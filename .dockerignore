@@ -2,6 +2,7 @@
 # mac-arm64 原生模块或开发数据(含真实项目)烤进镜像。
 node_modules
 .next
+.next-local
 data
 release
 .git

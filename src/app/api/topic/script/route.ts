@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateTopicScript } from "@/lib/script-engine/generator";
+import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import type { TopicNarrationStyle } from "@/lib/script-engine/prompts";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects } from "@/lib/db/schema";
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
     return apiError(req, "请填写一句话主题", "Please enter a one-sentence topic");
   }
 
-  const llmConfig = body.llmConfig as { baseUrl?: string; apiKey?: string; model?: string } | undefined;
+  const llmConfig = body.llmConfig as { provider?: string; baseUrl?: string; apiKey?: string; model?: string } | undefined;
   if (!llmConfig?.baseUrl || !llmConfig?.apiKey || !llmConfig?.model) {
     return apiError(req, "请配置 LLM 参数（baseUrl、apiKey、model）", "Please configure the LLM parameters (baseUrl, apiKey, model)");
   }
@@ -100,6 +101,7 @@ export async function POST(req: NextRequest) {
   }
 
   // persist to DB: delete old scripts → insert new ones → select first by default → update project status to scripting
+  const generationMetadata = scriptGenerationMetadata({ provider: llmConfig.provider, model: llmConfig.model }, "topic-script");
   let savedScripts = generated;
   try {
     await db.delete(scriptsTable).where(eq(scriptsTable.projectId, projectId));
@@ -113,6 +115,7 @@ export async function POST(req: NextRequest) {
           title: s.title,
           totalDuration: s.totalDuration,
           shots: s.shots,
+          generationMetadata,
           selected: i === 0,
         }))
       )
@@ -123,6 +126,7 @@ export async function POST(req: NextRequest) {
       styleType: r.styleType,
       totalDuration: r.totalDuration ?? 0,
       shots: r.shots ?? [],
+      generationMetadata: r.generationMetadata,
       selected: r.selected ?? false,
     })) as typeof generated;
     await db

@@ -11,9 +11,12 @@
     "pnpm": ">=10"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
+    "prebuild": "node scripts/clean-legacy-build.mjs",
     "build": "next build",
-    "start": "next start",
+    "postbuild": "node scripts/write-build-stamp.mjs",
+    "start": "node scripts/start-standalone.mjs",
+    "start:local": "node scripts/launch-local.mjs",
     "lint": "eslint",
     "test": "vitest run",
     "mcp": "node mcp/clipforge-mcp.mjs",

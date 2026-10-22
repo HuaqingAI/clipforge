@@ -8,7 +8,7 @@ import {
   resolveFilmModel,
   modelMaxSeconds,
   FILM_MAX_SECONDS,
-  FILM_FALLBACK_MODEL,
+  FilmModelSelectionError,
   estimateFilmSpend,
   parseUnitUsd,
 } from "@/lib/storyboard-film";
@@ -255,6 +255,11 @@ describe("referenceQuotaCheck（付费前参考图配额闸）", () => {
     expect(referenceQuotaCheck(99, "some/unknown-model")).toEqual({ ok: true, count: 99 });
     expect(referenceQuotaCheck(99, "minimax/h3/reference-to-video").ok).toBe(true);
   });
+  it("uses the existing Ark reference-image quota before the provider truncates a film's keyframes", async () => {
+    const { referenceQuotaCheck } = await import("@/lib/storyboard-film");
+    expect(referenceQuotaCheck(9, "doubao-seedance-2.5")).toEqual({ ok: true, count: 9, limit: 9 });
+    expect(referenceQuotaCheck(10, "doubao-seedance-2.0-mini")).toEqual({ ok: false, count: 10, limit: 9 });
+  });
 });
 
 /**
@@ -263,23 +268,34 @@ describe("referenceQuotaCheck（付费前参考图配额闸）", () => {
  * on a model they never chose, and short-ceiling models returned quietly truncated films.
  */
 describe("一键整片：模型解析与时长适配", () => {
-  it("resolveFilmModel：reference-to-video 模型原样保留，其余回退并记录被替换的模型", () => {
+  it("resolveFilmModel：只使用选定模型，不兼容或未设置时提示在设置中选择", () => {
     expect(resolveFilmModel("alibaba/wan-3.0/reference-to-video")).toEqual({
       model: "alibaba/wan-3.0/reference-to-video",
     });
-    expect(resolveFilmModel("bytedance/seedance-2.0/text-to-video")).toEqual({
-      model: FILM_FALLBACK_MODEL,
-      swappedFrom: "bytedance/seedance-2.0/text-to-video",
-    });
-    // nothing configured: fallback with no swap to report
-    expect(resolveFilmModel(undefined)).toEqual({ model: FILM_FALLBACK_MODEL });
-    expect(resolveFilmModel("   ")).toEqual({ model: FILM_FALLBACK_MODEL });
+    for (const incompatible of ["bytedance/seedance-2.0/text-to-video", "doubao-seedance-2.1"]) {
+      expect(() => resolveFilmModel(incompatible)).toThrow(FilmModelSelectionError);
+      expect(() => resolveFilmModel(incompatible)).toThrow("设置 → 视频生成 → 默认视频模型");
+    }
+    expect(() => resolveFilmModel(undefined)).toThrow(FilmModelSelectionError);
+    expect(() => resolveFilmModel("   ")).toThrow("设置 → 视频生成 → 默认视频模型");
   });
 
   it("modelMaxSeconds：读模型自己的时长上限，未知模型返回 undefined", () => {
     expect(modelMaxSeconds("bytedance/seedance-2.5/reference-to-video")).toBe(30);
     expect(modelMaxSeconds("minimax/h3/reference-to-video")).toBe(15);
     expect(modelMaxSeconds("who/knows")).toBeUndefined();
+  });
+
+  it.each([
+    "doubao-seedance-2.5",
+    "doubao-seedance-2.0",
+    "doubao-seedance-2.0-fast",
+    "doubao-seedance-2.0-mini",
+    "doubao-seedance-2-5-260628",
+    "doubao-seedance-2-0-260128",
+  ])("keeps the unified Ark reference model %s without applying Atlas duration bounds", (model) => {
+    expect(resolveFilmModel(model)).toEqual({ model });
+    expect(modelMaxSeconds(model)).toBeUndefined();
   });
 
   it("filmDurationFit：按所选模型的上限夹取，超出时标记 overflow", () => {

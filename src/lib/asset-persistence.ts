@@ -3,7 +3,8 @@ import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { assets } from "@/lib/db/schema";
+import { assets, scripts } from "@/lib/db/schema";
+import { assetMatchesScript, filterAssetsForScript, scriptRevision, type AssetScope } from "@/lib/asset-context";
 import { validateOrDelete } from "@/lib/media-validate";
 import { getDataDir } from "@/lib/paths";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
@@ -77,7 +78,15 @@ export interface SaveAssetCandidateInput {
   model?: string;
   prompt?: string;
   generationPlan?: GenerationControlSummary | null;
+  sourceKeyframeUrl?: string | null;
+  scope?: AssetScope;
+  selectedPolicy?: AssetSelectionPolicy;
 }
+
+export type AssetSelectionPolicy =
+  | { mode: "select" }
+  | { mode: "alternative" }
+  | { mode: "select-if-unchanged"; baseline: { scriptId: string; scriptRevision: string; selectedAssetId: string | null } };
 
 /** Insert a validated take and atomically make it the active composition input. */
 export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
@@ -92,7 +101,22 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
   }
   const generationPlan = input.generationPlan ? sanitizeGenerationControlSummary(input.generationPlan) : null;
   const rows = db.transaction((transaction) => {
-    transaction.update(assets).set({ selected: false }).where(and(eq(assets.projectId, input.projectId), eq(assets.shotId, input.shotId))).run();
+    const scriptRows = transaction.select().from(scripts).where(eq(scripts.projectId, input.projectId)).all();
+    const currentScript = scriptRows.find((row) => row.selected) ?? scriptRows[0];
+    const targetScript = input.scope ? scriptRows.find((row) => row.id === input.scope!.sourceScriptId) : currentScript;
+    const candidates = transaction.select().from(assets).where(and(eq(assets.projectId, input.projectId), eq(assets.shotId, input.shotId))).all();
+    const scopedCandidates = input.scope ? candidates.filter((row) => assetMatchesScript(row, targetScript)
+      && (row.sourceScriptId ? row.sourceScriptId === input.scope!.sourceScriptId : input.scope!.sourceScriptId === currentScript?.id)) : filterAssetsForScript(candidates, currentScript);
+    const policy = input.selectedPolicy ?? { mode: "select" };
+    let selected = policy.mode === "select";
+    if (policy.mode === "select-if-unchanged") {
+      const currentSelected = scopedCandidates.find((row) => row.selected);
+      selected = Boolean(currentScript && currentScript.id === policy.baseline.scriptId
+        && scriptRevision(currentScript) === policy.baseline.scriptRevision
+        && (currentSelected?.id ?? null) === policy.baseline.selectedAssetId
+        && (!input.scope || assetMatchesScript({ shotId: input.shotId, ...input.scope }, currentScript)));
+    }
+    if (selected) for (const row of scopedCandidates) transaction.update(assets).set({ selected: false }).where(eq(assets.id, row.id)).run();
     return transaction.insert(assets).values({
       projectId: input.projectId,
       shotId: input.shotId,
@@ -103,7 +127,9 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
       model: input.model,
       prompt: input.prompt,
       generationPlan,
-      selected: true,
+      ...(input.scope && input.scope),
+      ...(input.sourceKeyframeUrl && { sourceKeyframeUrl: input.sourceKeyframeUrl }),
+      selected,
       status: "done",
     }).returning().all();
   });

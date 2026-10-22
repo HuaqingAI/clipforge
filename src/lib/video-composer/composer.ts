@@ -1,6 +1,7 @@
 import { join, dirname } from "path";
 import { getDataDir } from "@/lib/paths";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
+import { ffmpegFilterFileArgs } from "@/lib/ffmpeg-filter-file";
 import { mkdir, writeFile, rm } from "fs/promises";
 import { existsSync } from "fs";
 import { TRANSITIONS, type TransitionMode } from "./transitions";
@@ -386,6 +387,8 @@ export interface ClipInput {
   hasAudio?: boolean;
   /** path to the TTS voice-over audio file for this clip; aligned to clip duration (padded with silence if shorter, trimmed if longer) */
   audioPath?: string;
+  /** Mix TTS with the video's native audio; otherwise audioPath replaces native audio as before. */
+  mixNativeAudio?: boolean;
   /**
    * Probed source media length in seconds (video clips only). Lets the composer speed-fit a
    * slightly-too-long clip into its slot instead of trimming the tail — tail-trim would cut off
@@ -450,9 +453,41 @@ interface ComposeGraph {
   outputPath: string;
 }
 
+/** Shared by the finished-video and editable-stem renderers so each clip has the same audible content. */
+export function buildClipAudioFilters(input: {
+  duration: number;
+  outputLabel: string;
+  ttsInput?: string;
+  nativeInput?: string;
+  voiceGround: boolean;
+}): string[] {
+  const { duration, outputLabel, ttsInput, nativeInput, voiceGround } = input;
+  const filters: string[] = [];
+  if (ttsInput !== undefined) {
+    const label = nativeInput !== undefined ? `${outputLabel}_tts` : outputLabel;
+    const ground = voiceGround ? `${VOICE_GROUND_CHAIN},` : "";
+    filters.push(`[${ttsInput}:a]aresample=44100,${ground}apad,atrim=duration=${duration},asetpts=PTS-STARTPTS[${label}]`);
+  }
+  if (nativeInput !== undefined) {
+    const label = ttsInput !== undefined ? `${outputLabel}_native` : outputLabel;
+    // Keep the original ambience, softening its edges without shortening the clip.
+    const edgeFade = duration > 0.1
+      ? `,afade=t=in:st=0:d=0.02,afade=t=out:st=${Math.max(0, duration - 0.02).toFixed(3)}:d=0.02`
+      : "";
+    filters.push(`[${nativeInput}:a]aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS${edgeFade}[${label}]`);
+  }
+  if (ttsInput !== undefined && nativeInput !== undefined) {
+    // Preserve narration level and constrain combined peaks; compensate limiter lookahead to keep sync.
+    filters.push(`[${outputLabel}_tts][${outputLabel}_native]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[${outputLabel}]`);
+  } else if (ttsInput === undefined && nativeInput === undefined) {
+    filters.push(`anullsrc=r=44100:cl=stereo,atrim=duration=${duration},asetpts=PTS-STARTPTS[${outputLabel}]`);
+  }
+  return filters;
+}
+
 // Assemble the ffmpeg composition graph (inputs / filtergraph / stream labels / duration) once;
 // buildComposeCommand renders it as a shell string (tests/debug) and buildComposeInvocation renders it
-// as shell-free argv + a -filter_complex_script payload (actual execution).
+// as shell-free argv + a filtergraph file payload (actual execution).
 function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
   // empty clips would cause the subsequent -map "[v0]" to reference a stream that was never created, producing a cryptic ffmpeg error; fail early with a readable message instead
   if (!config.clips || config.clips.length === 0) {
@@ -520,7 +555,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
     }
   });
 
-  // audio handling: TTS voice-over > native video audio > silence; each segment is aligned to clip duration for audio/video sync
+  // Audio defaults to TTS > native > silence; explicitly requested native/TTS mixes use both.
   const audioParts: string[] = [];
   // voice grounding defaults ON whenever a TTS track exists (quality features default into every
   // chain); voiceGround:false opts out. Native model audio never passes through the chain.
@@ -531,30 +566,15 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
   const roomTone = config.output.voiceGround !== false && hasAnyAudio;
   if (hasAnyAudio) {
     config.clips.forEach((clip, i) => {
+      let ttsInput: string | undefined;
       if (clip.audioPath) {
-        // TTS voice-over: added as an extra input, padded with silence / trimmed to clip duration;
-        // with voice grounding it first passes the de-broadcast chain (phone-mic band + AGC-style
-        // compression + light exciter) so it stops sounding like a studio read
-        const ai = inputs.length;
+        ttsInput = String(inputs.length);
         inputs.push({ path: clip.audioPath });
-        const ground = voiceGround ? `${VOICE_GROUND_CHAIN},` : "";
-        audioParts.push(
-          `[${ai}:a]aresample=44100,${ground}apad,atrim=duration=${clip.duration},asetpts=PTS-STARTPTS[a${i}]`
-        );
-      } else if (clip.hasAudio && clip.type === "video") {
-        // extract the clip's native audio track (model-generated voice/sfx), padded or trimmed to shot duration.
-        // 20ms edge micro-fades soften the noise-floor jump at hard cuts between native clips —
-        // deliberately NOT acrossfade (it would shorten audio 40ms per joint while the video concat
-        // keeps full length, accumulating A/V drift); edge fades smooth the same seam drift-free.
-        const edgeFade =
-          clip.duration > 0.1
-            ? `,afade=t=in:st=0:d=0.02,afade=t=out:st=${Math.max(0, clip.duration - 0.02).toFixed(3)}:d=0.02`
-            : "";
-        audioParts.push(`[${i}:a]aresample=44100,apad,atrim=duration=${clip.duration},asetpts=PTS-STARTPTS${edgeFade}[a${i}]`);
-      } else {
-        // generate a silent track of the same duration (using a lavfi virtual input)
-        audioParts.push(`anullsrc=r=44100:cl=stereo,atrim=duration=${clip.duration},asetpts=PTS-STARTPTS[a${i}]`);
       }
+      const nativeInput = clip.hasAudio && clip.type === "video" && (!clip.audioPath || clip.mixNativeAudio)
+        ? String(i)
+        : undefined;
+      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, voiceGround }));
     });
   }
 
@@ -653,8 +673,8 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
     const subtitleStream = `sub_out`;
     const fontFile = config.subtitle.fontFile ?? resolveChineseFontFile();
     // fontsdir points to the directory containing the Chinese font so that libass can locate it on Linux (no CoreText)
-    const fontsdirArg = fontFile ? `:fontsdir=${escapeSubtitlesPath(dirname(fontFile))}` : "";
-    filterParts.push(`[${currentVideoStream}]subtitles=${escapeSubtitlesPath(config.subtitle.karaokeAssPath)}${fontsdirArg}[${subtitleStream}]`);
+    const fontsdirArg = fontFile ? `:fontsdir='${escapeSubtitlesPath(dirname(fontFile))}'` : "";
+    filterParts.push(`[${currentVideoStream}]subtitles='${escapeSubtitlesPath(config.subtitle.karaokeAssPath)}'${fontsdirArg}[${subtitleStream}]`);
     currentVideoStream = subtitleStream;
   } else if (config.subtitle?.texts.length) {
     const subtitleStream = `sub_out`;
@@ -814,7 +834,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
 
 /**
  * Convert the pre-shell-escaped filtergraph (built for an inline, double-quoted -filter_complex argument)
- * into the form ffmpeg reads directly from a -filter_complex_script file. The only shell transform our
+ * into the form ffmpeg reads directly from a filtergraph file. The only shell transform our
  * filtergraph relies on is POSIX double-quote backslash-halving (\\ -> \): escapeDrawText deliberately
  * doubles backslashes expecting the shell to halve them. Reading from a file (or passing via execFile)
  * skips the shell, so we apply that halving ourselves. escapeSubtitlesPath emits single backslashes
@@ -859,11 +879,11 @@ export function buildComposeCommand(config: ComposeConfig): string {
   return cmd;
 }
 
-/** Shell-free ffmpeg invocation: raw argv + a filtergraph in ffmpeg-direct form (fed via -filter_complex_script). */
+/** Shell-free ffmpeg invocation: raw argv + a filtergraph in ffmpeg-direct form (loaded from a file). */
 export interface ComposeInvocation {
   /** ["-y", ...inputs] — raw paths, no shell quoting */
   inputArgs: string[];
-  /** filtergraph in ffmpeg-direct form (shell backslash-halving already applied); write to a file for -filter_complex_script */
+  /** filtergraph in ffmpeg-direct form (shell backslash-halving already applied); write to a file */
   filterComplex: string;
   /** maps + encode + metadata + -t + output path (the filter flag is spliced in by the caller) */
   outputArgs: string[];
@@ -872,7 +892,7 @@ export interface ComposeInvocation {
 
 /**
  * Build a shell-free ffmpeg invocation. The giant, newline-laden filtergraph is returned separately so the
- * caller can write it to a file and pass it via -filter_complex_script; together with execFile (no shell)
+ * caller can write it to a file and load it with a compatible FFmpeg option; together with execFile (no shell)
  * this sidesteps cmd.exe's 8191-char command-line cap, its embedded-newline breakage, and its backslash
  * mangling of Windows paths — all of which made every compose fail on Windows (issue #13) while working on
  * macOS/Linux.
@@ -930,7 +950,7 @@ export async function composeVideo(config: ComposeConfig): Promise<string> {
 
   const inv = buildComposeInvocation(config);
 
-  // Write the (large, newline-laden) filtergraph to a script file and pass it via -filter_complex_script.
+  // Write the (large, newline-laden) filtergraph to a file using the binary's supported loading option.
   // Combined with execFile (no shell) this is the crux of the Windows fix (issue #13): a real 6-shot compose
   // command is ~12k chars with ~23 embedded newlines, and running it through cmd.exe (as child_process.exec
   // does on Windows) blew past its 8191-char command-line cap and choked on the newlines, so every final
@@ -938,18 +958,20 @@ export async function composeVideo(config: ComposeConfig): Promise<string> {
   // cap, no quoting/backslash issues) and the script file keeps the argv small regardless of project size.
   const filterFile = join(outputDir, `filter_${Date.now()}.txt`);
   await writeFile(filterFile, inv.filterComplex, "utf8");
-  const args = [...inv.inputArgs, "-filter_complex_script", filterFile, ...inv.outputArgs];
+  const binary = ffmpegBin();
 
   const { execFile } = await import("child_process");
   const { promisify } = await import("util");
   const execFileAsync = promisify(execFile);
 
   try {
+    const filterArgs = await ffmpegFilterFileArgs(filterFile, binary);
+    const args = [...inv.inputArgs, ...filterArgs, ...inv.outputArgs];
     // Only the expensive ffmpeg run goes through the gate (cheap setup above runs unguarded);
     // execFile's timeout starts inside the limited fn, so time spent queueing never counts against it.
     // apply timeout (sends SIGTERM if exceeded); disk-full / timeout errors are mapped to readable messages
     await withComposeSlot(() =>
-      execFileAsync(ffmpegBin(), args, { maxBuffer: 50 * 1024 * 1024, timeout: COMPOSE_TIMEOUT_MS })
+      execFileAsync(binary, args, { maxBuffer: 50 * 1024 * 1024, timeout: COMPOSE_TIMEOUT_MS })
     );
   } catch (e) {
     const friendly = composeErrorMessage(e as { killed?: boolean; signal?: string; stderr?: string; message?: string });

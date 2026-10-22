@@ -19,6 +19,8 @@ import { buildHookVariants } from "@/lib/script-engine/hook-variants";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
 import { ProjectHeader } from "@/components/project-header";
+import { FreeVoicePreview } from "@/components/free-voice-preview";
+import { ShotVideoPicker, buildShotAssetSelections, selectedShotAsset, type ShotVideoAsset } from "@/components/shot-video-picker";
 import {
   Select,
   SelectContent,
@@ -34,16 +36,17 @@ interface VideoClipItem {
   type: Shot["type"];
   duration: number;
   voiceover: string;
-  transition: "ai_start_end" | "ai_reference" | "direct_concat" | "ffmpeg_fade";
+  transition: "direct_concat" | "ffmpeg_fade";
 }
 
 // 合成配置
 interface ComposeConfig {
   ttsEnabled: boolean;
+  voiceoverMode: "auto" | "replace" | "mix";
   ttsVoice: string;
   /** 免费 TTS 音色（未配置付费 TTS 时使用） */
   freeVoice: string;
-  bgm: string;
+  subtitles: boolean;
   subtitleSize: number;
   subtitlePosition: "bottom" | "center" | "top";
   aspectRatio: "9:16" | "16:9" | "1:1";
@@ -75,19 +78,8 @@ const freeVoiceOptions = [
   { value: "zh-CN-YunjianNeural", labelKey: "freeVoiceYunjian" },
 ];
 
-// 背景音乐选项（label 改为 i18n key）
-const bgmOptions = [
-  { value: "none", labelKey: "bgmNone" },
-  { value: "upbeat", labelKey: "bgmUpbeat" },
-  { value: "chill", labelKey: "bgmChill" },
-  { value: "energetic", labelKey: "bgmEnergetic" },
-  { value: "emotional", labelKey: "bgmEmotional" },
-];
-
 // 转场标签（值为 i18n key）
 const transitionLabels: Record<string, string> = {
-  ai_start_end: "transitionAiStartEnd",
-  ai_reference: "transitionAiReference",
   direct_concat: "transitionDirectConcat",
   ffmpeg_fade: "transitionFfmpegFade",
 };
@@ -107,14 +99,7 @@ interface DbShot {
   type: VideoClipItem["type"];
   duration: number;
   voiceover: string;
-  transition: VideoClipItem["transition"];
-}
-
-// 分镜素材（仅取缩略图所需字段）
-interface DbAsset {
-  shotId: number;
-  filePath: string | null;
-  status: string;
+  transition: Shot["transition"];
 }
 
 // 判断素材是图还是视频（视频用 <video> 当封面，图用 <img>）
@@ -126,16 +111,25 @@ export default function VideoPage() {
   const { id } = useParams<{ id: string }>();
   const { defaultResolution, defaultAspectRatio, tts, providers } = useSettingsStore();
   const [clips, setClips] = useState<VideoClipItem[]>([]);
-  // 分镜缩略图：shotId → 素材文件路径（在时间线里直接预览每段画面）
-  const [thumbs, setThumbs] = useState<Record<number, string>>({});
+  const [scriptId, setScriptId] = useState("");
+  const [savedAssets, setSavedAssets] = useState<ShotVideoAsset[]>([]);
+  const [savingAssetId, setSavingAssetId] = useState<string | null>(null);
+  const [assetSelectionError, setAssetSelectionError] = useState<{ shotId: number; message: string } | null>(null);
+  const selectingAsset = useRef(false);
+  // 缩略图严格跟随持久化选材，与合成请求中的资产编号一致。
+  const thumbs = useMemo(() => Object.fromEntries(clips.flatMap(({ shotId }) => {
+    const asset = selectedShotAsset(savedAssets, shotId);
+    return asset?.filePath ? [[shotId, asset.filePath]] : [];
+  })), [clips, savedAssets]);
   const [projectName, setProjectName] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
     ttsEnabled: true,
+    voiceoverMode: "auto",
     ttsVoice: "female-gentle",
     freeVoice: "zh-CN-XiaoxiaoNeural",
-    bgm: "upbeat",
+    subtitles: true,
     subtitleSize: 24,
     subtitlePosition: "bottom",
     aspectRatio: "9:16",
@@ -161,31 +155,6 @@ export default function VideoPage() {
   const [bgmUploading, setBgmUploading] = useState(false);
   // 是否已配置付费 TTS（否则配音走免费 Edge keyless TTS）
   const paidTtsReady = isPaidTTSReady(tts, providers);
-  // 免费配音试听状态
-  const [previewingVoice, setPreviewingVoice] = useState(false);
-
-  // 试听免费音色：合成一小段并播放
-  const previewFreeVoice = async () => {
-    if (previewingVoice) return;
-    setPreviewingVoice(true);
-    try {
-      const res = await fetch("/api/tts/free", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice: config.freeVoice, text: t("ttsPreviewText") }),
-      });
-      if (!res.ok) throw new Error(t("errorPreviewFailed"));
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
-      await audio.play();
-    } catch {
-      /* 试听失败静默（不阻断主流程） */
-    } finally {
-      setPreviewingVoice(false);
-    }
-  };
   const uploadBgm = async (file: File) => {
     setBgmUploading(true);
     try {
@@ -208,6 +177,7 @@ export default function VideoPage() {
     (async () => {
       setLoading(true);
       setLoadError(null);
+      setAssetSelectionError(null);
       try {
         const [projectRes, scriptsRes, assetsRes] = await Promise.all([
           fetch(`/api/project/${id}`),
@@ -216,7 +186,8 @@ export default function VideoPage() {
         ]);
         const project = projectRes.ok ? await projectRes.json() : null;
         const scripts = scriptsRes.ok ? await scriptsRes.json() : [];
-        const assets = assetsRes.ok ? await assetsRes.json() : [];
+        if (!assetsRes.ok) throw new Error(t("errorLoadFailed"));
+        const assets = await assetsRes.json();
         if (cancelled) return;
         if (project) {
           setProjectName(project.name ?? project.productName ?? "");
@@ -226,21 +197,16 @@ export default function VideoPage() {
             if (voiceStage) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
           }
         }
-        // 收集每个分镜已生成的画面，作时间线缩略图（已完成且有文件的才算）
-        const thumbMap: Record<number, string> = {};
-        for (const a of (Array.isArray(assets) ? assets : []) as DbAsset[]) {
-          if (a && typeof a.shotId === "number" && a.filePath && a.status === "done" && thumbMap[a.shotId] == null) {
-            thumbMap[a.shotId] = a.filePath;
-          }
-        }
-        setThumbs(thumbMap);
+        setSavedAssets(Array.isArray(assets) ? assets : []);
         const selected = Array.isArray(scripts)
           ? scripts.find((s: { selected?: boolean }) => s.selected) ?? scripts[0]
           : null;
         if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
+          setScriptId("");
           setLoadError(t("errorNoScript"));
           setClips([]);
         } else {
+          setScriptId(typeof selected.id === "string" ? selected.id : "");
           // raw shots feed the variant matrix (hook rewrites need full Shot objects)
           setScriptShots(selected.shots as Shot[]);
           setClips(
@@ -249,7 +215,8 @@ export default function VideoPage() {
               type: s.type,
               duration: s.duration,
               voiceover: s.voiceover ?? "",
-              transition: s.transition ?? "ai_start_end",
+              // Legacy AI modes use the same hard cut in the composer.
+              transition: s.transition === "ffmpeg_fade" ? "ffmpeg_fade" : "direct_concat",
             }))
           );
         }
@@ -287,7 +254,12 @@ export default function VideoPage() {
     );
   };
 
-  // style packs: declarative JSON recipes (caption preset / BGM / quality / CTA / product card).
+  const applyTransitionToAll = (transition: VideoClipItem["transition"]) => {
+    // A transition belongs to the incoming shot; the first shot has no boundary.
+    setClips((prev) => prev.map((clip, index) => index === 0 ? clip : { ...clip, transition }));
+  };
+
+  // style packs: declarative JSON recipes (caption preset / audio mix / quality / CTA / product card).
   // Novice-safe "external skill": pure data validated against a whitelist — nothing executable.
   const packFileRef = useRef<HTMLInputElement>(null);
   const [packNotice, setPackNotice] = useState<string | null>(null);
@@ -297,7 +269,6 @@ export default function VideoPage() {
     setConfig((c) => ({
       ...c,
       ...(p.captionPreset && { captionPreset: p.captionPreset }),
-      ...(p.bgm && { bgm: p.bgm }),
       ...(p.bgmVolume !== undefined && { bgmVolume: p.bgmVolume }),
       ...(p.bgmDuck !== undefined && { bgmDuck: p.bgmDuck }),
       ...(p.quality && { renderPreset: p.quality, resolution: RENDER_PRESETS[p.quality].resolution }),
@@ -344,7 +315,6 @@ export default function VideoPage() {
       name: projectName || "my-style",
       compose: {
         captionPreset: config.captionPreset,
-        bgm: config.bgm as StylePack["compose"]["bgm"],
         bgmVolume: config.bgmVolume,
         bgmDuck: config.bgmDuck,
         quality: config.renderPreset,
@@ -362,20 +332,42 @@ export default function VideoPage() {
   };
 
   // —— Variant matrix: same assets,
-  // hook copy × caption preset × BGM mood combos rendered as separate labeled outputs
+  // hook copy × caption preset combos rendered as separate labeled outputs
   // for A/B testing. Zero extra AI-generation cost — only compose (FFmpeg + TTS) reruns. ——
   const [scriptShots, setScriptShots] = useState<Shot[]>([]);
   const [projectCategory, setProjectCategory] = useState("");
   const [matrixOpen, setMatrixOpen] = useState(false);
   const [matrixHooks, setMatrixHooks] = useState<Set<string>>(new Set(["base"]));
   const [matrixCaptions, setMatrixCaptions] = useState<Set<string>>(new Set());
-  const [matrixBgms, setMatrixBgms] = useState<Set<string>>(new Set());
   const [matrixRunning, setMatrixRunning] = useState(false);
-  const [matrixResults, setMatrixResults] = useState<Array<{ label: string; status: "composing" | "done" | "failed"; url?: string }>>([]);
+  const [matrixResults, setMatrixResults] = useState<Array<{ label: string; status: "composing" | "done" | "failed"; url?: string; error?: string }>>([]);
+
+  const selectAsset = async (asset: ShotVideoAsset) => {
+    if (selectingAsset.current || isComposing || matrixRunning) return;
+    selectingAsset.current = true;
+    setSavingAssetId(asset.id);
+    setAssetSelectionError(null);
+    try {
+      const response = await fetch(`/api/project/${id}/assets`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetId: asset.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || (locale === "zh" ? "切换视频版本失败，请重试" : "Failed to select this version. Please retry."));
+      setSavedAssets((current) => current.map((row) => row.shotId === asset.shotId ? { ...row, selected: row.id === asset.id } : row));
+      setComposeDone(false);
+      setOutputUrl(null);
+    } catch (failure) {
+      setAssetSelectionError({ shotId: asset.shotId, message: failure instanceof Error ? failure.message : locale === "zh" ? "切换视频版本失败，请重试" : "Failed to select this version. Please retry." });
+    } finally {
+      selectingAsset.current = false;
+      setSavingAssetId(null);
+    }
+  };
 
   /** Hard cap on one batch (compose is FFmpeg-heavy and runs sequentially). */
   const MATRIX_MAX = 6;
-  const MATRIX_BGM_MOODS = ["upbeat", "chill", "energetic", "emotional"] as const;
 
   // hook-pattern categories use the script-engine vocabulary; map the project's UI category in
   const matrixCategory = (
@@ -394,26 +386,23 @@ export default function VideoPage() {
 
   const matrixCombos = useMemo(() => {
     const hooks = [...matrixHooks];
-    const captions = [...matrixCaptions];
-    const bgms = [...matrixBgms];
-    const combos: Array<{ hookKey: string; hookLabel: string; caption: string; bgm: string; label: string }> = [];
+    const captions = config.subtitles ? [...matrixCaptions] : [config.captionPreset];
+    const combos: Array<{ hookKey: string; hookLabel: string; caption: string; label: string }> = [];
     for (const h of hooks) {
       const hookLabel = h === "base" ? t("matrixBaseHook") : hookVariants.find((v) => v.hookId === h)?.hookName ?? h;
       for (const c of captions) {
-        for (const b of bgms) {
-          combos.push({ hookKey: h, hookLabel, caption: c, bgm: b, label: `${hookLabel}×${c}×${b}` });
-        }
+        const captionLabel = config.subtitles ? c : t("matrixNoSubtitles");
+        combos.push({ hookKey: h, hookLabel, caption: c, label: `${hookLabel}×${captionLabel}` });
       }
     }
     return combos.slice(0, MATRIX_MAX);
-  }, [matrixHooks, matrixCaptions, matrixBgms, hookVariants, t]);
+  }, [matrixHooks, matrixCaptions, hookVariants, config.subtitles, config.captionPreset, t]);
 
   const toggleMatrixOpen = () => {
     setMatrixOpen((open) => {
-      // seed caption/BGM dimensions from the current config on first open
+      // Seed the caption dimension from the current config on first open.
       if (!open) {
         setMatrixCaptions((s) => (s.size === 0 ? new Set([config.captionPreset]) : s));
-        setMatrixBgms((s) => (s.size === 0 ? new Set([config.bgm !== "none" ? config.bgm : "upbeat"]) : s));
       }
       return !open;
     });
@@ -430,7 +419,9 @@ export default function VideoPage() {
 
   /** Run the matrix: sequential compose per combo, each polled by its own compositionId. */
   const runMatrix = async () => {
-    if (matrixRunning || matrixCombos.length === 0) return;
+    if (matrixRunning || isComposing || selectingAsset.current || !scriptId || matrixCombos.length === 0) return;
+    const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
+    const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setMatrixRunning(true);
     setMatrixResults(matrixCombos.map((c) => ({ label: c.label, status: "composing" as const })));
     for (let i = 0; i < matrixCombos.length; i++) {
@@ -443,19 +434,21 @@ export default function VideoPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            scriptId,
+            shotAssetSelections,
+            transitionOverrides,
             resolution: config.resolution,
             renderPreset: config.renderPreset,
             aspectRatio: config.aspectRatio,
+            subtitles: config.subtitles,
             label: combo.label,
             ...(hookShot && { voiceoverOverrides: [{ shotId: hookShot.shotId, voiceover: hookShot.voiceover ?? "" }] }),
             ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
             ...(config.productCard && { productCard: true }),
             captionPreset: combo.caption,
-            bgmVolume: config.bgmVolume,
-            ...(config.bgmDuck && { bgmDuck: true }),
+            ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
             ...(!config.voiceGround && { voiceGround: false }),
-            // uploaded BGM stays fixed across combos; otherwise the mood dimension picks the free track
-            ...(bgm?.path ? { bgmPath: bgm.path } : { freeBgm: true, bgmMood: combo.bgm }),
+            ...(config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
             ...(config.ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
             ...(config.ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
           }),
@@ -466,7 +459,7 @@ export default function VideoPage() {
         const url: string = await new Promise((resolve, reject) => {
           const poll = setInterval(async () => {
             try {
-              const r = await fetch(`/api/project/${id}/compose?compositionId=${data.compositionId}`);
+              const r = await fetch(`/api/project/${id}/compose?compositionId=${encodeURIComponent(data.compositionId)}`);
               const d = await r.json();
               const c = d.composition;
               if (!c) return;
@@ -475,7 +468,7 @@ export default function VideoPage() {
                 resolve(c.url);
               } else if (c.status === "failed") {
                 clearInterval(poll);
-                reject(new Error("failed"));
+                reject(new Error(c.error || t("errorComposeAssets")));
               }
             } catch {
               // transient poll failure — keep trying until the outer timeout
@@ -487,8 +480,8 @@ export default function VideoPage() {
           }, 300000);
         });
         setMatrixResults((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: "done", url } : r)));
-      } catch {
-        setMatrixResults((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: "failed" } : r)));
+      } catch (error) {
+        setMatrixResults((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: "failed", error: error instanceof Error ? error.message : t("errorComposeFailed") } : r)));
       }
     }
     setMatrixRunning(false);
@@ -496,6 +489,9 @@ export default function VideoPage() {
 
   // 真实合成：调用 compose API 跑 FFmpeg，配乐观进度动画，完成后拿到真实 mp4
   const startCompose = async () => {
+    if (isComposing || matrixRunning || selectingAsset.current || !scriptId) return;
+    const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
+    const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setIsComposing(true);
     setComposeError(null);
     setComposeDone(false);
@@ -513,19 +509,20 @@ export default function VideoPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          scriptId,
+          shotAssetSelections,
+          transitionOverrides,
           resolution: config.resolution,
           renderPreset: config.renderPreset,
           aspectRatio: config.aspectRatio,
+          subtitles: config.subtitles,
           ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
           ...(config.productCard && { productCard: true }),
           ...(config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
-          bgmVolume: config.bgmVolume,
-          ...(config.bgmDuck && { bgmDuck: true }),
-          ...(bgm?.path && { bgmPath: bgm.path }),
+          ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
           ...(!config.voiceGround && { voiceGround: false }),
-          // 没上传 BGM 且选了非 none 的配乐情绪 → 自动取一条该情绪的免费 CC 配乐（之前这里漏发，下拉形同虚设）
-          ...(!bgm?.path && config.bgm !== "none" && { freeBgm: true, bgmMood: config.bgm }),
           // 开启配音时：已配付费 TTS 走付费；否则走免费 Edge keyless TTS（无需 Key），合成为每镜生成口播音轨
+          ...(config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
           ...(config.ttsEnabled && paidTtsReady && {
             // 解析后的完整配置（含平台、复用的 Key、默认 baseUrl/模型/音色、可选 GroupId）
             ttsConfig: resolveTTSConfig(tts, providers),
@@ -536,13 +533,13 @@ export default function VideoPage() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || t("errorComposeFailed"));
+      if (!res.ok || !data.compositionId) throw new Error(data.error || t("errorComposeFailed"));
 
       // 轮询合成状态，直到 done / failed（后台任务，避免长视频请求超时）
       const url: string = await new Promise((resolve, reject) => {
         const poll = setInterval(async () => {
           try {
-            const r = await fetch(`/api/project/${id}/compose`);
+            const r = await fetch(`/api/project/${id}/compose?compositionId=${encodeURIComponent(data.compositionId)}`);
             const d = await r.json();
             const c = d.composition;
             if (!c) return;
@@ -551,7 +548,7 @@ export default function VideoPage() {
               resolve(c.url);
             } else if (c.status === "failed") {
               clearInterval(poll);
-              reject(new Error(t("errorComposeAssets")));
+              reject(new Error(c.error || t("errorComposeAssets")));
             }
           } catch {
             // 单次轮询失败忽略，继续重试
@@ -616,6 +613,28 @@ export default function VideoPage() {
               </Link>
             </div>
 
+            {clips.length > 1 && (
+              <div role="group" aria-label={t("transitionBulkLabel")} className="mb-4 rounded-lg border border-border/50 bg-muted/10 p-3 space-y-2">
+                <p className="text-xs font-medium">{t("transitionBulkLabel")}</p>
+                <div className="flex flex-wrap gap-2">
+                  {(["direct_concat", "ffmpeg_fade"] as const).map((transition) => (
+                    <Button
+                      key={transition}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-pressed={clips.slice(1).every((clip) => clip.transition === transition)}
+                      onClick={() => applyTransitionToAll(transition)}
+                      className="text-xs aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary"
+                    >
+                      {t(transition === "direct_concat" ? "transitionAllDirectConcat" : "transitionAllFfmpegFade")}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground">{t("transitionBulkHint")}</p>
+              </div>
+            )}
+
             <div className="space-y-1">
               {clips.map((clip, index) => {
                 const typeInfo = shotTypeLabels[clip.type];
@@ -667,6 +686,15 @@ export default function VideoPage() {
                             {String(clip.shotId).padStart(2, "0")}
                           </span>
                         </div>
+                        <ShotVideoPicker
+                          shotId={clip.shotId}
+                          assets={savedAssets}
+                          locale={locale}
+                          disabled={savingAssetId !== null || isComposing || matrixRunning}
+                          savingAssetId={savingAssetId}
+                          error={assetSelectionError?.shotId === clip.shotId ? assetSelectionError.message : undefined}
+                          onSelect={(asset) => { void selectAsset(asset); }}
+                        />
                       </CardContent>
                     </Card>
 
@@ -676,12 +704,11 @@ export default function VideoPage() {
                         <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-muted/20 border border-border/30">
                           <LuChevronDown className="w-3 h-3 text-muted-foreground" />
                           <select
-                            value={clip.transition}
-                            onChange={(e) => updateTransition(clip.shotId, e.target.value)}
+                            aria-label={locale === "en" ? `Transition from shot ${clip.shotId} to shot ${clips[index + 1].shotId}` : `镜头 ${clip.shotId} 到镜头 ${clips[index + 1].shotId} 的转场`}
+                            value={clips[index + 1].transition}
+                            onChange={(e) => updateTransition(clips[index + 1].shotId, e.target.value)}
                             className="text-[11px] text-muted-foreground bg-transparent border-none outline-none cursor-pointer"
                           >
-                            <option value="ai_start_end">{t(transitionLabels.ai_start_end)}</option>
-                            <option value="ai_reference">{t(transitionLabels.ai_reference)}</option>
                             <option value="direct_concat">{t(transitionLabels.direct_concat)}</option>
                             <option value="ffmpeg_fade">{t(transitionLabels.ffmpeg_fade)}</option>
                           </select>
@@ -756,11 +783,41 @@ export default function VideoPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">{t("ttsEnableLabel")}</span>
                   <button
+                    type="button"
+                    role="switch"
+                    aria-label={t("ttsEnableLabel")}
+                    aria-checked={config.ttsEnabled}
                     onClick={() => setConfig((c) => ({ ...c, ttsEnabled: !c.ttsEnabled }))}
                     className={`relative w-10 h-5 rounded-full transition-colors ${config.ttsEnabled ? "bg-primary" : "bg-muted"}`}
                   >
                     <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.ttsEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
                   </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">{t("ttsAutoHint")}</p>
+                <div className={`space-y-3 ${config.ttsEnabled ? "" : "opacity-50"}`}>
+                  {([
+                    { mode: "replace", label: "ttsReplaceLabel", hint: "ttsReplaceHint" },
+                    { mode: "mix", label: "ttsMixLabel", hint: "ttsMixHint" },
+                  ] as const).map(({ mode, label, hint }) => (
+                    <div key={mode} className="flex items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">{t(label)}</p>
+                        <p id={`voiceover-${mode}-hint`} className="text-[11px] text-muted-foreground">{t(hint)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label={t(label)}
+                        aria-describedby={`voiceover-${mode}-hint`}
+                        aria-checked={config.voiceoverMode === mode}
+                        disabled={!config.ttsEnabled}
+                        onClick={() => setConfig((c) => ({ ...c, voiceoverMode: c.voiceoverMode === mode ? "auto" : mode }))}
+                        className={`relative h-5 w-10 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed ${config.voiceoverMode === mode ? "bg-primary" : "bg-muted"}`}
+                      >
+                        <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.voiceoverMode === mode ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
                 {config.ttsEnabled && paidTtsReady && (
                   <p className="text-[11px] text-muted-foreground">
@@ -787,70 +844,21 @@ export default function VideoPage() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <button
-                      onClick={previewFreeVoice}
-                      disabled={previewingVoice}
-                      className="text-[11px] text-primary hover:underline disabled:opacity-50"
-                    >
-                      {previewingVoice ? t("ttsPreviewing") : t("ttsPreviewCta")}
-                    </button>
+                    <FreeVoicePreview
+                      key={`${config.freeVoice}:${locale}`}
+                      voice={config.freeVoice}
+                      text={t("ttsPreviewText")}
+                    />
                   </div>
                 )}
-              </CardContent>
-            </Card>
-
-            {/* 背景音乐 */}
-            <Card className="glass-card">
-              <CardContent className="p-4 space-y-3">
-                <Label className="text-sm font-medium">{t("bgmSectionLabel")}</Label>
-                <Select value={config.bgm} onValueChange={(v) => setConfig((c) => ({ ...c, bgm: v ?? c.bgm }))}>
-                  <SelectTrigger className="bg-muted/30 border-border/50 text-xs">
-                    {/* Base UI 的 Select.Value 默认显示原始 value，用函数子节点映射为中文标签 */}
-                    <SelectValue>
-                      {(value: string) => {
-                        const o = bgmOptions.find((o) => o.value === value);
-                        return o ? t(o.labelKey) : value;
-                      }}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {bgmOptions.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {t(o.labelKey)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="space-y-1.5 pt-1">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{t("bgmVolumeLabel")}</span>
-                    <span className="tabular-nums">{Math.round(config.bgmVolume * 100)}%</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={5}
-                    max={40}
-                    step={1}
-                    value={Math.round(config.bgmVolume * 100)}
-                    onChange={(event) => setConfig((c) => ({ ...c, bgmVolume: Number(event.target.value) / 100 }))}
-                    className="w-full accent-primary"
-                    aria-label={t("bgmVolumeLabel")}
-                  />
-                </div>
-                {/* 旁白闪避：旁白一响压低 BGM、停顿回升，旁白更清晰 */}
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-xs text-muted-foreground">{t("bgmDuckLabel")}</span>
-                  <button
-                    onClick={() => setConfig((c) => ({ ...c, bgmDuck: !c.bgmDuck }))}
-                    className={`relative w-10 h-5 rounded-full transition-colors ${config.bgmDuck ? "bg-primary" : "bg-muted"}`}
-                  >
-                    <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.bgmDuck ? "translate-x-5" : "translate-x-0.5"}`} />
-                  </button>
-                </div>
                 {/* 人声落地：TTS 旁白过手机麦频段+AGC 压缩+房间底噪垫底，摆脱「播音棚干声」感（原生模型人声不经过此链） */}
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-xs text-muted-foreground">{t("voiceGroundLabel")}</span>
                   <button
+                    type="button"
+                    role="switch"
+                    aria-label={t("voiceGroundLabel")}
+                    aria-checked={config.voiceGround}
                     onClick={() => setConfig((c) => ({ ...c, voiceGround: !c.voiceGround }))}
                     className={`relative w-10 h-5 rounded-full transition-colors ${config.voiceGround ? "bg-primary" : "bg-muted"}`}
                   >
@@ -864,12 +872,29 @@ export default function VideoPage() {
             <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("subtitleLabel")}</Label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="compose-subtitles" className="text-xs text-muted-foreground">{t("subtitleEnableLabel")}</Label>
+                  <button
+                    id="compose-subtitles"
+                    type="button"
+                    role="switch"
+                    aria-label={t("subtitleEnableLabel")}
+                    aria-describedby="compose-subtitles-hint"
+                    aria-checked={config.subtitles}
+                    onClick={() => setConfig((c) => ({ ...c, subtitles: !c.subtitles }))}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${config.subtitles ? "bg-primary" : "bg-muted"}`}
+                  >
+                    <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.subtitles ? "translate-x-5" : "translate-x-0.5"}`} />
+                  </button>
+                </div>
+                <p id="compose-subtitles-hint" className="text-[11px] text-muted-foreground">{t("subtitleEnableHint")}</p>
+                <div className={`grid grid-cols-3 gap-2 ${config.subtitles ? "" : "opacity-50"}`}>
                   {(["bottom", "center", "top"] as const).map((pos) => (
                     <button
                       key={pos}
+                      disabled={!config.subtitles}
                       onClick={() => setConfig((c) => ({ ...c, subtitlePosition: pos }))}
-                      className={`h-9 rounded-md text-xs border transition-all ${
+                      className={`h-9 rounded-md text-xs border transition-all disabled:cursor-not-allowed ${
                         config.subtitlePosition === pos
                           ? "border-primary bg-primary/10 text-primary"
                           : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
@@ -880,14 +905,15 @@ export default function VideoPage() {
                   ))}
                 </div>
                 {/* caption style preset: standard boxed / bold punch / minimal / karaoke word-by-word */}
-                <div className="space-y-1.5 pt-1">
+                <div className={`space-y-1.5 pt-1 ${config.subtitles ? "" : "opacity-50"}`}>
                   <span className="text-xs text-muted-foreground">{t("captionStyleLabel")}</span>
                   <div className="grid grid-cols-2 gap-2">
                     {(["standard", "bold", "minimal", "karaoke"] as const).map((preset) => (
                       <button
                         key={preset}
+                        disabled={!config.subtitles}
                         onClick={() => setConfig((c) => ({ ...c, captionPreset: preset }))}
-                        className={`h-9 rounded-md text-xs border transition-all ${
+                        className={`h-9 rounded-md text-xs border transition-all disabled:cursor-not-allowed ${
                           config.captionPreset === preset
                             ? "border-primary bg-primary/10 text-primary"
                             : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
@@ -1012,18 +1038,40 @@ export default function VideoPage() {
             {/* 合成按钮 */}
             <div className="space-y-3">
               {/* 背景音乐（可选，合成时混入并自动压低让位配音） */}
-              <div className="flex items-center justify-between p-3 rounded-lg border border-border/40 bg-muted/10">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium">{t("bgmOptionalTitle")}</p>
-                  <p className="text-[11px] text-muted-foreground truncate">{bgm ? t("bgmSelected", { name: bgm.name }) : t("bgmUploadHint")}</p>
+              <div className="space-y-3 p-3 rounded-lg border border-border/40 bg-muted/10">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium">{t("bgmOptionalTitle")}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{bgm ? t("bgmSelected", { name: bgm.name }) : t("bgmUploadHint")}</p>
+                  </div>
+                  <label className="shrink-0">
+                    <input type="file" accept="audio/*" className="hidden" disabled={isComposing || bgmUploading}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadBgm(f); e.target.value = ""; }} />
+                    <span className={`inline-flex items-center h-8 px-3 rounded-md border border-border/60 text-xs cursor-pointer hover:border-primary/50 ${(isComposing || bgmUploading) ? "opacity-50 pointer-events-none" : ""}`}>
+                      {bgmUploading ? t("bgmUploading") : bgm ? t("bgmReplace") : t("bgmUploadCta")}
+                    </span>
+                  </label>
                 </div>
-                <label className="shrink-0">
-                  <input type="file" accept="audio/*" className="hidden" disabled={isComposing || bgmUploading}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadBgm(f); e.target.value = ""; }} />
-                  <span className={`inline-flex items-center h-8 px-3 rounded-md border border-border/60 text-xs cursor-pointer hover:border-primary/50 ${(isComposing || bgmUploading) ? "opacity-50 pointer-events-none" : ""}`}>
-                    {bgmUploading ? t("bgmUploading") : bgm ? t("bgmReplace") : t("bgmUploadCta")}
-                  </span>
-                </label>
+                {bgm && <>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{t("bgmVolumeLabel")}</span>
+                      <span className="tabular-nums">{Math.round(config.bgmVolume * 100)}%</span>
+                    </div>
+                    <input type="range" min={5} max={40} step={1}
+                      value={Math.round(config.bgmVolume * 100)}
+                      onChange={(event) => setConfig((c) => ({ ...c, bgmVolume: Number(event.target.value) / 100 }))}
+                      className="w-full accent-primary" aria-label={t("bgmVolumeLabel")} />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">{t("bgmDuckLabel")}</span>
+                    <button type="button" role="switch" aria-label={t("bgmDuckLabel")} aria-checked={config.bgmDuck}
+                      onClick={() => setConfig((c) => ({ ...c, bgmDuck: !c.bgmDuck }))}
+                      className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${config.bgmDuck ? "bg-primary" : "bg-muted"}`}>
+                      <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.bgmDuck ? "translate-x-5" : "translate-x-0.5"}`} />
+                    </button>
+                  </div>
+                </>}
               </div>
 
               {/* 合成进度 */}
@@ -1044,7 +1092,7 @@ export default function VideoPage() {
               {/* 合成失败提示 */}
               {composeError && (
                 <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
-                  <p className="text-xs text-destructive">⚠ {composeError}</p>
+                  <p className="text-xs text-destructive break-words whitespace-pre-wrap">⚠ {composeError}</p>
                 </div>
               )}
 
@@ -1058,7 +1106,7 @@ export default function VideoPage() {
 
               <Button
                 onClick={startCompose}
-                disabled={isComposing || clips.length === 0}
+                disabled={isComposing || matrixRunning || savingAssetId !== null || !scriptId || clips.length === 0}
                 className="w-full brand-gradient text-white"
               >
                 {isComposing ? (
@@ -1126,13 +1174,15 @@ export default function VideoPage() {
                       </div>
                       <div>
                         <p className="font-medium mb-1.5">{t("matrixCaptions")}</p>
-                        <div className="flex flex-wrap gap-1.5">
+                        {!config.subtitles && <p className="text-muted-foreground">{t("matrixNoSubtitles")}</p>}
+                        <div className={`flex flex-wrap gap-1.5 ${config.subtitles ? "" : "opacity-50"}`}>
                           {CAPTION_PRESET_IDS.map((c) => (
                             <button
                               key={c}
                               type="button"
+                              disabled={!config.subtitles}
                               onClick={() => toggleInSet(setMatrixCaptions, c)}
-                              className={`rounded-full border px-2 py-0.5 transition-all ${
+                              className={`rounded-full border px-2 py-0.5 transition-all disabled:cursor-not-allowed ${
                                 matrixCaptions.has(c)
                                   ? "border-primary bg-primary/10 text-primary"
                                   : "border-border/60 text-muted-foreground hover:border-primary/40"
@@ -1143,31 +1193,12 @@ export default function VideoPage() {
                           ))}
                         </div>
                       </div>
-                      <div>
-                        <p className="font-medium mb-1.5">{t("matrixBgms")}</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {MATRIX_BGM_MOODS.map((b) => (
-                            <button
-                              key={b}
-                              type="button"
-                              onClick={() => toggleInSet(setMatrixBgms, b)}
-                              className={`rounded-full border px-2 py-0.5 transition-all ${
-                                matrixBgms.has(b)
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-border/60 text-muted-foreground hover:border-primary/40"
-                              }`}
-                            >
-                              {b}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-muted-foreground">{t("matrixCount", { n: matrixCombos.length, max: MATRIX_MAX })}</span>
                         <Button
                           size="sm"
                           className="text-xs"
-                          disabled={matrixRunning || matrixCombos.length === 0 || isComposing}
+                          disabled={matrixRunning || matrixCombos.length === 0 || isComposing || savingAssetId !== null || !scriptId}
                           onClick={runMatrix}
                         >
                           {matrixRunning ? (
@@ -1186,7 +1217,7 @@ export default function VideoPage() {
                       {matrixResults.length > 0 && (
                         <div className="space-y-1">
                           {matrixResults.map((r) => (
-                            <div key={r.label} className="flex items-center gap-2 truncate">
+                            <div key={r.label} className="flex flex-wrap items-center gap-2">
                               {r.status === "composing" ? (
                                 <LuLoaderCircle className="animate-spin h-3 w-3 shrink-0 text-muted-foreground" />
                               ) : r.status === "done" ? (
@@ -1200,6 +1231,7 @@ export default function VideoPage() {
                                   {t("matrixView")}
                                 </a>
                               )}
+                              {r.error && <p className="w-full text-destructive text-xs break-words whitespace-pre-wrap">{r.error}</p>}
                             </div>
                           ))}
                           <p className="text-[10px] text-muted-foreground pt-1">{t("matrixExportHint")}</p>

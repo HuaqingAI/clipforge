@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { listKlingJobs, isKlingJobUnresolved } from "@/lib/kling/repository";
+import { listKlingFilms, isKlingFilmUnresolved } from "@/lib/kling/film-repository";
 import { rm } from "fs/promises";
 import { join } from "path";
 import { getDb } from "@/lib/db";
@@ -125,7 +127,27 @@ export async function DELETE(
     // DB rows cascade (scripts/assets/compositions via onDelete:"cascade" + foreign_keys=ON),
     // but the project's on-disk files do not — remove them too so deletes don't leak orphaned
     // uploads/output directories. force:true ignores missing dirs; failures never block the delete.
-    await db.delete(projects).where(eq(projects.id, id));
+    const blockingTasks = db.transaction((tx) => {
+      const tasks = [
+        ...listKlingFilms(id).filter(isKlingFilmUnresolved).map((run) => ({
+          kind: "kling_film" as const, id: run.id,
+          href: `/project/${encodeURIComponent(id)}/assets?klingFilm=${encodeURIComponent(run.id)}`,
+        })),
+        ...listKlingJobs(id).filter(isKlingJobUnresolved).map((job) => ({
+          kind: "kling_job" as const, id: job.id,
+          href: `/project/${encodeURIComponent(id)}/assets?klingJob=${encodeURIComponent(job.id)}`,
+        })),
+      ];
+      if (tasks.length === 0) tx.delete(projects).where(eq(projects.id, id)).run();
+      return tasks;
+    }, { behavior: "immediate" });
+    if (blockingTasks.length > 0) {
+      return NextResponse.json({
+        error: errText(req, "项目仍有待恢复的 Kling 任务，请先处理原任务，避免丢失已生成视频", "Resolve this project's Kling tasks before deleting it"),
+        code: "PROJECT_HAS_UNRESOLVED_KLING_TASKS",
+        blockingTasks,
+      }, { status: 409 });
+    }
     await Promise.all([
       rm(join(getUploadsDir(), id), { recursive: true, force: true }).catch(() => {}),
       rm(join(getOutputDir(), id), { recursive: true, force: true }).catch(() => {}),

@@ -1,6 +1,6 @@
 /**
  * OpenAI 官方 Provider 实现
- * 支持图片生成（文生图 + 图生图编辑）：GPT Image 系列（gpt-image-2 旗舰 / gpt-image-1.5 等），兼容 DALL·E 3/2。
+ * 支持图片生成（文生图 + 图生图编辑）：GPT Image 系列（2.5 Flare / Sunburst、2、1.5 等），兼容 DALL·E 3/2。
  * 文档参考: https://platform.openai.com/docs/api-reference/images
  *
  * 说明：
@@ -10,12 +10,13 @@
  * - gpt-image-* 系列只返回 base64（b64_json），不支持 response_format；
  *   DALL·E 2/3 支持 response_format=url。本实现统一把 base64 包成 data URI 返回，
  *   下游落库（persistSource）已支持 data: 协议。
- * - gpt-image-2 支持任意分辨率（宽高被 16 整除、比例 1:3~3:1），竖屏带货可直接出 9:16。
+ * - gpt-image-2 / 2.5 支持任意分辨率（宽高被 16 整除、比例 1:3~3:1），竖屏带货可直接出 9:16。
  * - 视频（Sora）下载需鉴权（GET /v1/videos/{id}/content 带 Bearer），
  *   而本应用素材落库走的是无鉴权直链下载，故暂不接入 OpenAI 视频，generateVideo 直接报错。
  */
 
 import { BaseProvider, ProviderError } from './base'
+import { normalizeOpenAIBaseUrl } from '@/lib/openai-config'
 import type {
   ProviderConfig,
   ImageOptions,
@@ -47,7 +48,7 @@ export class OpenAIProvider extends BaseProvider {
   constructor(config: ProviderConfig) {
     super({
       ...config,
-      baseUrl: config.baseUrl || 'https://api.openai.com/v1',
+      baseUrl: normalizeOpenAIBaseUrl(config.baseUrl),
     })
   }
 
@@ -56,8 +57,9 @@ export class OpenAIProvider extends BaseProvider {
    * 有参考图 / image-to-image 走编辑接口，否则走文生图。
    */
   async generateImage(options: ImageOptions): Promise<ImageResult> {
-    if (options.mode === 'image-to-image' || options.referenceImageUrl) {
-      return this.editImage(options)
+    const references = this.imageReferences(options)
+    if (options.mode === 'image-to-image' || references.length > 0) {
+      return this.editImage(options, references)
     }
     return this.textToImage(options)
   }
@@ -90,9 +92,25 @@ export class OpenAIProvider extends BaseProvider {
 
     const models: Model[] = [
       {
+        id: 'gpt-image-2.5-flare',
+        name: 'GPT Image 2.5 Flare',
+        description: '快速、高质量的日常生图，支持文生图与参考图编辑',
+        modes: ['text-to-image', 'image-to-image'],
+        mediaType: 'image',
+        provider: this.name,
+      },
+      {
+        id: 'gpt-image-2.5-sunburst',
+        name: 'GPT Image 2.5 Sunburst',
+        description: '注重图像编辑精度，支持文生图与多参考图编辑',
+        modes: ['text-to-image', 'image-to-image'],
+        mediaType: 'image',
+        provider: this.name,
+      },
+      {
         id: 'gpt-image-2',
         name: 'GPT Image 2',
-        description: 'OpenAI 2026 旗舰图像模型，任意分辨率（含 9:16 竖屏）、文字渲染与商品保真图生图最佳',
+        description: '支持任意分辨率（含 9:16 竖屏）、文字渲染与商品保真图生图',
         modes: ['text-to-image', 'image-to-image'],
         mediaType: 'image',
         provider: this.name,
@@ -139,17 +157,20 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   /** 图生图（编辑）：POST /images/edits（multipart） */
-  private async editImage(options: ImageOptions): Promise<ImageResult> {
+  private async editImage(options: ImageOptions, references: string[]): Promise<ImageResult> {
     const model = options.modelId
     if (model.startsWith('dall-e-3')) {
       throw new ProviderError('DALL·E 3 不支持图生图（图片编辑），请改用 gpt-image-1', 'NOT_SUPPORTED', this.name)
     }
-    if (!options.referenceImageUrl) {
+    if (references.length === 0) {
       throw new ProviderError('图生图缺少参考图', 'BAD_REFERENCE', this.name)
     }
 
     const isDalle2 = model.startsWith('dall-e-2')
-    const { blob, filename } = await this.fetchReferenceImage(options.referenceImageUrl)
+    if (isDalle2 && references.length > 1) {
+      throw new ProviderError('DALL·E 2 仅支持一张参考图，请改用 GPT Image 系列以保留全部人物与商品参考', 'NOT_SUPPORTED', this.name)
+    }
+    const images = await Promise.all(references.map((reference) => this.fetchReferenceImage(reference)))
 
     const form = new FormData()
     form.append('model', model)
@@ -157,12 +178,23 @@ export class OpenAIProvider extends BaseProvider {
     form.append('n', String(isDalle2 ? 1 : (options.count ?? 1)))
     form.append('size', this.pickSize(model, options.width, options.height))
     // gpt-image-* 用数组字段 image[]；dall-e-2 用单字段 image
-    form.append(isDalle2 ? 'image' : 'image[]', blob, filename)
+    for (const { blob, filename } of images) {
+      form.append(isDalle2 ? 'image' : 'image[]', blob, filename)
+    }
     // 仅 dall-e-2 支持 response_format；gpt-image-* 恒返回 b64_json
     if (isDalle2) form.append('response_format', 'url')
 
     const response = await this.postMultipart<OpenAIImageResponse>('/images/edits', form)
     return this.mapResult(model, response)
+  }
+
+  /** Ordered multi-image references take precedence; retain the legacy single-image input. */
+  private imageReferences(options: ImageOptions): string[] {
+    const references = (options.referenceImageUrls ?? [])
+      .filter((reference) => typeof reference === 'string' && reference.trim().length > 0)
+    if (references.length > 0) return references
+    const single = options.referenceImageUrl?.trim()
+    return single ? [single] : []
   }
 
   /** 解析图片响应：url 直接用，b64_json 包成 data URI */
@@ -212,16 +244,37 @@ export class OpenAIProvider extends BaseProvider {
         body: form,
         signal: controller.signal,
       })
-      if (!resp.ok) {
-        const errBody = await resp.text().catch(() => '')
+      const responseText = await resp.text()
+      let response: T
+      try {
+        response = JSON.parse(responseText) as T
+      } catch {
+        const contentType = resp.headers.get('content-type') || '未声明 Content-Type'
+        const isHtml = /text\/html/i.test(contentType) || /^\s*(?:<!doctype\s+html\b|<html\b|<head\b|<body\b)/i.test(responseText)
+        // Keep credentials, query strings and the returned webpage out of diagnostics.
+        let endpoint = path
+        try {
+          const requestUrl = new URL(url)
+          endpoint = `${requestUrl.origin}${requestUrl.pathname}`
+        } catch {
+          /* The static endpoint path is enough if the configured URL cannot be parsed. */
+        }
         throw new ProviderError(
-          `API 请求失败: ${resp.status} ${resp.statusText} - ${errBody}`,
+          `API 响应异常（HTTP ${resp.status}，${contentType}）：${isHtml ? '服务返回 HTML 网页，而非图片 API 的 JSON' : responseText.trim() ? '服务返回的内容不是有效 JSON' : '服务返回空响应'}。请求地址：${endpoint}。请检查 Base URL 是否为 API 接入地址，并确认服务支持 POST ${path} 图生图接口。`,
+          'INVALID_RESPONSE',
+          this.name,
+          resp.status
+        )
+      }
+      if (!resp.ok) {
+        throw new ProviderError(
+          `API 请求失败: ${resp.status} ${resp.statusText} - ${responseText}`,
           'API_ERROR',
           this.name,
           resp.status
         )
       }
-      return (await resp.json()) as T
+      return response
     } catch (e) {
       if (e instanceof ProviderError) throw e
       const isTimeout = e instanceof DOMException && e.name === 'AbortError'
@@ -257,7 +310,7 @@ export class OpenAIProvider extends BaseProvider {
     }
     // DALL·E 2 仅方图
     if (model.startsWith('dall-e-2')) return '1024x1024'
-    // gpt-image-2 / 2-2026-*：支持任意分辨率，按真实比例就近取（带货可直接出 9:16）
+    // gpt-image-2 / 2.5（含日期版本）：支持任意分辨率，按真实比例就近取（带货可直接出 9:16）
     if (model.startsWith('gpt-image-2')) return this.fitArbitrarySize(w, h)
     // 其余 gpt-image-*（1 / 1.5 / mini）：标准三档 1024x1024 / 1536x1024 / 1024x1536
     if (ratio > 1.2) return '1536x1024'

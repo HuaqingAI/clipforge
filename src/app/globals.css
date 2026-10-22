@@ -80,6 +80,7 @@
 
 /* ==================== 亮色主题 ==================== */
 :root {
+  color-scheme: light;
   --background: #f8fafc;
   --foreground: #0f172a;
   --card: #ffffff;
@@ -120,6 +121,7 @@
 /* ==================== 暗色主题（暗色创作台·全站默认） ==================== */
 /* 近黑冷调底 + 单一电光青强调，气质偏 Linear/Runway 的「高级暗色」 */
 .dark {
+  color-scheme: dark;
   --background: #0b0d12;
   --foreground: #edeff4;
   --card: #12151c;
@@ -165,6 +167,12 @@
   }
   html {
     @apply font-sans;
+  }
+  /* Native popup menus must not mix a system background with inherited theme text. */
+  select option,
+  select optgroup {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
   }
 }
 

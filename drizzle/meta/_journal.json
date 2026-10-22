@@ -141,6 +141,27 @@
       "when": 1788575554801,
       "tag": "0019_calm_tigra",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1792401482080,
+      "tag": "0020_kling_local_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1792404548080,
+      "tag": "0021_kling_film_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1792552933964,
+      "tag": "0022_add_script_generation_metadata",
+      "breakpoints": true
     }
   ]
 }

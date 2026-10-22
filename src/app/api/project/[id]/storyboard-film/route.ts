@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, stat, rename, unlink } from "fs/promises";
+import { createHash, randomUUID } from "crypto";
 import { join } from "path";
 import { getDataDir } from "@/lib/paths";
 import { getDb } from "@/lib/db";
-import { scripts, assets, compositions } from "@/lib/db/schema";
-import { and, eq } from "drizzle-orm";
+import { scripts, assets, compositions, aiTasks } from "@/lib/db/schema";
+import { and, eq, isNull } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
 import { ProviderError } from "@/lib/providers/base";
 import { GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
@@ -15,6 +16,7 @@ import {
   filmDurationFit,
   referenceQuotaCheck,
   resolveFilmModel,
+  FilmModelSelectionError,
   estimateFilmSpend,
   parseUnitUsd,
   FILM_MAX_SECONDS,
@@ -25,6 +27,9 @@ import { toRemoteUsableImage } from "@/lib/remote-image";
 import { probeMedia } from "@/lib/media-probe";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { apiError, errText } from "@/lib/api-error";
+import { filterAssetsForScript } from "@/lib/asset-context";
+import { isKlingVideoSelection } from "@/lib/assets-view";
+import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
 
@@ -48,13 +53,28 @@ function shotKeyframe(asset: { filePath?: string | null; thumbnailPath?: string 
  * body: { scriptId, provider, apiKey, model?, baseUrl?, options? }
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  let inputReferences: { url: string; kind: "character-sheet" | "shot"; shotId?: number }[] = [];
   try {
     const { id } = await params;
     if (!/^[a-zA-Z0-9-]+$/.test(id)) {
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
-    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, dryRun, spendCapUsd, acknowledgeOverCap } = body as {
+    if (body.action === "recover") return await recoverFilm(req, id, body);
+    if (body.provider === "kling-cli" || isKlingVideoSelection(body.model)) {
+      try {
+        await assertKlingLocalRequest(req);
+        if (body.dryRun === true) {
+          const { previewKlingFilm } = await import("@/lib/kling/film-plan");
+          return NextResponse.json(await previewKlingFilm({ ...body, projectId: id, selectionKey: body.selectionKey ?? body.model }), { headers: { "Cache-Control": "no-store" } });
+        }
+        const { getKlingFilm } = await import("@/lib/kling/film-repository");
+        if (typeof body.planId !== "string" || getKlingFilm(body.planId).projectId !== id) return NextResponse.json({ error: { code: "KLING_FILM_CONFIRMATION_REQUIRED", message: "请先在本项目预览并确认 Kling 整片计划" } }, { status: 422 });
+        const { startKlingFilm } = await import("@/lib/kling/films");
+        return NextResponse.json({ run: await startKlingFilm(body) }, { headers: { "Cache-Control": "no-store" } });
+      } catch (error) { return klingRouteError(error); }
+    }
+    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, dryRun, spendCapUsd, acknowledgeOverCap, expectedPrompt } = body as {
       scriptId?: string;
       provider?: string;
       model?: string;
@@ -69,6 +89,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       spendCapUsd?: number;
       /** Explicit go-ahead for a generation the cap would otherwise block */
       acknowledgeOverCap?: boolean;
+      /** Optional confirmed preview; reject script changes before any video generation is submitted. */
+      expectedPrompt?: string;
     };
     if (!scriptId) {
       return apiError(req, "缺少 scriptId", "Missing scriptId", 400);
@@ -106,9 +128,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // preview names the same model the paid submit uses (issue #28)
     const choice = resolveFilmModel(model);
     const fit = filmDurationFit(shots, choice.model);
+    const prompt = buildStoryboardFilmPrompt(shots, script.characters, { characterSheet: !!characterSheetUrl });
+    if (expectedPrompt !== undefined && typeof expectedPrompt !== "string") {
+      return NextResponse.json({ error: errText(req, "整片确认信息无效，请重新预览后确认生成。", "Invalid film confirmation. Preview the plan again before generating."), errorCode: "FILM_CONFIRMATION_INVALID" }, { status: 422 });
+    }
+    if (expectedPrompt !== undefined && expectedPrompt !== prompt) {
+      return NextResponse.json({ error: errText(req, "脚本或参考素材配置已变化，请重新预览整片计划后确认生成。", "The script or reference configuration changed. Preview and confirm the film plan again before generating."), errorCode: "FILM_PLAN_STALE" }, { status: 409 });
+    }
 
     if (dryRun) {
-      const prompt = buildStoryboardFilmPrompt(shots, script.characters, { characterSheet: !!characterSheetUrl });
       const previewOpts = (options ?? {}) as { width?: number; height?: number };
       const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), fit.seconds, previewOpts);
       // planned reference count: one keyframe per shot (+ the identity sheet when present) —
@@ -120,7 +148,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         shotCount: shots.length,
         seconds: fit.seconds,
         model: choice.model,
-        ...(choice.swappedFrom && { swappedFrom: choice.swappedFrom }),
         scriptSeconds: fit.scriptSeconds,
         modelMaxSeconds: fit.cap,
         durationOverflow: fit.overflow,
@@ -154,7 +181,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // every shot needs a keyframe IMAGE (grid cells or per-shot stills) to cite as @ImageN
-    const assetRows = await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true)));
+    const assetRows = filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), script);
     const byShot = new Map(assetRows.map((a) => [a.shotId, a]));
     const keyframes: string[] = [];
     const missing: number[] = [];
@@ -174,6 +201,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // remote providers can't reach localhost: local /api/files keyframes travel as Base64.
     // With a character sheet it leads the array (@Image1 = identity anchor, shots shift to @Image2..)
     const refInputs = [...(characterSheetUrl ? [characterSheetUrl] : []), ...keyframes];
+    inputReferences = [
+      ...(characterSheetUrl ? [{ url: characterSheetUrl, kind: "character-sheet" as const }] : []),
+      ...keyframes.map((url, index) => ({ url, kind: "shot" as const, shotId: shots[index].shotId })),
+    ];
     // pre-spend quota gate: a reference count over the model's schema limit is a guaranteed
     // upstream rejection — block BEFORE the paid submit instead of paying to find out
     const quota = referenceQuotaCheck(refInputs.length, choice.model);
@@ -206,7 +237,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       (u): u is string => !!u
     );
 
-    const prompt = buildStoryboardFilmPrompt(shots, script.characters, { characterSheet: !!characterSheetUrl });
     const duration = fit.seconds;
     // lip-sync guardrail (advisory, never blocks): overstuffed lines drift out of sync near the
     // end of a segment — surfaced so the UI/CLI can suggest trimming before the paid generation
@@ -231,8 +261,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // legacy single-phase path for providers without two-phase task support
     if (!provider.submitVideoTask || !provider.waitForTask) {
       const result = await provider.generateVideo(videoOptions);
-      const saved = await persistFilm(id, result.videoUrls?.[0], choice.model);
-      return NextResponse.json({ ...saved, taskId: result.taskId, modelId: result.modelId, seconds: duration, dialogueWarnings });
+      const rowId = result.taskId ? await recordAiTask({ projectId: id, provider: providerName, model: result.modelId || choice.model, mediaType: "video", mode: "video-to-video", prompt, taskId: result.taskId }) : null;
+      try {
+        const saved = await persistFilm(id, result.videoUrls?.[0], result.modelId || choice.model, providerName, result.taskId);
+        await updateAiTask(rowId, { status: "completed", resultUrls: result.videoUrls, error: null });
+        return NextResponse.json({ ...saved, taskId: result.taskId, modelId: result.modelId, seconds: duration, dialogueWarnings });
+      } catch (failure) {
+        const error = failure instanceof Error ? failure.message : errText(req, "成片保存失败", "Could not save the completed film");
+        await updateAiTask(rowId, { status: "unknown", resultUrls: result.videoUrls, error });
+        return NextResponse.json({ error, taskId: result.taskId, modelId: result.modelId || choice.model, recoverable: Boolean(result.taskId) }, { status: 502 });
+      }
     }
 
     // Phase 1: submit, then persist the paid task ID before polling (issue #16)
@@ -259,8 +297,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           { status: 502 }
         );
       }
+      await updateAiTask(rowId, { status: "processing", resultUrls: [videoUrl], error: null });
+      const saved = await persistFilm(id, videoUrl, modelId, providerName, taskId);
       await updateAiTask(rowId, { status: "completed", resultUrls: [videoUrl], error: null });
-      const saved = await persistFilm(id, videoUrl, modelId);
       return NextResponse.json({ ...saved, taskId, modelId, seconds: duration, dialogueWarnings });
     } catch (error) {
       const failed = error instanceof ProviderError && error.code === "TASK_FAILED";
@@ -283,7 +322,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
   } catch (error) {
+    if (error instanceof FilmModelSelectionError) {
+      return NextResponse.json({ error: errText(req, error.message, error.englishMessage), errorCode: error.code }, { status: 422 });
+    }
     console.error("一键整片生成失败:", error);
+    if (error instanceof ProviderError && error.code.startsWith("InputImageSensitiveContentDetected")) {
+      const number = error.referenceImageNumber;
+      const reference = number ? inputReferences[number - 1] : undefined;
+      const label = reference?.kind === "character-sheet"
+        ? errText(req, "人物定妆照", "the presenter reference sheet")
+        : reference?.shotId != null
+          ? errText(req, `镜头 ${reference.shotId} 的关键帧`, `the keyframe for shot ${reference.shotId}`)
+          : errText(req, "输入图片", "an input image");
+      const privacy = error.code.endsWith(".PrivacyInformation");
+      return NextResponse.json({
+        error: privacy
+          ? errText(req,
+              `方舟拒绝了${label}：平台判定图片可能包含真人或隐私内容。请在素材页检查该图；产品特写可重新生成纯商品分镜，台词使用画外旁白。直接重复提交相同图片无法解决。`,
+              `Ark rejected ${label} because it may contain a real person or private information. Review the image in Assets. For a product close-up, regenerate product-only shots with off-screen narration. Resubmitting the same image will not resolve this rejection.`)
+          : errText(req,
+              `方舟拒绝了${label}：该图未通过平台内容审核。请按所选模型的素材要求检查并更换图片后再提交。`,
+              `Ark rejected ${label} during content review. Check the selected model's input requirements and replace the image before submitting again.`),
+        errorCode: error.code,
+        ...(error.requestId && { requestId: error.requestId }),
+        ...(reference && { rejectedReference: { ...reference, number } }),
+      }, { status: error.statusCode && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 400 });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : errText(req, "一键整片生成失败", "Storyboard film failed") },
       { status: 500 }
@@ -304,23 +368,84 @@ async function unitPriceUsd(modelId: string, baseUrl?: string): Promise<number |
   }
 }
 
-/** Download the generated film into the project's output dir and register it as a composition. */
-async function persistFilm(projectId: string, videoUrl: string | undefined, model: string) {
+function filmIdentity(projectId: string, provider: string, taskId: string) {
+  const hash = createHash("sha256").update(JSON.stringify([projectId, provider, taskId])).digest("hex");
+  const fileName = `film_${hash}.mp4`;
+  return { compositionId: `film-${hash}`, fileName, outputPath: join(getDataDir(), "output", projectId, fileName) };
+}
+
+/** Returning an existing local output avoids duplicate downloads and composition rows on repeated recovery. */
+async function savedFilm(projectId: string, provider: string, taskId: string) {
+  const identity = filmIdentity(projectId, provider, taskId);
+  const row = getDb().select().from(compositions).where(and(eq(compositions.id, identity.compositionId), eq(compositions.projectId, projectId))).get();
+  if (!row || row.status !== "done" || row.outputPath !== identity.outputPath || !(await stat(identity.outputPath).catch(() => null))?.size) return null;
+  return { url: `/api/output/${projectId}/${identity.fileName}`, compositionId: row.id, fileName: identity.fileName };
+}
+
+/** Recover only a persisted full-film task. This path never calls any generation/submit method. */
+async function recoverFilm(req: NextRequest, projectId: string, body: Record<string, unknown>) {
+  if (typeof body.taskId !== "string" || !body.taskId.trim() || typeof body.provider !== "string") return apiError(req, "恢复缺少原任务编号或平台", "Recovery requires the original task ID and provider", 400);
+  const taskId = body.taskId;
+  const [task] = await getDb().select().from(aiTasks).where(and(eq(aiTasks.projectId, projectId), eq(aiTasks.taskId, taskId), eq(aiTasks.provider, body.provider), isNull(aiTasks.shotId), eq(aiTasks.mediaType, "video"), eq(aiTasks.mode, "video-to-video")));
+  if (!task || task.provider === "kling-cli") return NextResponse.json({ error: errText(req, "原整片任务不存在或不属于此项目，请检查任务记录。", "The original film task does not exist or belongs to another project."), taskId, recoverable: false }, { status: 404 });
+  if (body.model !== undefined && body.model !== task.model) return NextResponse.json({ error: errText(req, "恢复模型必须与原任务一致，请使用原任务记录恢复。", "Recovery must use the model saved on the original task."), taskId, recoverable: true }, { status: 409 });
+  try {
+    const local = await savedFilm(projectId, task.provider, taskId);
+    if (local) {
+      await updateAiTask(task.id, { status: "completed", error: null });
+      return NextResponse.json({ ...local, taskId, modelId: task.model, status: "completed" });
+    }
+    if (typeof body.apiKey !== "string" || !body.apiKey) return NextResponse.json({ error: errText(req, "请在设置中配置原任务平台的 API Key 后恢复。", "Configure the original provider's API key in Settings before recovering."), taskId, recoverable: true }, { status: 422 });
+    const provider = createProvider({ name: task.provider, apiKey: body.apiKey, baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : "" });
+    const status = body.wait === true && provider.waitForTask ? await provider.waitForTask(taskId, { interval: 5000 }) : await provider.getTaskStatus(taskId);
+    if (status.status === "failed" || status.status === "cancelled") {
+      const error = status.error || errText(req, "原整片任务已失败", "The original film task failed");
+      await updateAiTask(task.id, { status: "failed", error });
+      return NextResponse.json({ error, taskId, modelId: task.model, status: status.status, recoverable: false }, { status: 502 });
+    }
+    if (status.status !== "completed") {
+      await updateAiTask(task.id, { status: "processing", error: null });
+      return NextResponse.json({ taskId, modelId: task.model, status: status.status, recoverable: true }, { status: 202 });
+    }
+    const result = status.result;
+    const videoUrl = (result && "videoUrls" in result ? result.videoUrls?.[0] : undefined) ?? task.resultUrls?.[0];
+    await updateAiTask(task.id, { status: "processing", ...(videoUrl && { resultUrls: [videoUrl] }), error: null });
+    const saved = await persistFilm(projectId, videoUrl, task.model, task.provider, taskId);
+    await updateAiTask(task.id, { status: "completed", ...(videoUrl && { resultUrls: [videoUrl] }), error: null });
+    return NextResponse.json({ ...saved, taskId, modelId: task.model, status: "completed" });
+  } catch (failure) {
+    const failed = failure instanceof ProviderError && failure.code === "TASK_FAILED";
+    const error = failure instanceof Error ? failure.message : errText(req, "恢复整片失败", "Film recovery failed");
+    await updateAiTask(task.id, { status: failed ? "failed" : "unknown", error });
+    return NextResponse.json({ error, taskId, modelId: task.model, recoverable: !failed }, { status: failed ? 502 : 504 });
+  }
+}
+
+/** Download the generated film and register a stable composition for the original paid task. */
+async function persistFilm(projectId: string, videoUrl: string | undefined, model: string, provider: string, taskId?: string) {
+  const stableTaskId = taskId || randomUUID();
+  const existing = await savedFilm(projectId, provider, stableTaskId);
+  if (existing) return existing;
   if (!videoUrl) throw new Error("生成完成但未返回视频地址");
   const resp = await fetch(videoUrl);
   if (!resp.ok) throw new Error(`下载成片失败: ${resp.status}`);
   const buf = Buffer.from(await resp.arrayBuffer());
+  if (buf.length === 0) throw new Error("下载成片返回了空视频，原任务可继续恢复");
   const outputDir = join(getDataDir(), "output", projectId);
   await mkdir(outputDir, { recursive: true });
-  const fileName = `film_${Date.now()}.mp4`;
-  const outputPath = join(outputDir, fileName);
-  await writeFile(outputPath, buf);
+  const { compositionId, fileName, outputPath } = filmIdentity(projectId, provider, stableTaskId);
+  const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, buf);
+    await rename(temporaryPath, outputPath);
+  } finally { await unlink(temporaryPath).catch(() => {}); }
 
   const probe = await probeMedia(outputPath).catch(() => undefined);
   const db = getDb();
   const [comp] = await db
     .insert(compositions)
     .values({
+      id: compositionId,
       projectId,
       outputPath,
       resolution: "720p",
@@ -331,6 +456,7 @@ async function persistFilm(projectId: string, videoUrl: string | undefined, mode
       label: `九宫格整片 · ${model.split("/").slice(0, 2).pop() ?? model}`.slice(0, 60),
       status: "done",
     })
+    .onConflictDoUpdate({ target: compositions.id, set: { outputPath, status: "done", ...(probe?.duration ? { duration: Math.round(probe.duration * 1000) } : {}) } })
     .returning();
   return { url: `/api/output/${projectId}/${fileName}`, compositionId: comp.id, fileName };
 }

@@ -20,6 +20,10 @@ import { ATLAS_KEYS_URL } from "@/lib/atlas-onekey";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { classifyTrendTitle, pickDailyTrend, TREND_CATEGORY_IDS } from "@/lib/trends";
 import type { TrendTopic, TrendCategoryId } from "@/lib/trends";
+import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
+
+/** Hide the trend radar and daily-topic picker on the landing page. */
+const SHOW_TREND_RADAR = false;
 
 /** How many trend chips are shown at once; "shuffle" pages through the full board. */
 const TRENDS_PAGE_SIZE = 8;
@@ -71,7 +75,8 @@ export default function StartPage() {
   const [mode, setMode] = useState<Mode>("upload");
   // generation-task mode: the free/paid fork, explicit with cost up front
   // (open-source BYOK — AI charges go to the user's own model platform, never to us)
-  const [genMode, setGenMode] = useState<"free" | "ai">("free");
+  const [selectedGenMode, setGenMode] = useState<"free" | "ai">(SHOW_FREE_QUICK_CUT ? "free" : "ai");
+  const genMode = SHOW_FREE_QUICK_CUT ? selectedGenMode : "ai";
   // commerce form (AI mode only): what the finished video looks like
   const [form, setForm] = useState<FormId>("auto");
   const { characters } = useCharacterStore();
@@ -185,6 +190,7 @@ export default function StartPage() {
   // trend radar ("what to post today"): Chinese UI reads domestic boards, English UI reads Google Trends.
   // Failure or an empty board silently hides the section — the landing page must never block on it.
   useEffect(() => {
+    if (!SHOW_TREND_RADAR) return;
     let cancelled = false;
     (async () => {
       try {
@@ -216,6 +222,7 @@ export default function StartPage() {
   // (deferred to a microtask: hydrating from localStorage after paint keeps SSR markup stable
   // and satisfies the no-sync-setState-in-effect rule)
   useEffect(() => {
+    if (!SHOW_TREND_RADAR) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -554,9 +561,8 @@ export default function StartPage() {
         .cf-cta{height:48px;padding:0 24px;border:0;border-radius:12px;background:linear-gradient(100deg,#6366f1,#8b5cf6 55%,#d946ef);color:var(--ink);font:inherit;font-size:15px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;box-shadow:0 12px 30px -12px rgba(139,92,246,.4);transition:.18s}
         .cf-cta:hover:not(:disabled){transform:translateY(-1px)}
         .cf-cta:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
-        .cf-reassure{font-size:12.5px;color:var(--muted);line-height:1.5}
-        .cf-reassure b{color:var(--dim);font-weight:600}
         .cf-genrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+        .cf-genrow.single{grid-template-columns:1fr}
         .cf-gen{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:rgba(0,0,0,.2);font:inherit;text-align:left;cursor:pointer;transition:.18s}
         .cf-gen b{font-size:13.5px;font-weight:600;color:var(--text)}
         .cf-gen span{font-size:11.5px;line-height:1.5;color:var(--muted)}
@@ -758,8 +764,8 @@ export default function StartPage() {
 
             {/* generation-task mode: the free/paid fork every mature product makes explicit —
                 cost and key requirements live ON the option, never behind it */}
-            <div className="cf-genrow">
-              {(["free", "ai"] as const).map((g) => (
+            <div className={`cf-genrow${SHOW_FREE_QUICK_CUT ? "" : " single"}`}>
+              {(["free", "ai"] as const).filter((g) => SHOW_FREE_QUICK_CUT || g === "ai").map((g) => (
                 <button key={g} type="button" className={`cf-gen${genMode === g ? " on" : ""}`} onClick={() => setGenMode(g)}>
                   <b>{t(g === "free" ? "genFree" : "genAi")}</b>
                   <span>{t(g === "free" ? "genFreeDesc" : "genAiDesc")}</span>
@@ -837,7 +843,6 @@ export default function StartPage() {
                 {busy ? (stage || t("busyDefault")) : t("ctaStart")}
                 {!busy && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>}
               </button>
-              <div className="cf-reassure">{t("reassureLead")}<b>Atlas Cloud</b>{t("reassureTail")}</div>
             </div>
             {error && <div className="cf-err">{error}</div>}
               </>
@@ -880,7 +885,7 @@ export default function StartPage() {
             </div>
           )}
 
-          {trends.length > 0 && (
+          {SHOW_TREND_RADAR && trends.length > 0 && (
             <div className="cf-trends">
               <div className="cf-trends-head">
                 <span className="cf-trends-lbl">{t("trendsLabel")}</span>

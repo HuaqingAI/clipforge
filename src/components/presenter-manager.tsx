@@ -1,17 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { LuPlus, LuTrash2, LuUser, LuStar } from "react-icons/lu";
+import { LuPlus, LuTrash2, LuUser, LuStar, LuUpload, LuX } from "react-icons/lu";
 import { useT } from "@/lib/i18n";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useCharacterStore, type Character } from "@/lib/stores/project-store";
 import { resolveDefaultModelTarget, buildImageOptions } from "@/lib/gen-params";
+import {
+  CHARACTER_REFERENCE_MIME_TYPES,
+  MAX_CHARACTER_REFERENCE_BYTES,
+  MAX_CHARACTER_REFERENCE_IMAGES,
+  characterSheetRequest,
+  hasCharacterSheetInput,
+  hasSameCharacterSheetInput,
+} from "@/lib/character-reference";
 
 /* eslint-disable @next/next/no-img-element -- sheet previews are local uploads served by our own API */
 
@@ -34,31 +42,46 @@ export function PresenterManager() {
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", description: "", appearance: "", voiceStyle: "" });
+  const [sourceReferenceImages, setSourceReferenceImages] = useState<string[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadFailure, setUploadFailure] = useState<{ message: string; files: File[]; retryable: boolean } | null>(null);
+  const uploadInput = useRef<HTMLInputElement>(null);
+  const uploadController = useRef<AbortController | null>(null);
+  const formSession = useRef(0);
+  const sheetGenActive = useRef(new Set<string>());
   // per-presenter in-flight sheet generations (the result lands in referenceImages[0])
   const [sheetGenIds, setSheetGenIds] = useState<Set<string>>(new Set());
   const [sheetNotice, setSheetNotice] = useState<string | null>(null);
   // full-size sheet preview dialog (null = closed)
-  const [preview, setPreview] = useState<{ url: string; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ url: string; alt: string } | null>(null);
+
+  useEffect(() => () => {
+    formSession.current += 1;
+    uploadController.current?.abort();
+  }, []);
 
   // generate the 2x2 turnaround sheet: same person from four angles in ONE generation,
   // then every downstream pass (grid / film / keyframes) can pin the identity to it
   const generateSheet = async (char: Character) => {
-    if (!char.appearance?.trim()) {
+    if (!hasCharacterSheetInput(char)) {
       setSheetNotice(t("characterSheetNeedsAppearance"));
       return;
     }
-    if (sheetGenIds.has(char.id)) return;
+    if (sheetGenActive.current.has(char.id) || editingId === char.id) return;
+    sheetGenActive.current.add(char.id);
     setSheetGenIds((prev) => new Set(prev).add(char.id));
     setSheetNotice(null);
     try {
       const target = await resolveDefaultModelTarget(providers, defaultImageModel, customModels, "image");
       if (!target) throw new Error(t("characterSheetNoModel"));
+      if (!hasSameCharacterSheetInput(char, useCharacterStore.getState().characters.find((current) => current.id === char.id))) {
+        throw new Error(t("characterSheetInputChanged"));
+      }
       const res = await fetch("/api/characters/sheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          appearance: char.appearance,
-          name: char.name,
+          ...characterSheetRequest(char),
           provider: target.provider,
           model: target.model,
           apiKey: target.apiKey,
@@ -69,11 +92,15 @@ export function PresenterManager() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t("characterSheetFailed"));
+      if (!hasSameCharacterSheetInput(char, useCharacterStore.getState().characters.find((current) => current.id === char.id))) {
+        throw new Error(t("characterSheetInputChanged"));
+      }
       updateCharacter(char.id, { referenceImages: [data.url, ...(char.referenceImages ?? []).slice(1)] });
       setSheetNotice(t("characterSheetDone", { name: char.name }));
     } catch (e) {
       setSheetNotice(e instanceof Error ? e.message : t("characterSheetFailed"));
     } finally {
+      sheetGenActive.current.delete(char.id);
       setSheetGenIds((prev) => {
         const next = new Set(prev);
         next.delete(char.id);
@@ -82,19 +109,75 @@ export function PresenterManager() {
     }
   };
 
+  const clearUploads = () => {
+    formSession.current += 1;
+    uploadController.current?.abort();
+    uploadController.current = null;
+    setIsUploading(false);
+    setUploadFailure(null);
+  };
+
+  const uploadImages = async (files: File[]) => {
+    if (!files.length || uploadController.current) return;
+    let invalidMessage: string | null = null;
+    if (sourceReferenceImages.length + files.length > MAX_CHARACTER_REFERENCE_IMAGES) {
+      invalidMessage = t("characterReferenceLimit", { count: MAX_CHARACTER_REFERENCE_IMAGES });
+    } else if (files.some((file) => !CHARACTER_REFERENCE_MIME_TYPES.some((mime) => mime === file.type))) {
+      invalidMessage = t("characterReferenceTypeError");
+    } else if (files.some((file) => file.size > MAX_CHARACTER_REFERENCE_BYTES)) {
+      invalidMessage = t("characterReferenceSizeError");
+    }
+    if (invalidMessage) {
+      setUploadFailure({ message: invalidMessage, files, retryable: false });
+      return;
+    }
+    const session = formSession.current;
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setIsUploading(true);
+    setUploadFailure(null);
+    const body = new FormData();
+    files.forEach((file) => body.append("files", file));
+    body.append("projectId", "characters");
+    try {
+      const res = await fetch("/api/upload", { method: "POST", body, signal: controller.signal });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || t("characterReferenceUploadFailed"));
+      if (!Array.isArray(data?.paths) || data.paths.length !== files.length || data.paths.some((path: unknown) => typeof path !== "string" || !path.trim())) {
+        throw new Error(t("characterReferenceUploadFailed"));
+      }
+      if (session !== formSession.current || controller.signal.aborted) return;
+      setSourceReferenceImages((previous) => [...previous, ...data.paths]);
+    } catch (error) {
+      if (session !== formSession.current || controller.signal.aborted) return;
+      setUploadFailure({ message: error instanceof Error ? error.message : t("characterReferenceUploadFailed"), files, retryable: true });
+    } finally {
+      if (session === formSession.current) {
+        uploadController.current = null;
+        setIsUploading(false);
+      }
+    }
+  };
+
   const resetForm = () => {
+    clearUploads();
     setForm({ name: "", description: "", appearance: "", voiceStyle: "" });
+    setSourceReferenceImages([]);
     setIsCreating(false);
     setEditingId(null);
   };
 
   const handleSave = () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim() || isUploading || uploadController.current || uploadFailure || (editingId && sheetGenActive.current.has(editingId))) return;
     if (editingId) {
+      const originalImages = characters.find((char) => char.id === editingId)?.sourceReferenceImages ?? [];
+      const photosChanged = originalImages.length !== sourceReferenceImages.length || originalImages.some((url, index) => url !== sourceReferenceImages[index]);
       updateCharacter(editingId, {
         name: form.name,
         description: form.description,
         appearance: form.appearance,
+        sourceReferenceImages,
+        ...(photosChanged ? { referenceImages: [] } : {}),
         voiceProfile: form.voiceStyle ? { style: form.voiceStyle } : undefined,
       });
     } else {
@@ -104,6 +187,7 @@ export function PresenterManager() {
         description: form.description,
         appearance: form.appearance,
         referenceImages: [],
+        sourceReferenceImages,
         voiceProfile: form.voiceStyle ? { style: form.voiceStyle } : undefined,
         isDefault: characters.length === 0,
       });
@@ -112,8 +196,11 @@ export function PresenterManager() {
   };
 
   const startEdit = (char: Character) => {
+    if (sheetGenActive.current.has(char.id)) return;
+    clearUploads();
     setEditingId(char.id);
     setIsCreating(true);
+    setSourceReferenceImages(char.sourceReferenceImages ?? []);
     setForm({
       name: char.name,
       description: char.description || "",
@@ -149,17 +236,19 @@ export function PresenterManager() {
               <CardContent className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3 flex-1 min-w-0">
-                    {char.referenceImages?.[0] ? (
-                      // click opens the full-size sheet so the four views are actually inspectable
+                    {char.referenceImages?.[0] || char.sourceReferenceImages?.[0] ? (
                       <button
                         type="button"
                         className="shrink-0 cursor-zoom-in"
-                        onClick={() => setPreview({ url: char.referenceImages![0], name: char.name })}
-                        title={t("characterSheetAlt", { name: char.name })}
+                        onClick={() => setPreview({
+                          url: char.referenceImages?.[0] || char.sourceReferenceImages![0],
+                          alt: char.referenceImages?.[0] ? t("characterSheetAlt", { name: char.name }) : t("characterReferenceAlt", { index: 1 }),
+                        })}
+                        title={char.referenceImages?.[0] ? t("characterSheetAlt", { name: char.name }) : t("characterReferenceAlt", { index: 1 })}
                       >
                         <img
-                          src={char.referenceImages[0]}
-                          alt={t("characterSheetAlt", { name: char.name })}
+                          src={char.referenceImages?.[0] || char.sourceReferenceImages![0]}
+                          alt={char.referenceImages?.[0] ? t("characterSheetAlt", { name: char.name }) : t("characterReferenceAlt", { index: 1 })}
                           className="h-16 w-16 rounded-lg object-cover ring-1 ring-border"
                         />
                       </button>
@@ -181,6 +270,7 @@ export function PresenterManager() {
                       {char.description && <p className="text-xs text-muted-foreground mb-1">{char.description}</p>}
                       {char.appearance && <p className="text-xs text-muted-foreground/70 line-clamp-1">{t("characterAppearancePrefix", { appearance: char.appearance })}</p>}
                       {char.voiceProfile?.style && <p className="text-xs text-muted-foreground/70 mt-0.5">{t("characterVoicePrefix", { voice: char.voiceProfile.style })}</p>}
+                      {!!char.sourceReferenceImages?.length && <p className="text-xs text-muted-foreground/70 mt-0.5">{t("characterReferenceSaved", { count: char.sourceReferenceImages.length })}</p>}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
@@ -188,7 +278,7 @@ export function PresenterManager() {
                       variant="ghost"
                       size="sm"
                       className="text-xs h-7 px-2 text-primary"
-                      disabled={sheetGenIds.has(char.id)}
+                      disabled={sheetGenIds.has(char.id) || editingId === char.id}
                       onClick={() => generateSheet(char)}
                       title={t("characterSheetTip")}
                     >
@@ -199,8 +289,8 @@ export function PresenterManager() {
                         <LuStar className="w-3 h-3" />
                       </Button>
                     )}
-                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2" onClick={() => startEdit(char)}>{t("characterEdit")}</Button>
-                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 text-destructive hover:text-destructive" onClick={() => removeCharacter(char.id)}>
+                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2" disabled={sheetGenIds.has(char.id)} onClick={() => startEdit(char)}>{t("characterEdit")}</Button>
+                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 text-destructive hover:text-destructive" disabled={sheetGenIds.has(char.id)} aria-label={t("characterDelete", { name: char.name })} onClick={() => !sheetGenActive.current.has(char.id) && removeCharacter(char.id)}>
                       <LuTrash2 className="w-3 h-3" />
                     </Button>
                   </div>
@@ -216,8 +306,62 @@ export function PresenterManager() {
           <CardContent className="p-5 space-y-4">
             <h3 className="text-sm font-semibold">{editingId ? t("characterFormEditTitle") : t("characterFormAddTitle")}</h3>
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{t("characterNameLabel")}</Label>
-              <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder={t("characterNamePlaceholder")} className="text-sm" />
+              <Label htmlFor="character-name" className="text-xs text-muted-foreground">{t("characterNameLabel")}</Label>
+              <Input id="character-name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder={t("characterNamePlaceholder")} className="text-sm" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="character-reference-images" className="text-xs text-muted-foreground">{t("characterReferenceLabel")}</Label>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">{t("characterReferenceTip", { count: MAX_CHARACTER_REFERENCE_IMAGES })}</p>
+              <input
+                ref={uploadInput}
+                id="character-reference-images"
+                type="file"
+                accept={CHARACTER_REFERENCE_MIME_TYPES.join(",")}
+                multiple
+                className="sr-only"
+                disabled={isUploading || sourceReferenceImages.length >= MAX_CHARACTER_REFERENCE_IMAGES}
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  void uploadImages(files);
+                }}
+              />
+              {sourceReferenceImages.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {sourceReferenceImages.map((url, index) => (
+                    <div key={`${url}-${index}`} className="relative">
+                      <button type="button" className="block cursor-zoom-in" onClick={() => setPreview({ url, alt: t("characterReferenceAlt", { index: index + 1 }) })}>
+                        <img src={url} alt={t("characterReferenceAlt", { index: index + 1 })} className="h-20 w-20 rounded-lg object-cover ring-1 ring-border" />
+                      </button>
+                      <button
+                        type="button"
+                        className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-background text-muted-foreground ring-1 ring-border hover:text-destructive disabled:opacity-50"
+                        aria-label={t("characterReferenceRemove", { index: index + 1 })}
+                        disabled={isUploading}
+                        onClick={() => setSourceReferenceImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))}
+                      >
+                        <LuX className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" size="sm" disabled={isUploading || sourceReferenceImages.length >= MAX_CHARACTER_REFERENCE_IMAGES} onClick={() => uploadInput.current?.click()}>
+                  <LuUpload className="mr-1.5 h-3.5 w-3.5" />
+                  {isUploading ? t("characterReferenceUploading") : t("characterReferenceUpload")}
+                </Button>
+                <span className="text-xs text-muted-foreground">{sourceReferenceImages.length}/{MAX_CHARACTER_REFERENCE_IMAGES}</span>
+              </div>
+              {uploadFailure && (
+                <div className="space-y-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+                  <p role="alert" className="text-xs text-destructive">{uploadFailure.message}</p>
+                  <div className="flex gap-2">
+                    {uploadFailure.retryable && <Button type="button" variant="outline" size="sm" disabled={isUploading} onClick={() => void uploadImages(uploadFailure.files)}>{t("characterReferenceRetry")}</Button>}
+                    <Button type="button" variant="ghost" size="sm" disabled={isUploading} onClick={() => setUploadFailure(null)}>{t("characterReferenceDiscard")}</Button>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">{t("characterDescLabel")}</Label>
@@ -234,7 +378,7 @@ export function PresenterManager() {
             </div>
             <div className="flex items-center justify-end gap-2 pt-2">
               <Button variant="outline" size="sm" onClick={resetForm}>{t("characterCancel")}</Button>
-              <Button size="sm" className="brand-gradient text-white" onClick={handleSave} disabled={!form.name.trim()}>
+              <Button size="sm" className="brand-gradient text-white" onClick={handleSave} disabled={!form.name.trim() || isUploading || !!uploadFailure}>
                 {editingId ? t("characterSaveEdit") : t("characterAddSubmit")}
               </Button>
             </div>
@@ -251,10 +395,10 @@ export function PresenterManager() {
       <Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
         <DialogContent className="max-w-2xl p-4">
           <DialogTitle className="text-sm">
-            {preview ? t("characterSheetAlt", { name: preview.name }) : ""}
+            {preview?.alt ?? ""}
           </DialogTitle>
           {preview && (
-            <img src={preview.url} alt={t("characterSheetAlt", { name: preview.name })} className="w-full rounded-lg" />
+            <img src={preview.url} alt={preview.alt} className="w-full rounded-lg" />
           )}
         </DialogContent>
       </Dialog>

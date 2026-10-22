@@ -11,6 +11,7 @@ const geistSans = GeistSans;
 const geistMono = GeistMono;
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || `http://localhost:${process.env.PORT || 3000}`),
   // Title/description are bilingual (Chinese first): prioritize domestic traffic while covering overseas search indexing
   title: "ClipForge — AI 短视频带货创作工具 | AI Short Video Creator",
   description:

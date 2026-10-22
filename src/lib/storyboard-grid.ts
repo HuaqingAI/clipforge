@@ -38,7 +38,7 @@ const SHOT_TYPE_LABELS: Record<string, string> = {
 export function buildStoryboardGridPrompt(
   shots: Shot[],
   characters?: ScriptCharacter[] | null,
-  refs?: { characterSheet?: boolean; productImage?: boolean }
+  refs?: { characterSheet?: boolean; productImage?: boolean; productImageCount?: number }
 ): string {
   const cells = shots.slice(0, GRID_MAX_SHOTS);
   const cast = (characters ?? [])
@@ -51,20 +51,26 @@ export function buildStoryboardGridPrompt(
     return `第 ${i + 1} 格（${label}）：${s.description}`;
   });
 
-  // reference-image contract: the images array order is [character sheet?, product photo?],
+  // reference-image contract: the images array order is [character sheet?, ...product photos],
   // so the prompt cites them by position (field-proven with gpt-image-2/edit)
+  const suppliedCount = refs?.productImageCount;
+  const productImageCount = typeof suppliedCount === "number" && Number.isFinite(suppliedCount)
+    ? Math.max(0, Math.floor(suppliedCount))
+    : refs?.productImage ? 1 : 0;
   const refLines: string[] = [];
-  if (refs?.characterSheet || refs?.productImage) {
+  if (refs?.characterSheet || productImageCount > 0) {
     let n = 0;
-    if (refs.characterSheet) {
+    if (refs?.characterSheet) {
       n += 1;
       refLines.push(
         `第 ${n} 张参考图是出镜人物的四视图定妆照——九格中的人物脸型、发型、体型与服装必须与其完全一致（定妆照只作人物参考，不作为分镜画面）。人物需自然融入各格自身的场景与光线，不得把定妆照的浅灰影棚背景、四格分格或边框带进任何一格。`
       );
     }
-    if (refs.productImage) {
+    for (let i = 0; i < productImageCount; i++) {
       n += 1;
-      refLines.push(`第 ${n} 张参考图是商品实拍图——九格中的商品外观、配色与包装必须与其完全一致。`);
+      refLines.push(productImageCount === 1
+        ? `第 ${n} 张参考图是商品实拍图——九格中的商品外观、配色与包装必须与其完全一致。`
+        : `第 ${n} 张参考图是商品实拍图（同一商品的不同视角，第 ${i + 1}/${productImageCount} 张商品参考）——结合全部商品参考图锁定同一件商品的外观、结构、配色与包装，不得将不同视角当成不同商品。`);
     }
   }
 

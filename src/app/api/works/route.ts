@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { existsSync } from "fs";
 import { getDb } from "@/lib/db";
 import { compositions, projects } from "@/lib/db/schema";
@@ -69,7 +69,12 @@ export async function GET() {
         thumbnailUrl: thumbName ? `/api/output/${c.projectId}/${thumbName}` : null,
       });
     }
-    return NextResponse.json({ works });
+    // Poster extraction yields to other requests, including work deletion. Do not return
+    // a removed card from the initial snapshot after its files and record are gone.
+    const currentIds = rows.length ? new Set((await db.select({ id: compositions.id }).from(compositions)
+      .where(and(eq(compositions.status, "done"), inArray(compositions.id, rows.map((row) => row.id)))))
+      .map((row) => row.id)) : new Set<string>();
+    return NextResponse.json({ works: works.filter((work) => currentIds.has(work.id as string)) });
   } catch (error) {
     console.error("获取作品流失败:", error);
     return NextResponse.json(

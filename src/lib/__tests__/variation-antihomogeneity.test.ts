@@ -31,10 +31,14 @@ describe("buildVariationPlan", () => {
     expect(new Set(plan.map((s) => s.hookId)).size).toBeGreaterThan(1);
   });
 
-  it("one slot per 4-cycle goes BGM-free and BGM slots carry a mood", () => {
+  it("does not assign automatic music to batch variants", () => {
     const plan = buildVariationPlan({ count: 8, category: "home", seed: 2 });
-    expect(plan.filter((s) => !s.bgm)).toHaveLength(2);
-    expect(plan.filter((s) => s.bgm).every((s) => !!s.bgmMood)).toBe(true);
+    for (const slot of plan) {
+      expect(slot).not.toHaveProperty("bgm");
+      expect(slot).not.toHaveProperty("bgmMood");
+      expect(describeSlot(slot)).not.toMatch(/BGM|配乐/);
+      expect(describeSlot(slot, {}, "en")).not.toMatch(/BGM|music/);
+    }
   });
 
   it("describeSlot renders a readable one-liner", () => {

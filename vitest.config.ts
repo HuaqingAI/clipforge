@@ -10,6 +10,6 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     // exclude node_modules, build artifacts (.next/standalone copies e2e in), and the Playwright e2e directory
-    exclude: ["**/node_modules/**", "**/.next/**", "**/dist/**", "**/e2e/**"],
+    exclude: ["**/node_modules/**", "**/.git/**", "**/.next/**", "**/dist/**", "**/e2e/**"],
   },
 });

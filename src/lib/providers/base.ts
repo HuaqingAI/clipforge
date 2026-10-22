@@ -30,6 +30,16 @@ export class ProviderError extends Error {
    * silently dropping something the user already paid for (issue #16).
    */
   taskId?: string
+  /** Upstream request identifier, when a provider returns one. */
+  requestId?: string
+  /** Upstream parameter name associated with the rejection. */
+  param?: string
+  /** Zero-based position in the submitted content array. */
+  contentIndex?: number
+  /** One-based image position among the submitted image inputs. */
+  referenceImageNumber?: number
+  /** The rejected input's protocol role, such as first_frame or reference_image. */
+  inputRole?: string
 
   constructor(message: string, code: string, provider: string, statusCode?: number) {
     super(message)

@@ -13,6 +13,7 @@ import { useSettingsStore } from "@/lib/stores/settings-store";
 import { mergeCustomModels, buildVideoOptions } from "@/lib/gen-params";
 import { referenceModelFor, buildReplicatePrompt, REPLICATE_MAX_REF_SEC, type ReplicateShot } from "@/lib/replicate-plan";
 import { useT } from "@/lib/i18n";
+import { isKlingVideoSelection } from "@/lib/assets-view";
 
 /** storyboard card data */
 interface StoryboardCard {
@@ -46,10 +47,14 @@ interface VideoModelTarget {
   baseUrl?: string;
 }
 
+// Temporarily keep the model-tier implementation available while hiding its page entry point.
+const SHOW_MODEL_TIER_REPLICATION = false;
+
 export default function ClonePage() {
   const t = useT("clone");
   const router = useRouter();
   const { llm, providers, defaultVideoModel, customModels, videoParams } = useSettingsStore();
+  const klingDefault = isKlingVideoSelection(defaultVideoModel);
 
   // video URL and analysis state
   const [videoUrl, setVideoUrl] = useState("");
@@ -90,7 +95,10 @@ export default function ClonePage() {
 
   // resolve the provider for the default video model (drives the model-tier replicate button)
   useEffect(() => {
+    if (!SHOW_MODEL_TIER_REPLICATION) return;
     let cancelled = false;
+    setVideoModelTarget(null);
+    if (isKlingVideoSelection(defaultVideoModel)) return;
     const enabled = Object.entries(providers)
       .filter(([, p]) => p.enabled && p.apiKey)
       .map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
@@ -209,6 +217,7 @@ export default function ClonePage() {
    * the result is saved as a finished composition on the export page.
    */
   const handleModelReplicate = useCallback(async () => {
+    if (isKlingVideoSelection(useSettingsStore.getState().defaultVideoModel)) { setReplicateError("Kling CLI 暂不支持模型级复刻。请在项目中使用转动态或整片自动编排。"); return; }
     if (isReplicating || !refAnalysis || !videoModelTarget) return;
     const refModel = referenceModelFor(videoModelTarget.model);
     if (!refModel) {
@@ -293,6 +302,7 @@ export default function ClonePage() {
           productImages: paths,
           ...(refAnalysis?.referenceStructure && { referenceStructure: refAnalysis.referenceStructure }),
           llmConfig: {
+            provider: llm.provider,
             baseUrl: llm.baseUrl,
             apiKey: llm.apiKey,
             model: llm.model,
@@ -731,7 +741,7 @@ export default function ClonePage() {
         </div>
 
         {/* model-tier one-shot replication (Seedance reference-to-video, ≤15s references) */}
-        {refAnalysis && (
+        {SHOW_MODEL_TIER_REPLICATION && refAnalysis && (
           <div className="mb-10">
             <Card className="glass-card">
               <CardContent className="p-6 space-y-3">
@@ -747,7 +757,7 @@ export default function ClonePage() {
                 {videoModelTarget && !referenceModelFor(videoModelTarget.model) && (
                   <p className="text-xs text-amber-600/90">{t("modelTierNeedSeedance")}</p>
                 )}
-                {!videoModelTarget && <p className="text-xs text-amber-600/90">{t("modelTierNeedModel")}</p>}
+                {klingDefault ? <p className="text-xs text-amber-600/90">Kling CLI 暂不支持模型级复刻。可先创建项目并编写脚本，再使用转动态或整片自动编排。</p> : !videoModelTarget && <p className="text-xs text-amber-600/90">{t("modelTierNeedModel")}</p>}
                 {replicateError && <p className="text-xs text-destructive">{replicateError}</p>}
                 {replicateResult ? (
                   <div className="space-y-2">

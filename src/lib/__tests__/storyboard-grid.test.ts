@@ -40,6 +40,29 @@ describe("buildStoryboardGridPrompt", () => {
     const none = buildStoryboardGridPrompt(shots, cast);
     expect(none).not.toContain("参考图");
   });
+
+  it.each([false, true])("两张商品图是同一商品不同视角，按实际上传顺序编号（定妆照：%s）", (characterSheet) => {
+    const p = buildStoryboardGridPrompt(shots, cast, { characterSheet, productImageCount: 2 });
+    const productStart = characterSheet ? 2 : 1;
+    expect(p).toContain(`第 ${productStart} 张参考图是商品实拍图（同一商品的不同视角，第 1/2 张商品参考）`);
+    expect(p).toContain(`第 ${productStart + 1} 张参考图是商品实拍图（同一商品的不同视角，第 2/2 张商品参考）`);
+    expect(p.match(/张参考图是商品实拍图/g)).toHaveLength(2);
+    expect(p).toContain("结合全部商品参考图锁定同一件商品");
+    expect(p).toContain("不得将不同视角当成不同商品");
+    if (characterSheet) {
+      expect(p).toContain("第 1 张参考图是出镜人物的四视图定妆照");
+    } else {
+      expect(p).not.toContain("定妆照");
+    }
+  });
+
+  it("单商品计数保留原提示词；明确零张不引用不存在的商品图", () => {
+    expect(buildStoryboardGridPrompt(shots, cast, { characterSheet: true, productImageCount: 1 }))
+      .toBe(buildStoryboardGridPrompt(shots, cast, { characterSheet: true, productImage: true }));
+    const noProduct = buildStoryboardGridPrompt(shots, cast, { productImage: true, productImageCount: 0 });
+    expect(noProduct).not.toContain("参考图");
+  });
+
 });
 
 describe("computeGridCells", () => {

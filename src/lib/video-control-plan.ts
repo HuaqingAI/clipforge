@@ -15,6 +15,7 @@ export type VideoReferenceMediaType = "image" | "video" | "audio";
 export type VideoControlWarning =
   | "reference-pack-unsupported"
   | "reference-pack-deferred-for-end-frame"
+  | "last-frame-as-reference"
   | "reference-audio-unsupported";
 
 export interface VideoReferenceInput {
@@ -122,25 +123,31 @@ export function buildVideoControlPlan(input: {
   // carry that end frame as a target anchor, while plain continuity-only requests retain the
   // provider's stronger native start/end-frame contract.
   const isAtlasReferenceMode = input.provider === "atlas-cloud" && hasVisualPack && canUseVisualPack && (!input.lastFrameUrl || hasIdentityPack);
-  const canAttachAlongsideFrames = input.provider === "volcengine" && hasVisualPack && canUseVisualPack;
+  const hasSupportedAudioReference = optional.some((item) => item.mediaType === "audio") && canUseAudioReference;
+  // Ark frame conditioning and reference conditioning are mutually exclusive. Required
+  // identity references (or supported audio references) take priority; soft visual
+  // references alone yield to a native end frame.
+  const isArkReferenceMode = input.provider === "volcengine"
+    && ((hasVisualPack && canUseVisualPack) || hasSupportedAudioReference)
+    && (!isNonEmpty(input.lastFrameUrl) || (hasIdentityPack && canUseVisualPack) || hasSupportedAudioReference);
+  const isReferenceMode = isAtlasReferenceMode || isArkReferenceMode;
 
   if (hasVisualPack && !canUseVisualPack) warnings.push("reference-pack-unsupported");
-  if (hasVisualPack && input.provider === "atlas-cloud" && canUseVisualPack && input.lastFrameUrl && !isAtlasReferenceMode) {
+  if (hasVisualPack && (input.provider === "atlas-cloud" || input.provider === "volcengine") && canUseVisualPack && input.lastFrameUrl && !isReferenceMode) {
     warnings.push("reference-pack-deferred-for-end-frame");
   }
+  if (isArkReferenceMode && isNonEmpty(input.lastFrameUrl)) warnings.push("last-frame-as-reference");
   if (input.audioReferenceUrl && !canUseAudioReference) warnings.push("reference-audio-unsupported");
 
   let referenceInputs: VideoReferenceInput[] = [];
-  if (isAtlasReferenceMode) {
+  if (isReferenceMode) {
     if (isNonEmpty(input.firstFrameUrl)) {
       referenceInputs.push({ url: input.firstFrameUrl, role: "keyframe", mediaType: "image", required: true });
     }
     if (isNonEmpty(input.lastFrameUrl)) {
       referenceInputs.push({ url: input.lastFrameUrl, role: "end-frame", mediaType: "image", required: false });
     }
-    referenceInputs.push(...optional.filter((item) => item.mediaType !== "audio" || canUseAudioReference));
-  } else if (canAttachAlongsideFrames) {
-    referenceInputs.push(...optional.filter((item) => item.mediaType !== "audio" || canUseAudioReference));
+    referenceInputs.push(...optional.filter((item) => item.mediaType === "audio" ? canUseAudioReference : canUseVisualPack));
   } else if (input.audioReferenceUrl && canUseAudioReference) {
     referenceInputs.push({ url: input.audioReferenceUrl, role: "audio", mediaType: "audio", required: false });
   }
@@ -158,11 +165,8 @@ export function buildVideoControlPlan(input: {
   const voiceoverBound = nativeAudio && isNonEmpty(input.voiceover);
   const audioMode: VideoControlSummary["audioMode"] = nativeAudio ? "native" : isNonEmpty(input.voiceover) ? "post" : "none";
   const audioPrompt = nativeAudio ? nativeAudioInstruction(input) : undefined;
-  const frameImageCount = canAttachAlongsideFrames
-    ? Number(isNonEmpty(input.firstFrameUrl)) + Number(isNonEmpty(input.lastFrameUrl))
-    : 0;
-  const promptSuffix = [referenceInstruction(referenceInputs, input.locale, frameImageCount), audioPrompt].filter(Boolean).join(input.locale === "zh" ? "。" : " ");
-  const strategy: VideoControlSummary["strategy"] = isAtlasReferenceMode || canAttachAlongsideFrames ? "reference-pack" : "keyframe";
+  const promptSuffix = [referenceInstruction(referenceInputs, input.locale), audioPrompt].filter(Boolean).join(input.locale === "zh" ? "。" : " ");
+  const strategy: VideoControlSummary["strategy"] = isReferenceMode ? "reference-pack" : "keyframe";
   const referenceRoles = unique([
     ...(isNonEmpty(input.firstFrameUrl) ? ["keyframe" as const] : []),
     ...(isNonEmpty(input.lastFrameUrl) ? ["end-frame" as const] : []),
@@ -172,14 +176,14 @@ export function buildVideoControlPlan(input: {
   return {
     version: 1,
     strategy,
-    mode: isAtlasReferenceMode ? "video-to-video" : "image-to-video",
+    mode: isReferenceMode ? "video-to-video" : "image-to-video",
     referenceRoles,
-    referenceCount: referenceInputs.length + (isAtlasReferenceMode ? 0 : Number(Boolean(input.firstFrameUrl)) + Number(Boolean(input.lastFrameUrl))),
+    referenceCount: referenceInputs.length + (isReferenceMode ? 0 : Number(isNonEmpty(input.firstFrameUrl)) + Number(isNonEmpty(input.lastFrameUrl))),
     audioMode,
     voiceoverBound,
     warnings: unique(warnings),
-    ...(!isAtlasReferenceMode && isNonEmpty(input.firstFrameUrl) && { firstFrameUrl: input.firstFrameUrl }),
-    ...(!isAtlasReferenceMode && isNonEmpty(input.lastFrameUrl) && { lastFrameUrl: input.lastFrameUrl }),
+    ...(!isReferenceMode && isNonEmpty(input.firstFrameUrl) && { firstFrameUrl: input.firstFrameUrl }),
+    ...(!isReferenceMode && isNonEmpty(input.lastFrameUrl) && { lastFrameUrl: input.lastFrameUrl }),
     referenceInputs,
     promptSuffix,
     ...(audioPrompt && { audioPrompt }),
@@ -197,7 +201,7 @@ export function sanitizeVideoControlSummary(value: unknown): VideoControlSummary
   const roles = Array.isArray(raw.referenceRoles)
     ? unique(raw.referenceRoles.filter((role): role is VideoReferenceRole => typeof role === "string" && (VIDEO_REFERENCE_ROLES as readonly string[]).includes(role))).slice(0, VIDEO_REFERENCE_ROLES.length)
     : [];
-  const allowedWarnings: VideoControlWarning[] = ["reference-pack-unsupported", "reference-pack-deferred-for-end-frame", "reference-audio-unsupported"];
+  const allowedWarnings: VideoControlWarning[] = ["reference-pack-unsupported", "reference-pack-deferred-for-end-frame", "last-frame-as-reference", "reference-audio-unsupported"];
   const warnings = Array.isArray(raw.warnings)
     ? unique(raw.warnings.filter((warning): warning is VideoControlWarning => typeof warning === "string" && allowedWarnings.includes(warning as VideoControlWarning))).slice(0, allowedWarnings.length)
     : [];

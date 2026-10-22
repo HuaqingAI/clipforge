@@ -9,12 +9,13 @@
  *
  * Note: the service is provided by Microsoft; the WebSocket handshake requires a dynamic
  * Sec-MS-GEC token plus a Sec-MS-GEC-Version that tracks the current Edge version.
- * Microsoft occasionally rotates the expected version (old values return 403). The version
+ * Microsoft occasionally rotates the expected version/token algorithm (old values return 403). The version
  * is therefore stored as a constant that can be overridden via the EDGE_TTS_VERSION env var,
  * allowing a fix without a code change.
  */
 
 import { ttsCacheKey, readTtsCache, writeTtsCache, readTtsWords, writeTtsWords } from "@/lib/tts-cache";
+import { EDGE_TTS_DEFAULT_VERSION, generateSecMsGec } from "@/lib/edge-tts-token";
 
 /** One spoken word with its real position on the synthesized audio's timeline (seconds). */
 export interface TTSWord {
@@ -26,7 +27,7 @@ export interface TTSWord {
 const TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const WSS_BASE = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 /** Tracks the current Edge/Chromium version; returns 403 when expired — override via EDGE_TTS_VERSION */
-const SEC_MS_GEC_VERSION = process.env.EDGE_TTS_VERSION || "1-143.0.3650.75";
+const SEC_MS_GEC_VERSION = process.env.EDGE_TTS_VERSION || EDGE_TTS_DEFAULT_VERSION;
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
 
@@ -64,31 +65,14 @@ export function escapeSsml(text: string): string {
     .replace(/'/g, "&apos;");
 }
 
-async function sha256Upper(str: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .toUpperCase();
-}
-
-/**
- * Generate the Sec-MS-GEC token: .NET ticks (100 ns intervals since 1601) rounded down
- * to the nearest 300-second boundary, concatenated with the trusted client token,
- * then SHA-256 hashed as uppercase hex. Matches the official edge-tts algorithm.
- */
-async function secMsGec(): Promise<string> {
-  let ticks = (Math.floor(Date.now() / 1000) + 11644473600) * 10_000_000;
-  ticks -= ticks % 3_000_000_000; // 300 s = 3e9 × 100 ns
-  return sha256Upper(`${ticks}${TRUSTED_CLIENT_TOKEN}`);
-}
-
 function uuidNoDash(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
 function tsString(): string {
-  return new Date().toString().replace(/GMT.*$/, "GMT+0000 (Coordinated Universal Time)");
+  // The protocol timestamp must contain UTC fields, even when the host uses UTC+8.
+  const [weekday, day, month, year, time] = new Date().toUTCString().split(" ");
+  return `${weekday.slice(0, -1)} ${month} ${day} ${year} ${time} GMT+0000 (Coordinated Universal Time)`;
 }
 
 /**
@@ -173,7 +157,7 @@ async function synthesizeOnce(
   clean: string,
   { voice, rate, pitch, timeoutMs }: { voice: string; rate: string; pitch: string; timeoutMs: number }
 ): Promise<{ audio: Buffer; words: TTSWord[] }> {
-  const gec = await secMsGec();
+  const gec = generateSecMsGec();
   const url =
     `${WSS_BASE}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}` +
     `&Sec-MS-GEC=${gec}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}&ConnectionId=${uuidNoDash()}`;

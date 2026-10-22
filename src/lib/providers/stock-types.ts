@@ -244,14 +244,14 @@ export async function downloadStockFile(
   mediaType?: StockMediaType
 ): Promise<DownloadResult> {
   const { writeFile, copyFile, stat } = await import("fs/promises");
-  const { join } = await import("path");
+  const { join, isAbsolute } = await import("path");
 
   const safeBaseName = fileBaseName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "file";
 
   // local media branch: url is an absolute local path or file:// (constructed exclusively by scanLocalMaterials via readdir from the project pool, never user input);
   // copy directly instead of using network fetch (fetch does not support file paths). Size limit is still enforced, consistent with network downloads.
-  if (url.startsWith("/") || url.startsWith("file://")) {
-    const srcPath = url.startsWith("file://") ? new URL(url).pathname : url;
+  if (isAbsolute(url) || url.startsWith("file://")) {
+    const srcPath = url.startsWith("file://") ? (await import("node:url")).fileURLToPath(url) : url;
     const st = await stat(srcPath);
     if (st.size > MAX_DOWNLOAD_BYTES) throw new Error(`素材体积 ${st.size} 超过上限 ${MAX_DOWNLOAD_BYTES}`);
     const localExt = inferExtension(srcPath, null, mediaType);

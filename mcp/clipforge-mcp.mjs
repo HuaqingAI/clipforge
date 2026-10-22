@@ -49,15 +49,13 @@ function composeBody(args) {
   if (typeof args.voice === "string" && args.voice) body.freeTts.voice = args.voice;
   if (ASPECT_RATIOS.includes(args.aspectRatio)) body.aspectRatio = args.aspectRatio;
   if (QUALITY_PRESETS.includes(args.quality)) body.renderPreset = args.quality;
-  if (args.bgm === true) body.freeBgm = true; // automatically add a free CC background music track
-  if (["upbeat", "chill", "energetic", "emotional"].includes(args.bgmMood)) body.bgmMood = args.bgmMood; // BGM mood
   if (Number.isFinite(args.bgmVolume) && args.bgmVolume >= 0.05 && args.bgmVolume <= 0.4) body.bgmVolume = Math.round(args.bgmVolume * 100) / 100; // normalized 0.05-0.4 mix level
   if (args.audioStems === true) body.exportAudioStems = true; // render editable voice/BGM WAV stems after the main composition
   if (args.bgmDuck === true) body.bgmDuck = true; // voiceover ducking (makes narration clearer)
   if (args.karaoke === true) body.karaoke = true; // karaoke word-by-word captions
   if (CAPTION_PRESETS.includes(args.captionPreset)) body.captionPreset = args.captionPreset; // caption style preset
   if (args.productCard === true) body.productCard = true; // product card overlay (only applies when product image exists)
-  if (args.aiDisclosure === false) body.aigcBadge = false; // opt OUT of the default-on visible AIGC badge
+  if (typeof args.aiDisclosure === "boolean") body.aigcBadge = args.aiDisclosure;
   if (typeof args.ctaText === "string" && args.ctaText.trim()) body.ctaText = args.ctaText.trim(); // end-card purchase CTA
   return body;
 }
@@ -82,10 +80,6 @@ const OUTPUT_OPTION_PROPS = {
   voice: { type: "string", description: "Edge TTS 音色 value（如 zh-CN-XiaoxiaoNeural / en-US-AriaNeural，必须来自 clipforge_list_voices，猜测的 id 会合成失败或读错语种）。create_video 不指定则按主题语言自动挑（英文主题→英文音色，日/韩同理；中文→晓晓）" },
   aspectRatio: { type: "string", enum: ASPECT_RATIOS, description: "画幅，默认 9:16 竖屏" },
   quality: { type: "string", enum: QUALITY_PRESETS, description: "画质预设 fast/standard/hd，默认 standard" },
-  bgm: {
-    type: "boolean",
-    description: "是否自动加一段免费 CC 背景音乐（Openverse keyless，混在旁白下方自动压低）。CC 音乐多需署名，默认 false",
-  },
   karaoke: {
     type: "boolean",
     description: "卡拉OK逐字高亮字幕（整句留屏、逐字随旁白变色，2026 爆款字幕样式）。默认 false（默认是 rapid 短句卡字幕）",
@@ -99,11 +93,6 @@ const OUTPUT_OPTION_PROPS = {
   productCard: {
     type: "boolean",
     description: "带货商品卡贴片（左下角商品图缩略+名+价+购买引导）。仅对有商品图的带货项目生效，topic 视频无效。默认 false",
-  },
-  bgmMood: {
-    type: "string",
-    enum: ["upbeat", "chill", "energetic", "emotional"],
-    description: "免费 BGM 的情绪（需 bgm=true）：upbeat 欢快 / chill 舒缓 / energetic 动感 / emotional 情感。不传则按商品品类自动挑",
   },
   bgmDuck: {
     type: "boolean",
@@ -122,7 +111,7 @@ const OUTPUT_OPTION_PROPS = {
   aiDisclosure: {
     type: "boolean",
     description:
-      "「内容由 AI 生成」显式角标（片头左上角 ≥2 秒，2026-07 抖音新规要求，仅 AI 配音也须标注）。默认 true（自动烧录）；设 false 关闭——发布门禁会提示限流风险。GB45438 隐式文件元数据始终写入，不受此开关影响",
+      "是否在片头画面添加「内容由 AI 生成」角标。默认 false，不自动添加；设 true 时开启。此选项只控制可见角标。",
   },
   ctaText: {
     type: "string",

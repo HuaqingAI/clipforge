@@ -21,7 +21,6 @@ describe("style packs", () => {
     expect(pack!.name).toBe("测试配方");
     expect(pack!.compose).toEqual({
       captionPreset: "bold",
-      bgm: "upbeat",
       bgmDuck: true,
       quality: "hd",
       aspectRatio: "16:9",
@@ -59,6 +58,15 @@ describe("style packs", () => {
     expect(pack!.compose.bgmVolume).toBe(0.4);
   });
 
+  it("ignores legacy automatic music choices while retaining uploaded audio mix settings", () => {
+    const pack = parseStylePack(JSON.stringify({
+      format: STYLE_PACK_FORMAT,
+      name: "旧配方",
+      compose: { bgm: "emotional", freeBgm: true, bgmMood: "upbeat", bgmVolume: 0.12, bgmDuck: true },
+    }));
+    expect(pack!.compose).toEqual({ bgmVolume: 0.12, bgmDuck: true });
+  });
+
   it("ignores unknown fields (forward compatibility) and clamps long strings", () => {
     const pack = parseStylePack(
       JSON.stringify({
@@ -75,10 +83,10 @@ describe("style packs", () => {
   });
 
   it("serialize → parse roundtrips", () => {
-    const json = serializeStylePack({ name: "回环", compose: { captionPreset: "karaoke", bgm: "none" } });
+    const json = serializeStylePack({ name: "回环", compose: { captionPreset: "karaoke", bgmVolume: 0.12, bgmDuck: true } });
     const back = parseStylePack(json);
     expect(back!.name).toBe("回环");
-    expect(back!.compose).toEqual({ captionPreset: "karaoke", bgm: "none" });
+    expect(back!.compose).toEqual({ captionPreset: "karaoke", bgmVolume: 0.12, bgmDuck: true });
   });
 
   it("every builtin pack validates through the parser unchanged", () => {
@@ -87,6 +95,7 @@ describe("style packs", () => {
       expect(back).not.toBeNull();
       expect(back!.name).toBe(p.name);
       expect(back!.compose).toEqual(p.compose);
+      expect(back!.compose).not.toHaveProperty("bgm");
     }
   });
 });

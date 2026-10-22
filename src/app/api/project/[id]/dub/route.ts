@@ -3,6 +3,7 @@ import { eq, desc } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects, type Shot } from "@/lib/db/schema";
 import { translateShots, defaultVoiceForLang, langName } from "@/lib/script-engine/translate";
+import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import { apiError, errText } from "@/lib/api-error";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   const targetLang = typeof body.targetLang === "string" ? body.targetLang.trim() : "";
   if (!targetLang) return apiError(req, "请指定 targetLang（如 en/ja/ko/es）", "Please specify targetLang (e.g. en/ja/ko/es)");
-  const llmConfig = body.llmConfig as { baseUrl?: string; apiKey?: string; model?: string } | undefined;
+  const llmConfig = body.llmConfig as { provider?: string; baseUrl?: string; apiKey?: string; model?: string } | undefined;
   if (!llmConfig?.baseUrl || !llmConfig?.model) {
     return apiError(req, "请配置 LLM 参数（baseUrl、model；本地/免费端点 apiKey 可留空）", "Please configure LLM parameters (baseUrl, model; apiKey may be left empty for local/free endpoints)");
   }
@@ -71,7 +72,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const [row] = await db
     .insert(scriptsTable)
-    .values({ projectId: id, version: nextVersion, styleType: "custom", title, totalDuration, shots: translated, selected: true })
+    .values({
+      projectId: id, version: nextVersion, styleType: "custom", title, totalDuration,
+      shots: translated, selected: true,
+      generationMetadata: scriptGenerationMetadata({ provider: llmConfig.provider, model: llmConfig.model }, "translation"),
+    })
     .returning();
 
   return NextResponse.json({

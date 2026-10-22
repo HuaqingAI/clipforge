@@ -77,7 +77,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", product_reveal: "lazy_susan", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "整体走高级影棚质感路线，突出材质细节与工艺感，文案克制有分量" },
   },
   {
@@ -90,7 +90,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", pain_point: "handheld_real", demo: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "像朋友分享日常一样自然，把商品融进真实生活场景，避免促销腔" },
   },
   {
@@ -103,7 +103,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "orbit_slow", demo: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "开箱动作干脆利落，逐层展示有惊喜感；建议关键镜头换成实拍上手画面更合规" },
   },
   {
@@ -116,7 +116,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "口播直给有网感，重点句短促有力，适合逐字字幕强调" },
   },
   {
@@ -129,7 +129,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "dolly_zoom", pain_point: "handheld_real", demo: "follow_track", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "前半段铺垫冲突，反转点干净利落，商品是解决方案不是主角台词" },
   },
   {
@@ -143,7 +143,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", product_reveal: "macro_glide", demo: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "突出色泽、质地与热气蒸汽等食欲信号，文案调动味觉想象" },
   },
   {
@@ -157,7 +157,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "whip_pan", product_reveal: "arc_quarter", demo: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "克制的科技感文案，参数说人话，画面冷调背景干净" },
   },
   {
@@ -170,7 +170,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "pov_walk", social_proof: "lateral_track", demo: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "受访者口吻真实多样，观点具体不夸大，像随机街采不像摆拍" },
   },
 
@@ -185,7 +185,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", product_reveal: "orbit_slow", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "纯白背景零杂物，商品是唯一主角，文案极简只留核心卖点" },
   },
   {
@@ -199,7 +199,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "premium_gray",
     cameraPlan: { hook: "macro_glide", product_reveal: "crane_down_close", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "画面全程贴近材质表面，突出纹理、光泽与工艺细节，文案少而精" },
   },
   {
@@ -213,7 +213,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "第一镜直接展示商品正在解决问题的状态，不要包装不要铺垫，效果即钩子" },
   },
   {
@@ -227,7 +227,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "dolly_zoom", demo: "handheld_real", product_reveal: "hero_rise", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "围绕一项极端条件测试展开全片，测试过程真实可信，结果不夸大" },
   },
   {
@@ -241,7 +241,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", product_reveal: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "模特向镜头自然走来展示上身效果，突出版型与垂感，街头时尚杂志感" },
   },
   {
@@ -254,7 +254,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "overhead_top", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "画面以商品平铺与大字卖点为主，节奏跟音乐卡点，每镜信息量一句话说清" },
   },
 
@@ -270,7 +270,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", demo: "macro_glide", social_proof: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以研究员口吻讲成分与原理，术语说人话，结论克制不绝对化；资质背书需真实" },
   },
   {
@@ -283,7 +283,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "focus_shift", demo: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "none", bgmDuck: false },
+    compose: { captionPreset: "karaoke", bgmDuck: false },
     scriptHint: { zh: "坐在车内对镜头口播，像跟朋友打视频电话，语气松弛真诚不像广告" },
   },
   {
@@ -296,7 +296,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", social_proof: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "开场点出用户最担心的问题，逐条正面回应给证据，最后才报价格" },
   },
   {
@@ -309,7 +309,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", social_proof: "lateral_track", demo: "follow_track", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "多位不同身份的素人各说一句真实使用感受，每段短促直给，观点具体不重样" },
   },
   {
@@ -322,7 +322,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", social_proof: "focus_shift", demo: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "主播以新闻播报口吻一本正经介绍商品，播报体与带货内容形成反差趣味，信息真实" },
   },
   {
@@ -336,7 +336,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "按第一步第二步分步教学，每步一个可跟做的动作，商品在步骤中自然出场" },
   },
 
@@ -351,7 +351,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "dolly_zoom", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "开场明确表达怀疑，试用过程如实记录，转变理由具体可信，不演过头" },
   },
   {
@@ -364,7 +364,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "dolly_zoom", pain_point: "handheld_real", demo: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "家庭或办公室双人对话冲突开场，商品在剧情转折处自然出现化解矛盾" },
   },
   {
@@ -378,7 +378,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "pov_walk", demo: "follow_track", social_proof: "lateral_track", product_reveal: "hero_rise", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以探厂视角走进车间，展示真实产线与工艺环节，源头信息需真实可核" },
   },
   {
@@ -392,7 +392,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "按时间节点记录使用过程与变化，描述客观不承诺效果，避免绝对化用词" },
   },
 
@@ -408,7 +408,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "按晨间时间线串起多个生活动作，商品作为流程一环自然出现，不打断节奏" },
   },
   {
@@ -421,7 +421,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "handheld_real", product_reveal: "crane_down_close", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "全程第一视角展示使用过程，保留环境音的真实感，旁白像自言自语" },
   },
   {
@@ -435,7 +435,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "macro_glide", product_reveal: "crane_down_close", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "以声音质感为主线（开合、倾倒、揉捏等），画面慢而近，文案降到最少" },
   },
   {
@@ -449,7 +449,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", demo: "handheld_real", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "整体唯美松弛的vlog氛围，先给情绪再给商品，安利像随口一提" },
   },
   {
@@ -463,7 +463,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "dolly_zoom", pain_point: "handheld_real", demo: "lateral_track", product_reveal: "crane_up", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "先给改造前的杂乱现状，过程快剪，结尾大空间揭示改造后效果形成反差" },
   },
 
@@ -478,7 +478,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", product_reveal: "hero_rise", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "前段快节奏讲价值，结尾集中讲优惠；优惠信息必须真实，不使用虚假紧迫话术" },
   },
   {
@@ -491,7 +491,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", pain_point: "focus_shift", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "先给常见渠道价或同类价做参照，再展示本品价格与配置；对比信息需真实可核" },
   },
   {
@@ -505,7 +505,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", product_reveal: "overhead_top", demo: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "把套餐内容全部铺开逐件清点，数量与赠品眼见为实，报价干脆" },
   },
   {
@@ -518,7 +518,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", social_proof: "handheld_real", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "none", bgmDuck: false, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: false, productCard: true },
     scriptHint: { zh: "模拟直播间讲解的高光片段，话术密集直给有现场感，承诺内容必须真实" },
   },
   {
@@ -531,7 +531,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "lazy_susan", demo: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「三个理由」清单结构展开，逐条编号讲透，把最强卖点放在最后压轴" },
   },
 
@@ -546,7 +546,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "crane_up", product_reveal: "pull_reveal", demo: "arc_quarter", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "bold", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "把商品呈现为矗立在城市或自然场景中的巨物，画面越壮观越好，卖点简短有力" },
   },
   {
@@ -560,7 +560,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", product_reveal: "orbit_slow", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以液体飞溅、粉末扬起等高速摄影感瞬间为视觉主线，动感与质感并重" },
   },
   {
@@ -574,7 +574,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "night_neon",
     cameraPlan: { hook: "whip_pan", product_reveal: "crane_up", demo: "lateral_track", cta: "pull_reveal" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "商品以街头涂鸦、巨幅广告牌等城市视觉形式出现，整体潮流艺术感" },
   },
   {
@@ -588,7 +588,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "crane_down_close", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "宠物与商品同框互动作为记忆点，画面温馨有趣，宠物反应自然不摆拍" },
   },
   {
@@ -602,7 +602,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "whip_pan", product_reveal: "dolly_zoom", demo: "lateral_track", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以瞬间变装或场景切换制造前后反差，切换点干脆利落卡在节拍上" },
   },
   {
@@ -615,7 +615,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", social_proof: "focus_shift", product_reveal: "push_then_hold", demo: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「回复网友评论」的口吻展开，把常见疑问当话题逐条回应，社交感强" },
   },
 
@@ -633,7 +633,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "macro_glide", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "素颜自嘲开场，上妆过程快剪，妆后定格回眸；前后对比须同机位同光线真实呈现，不过度修饰" },
   },
   {
@@ -647,7 +647,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以「今天有约，跟我一起化」开场，镜前第一人称边化边聊步骤手法，商品在步骤中自然出场" },
   },
   {
@@ -661,7 +661,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", product_reveal: "macro_glide", social_proof: "lazy_susan", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "倒出一堆空瓶开场，逐瓶讲用空理由与回购意向，挤压见底的动作特写增强真实感" },
   },
   {
@@ -675,7 +675,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "lateral_track", product_reveal: "macro_glide", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以「化妆台从不留白占地方的东西」开场，镜头横移扫过台面，逐件拿起讲使用频率与真爱理由" },
   },
   {
@@ -689,7 +689,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "focus_shift", social_proof: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以明确肤质人设开场（如大油皮），定时打卡实测持妆/保湿表现，结论只给同肤质人群，描述客观" },
   },
   {
@@ -703,7 +703,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", pain_point: "focus_shift", demo: "macro_glide", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "左右手/半脸同涂实测对比，按预算档位给购买建议；对比客观不贬损其他品牌，不虚构测试结果" },
   },
   {
@@ -717,7 +717,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "lateral_track", demo: "macro_glide", product_reveal: "focus_shift", social_proof: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "同品类多款排排站，统一标准逐项评分并公布排名；评分依据真实体验，可指出不足但不夸大贬低" },
   },
   {
@@ -731,7 +731,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "macro_glide", product_reveal: "overhead_top", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "声明自然光原相机开场，多色号逐一上手/上唇展示，给不同肤色人群明确的色号建议，色彩还原真实" },
   },
 
@@ -747,7 +747,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "food_appetizing",
     cameraPlan: { hook: "macro_glide", product_reveal: "crash_push", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd", productCard: true },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd", productCard: true },
     scriptHint: { zh: "开袋/掰开的声音特写开场，怼拍拉丝流心爆汁瞬间，第一口真实反应收尾；保留原声不配BGM" },
   },
   {
@@ -761,7 +761,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "「十二点了，睡不着的进」低声开场，暗调暖光下加热/烹煮冒热气，吃第一口的满足表情收尾" },
   },
   {
@@ -775,7 +775,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "handheld_real", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "拉开工位抽屉「打工人快乐源泉」开场，办公室场景逐件安利并当场吃，点名回购最多的一款" },
   },
   {
@@ -789,7 +789,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "pov_walk", pain_point: "handheld_real", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "先探店实拍排队盛况，转折「不用排队家里也能吃到」，居家复刻同款并同框对比；店铺信息真实" },
   },
   {
@@ -803,7 +803,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "妈妈第一视角记录做辅食过程，配料与营养描述必须与配料表一致，宝宝吃光空碗自然收尾，不做医疗营养宣称" },
   },
   {
@@ -817,7 +817,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "按周一到周五分段快剪每餐搭配，日历角标推进节奏；只讲食材搭配与饱腹感受，不承诺任何减重效果" },
   },
   {
@@ -831,7 +831,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以「传说中最XX的它」立挑战开场，真实试吃夸张但不做作的反应，结尾反转好评或诚实劝退" },
   },
   {
@@ -845,7 +845,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "macro_glide", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "无口播，以切菜下锅的环境声为主线完整做一餐，商品（酱料/锅具）在流程中自然用到，字幕点出关键卖点" },
   },
   {
@@ -859,7 +859,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "「一个人也要好好吃饭」独白开场，快手做一餐，窗边独食治愈收尾，旁白像自言自语的治愈系" },
   },
   {
@@ -873,7 +873,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "macro_glide", demo: "focus_shift", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "「买零食先翻背面」开场，背标怼拍对比配料表长短，字幕划重点；配料表信息必须与实物一致" },
   },
 
@@ -889,7 +889,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "macro_glide", pain_point: "crash_push", demo: "follow_track", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "重度污渍特写开场，喷涂静置擦除全程实拍，一擦到底的高光瞬间重点呈现；清洁效果真实不摆拍" },
   },
   {
@@ -903,7 +903,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "pov_walk", demo: "lateral_track", product_reveal: "crane_up", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "空镜惨状开场，分区改造逐项报价格，全屋成果环绕展示收尾；预算与价格信息真实" },
   },
   {
@@ -917,7 +917,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", demo: "follow_track", product_reveal: "crash_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「懒人搭子TOP榜」展开，每件商品只给一个立竿见影的演示瞬间，编号推进，最后点名第一名" },
   },
   {
@@ -931,7 +931,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", social_proof: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以「入住一年这些东西买对/买错了」开场，红黑榜逐条盘点，敢讲缺点更可信，评价基于真实使用" },
   },
   {
@@ -945,7 +945,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", pain_point: "handheld_real", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以有娃家庭视角讲厨房布置，围绕动线、安全与效率逐件讲好物，做一餐验证顺手度，口吻务实" },
   },
   {
@@ -959,7 +959,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "whip_pan", product_reveal: "lazy_susan", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "「它一个能干十件事」开场，用法连环快切配计数角标，结尾把替代品价格加总算省钱账，账要真实" },
   },
   {
@@ -973,7 +973,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "slow_push", demo: "pov_walk", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以「我家没有开关」开场，按一天时间线逐幕演示场景联动，设备响应特写，晚安一键关全屋收尾" },
   },
 
@@ -989,7 +989,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", product_reveal: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "今日穿搭主题一句话点题，上衣裤子鞋包逐件报，整体look定格转身收尾，轻快日常口吻" },
   },
   {
@@ -1003,7 +1003,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", product_reveal: "dolly_zoom", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true, productCard: true },
     scriptHint: { zh: "同一单品连换多套搭配卡点切换，每套点出适合场合，单品全程高亮是主角" },
   },
   {
@@ -1017,7 +1017,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "lateral_track", product_reveal: "follow_track", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "点名身材人群开场（如梨形/小个子），先展示常见踩雷款的问题，再上本命款前后对比，语气像同身材姐妹" },
   },
   {
@@ -1031,7 +1031,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", product_reveal: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "按周一到周五一日一套快切，每套配场合说明，办公室通勤实景感，口吻利落像职场前辈" },
   },
   {
@@ -1045,7 +1045,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "lateral_track", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "「网图vs我实拍」悬念开场，同款同姿势同框对比验证，实拍呈现真实不加滤镜修饰" },
   },
   {
@@ -1059,7 +1059,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "premium_gray",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "crane_down_close", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "手揉面料的声音与画面开场，垂坠感、弹力、透光度逐项怼拍验证，少说话多给质感证据" },
   },
   {
@@ -1073,7 +1073,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", social_proof: "follow_track", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "同一款多位不同身高体重的人逐个上身，身高体重角标标注，给各身型明确选码建议，数据真实" },
   },
   {
@@ -1087,7 +1087,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "follow_track", product_reveal: "dolly_zoom", cta: "hero_rise" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "素人改造前自然登场，选款换装过程快剪，改造后走秀慢镜回眸形成反差，情感真挚不做作" },
   },
 
@@ -1103,7 +1103,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "lateral_track", demo: "focus_shift", product_reveal: "arc_quarter", social_proof: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "同价位多款同框，逐项实测数据对比配表格字幕，结论按人群明确到「XX需求选它」，数据真实可核" },
   },
   {
@@ -1117,7 +1117,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "premium_gray",
     cameraPlan: { hook: "crane_down_close", product_reveal: "macro_glide", demo: "overhead_top", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "顶光下慢节奏开箱，逐层揭膜配件排列成阵，开机点亮瞬间收尾；保留撕膜与摆放的原声" },
   },
   {
@@ -1131,7 +1131,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", social_proof: "handheld_real", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「用了30天说点实话」开场，使用痕迹特写增强真实感，优缺点各摆两三条，结论明确到谁该买谁别买" },
   },
   {
@@ -1145,7 +1145,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "handheld_real", pain_point: "overhead_top", demo: "follow_track", product_reveal: "lateral_track", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "乱桌惨状开场，理线支架灯光逐步升级，成品桌面夜景氛围灯运镜大赏收尾，数码美学感" },
   },
   {
@@ -1159,7 +1159,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「拆开看看它凭什么卖这价」开场，开壳逐层讲用料做工，内部结构微距特写，结论就事论事" },
   },
   {
@@ -1173,7 +1173,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "「通勤包里都有什么」俯拍摊开全家福，逐件掏出讲用途，点名最离不开的一件收尾" },
   },
   {
@@ -1187,7 +1187,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "handheld_real", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「宿舍幸福感TOP榜」展开，床位书桌小场景逐个演示适配性，报价格强调学生党友好，价格真实" },
   },
   {
@@ -1201,7 +1201,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "arc_quarter", social_proof: "lateral_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「老款用户要不要换」开场，新旧同框逐项对比，结尾反向点名「这几类人不用换」，克制反套路赢信任" },
   },
 
@@ -1216,7 +1216,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "follow_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "开场用一个用户本来就在想的疑问设问，中段逐步揭晓原因，商品作为答案自然承接，兑现开头的问题" },
   },
   {
@@ -1229,7 +1229,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "overhead_top", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以大数字开场制造冲击（如「99%的人都做错了」），展开反常识科普后商品入场；引用数字需有依据不编造" },
   },
   {
@@ -1242,7 +1242,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "开场承诺免费教一个有价值的方法，中段真的交付可用干货，商品作为「想省事就用它」的选项收尾" },
   },
   {
@@ -1255,7 +1255,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "开场直接点名目标人群身份，全片只围绕这一类人的场景与痛点展开，像圈内人给圈内人的建议" },
   },
   {
@@ -1268,7 +1268,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "dolly_zoom", pain_point: "handheld_real", demo: "follow_track", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "开场点出维持现状的隐性损失（时间/金钱/精力），把账算具体，商品是止损方案；损失描述真实不贩卖焦虑" },
   },
 
@@ -1283,7 +1283,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", product_reveal: "macro_glide", social_proof: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以长辈日常操劳的细节引共情，转折到「这次换我来」，礼物开箱与收礼反应收尾；情绪真挚忌苦情煽情" },
   },
   {
@@ -1296,7 +1296,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", pain_point: "focus_shift", product_reveal: "overhead_top", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "先损后教：翻车礼物打叉快闪开场，再按预算分档盘点正确答案，口吻像替你把关的闺蜜军师" },
   },
   {
@@ -1309,7 +1309,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", product_reveal: "lazy_susan", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以倒计时榜单逐个开箱种草，每件配「送给爱XX的他/她」人设标签，第一名压轴重磅揭晓" },
   },
   {
@@ -1322,7 +1322,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", product_reveal: "macro_glide", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以收到礼物拆箱的第一反应开场，展示细节讲为什么惊喜，「暗示对象来抄作业」收尾，反应自然不摆拍" },
   },
   {
@@ -1336,7 +1336,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", product_reveal: "overhead_top", demo: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "快递箱堆叠开场，整箱开箱逐样过品，按待客/追剧/送人分堆，年味热闹；价格与赠品信息真实" },
   },
   {
@@ -1350,7 +1350,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", product_reveal: "macro_glide", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "minimal", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以给伴侣准备惊喜的视角展开，选礼理由讲得具体走心，收礼瞬间自然收尾，甜而不腻" },
   },
   {
@@ -1364,7 +1364,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "overhead_top", demo: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「新生别乱买」开场，按必买/缓买/别买三档盘点，报预算总价收尾，口吻像学长学姐防坑" },
   },
 
@@ -1379,7 +1379,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "crash_push", demo: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "宣布促销开跑，3-5个单品快闪各配一句核心卖点，节奏不停顿；优惠信息必须真实有效" },
   },
   {
@@ -1392,7 +1392,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true, productCard: true },
     scriptHint: { zh: "直说清仓原因（换季/断码/腾仓），价格对比眼见为实；清仓理由与库存信息必须真实，不制造虚假稀缺" },
   },
   {
@@ -1405,7 +1405,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "把预售定金膨胀/尾款机制算成一笔明白账，何时付何时发讲清楚；机制描述必须与商家页面一致" },
   },
   {
@@ -1418,7 +1418,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", product_reveal: "macro_glide", social_proof: "lazy_susan", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「回购了N次的东西」立信任开场，逐件讲回购理由与使用场景，回购事实真实，像老用户的口碑清单" },
   },
   {
@@ -1431,7 +1431,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "pull_reveal", product_reveal: "orbit_slow", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "以首发揭幕感开场，聚焦讲清「新在哪」的两三个点，与旧款差异具体可感，首发信息真实" },
   },
 
@@ -1446,7 +1446,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "macro_glide", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以「买XX千万避开这几个坑」开场，逐条讲坑点及识别方法，最后给出正确选择；建议基于事实不制造焦虑" },
   },
   {
@@ -1459,7 +1459,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", pain_point: "focus_shift", demo: "macro_glide", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以从业者口吻爆料行业内幕，压低声线凑近镜头的耳语感，坦白自家哪里实在；内幕信息必须真实不编造" },
   },
   {
@@ -1472,7 +1472,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "hero_rise", pain_point: "handheld_real", demo: "follow_track", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "第一镜直接放最终成果，随后倒叙「之前有多糟→中间发生了什么」，商品是过程中的变量；成果真实可复现" },
   },
 
@@ -1487,7 +1487,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以「我必须分享」的兴奋感开场，像跟亲友安利一样直给，分享理由具体真实，热情但不夸大" },
   },
   {
@@ -1501,7 +1501,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「别再去XX渠道买了」劝告开场，把渠道价差算成明白账再给购买建议；价格对比必须真实可核" },
   },
   {
@@ -1514,7 +1514,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", product_reveal: "overhead_top", demo: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "自问自答式开场，套餐内容层层加码逐件摆出（主品+赠品+服务），数量眼见为实；赠品信息必须真实" },
   },
   {
@@ -1527,7 +1527,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以买家问价开场做成一问一答对话，先讲价值再揭价格制造反差；报价与优惠真实，不演虚假砍价" },
   },
   {
@@ -1541,7 +1541,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "pov_walk", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以种植者/生产者身份在田间地头自述，画面朴素纪实，讲清源头到手价的逻辑；身份与产地必须真实，不卖惨表演" },
   },
 
@@ -1556,7 +1556,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "全片温柔慢节奏，收集生活中的美好瞬间（阳光/热茶/植物），商品作为美好生活的一部分自然融入" },
   },
   {
@@ -1569,7 +1569,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "日常唠嗑开场不急着进主题，边聊近况边顺手用到商品，语气松弛像跟老朋友视频，带货像顺口一提" },
   },
   {
@@ -1582,7 +1582,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "pull_reveal", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "standard", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以罕见事物或反常用法开场抓好奇心，特写慢放揭示原理，原理讲清后商品自然承接；原理描述准确" },
   },
 
@@ -1597,7 +1597,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "crash_push", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "none", bgmDuck: false },
+    compose: { captionPreset: "karaoke", bgmDuck: false },
     scriptHint: { zh: "以「自家的货」开场掏心窝讲成本与利润逻辑，素人感不追求精致，方言感口吻更可信；成本描述真实" },
   },
   {
@@ -1611,7 +1611,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", social_proof: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "none", bgmDuck: false },
+    compose: { captionPreset: "standard", bgmDuck: false },
     scriptHint: { zh: "以冷知识或辟谣开场，单口脱口秀式讲清一个原理，顺势过渡到商品如何应用这个原理，理性克制" },
   },
   {
@@ -1625,7 +1625,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以有画面感的金句文案开场铺情绪，慢节奏字幕海报化呈现，商品在情绪落点处轻轻带出，文艺不堆砌" },
   },
   {
@@ -1639,7 +1639,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "pov_walk", demo: "handheld_real", product_reveal: "follow_track", social_proof: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "none", bgmDuck: false, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: false, productCard: true },
     scriptHint: { zh: "以走进批发档口/工厂仓库的第一视角开场，拿货现场手持纪实感，讲清直发省掉的环节；货源信息真实" },
   },
   {
@@ -1652,7 +1652,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "overhead_top", social_proof: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以户外摊位吆喝的热闹劲开场，叫卖式话术带烟火气，量大实惠眼见为实；报价与份量真实不夸口" },
   },
 
@@ -1667,7 +1667,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "lazy_susan", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「这几样闭眼入」清单开场，编号逐个过品每个只讲一个记忆点，TOP1压轴给最强理由" },
   },
   {
@@ -1681,7 +1681,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", demo: "follow_track", product_reveal: "macro_glide", social_proof: "lateral_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "双人闺蜜对话体，一方安利一方追问质疑，追问替观众问出真实顾虑，对话自然像日常聊天" },
   },
   {
@@ -1694,7 +1694,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", pain_point: "handheld_real", demo: "follow_track", social_proof: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "办公室日常整活开场，好物解决工位痛点成为剧情转折，同事围观「求链接」收尾，场景喜剧感自然" },
   },
   {
@@ -1707,7 +1707,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", product_reveal: "push_then_hold", demo: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以图文卡片翻页节奏组织信息，每卡一个知识点或卖点，大字标题+短说明，信息密度高但每卡一句话说清" },
   },
   {
@@ -1720,7 +1720,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", demo: "pov_walk", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "刻意保留随手拍的构图与光影瑕疵，像朋友圈随拍不像广告片；画面可以糙，内容必须真实不虚构" },
   },
   {
@@ -1734,7 +1734,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", pain_point: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以老物件或童年记忆开场铺怀旧情绪，复古胶片质感画面，商品作为「记忆里的味道/样子」唤起共鸣" },
   },
   {
@@ -1747,7 +1747,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "handheld_real", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以「XX的人千万别买它」反向开场，列的「劝退理由」实为放大卖点（如太上头/太好用），趣味反差不误导" },
   },
 
@@ -1762,7 +1762,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", product_reveal: "whip_pan", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "前3秒用价格炸点或效果特写做强前贴，中段爆点画面混剪连切，结尾口播集中压单；促销信息必须真实" },
   },
   {
@@ -1775,7 +1775,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "把满减/赠品/券后价逐项算成一笔明白账，算账字卡同步上屏；每个数字必须真实可核，不虚构原价" },
   },
 
@@ -1790,7 +1790,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", product_reveal: "hero_rise", demo: "orbit_slow", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "商品像充气一样膨胀变圆飘起的特效画面做记忆点，反差萌调性；特效属创意表现，不得暗示真实尺寸或功效" },
   },
   {
@@ -1804,7 +1804,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "crane_down_close", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "以捏压回弹的软质感画面为主线，动作缓慢重复有解压感，保留捏压原声；材质表现不夸大实际手感" },
   },
   {
@@ -1818,7 +1818,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "pull_reveal", product_reveal: "orbit_slow", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "把商品或场景呈现为毛绒玩偶质感的奇观画面，治愈可爱调性；特效属创意表现，不代表实物材质" },
   },
   {
@@ -1832,7 +1832,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "crane_down_close", product_reveal: "lazy_susan", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "upbeat", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "把商品呈现为桌面微缩手办场景，微距景深营造潮玩摄影感，趣味展示商品造型细节" },
   },
   {
@@ -1846,7 +1846,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "hero_rise", product_reveal: "orbit_slow", demo: "arc_quarter", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "商品零重力悬浮缓慢旋转，配件或成分元素环绕成阵，科技感构图干净，卖点字幕逐个点出" },
   },
   {
@@ -1859,7 +1859,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", product_reveal: "lazy_susan", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以定格动画的逐帧跳动感呈现，商品与道具像自己走位排队，手作温度与童趣感，节奏轻快" },
   },
   {
@@ -1872,7 +1872,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "pull_reveal", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以连续推进穿越多个场景的一镜到底感串场，每穿越一层展示一个使用场景，商品始终是画面锚点" },
   },
   {
@@ -1885,7 +1885,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", pain_point: "focus_shift", demo: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "一人分饰多角同框对话（质疑者/种草者/理性派），几个「自己」互相说服，观点交锋替观众问完所有顾虑" },
   },
   {
@@ -1899,7 +1899,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "dolly_zoom", demo: "focus_shift", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以倒放画面做视觉魔法（洒落的倒回杯中/皱的变平整），倒流感突出商品让状态复原的能力，趣味不误导" },
   },
   {
@@ -1913,7 +1913,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "pull_reveal", product_reveal: "orbit_slow", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "商品部件悬空拆解成爆炸图逐层展示，再利落合体，每层配一句结构/用料卖点；结构信息与实物一致" },
   },
   {
@@ -1926,7 +1926,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "dolly_zoom", product_reveal: "orbit_slow", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以旧方案流畅变形为新品的特效转场做主线，变形前后各讲一句核心差异；特效是表现手法，差异描述真实" },
   },
   {
@@ -1940,7 +1940,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以拟人化萌宠视角开口讲产品（配音对口型），吐槽主人带出使用场景，可爱消解广告感；AI拟人内容需带标识" },
   },
   {
@@ -1954,7 +1954,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", product_reveal: "crash_push", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以静态商品图/模特图做卡点律动的动画感，图片切换跟音乐节拍，快闪字卡逐图点卖点" },
   },
 
@@ -1969,7 +1969,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "night_neon",
     cameraPlan: { hook: "whip_pan", product_reveal: "crash_push", demo: "lateral_track", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: false, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: false, productCard: true },
     scriptHint: { zh: "整片节奏严格跟随音乐节拍，每个切换点卡在鼓点上，动作与转场为节拍服务，文案短促跟拍" },
   },
   {
@@ -1982,7 +1982,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "push_then_hold", cta: "whip_pan" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "借用当下流行梗的节奏结构，把商品填进梗的笑点位置，玩梗自然不硬蹭，笑点落在卖点上" },
   },
   {
@@ -1995,7 +1995,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", social_proof: "handheld_real", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以分屏合拍结构：一侧播放素材（用户反馈/使用画面），一侧真人实时反应点评，反应真实不夸张" },
   },
   {
@@ -2008,7 +2008,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "开场承接一个热门话题或讨论，转折切入自己的新角度，商品作为观点的落地方案，借势自然" },
   },
   {
@@ -2021,7 +2021,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "开场一句话复刻用户会搜的问题（如「XX怎么选」），按步骤真的交付答案，商品在步骤中自然入位" },
   },
 
@@ -2036,7 +2036,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "follow_track", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "按早/午/晚三个时段跳切一天生活，商品在每个时段自然出现一次，结尾回收「一天下来离不开它」" },
   },
   {
@@ -2049,7 +2049,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", pain_point: "handheld_real", demo: "follow_track", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "左右对照结构：旧方案痛点逐条数（费时/费钱），新方案优势逐条对，结尾「你选哪个」；不点名贬低具体品牌" },
   },
   {
@@ -2062,7 +2062,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "macro_glide", social_proof: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以「全网都在推，刷到第十次终于下单」开场，复述网上的说法再逐条亲测验证；热度与测试结果真实" },
   },
   {
@@ -2075,7 +2075,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以踩坑经验的反思口吻开场，逐条讲当年做错了什么，商品是那个教训的答案，语气真诚像过来人" },
   },
   {
@@ -2088,7 +2088,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "macro_glide", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以「用了多年的东西换掉了」开场，讲清换掉的具体原因与换后差异；不点名贬低原品牌，理由真实" },
   },
   {
@@ -2101,7 +2101,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "dolly_zoom", demo: "follow_track", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以一段有人物有场景的微型故事推进（那天发生了什么），情节自然走到「所以我下单了」作为故事结局" },
   },
 
@@ -2116,7 +2116,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "dolly_zoom", product_reveal: "pull_reveal", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "开场用一个反常规画面（怪角度/违和道具/突兀动作）打断刷屏惯性，随后解释反常并引入商品" },
   },
   {
@@ -2130,7 +2130,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "slow_push", demo: "focus_shift", product_reveal: "crash_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "开场承诺一个具体爽点（「看它一口气吸完」），中段有意铺垫拖延，结尾完整兑现承诺的瞬间；爽点必须真实兑现" },
   },
   {
@@ -2144,7 +2144,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以「别再这样用XX了」开场，先演示常见错误用法及后果，再给正确做法，商品是正确姿势的一部分" },
   },
   {
@@ -2157,7 +2157,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "night_neon",
     cameraPlan: { hook: "handheld_real", pain_point: "focus_shift", demo: "pov_walk", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以「POV:你正处在XX场景」的第二人称代入开场，场景演到情绪点商品入场终结困境，代入感强" },
   },
   {
@@ -2171,7 +2171,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", social_proof: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以绿幕抠像站在截图/评论/数据图前逐条指点讲解，证据画面即背景；引用的截图与数据必须真实" },
   },
   {
@@ -2185,7 +2185,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "dolly_zoom", demo: "follow_track", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "先演一段翻车惨状小品（厨房灾难/手残现场），慢镜回放放大笑点，商品作为正解收场，喜剧夸张但结果真实" },
   },
   {
@@ -2198,7 +2198,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以线上视频会议画面为舞台演职场小剧场，会议中的尴尬/救场成为剧情，商品在剧情转折处出场" },
   },
   {
@@ -2211,7 +2211,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "dolly_zoom", product_reveal: "pull_reveal", demo: "arc_quarter", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "emotional", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "bold", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以影视预告片的剪辑语法上新：碎片画面+悬念台词+定档字卡，氛围拉满，结尾揭晓商品与上市信息" },
   },
   {
@@ -2225,7 +2225,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", product_reveal: "focus_shift", demo: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "日系广告调性：画面留白构图克制，节奏安静，文案短句诗化，商品像杂志内页一样被安静呈现" },
   },
   {
@@ -2239,7 +2239,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "whip_pan", demo: "follow_track", product_reveal: "crash_push", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "bold", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "高频快切的运动感剪辑，跟拍冲刺跳跃等大动作，商品在运动状态中展示性能，节奏不留喘息" },
   },
 
@@ -2255,7 +2255,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", product_reveal: "crane_down_close", demo: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "大理石/丝绒质感台面配窗边黄金时刻光，浅景深编辑部布光，画面奢而静，文案惜字如金" },
   },
   {
@@ -2269,7 +2269,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", demo: "follow_track", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "面向大件高客单：开箱/安装/日常使用全流程慢节奏展示，细节触感与售后质保都讲到，不催单重信任" },
   },
   {
@@ -2283,7 +2283,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "focus_shift", product_reveal: "crash_push", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以顶拍加速呈现组装/制作全过程，快进节奏配轻快音乐，成品揭晓瞬间放慢，反差出成就感" },
   },
   {
@@ -2297,7 +2297,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "crane_down_close", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以双手制作/打磨商品的近景为主线，工坊光影与工具声音营造匠心感；手作工艺描述必须真实" },
   },
   {
@@ -2311,7 +2311,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", product_reveal: "orbit_slow", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "商品居中、原料向四周爆散悬停的高速摄影感画面，逐样点出真实原料；呈现的成分必须与配料表一致" },
   },
   {
@@ -2325,7 +2325,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "slow_push", product_reveal: "pull_reveal", demo: "orbit_slow", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以体积光中香雾/粒子旋转汇聚显形出商品的画面为主线，氛围神秘高级，文案只留一句核心" },
   },
   {
@@ -2339,7 +2339,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", product_reveal: "lazy_susan", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "深色背景商品缓慢旋转，一道受控扫光掠过勾勒轮廓与材质反光，保持商品原设计不做变形" },
   },
   {
@@ -2353,7 +2353,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "forest_soft",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "hero_rise", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以植物发芽到绽放的延时画面做成长隐喻，串联原料的自然来源；隐喻仅作氛围表达，不暗示未经证实的功效" },
   },
 
@@ -2369,7 +2369,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以今日妆容主题开场（如奶杏妆/晒伤妆），成品妆容多角度展示后报用品清单，轻快像姐妹分享" },
   },
   {
@@ -2383,7 +2383,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", product_reveal: "macro_glide", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "把随身化妆包倒出摊开，逐件讲为什么能进随身包（体积/补妆快/万能），浓缩感就是说服力" },
   },
   {
@@ -2397,7 +2397,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", social_proof: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以复刻某个热门妆容立挑战，过程逐步跟拍关键手法，结尾对照原妆自评像不像，趣味挑战感" },
   },
   {
@@ -2411,7 +2411,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "无口播补货流程：拆包装、倒进收纳盒、码进冰箱，全程保留窸窣原声，整齐画面即治愈，字幕点出商品" },
   },
   {
@@ -2425,7 +2425,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以「用它能做三道菜」开场，每道菜快节奏交付可复刻的做法，商品是每道菜的关键一步，实用为先" },
   },
   {
@@ -2439,7 +2439,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以点香/开氛围灯/换床品等动作逐步把房间调成想要的氛围，画面重光影质感，商品是氛围开关" },
   },
   {
@@ -2453,7 +2453,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "overhead_top", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以换季衣柜/被褥大整理为主线，收纳前后对比，压缩袋/收纳盒等好物在流程中自然出场" },
   },
   {
@@ -2467,7 +2467,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "开场声明「本片全程用它拍摄」，之后每个画面都是样张自证（夜景/防抖/微距分段展示）；自证画面必须真实" },
   },
   {
@@ -2481,7 +2481,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "arc_quarter", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以热门游戏实机压测为主线，帧率/温度/续航数据角标同步上屏，实战体验说话；测试数据真实" },
   },
   {
@@ -2495,7 +2495,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "pov_walk", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以「一整天不充电」立挑战，按时间线记录各时段用途与剩余电量角标，结尾公布真实结果；数据不造假" },
   },
 
@@ -2511,7 +2511,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "macro_glide", social_proof: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以「关于XX的几个流行说法都是错的」开场，逐条辟谣讲清依据，商品作为正确认知下的选择；辟谣依据可靠" },
   },
   {
@@ -2524,7 +2524,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", social_proof: "handheld_real", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以内部人自购视角开场（店员/员工），讲哪些自己真金白银回购、哪些不买，内部视角+自费事实必须真实" },
   },
   {
@@ -2538,7 +2538,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", social_proof: "focus_shift", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "受试者蒙眼盲测（试吃/试用），只凭感官猜价格猜档次，揭晓瞬间的真实反应是核心；盲测过程真实" },
   },
   {
@@ -2552,7 +2552,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", demo: "follow_track", social_proof: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "记录长辈第一次上手使用的全过程，疑问吐槽与被打动都保留，代际反应真实自然，温情不摆拍" },
   },
   {
@@ -2565,7 +2565,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以自嘲口吻坦白走过的弯路花过的冤枉钱，摆出试错清单，最后落在现在用的这一个；试错经历真实" },
   },
   {
@@ -2578,7 +2578,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以推翻一个流行观点开场（「选XX根本不用看XX」），论证给出新的选购标准，商品恰好符合新标准；论据真实" },
   },
   {
@@ -2591,7 +2591,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "macro_glide", social_proof: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以「连用七天会怎样」立挑战，每天一段打卡记录使用感受，第七天总结变化；描述客观不承诺效果" },
   },
   {
@@ -2605,7 +2605,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "dolly_zoom", demo: "follow_track", product_reveal: "hero_rise", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以低谷状态开场，改变过程用蒙太奇快剪推进，商品是过程中的关键道具而非全部功劳，励志真实不夸大" },
   },
 
@@ -2621,7 +2621,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "按晚间时间线串起卸妆护肤热饮熄灯等动作，节奏放慢氛围安静，商品是夜晚仪式感的一环" },
   },
   {
@@ -2635,7 +2635,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以周末重置日为主线：换洗打扫补货备餐一气呵成，商品在流程节点自然出场，治愈且有掌控感" },
   },
   {
@@ -2648,7 +2648,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", product_reveal: "macro_glide", demo: "handheld_real", social_proof: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以月度复盘视角摊开这个月买的东西，逐件给值不值的判断，有买对有买亏更可信，评价真实" },
   },
   {
@@ -2662,7 +2662,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "food_appetizing",
     cameraPlan: { hook: "hero_rise", product_reveal: "orbit_slow", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "minimal", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "商品从奶油/液流环抱中缓缓升起，原料在周围悬浮的慢动作大片感，食欲光效；呈现原料与配方一致" },
   },
   {
@@ -2675,7 +2675,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", social_proof: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "把商品的材料/工艺/环节成本摊开算账，解释定价逻辑「贵在哪/省在哪」；成本数字必须真实不虚构" },
   },
   {
@@ -2689,7 +2689,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "macro_glide", social_proof: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "以商品出厂前的质检流程为主线，逐道检验环节实拍讲标准，细节严谨感建立信任；流程与标准真实" },
   },
   {
@@ -2702,7 +2702,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "handheld_real", product_reveal: "macro_glide", social_proof: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以小店主视角记录一天：理货接单打包发货，穿插与顾客的暖心互动，人情味与烟火气是主角" },
   },
 
@@ -2717,7 +2717,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: false, quality: "hd" },
     scriptHint: { zh: "以「第XX号订单开始打包」开场，撕胶带装盒塞填充物全程收音，商品在打包过程中自然展示，治愈解压" },
   },
   {
@@ -2730,7 +2730,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "focus_shift", demo: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "把评论区高频问题做成快问快答，每题一句话答完立刻下一题，节奏干脆；回答真实不回避尖锐问题" },
   },
   {
@@ -2743,7 +2743,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "pov_walk", social_proof: "lateral_track", demo: "handheld_real", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true, productCard: true },
     scriptHint: { zh: "让路人上手体验后猜价格，多数人猜高后揭晓真实价格制造惊讶；猜价反应真实不安排托" },
   },
   {
@@ -2756,7 +2756,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "whip_pan", social_proof: "lateral_track", demo: "handheld_real", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "给全办公室同事人手一份集体试用，逐个收集一句话真实评价，最后公布投票结果；评价多样真实有好有坏" },
   },
   {
@@ -2769,7 +2769,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", product_reveal: "macro_glide", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "预告直播时间与直播间专属福利，剧透一两个爆品但留悬念，引导预约蹲点；福利信息必须真实兑现" },
   },
   {
@@ -2782,7 +2782,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "亲测售后全流程（咨询响应/退换速度/运费险），过程截图与时间线实录；售后体验真实呈现不美化" },
   },
   {
@@ -2795,7 +2795,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "macro_glide", demo: "follow_track", product_reveal: "focus_shift", social_proof: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "以材质来源与环保工艺为叙事线，克制讲述不说教；环保宣称必须有依据，不做漂绿式夸大" },
   },
   {
@@ -2809,7 +2809,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", product_reveal: "orbit_slow", demo: "macro_glide", social_proof: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "以传统文化元素与现代设计的碰撞为主线，讲设计灵感与工艺传承，情怀真挚不空喊口号" },
   },
   {
@@ -2822,7 +2822,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", social_proof: "macro_glide", demo: "handheld_real", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以多年老用户身份开场，新旧对比展示用了多年的旧品与新购的同款，长情故事真实具体；使用年限不虚构" },
   },
   {
@@ -2836,7 +2836,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", social_proof: "focus_shift", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "让不懂行的另一半盲评（猜用途/猜价格/给打分），外行视角的真实反应制造笑点与说服力，互动自然" },
   },
   {
@@ -2850,7 +2850,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", social_proof: "lateral_track", demo: "follow_track", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "一家三代各自讲跟这个商品的故事，代际视角不同但都在用，家庭温情与传承感真实动人" },
   },
   {
@@ -2863,7 +2863,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "dolly_zoom", product_reveal: "pull_reveal", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "以「拆之前我也不知道是啥」的悬念开箱，拆盒过程放大心跳感，揭晓反应真实；盲盒机制与概率信息须合规真实" },
   },
   {
@@ -2877,7 +2877,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "macro_glide", pain_point: "crash_push", demo: "follow_track", product_reveal: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "standard", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "以一件破旧物品开场（旧包/旧鞋/旧家具），用商品一步步翻新救活，前后对比即产品实力；翻新效果真实" },
   },
   // ---- Batch 9: overseas 2026 trend formats (de-influencing wave / UGC agency plays / faceless / ASMR splits / aesthetic cores / named lifestyle rituals / new hook schools) ----
@@ -2891,7 +2891,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以「这几个爆款我劝你别买」开场逐个给出真实劝退理由，最后只留一个真正值得的收尾；劝退理由须基于真实体验，不点名贬损具体品牌" },
   },
   {
@@ -2904,7 +2904,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", product_reveal: "pull_reveal", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "当众拒绝一笔高价消费开场（我不是买不起，是不想为溢价买单），现场算账对比，给出预算内的选择；账目与价格对比须真实" },
   },
   {
@@ -2917,7 +2917,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "orbit_slow", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "用「按次均摊/一天不到一块钱」式歪理算账合理化购买，越算越好笑，结论「约等于免费」促单；幽默夸张但价格数据须真实" },
   },
   {
@@ -2931,7 +2931,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "沉浸式把预算现金/卡片分进标签信封与分装册（近距收音），过程即解压，商品（记账本/分装工具）在使用中自然种草" },
   },
   {
@@ -2944,7 +2944,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", pain_point: "lateral_track", product_reveal: "focus_shift", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "none" },
+    compose: { captionPreset: "karaoke" },
     scriptHint: { zh: "播客间双人对谈金句切片质感，仿佛无意间聊到产品体验，评论区式软性收尾；对谈内容须为真实体验，广告合作属性须如实标注" },
   },
   {
@@ -2957,7 +2957,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "读出一条真实差评开场（有人给我们1星因为X），承认或反驳，实拍演示改进结果Y；差评与整改过程须真实，不得虚构差评做戏" },
   },
   {
@@ -2970,7 +2970,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", pain_point: "whip_pan", product_reveal: "lateral_track", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "「一般产品vs我们家」逐项打勾对比表，放大差异项后促单；对比不点名真实竞品，对比项须客观可验证" },
   },
   {
@@ -2983,7 +2983,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "dolly_zoom", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "none" },
+    compose: { captionPreset: "bold" },
     scriptHint: { zh: "全程零台词，靠手势、表情和字幕完成测评，保留环境音/使用音，打分手势收尾；字幕承担全部信息量，评价须真实" },
   },
   {
@@ -2997,7 +2997,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "近机位开吃，咀嚼脆响收音先行，吃到一半才口播口味与辣度，声音是主角；食用反应须真实不夸张表演" },
   },
   {
@@ -3011,7 +3011,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", product_reveal: "macro_glide", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "耳语音量+慢动作展示产品细节，轻声讲使用感，轻声报价收尾，营造一对一私享感；轻声但信息完整" },
   },
   {
@@ -3025,7 +3025,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", pain_point: "focus_shift", demo: "macro_glide", product_reveal: "lazy_susan", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "扮演柜姐/顾问对观众一对一服务（欢迎回来，今天帮你把XX配齐），为「你」挑选并试用，开出专属清单收尾；服务人设不冒充专业资质" },
   },
   {
@@ -3038,7 +3038,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", product_reveal: "focus_shift", cta: "crane_up" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "治愈画面+励志字幕蒙太奇，商品作为「小确幸」出现在日常瞬间，以善待自己式文案收尾，情绪真挚不贩卖焦虑" },
   },
   {
@@ -3052,7 +3052,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "crane_down_close", demo: "follow_track", product_reveal: "macro_glide", cta: "crane_up" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "田园场景慢节奏劳作（烘焙/园艺/手作），商品自然融入劳作过程，成果特写+柔性收尾，画面美学优先促销感靠后" },
   },
   {
@@ -3066,7 +3066,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以「今晚舒适度拉满」宣言开场，逐层叠加舒适单品（灯光/毯子/香薰），窝进成果里的第一视角收尾" },
   },
   {
@@ -3080,7 +3080,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "overhead_top", product_reveal: "pull_reveal", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "打开凌乱冰箱开场，分区造景过程（收纳盒/标签/装饰）快剪，开门瞬间的成果reveal收尾，前后对比即卖点" },
   },
   {
@@ -3094,7 +3094,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "醒来逐层拆掉过夜装备（发卷/眼膜/护理带），每拆一层介绍一件的作用，拆完展示状态收尾；效果表述真实不夸大" },
   },
   {
@@ -3108,7 +3108,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "睡眠装备逐件上床（遮光/白噪音/香薰/家纺），夜间使用实录+晨起状态收尾；只做流程与体验展示，不得宣称助眠医疗功效" },
   },
   {
@@ -3122,7 +3122,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "以「今晚是全套沐浴仪式之夜」开场，按顺序走完全流程产品（磨砂/发膜/身体护理），浴后仪式感收尾，突出流程的秩序感与犒赏感" },
   },
   {
@@ -3136,7 +3136,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "按时间轴记录一日三餐，食材/厨具/代餐在做与吃的过程中自然入镜，感受小结收尾；不做身材焦虑对比，不做营养功效宣称" },
   },
   {
@@ -3150,7 +3150,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "whip_pan", product_reveal: "lateral_track", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "摆出3上衣3下装3双鞋开场，连续变装快剪组合出多套穿搭，单品逐个点名收尾；组合数量诚实计算" },
   },
   {
@@ -3163,7 +3163,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "以聊天气泡逐条弹出的形式造剧情钩（姐妹半夜求链接式），对话中自然带出商品，结局+转化收尾；须标注虚构演绎，不得伪造成真实用户聊天证据" },
   },
   {
@@ -3176,7 +3176,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "上半屏产品口播讲解、下半屏解压/过程画面拉住注意力的双线结构，关键卖点大字幕同步，完播后转化；两屏内容都须与商品相关不误导" },
   },
   {
@@ -3189,7 +3189,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "studio_product",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", product_reveal: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "连续抛出AB二选（两件商品/两种用法/两种风格），节奏快让观众心里跟选，亮出胜者或「小孩子才做选择」收尾" },
   },
   {
@@ -3202,7 +3202,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", demo: "lateral_track", product_reveal: "focus_shift", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "把同类5-8件商品逐个放上S/A/B梯度板，每件一句理由，有褒有贬增可信，S级压轴挂车；评级理由须真实，不贬损点名竞品" },
   },
   // ---- Batch 10: domestic 2026 traffic structures (Qianchuan winning formats / live-script conversions / drama ecosystem / comment-native / WeChat Channels / Xiaohongshu lit styles / Bilibili sponsor culture) ----
@@ -3217,7 +3217,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "前3秒真人上身动态展示商品（巨量跑量素材公式），多角度试穿+文字贴卖点，全程不提价格，结尾引导进店；上身效果真实" },
   },
   {
@@ -3230,7 +3230,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "follow_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "单镜头连贯：开场即见商品，跟随镜头完整走完使用/穿搭流程，镜头定格+行动指令收尾；脚本按连续动线写，不设跳切" },
   },
   {
@@ -3243,7 +3243,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "借当下热议话题/热梗开场吸引，话题自然滑向商品，使用效果收尾；话题与商品关联须自然真实，不硬蹭不消费灾难事件" },
   },
   {
@@ -3257,7 +3257,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "none" },
+    compose: { captionPreset: "standard" },
     scriptHint: { zh: "开场承诺「全程不开美颜不打光」，原相机实测过程，前后对比放大真实感；对比条件一致，效果不夸大" },
   },
   {
@@ -3270,7 +3270,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", pain_point: "macro_glide", product_reveal: "lazy_susan", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "直播塑品话术转短视频：先让观众别问价，材质/工艺/细节逐层塑造+场景想象，最后价格揭晓形成反差促单；价格对比真实不虚构原价" },
   },
   {
@@ -3283,7 +3283,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "pull_reveal", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "连续三个戳心问句轰炸开场，「我知道，因为我也是」共鸣转折，方案+证据链收尾；痛点真实存在，不制造焦虑不做功效承诺" },
   },
   {
@@ -3296,7 +3296,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "whip_pan", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true, productCard: true },
     scriptHint: { zh: "主播报低价、「厂家」急喊不能再让的砍价冲突剧；须显著标注剧情演绎，最终成交价必须真实可履约，不虚构原价不伪造让利" },
   },
   {
@@ -3309,7 +3309,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "按剧情短剧高光切片写：最强冲突30秒，冲突顶点戛然而止留悬念，挂剧中同款+引导看全集；剧情标注演绎" },
   },
   {
@@ -3322,7 +3322,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "focus_shift", demo: "follow_track", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "连载体：固定人设+本集小冲突（可写「第N集」），商品作剧情道具反复自然出现，结尾埋下集悬念养追更；剧情标注演绎" },
   },
   {
@@ -3335,7 +3335,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "macro_glide", product_reveal: "pull_reveal", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "上期网友建议逐条截图开场，「听劝，全改了」逐条对照落地展示，改后成果+继续征集下轮意见；引用建议与改进须真实" },
   },
   {
@@ -3348,7 +3348,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", product_reveal: "pull_reveal", demo: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "私信截图铺屏「求链接」开场，揭晓被问爆的同款，给出获取方式+饥饿感收尾；私信数量与截图须真实，不得伪造互动数据" },
   },
   {
@@ -3361,7 +3361,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "中老年真实风险/痛点场景重现（防滑/起夜/操作难），情感化提醒「别等出事才想起」，商品方案收尾；不贩卖恐慌，不做医疗功效承诺" },
   },
   {
@@ -3374,7 +3374,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "实用提醒/安全科普定调（值得转发的有用感），「转给家里人看看」号召，商品作为解决方案自然嵌入；科普内容须准确有据" },
   },
   {
@@ -3388,7 +3388,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", product_reveal: "pull_reveal", demo: "macro_glide", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "团长口吻开场「咱们群今天团这个」，团购价与截团时间，接龙氛围感收尾；拼单数据与截团时间须真实，不伪造成团进度" },
   },
   {
@@ -3402,7 +3402,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "macro_glide", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "无口播、纯环境音第一视角使用全程（开盖/倒水/切配实录音效是主角），字幕点出关键感受，结尾一句话收束；不做治愈定调，核心是过程真实" },
   },
   {
@@ -3415,7 +3415,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", product_reveal: "pull_reveal", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "情绪拉满的夸张自嘲开场（大声控诉打工人日常），发疯的理由=商品能解的痛点，商品作为「救命稻草」癫式收尾；夸张属情绪表达，事实与功效不虚构" },
   },
   {
@@ -3428,7 +3428,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "一本正经的废话句式把人逗留住，反差急转抛出真卖点，再补一句废话自嘲收尾；废话是钩子，中段卖点须扎实" },
   },
   {
@@ -3441,7 +3441,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "开头直接自曝「这期广告」+利益相关声明，内容照常硬核不注水，「该夸夸该说说，不买也没关系」收尾；广告身份公开是核心信任机制" },
   },
   {
@@ -3454,7 +3454,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "whip_pan", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "通篇「吐槽」产品开场（最大的问题就是让我找不到问题），槽点讲着讲着全变卖点，结尾摊手式软转化；吐槽是修辞，卖点信息须真实" },
   },
   {
@@ -3467,7 +3467,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", social_proof: "slow_push", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "荒诞挑战宣言开场（用这口锅接住三楼扔下的西瓜），挑战过程即极限性能验证，结论收尾；挑战结果真实不摆拍造假，危险动作加「请勿模仿」提示" },
   },
   {
@@ -3481,7 +3481,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "lateral_track", product_reveal: "focus_shift", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "长测评结论前置开场，高信息密度快讲核心数据与对比，「完整版看主页」收尾；数据结论须与完整测评一致，不断章取义" },
   },
   {
@@ -3494,7 +3494,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "macro_glide", demo: "crane_down_close", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "高质感解压特写开场（切/挤/捏的生成式画面），ASMR音效沉浸循环，商品作为被「解压」的主角留记忆点；AI内容需带标识，特效属创意表现不得伪造实际质地与功效" },
   },
   {
@@ -3507,7 +3507,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "slow_push", product_reveal: "lazy_susan", demo: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "好运话题开场（求顺/求财/考试季），寓意讲解（符号与祝福的文化含义），商品=好运载体+仪式感收尾；寓意属文化表达，不得承诺运势改变或迷信功效" },
   },
   {
@@ -3520,7 +3520,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "warm_life",
     cameraPlan: { hook: "whip_pan", demo: "lateral_track", product_reveal: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: false },
+    compose: { captionPreset: "karaoke", bgmDuck: false },
     scriptHint: { zh: "魔性副歌直接起手（0.5秒内起），产品画面严格卡节奏反复出现，歌词即卖点循环洗脑收尾；音乐须有使用授权" },
   },
   {
@@ -3534,7 +3534,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "pov_walk", demo: "macro_glide", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "顾客视角推门进店，招牌产品沉浸实测（吃/用/试），人均价格+值不值结论收尾；探店体验真实，人均价格属实，与商家关系如实标注" },
   },
   // ---- Batch 11: vertical-category playbooks (maternity / pets / jewelry / sports-outdoor / auto / stationery / bags-shoes / appliances / personal care / silver economy) ----
@@ -3548,7 +3548,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "职业资历钩子开场（干了12年月嫂），实操护理手法演示中产品自然入镜，一句职业断言收尾；职业资历须真实不虚构，不做育儿医疗功效承诺" },
   },
   {
@@ -3561,7 +3561,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "孕周倒计时钩子（37周了补齐最后一件），逐件装包每件讲一个用途，拉链合上「就等发动了」收尾；清单实用性优先" },
   },
   {
@@ -3574,7 +3574,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "一手抱娃开场（另一只手是妈妈全部生产力），单手完成收车/开扣/冲奶实测，卡壳旧品对照新品一秒过关；实测过程真实不摆拍" },
   },
   {
@@ -3587,7 +3587,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "focus_shift", product_reveal: "macro_glide", social_proof: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "none", quality: "hd" },
+    compose: { captionPreset: "bold", quality: "hd" },
     scriptHint: { zh: "反问钩子开场（你的座椅敢上碰撞台吗），碰撞/拉力实测慢放+仪表读数，数据结论收尾；测试条件与数据须真实，不伪造检测结果，检测机构如实标注" },
   },
   {
@@ -3600,7 +3600,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "妈妈出门24-48小时钩子，爸爸靠装备逐关通关（冲奶/辅食/哄睡），妈妈回家验收惊讶收尾；奶爸叙事真实幽默不刻板化" },
   },
   {
@@ -3613,7 +3613,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "饭盆落地→进食特写→舔嘴镜头正放倒放循环三遍+慢动作，空盆收尾；宠物反应真实抓拍不摆拍诱导" },
   },
   {
@@ -3626,7 +3626,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "玩具入场宠物锁定镜头，人宠互动连续演示三种玩法，人退场后宠物自得其乐收尾；互动状态真实" },
   },
   {
@@ -3639,7 +3639,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "快递进门宠物先扑上去，宠物撕箱主人只旁白，逐件试用宠物「验收」表情收尾；反应真实抓拍" },
   },
   {
@@ -3652,7 +3652,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "货架/两款对比摆开，宠物自己嗅闻选择，尊重选择当场下单开玩；选择过程真实不剪辑造假" },
   },
   {
@@ -3665,7 +3665,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "挑食黑历史钩子（拒食名场面混剪），新粮换碗实测，吃/不吃当场宣判可连测三天；实测结果真实，不诱导摆拍" },
   },
   {
@@ -3678,7 +3678,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "出门上班钩子，监控画面时间戳快剪：宠物独自使用自动喂食器/饮水机/玩具，下班回看「它比我过得好」收尾；监控画面真实" },
   },
   {
@@ -3692,7 +3692,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "dolly_zoom", demo: "macro_glide", product_reveal: "pull_reveal", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true, quality: "hd" },
+    compose: { captionPreset: "karaoke", bgmDuck: true, quality: "hd" },
     scriptHint: { zh: "选蚌下单钩子，开蚌悬念（刀口慢镜），取珠清点量珠径评成色，现场加工成饰品收尾；严禁塞珠式造假，开蚌结果真实随机，不承诺成色" },
   },
   {
@@ -3706,7 +3706,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "none" },
+    compose: { captionPreset: "standard" },
     scriptHint: { zh: "粉丝寄件/网购件上桌，放大镜+仪器逐项看做工镶嵌成色，报参考估值后顺势讲自家同价位对比；鉴定资质如实标注，估值仅供参考，不贬损点名他家" },
   },
   {
@@ -3720,7 +3720,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "macro_glide", product_reveal: "lazy_susan", demo: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true, quality: "hd", productCard: true },
+    compose: { captionPreset: "minimal", bgmDuck: true, quality: "hd", productCard: true },
     scriptHint: { zh: "无脸手部/颈部特写入场，转腕慢动作过灯火彩闪烁，三套场景搭配（通勤/晚宴/日常），价格反差收尾；材质成色表述真实" },
   },
   {
@@ -3733,7 +3733,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "数字钩子开场（记住三个数字：12坡度、3速度、30分钟），上机演示设置，30天体感与数据反馈收尾；体感表述真实，不承诺减脂效果" },
   },
   {
@@ -3747,7 +3747,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "slow_push", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "反健身房宣言钩子，布置舒适角仪式感（氛围灯/热饮/浴袍），边看剧边走步+步数结算收尾；轻松基调，不做身材焦虑" },
   },
   {
@@ -3761,7 +3761,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "pull_reveal", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "空间痛点钩子（出租屋5平米），展开/折叠收纳演示+跟练片段，一键归位塞床底收尾；折叠尺寸与承重数据真实" },
   },
   {
@@ -3774,7 +3774,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "none", quality: "hd" },
+    compose: { captionPreset: "bold", quality: "hd" },
     scriptHint: { zh: "极端天气预警钩子（台风黄色预警，正好验帐篷），雨中搭建/接缝漏水检查/大风拉扯，晨起帐内干燥度验货收尾；测试真实，安全前提下拍摄" },
   },
   {
@@ -3787,7 +3787,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "follow_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "痛点自查钩子（久坐党先对镜自测这个动作），教练三步动作方案，器械辅助演示对比徒手，打卡召集收尾；教练资质如实，不做医疗康复承诺" },
   },
   {
@@ -3800,7 +3800,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "standard", bgmDuck: true, productCard: true },
     scriptHint: { zh: "带娃出门翻车瞬间钩子（洒奶/晕车/没纸巾），后座应急舱逐件配置，实战场景验证收尾；场景真实实用" },
   },
   {
@@ -3813,7 +3813,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "follow_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "驾驶室生活钩子（在车上住了8年），驾驶室好物逐件讲（车载冰箱/床垫/支架），跑长途实用验证收尾；职业身份与使用体验真实" },
   },
   {
@@ -3826,7 +3826,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "计时器开钟钩子，桌面文具沉浸书写（笔尖声/翻页声收音，不露脸），番茄钟结算+桌面清单收尾；陪伴感优先促销感靠后" },
   },
   {
@@ -3839,7 +3839,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none" },
+    compose: { captionPreset: "minimal" },
     scriptHint: { zh: "素材摊开钩子，撕胶带/盖印章/贴贴纸的ASMR拼贴过程（纯物料声无BGM），成页翻阅+物料清单收尾" },
   },
   {
@@ -3852,7 +3852,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "成绩反差钩子，三色分区/康奈尔笔记法实操演示，工具逐个出场，成品笔记翻页+文具清单收尾；成绩表述真实不夸大，方法讲解须可操作" },
   },
   {
@@ -3866,7 +3866,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "计步器清零钩子（替你走两万步），分时段脚感播报（3千/1万/2万步），晚间脱鞋验脚收尾；计步数据与脚感表述真实" },
   },
   {
@@ -3880,7 +3880,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "小包大话钩子（这包看着小），逐件塞入计数（水瓶/电脑/伞…），拎起晃三下不变形收尾；塞入件数真实可复现" },
   },
   {
@@ -3894,7 +3894,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "机票亮出钩子（48小时后起飞），压缩袋/分装瓶/分区收纳装箱ASMR，称重合格拉杆出门收尾；收纳效果真实" },
   },
   {
@@ -3908,7 +3908,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "lazy_susan", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "包体特写入场（不露脸不出声），开合五金声+隔层逐层展示，三种背法快切收尾；口袋数量与容量表述真实" },
   },
   {
@@ -3922,7 +3922,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "none" },
+    compose: { captionPreset: "bold" },
     scriptHint: { zh: "深夜场景钩子（凌晨5点打豆浆吵不吵），分贝仪贴机开机实测对比环境音，隔墙家人熟睡验证收尾；读数真实，测试条件一致" },
   },
   {
@@ -3936,7 +3936,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", social_proof: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "电表/计量插座清零钩子，连续使用一周/一月读数记录，月底晒账单折算「一天几毛钱」收尾；读数与折算真实，使用条件如实说明" },
   },
   {
@@ -3950,7 +3950,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "hero_rise" },
-    compose: { captionPreset: "karaoke", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "karaoke", bgmDuck: true },
     scriptHint: { zh: "婆婆突袭钩子，小家电救场做出硬菜/收拾残局，态度反转产品露正脸收尾；剧情标注演绎，人物关系幽默不制造家庭对立" },
   },
   {
@@ -3964,7 +3964,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "敲门开箱钩子，安装难点直击（打孔/走线/调平），完工验收开机第一响收尾；安装过程真实记录，服务体验如实" },
   },
   {
@@ -3978,7 +3978,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "多日未洗素颜钩子，分步骤洗护沉浸过程（头皮磨砂/发膜/精油），吹干甩发光泽收尾；效果表述真实，不做生发防脱功效宣称" },
   },
   {
@@ -3992,7 +3992,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "macro_glide", demo: "focus_shift", product_reveal: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "炸毛/打结假发钩子，喷顺发喷雾+梳子一次梳通慢镜，光泽甩发+断发量对比收尾；对比条件一致，效果真实不加速造假" },
   },
   {
@@ -4006,7 +4006,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "macro_glide", demo: "focus_shift", product_reveal: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "自信提问钩子（觉得自己刷得很干净？），嚼显色片惊吓，电动牙刷/冲牙器清除后二次显色验证；显色测试真实，不做治疗类医疗宣称，效果因人而异" },
   },
   {
@@ -4020,7 +4020,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "lateral_track", social_proof: "pull_reveal", cta: "hero_rise" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true, productCard: true },
+    compose: { captionPreset: "bold", bgmDuck: true, productCard: true },
     scriptHint: { zh: "队形整齐亮相钩子（同款服装舞步），领队近景讲面料/弹性/显瘦，集体转身定格+团购口令收尾；团购信息真实" },
   },
   {
@@ -4033,7 +4033,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "牵挂钩子（离家1200公里，爸妈生病都不说），远程守护装备安装教学（摄像头/一键呼叫/智能药盒），手机端看到爸妈安好收尾；情感真挚不贩卖焦虑，设备功能演示真实" },
   },
   {
@@ -4046,7 +4046,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", pain_point: "slow_push", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "回家发现钩子（用了十年起球的旧物），心疼、偷偷下单换新，爸妈嘴上嫌贵、镜头里天天在用收尾；收在新物融入日常的平实画面，情感克制真实" },
   },
   {
@@ -4059,7 +4059,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "focus_shift", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "操作恐惧钩子（爸妈学不会智能产品？），大字/大音量/一个键完成全流程演示，长辈「教一遍就会」验证收尾；操作演示真实，适老表述不夸大" },
   },
   // ---- Batch 12: vertical-category playbooks wave two (3C micro-verticals / food & beverage / home single-variable proofs / apparel instrument tests / eyewear, books, instruments, collectibles, tools, beauty niches) ----
@@ -4073,7 +4073,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "none", bgmDuck: false },
+    compose: { captionPreset: "minimal", bgmDuck: false },
     scriptHint: { zh: "高保真敲击原声开场（无解说），同句文案换轴逐段对比，字幕报轴体名与价格，评论区选轴下单收尾；收音真实不加假音效" },
     goodFor: ["digital"],
   },
@@ -4087,7 +4087,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "whip_pan", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "手机悬空一甩咔哒吸附钩子，卡点连续吸上支架/卡包/充电宝，磁吸声做节奏单元，全家福定格报价收尾" },
     goodFor: ["digital"],
   },
@@ -4101,7 +4101,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "none", bgmDuck: false },
+    compose: { captionPreset: "standard", bgmDuck: false },
     scriptHint: { zh: "地铁/咖啡馆嘈杂原声轰炸两秒，捏耳机柄开降噪音频瞬间抽真空只剩人声，再开关一次对比+适用场景清单收尾；降噪对比用真实收音模拟，不夸大消噪效果" },
     goodFor: ["digital"],
   },
@@ -4115,7 +4115,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "focus_shift", social_proof: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "两台手机同时插电+悬浮计时器「猜谁先满」钩子，延时快进关键节点报百分比，三十分钟差距揭晓输家还在半血；充电数据真实实测不虚标" },
     goodFor: ["digital"],
   },
@@ -4129,7 +4129,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "hero_rise", demo: "orbit_slow", product_reveal: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "摊开手掌原地起飞的魔术感钩子，一键环绕/跟拍模式实录成片展示，「零门槛航拍」话术+新手套装收尾；飞行画面真实拍摄，提示遵守禁飞区规定" },
     goodFor: ["digital"],
   },
@@ -4143,7 +4143,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "macro_glide", product_reveal: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "怼脸拍一团乱麻线材的血压钩子，理线器逐段缠绕收拢的解压过程做主体，桌下空无一线成果定格+清单收尾" },
     goodFor: ["digital", "home"],
   },
@@ -4157,7 +4157,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "抓一把干茶怼镜头看条索，白瓷盖碗开汤汤色对光特写，翻叶底定等级报价「这个价喝到这个叶底是捡漏」；审评流程真实，不虚标等级与产地" },
     goodFor: ["food"],
   },
@@ -4171,7 +4171,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「官方喝法都是骗人的」钩子，用商品做基底的隐藏配方教学（如咖啡+椰乳+海盐奶盖），成品诱人一饮+评论区交作业挂话题收尾" },
     goodFor: ["food"],
   },
@@ -4185,7 +4185,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "加班回家灯光调暗开瓶声起的情绪钩子，倒酒配小食追剧泡脚的独处画面，「给今天收个尾」文案收尾；酒类红线：不诱导过量饮酒、不面向未成年人、不宣称解压疗效，平台需酒类资质挂车" },
     goodFor: ["food"],
   },
@@ -4199,7 +4199,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "push_then_hold", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "手机计时器上屏+冷冻袋拆封「敢不敢和饭店比」钩子，加热出锅摆盘全程快剪计时停在2分47，与饭店同菜价格对比收尾；预制属性如实标注，不宣称现做现炒" },
     goodFor: ["food"],
   },
@@ -4213,7 +4213,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "food_appetizing",
     cameraPlan: { hook: "push_then_hold", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "刀尖抵住的静止悬念一秒，缓慢下刀内馅熔岩状涌出的慢放特写，切面横截面怼镜+口味清单收尾；切面实拍不加假馅料" },
     goodFor: ["food"],
   },
@@ -4227,7 +4227,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "凌晨一点还在赶稿的自嘲钩子「熬夜是不可能戒的」，保温杯泡枸杞的赎罪式日常，同款熬夜自救包清单收尾；滋补类严禁功效医疗宣称（不说护肝抗衰提高免疫力），只做生活方式陪伴表达" },
     goodFor: ["food"],
   },
@@ -4241,7 +4241,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「猜猜这袋才多少大卡」设问钩子，热量换算成苹果个数/爬楼层数具象参照物上屏，解馋不怕胖话术+囤货装收尾；热量与0糖0脂表述须与营养成分表一致，不作减肥功效宣称" },
     goodFor: ["food"],
   },
@@ -4255,7 +4255,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "overhead_top", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "豆卡四行参数上屏（豆名/粉水比/水温/时间），注水绕圈的治愈俯拍+计时，风味描述三连词收尾，豆子和器具双链接；参数真实可复现" },
     goodFor: ["food"],
   },
@@ -4269,7 +4269,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "push_then_hold", demo: "pull_reveal", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "凑近深吸一口的表情特写钩子，用画面翻译气味——前调切下过雨的松林空镜、尾调切旧图书馆场景，香型人格测试式选香收尾；通感联想不虚构香料成分" },
     goodFor: ["home", "beauty"],
   },
@@ -4283,7 +4283,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "push_then_hold", pain_point: "slow_push", demo: "crash_push", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "生鸡蛋摆上床垫成年人整个跪压上去的捏汗钩子，揭晓鸡蛋完好，承托分散原理一句话+试睡政策收尾；实验真实可复现不摆拍" },
     goodFor: ["home"],
   },
@@ -4297,7 +4297,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "push_then_hold", demo: "arc_quarter", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "开着惨白顶灯的房间「这就是你家没氛围的原因」钩子，啪一声关顶灯逐一点亮落地灯串灯壁灯，同机位冷暖对比定格+灯具清单收尾" },
     goodFor: ["home"],
   },
@@ -4311,7 +4311,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "macro_glide", pain_point: "slow_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "黄叶蔫垂的濒死绿萝特写钩子（9块9捡漏的烂根苗），诊断修根换盆上营养液，7天/30天新芽延时对比+救命装备清单收尾；能不能救活的连载悬念可追更" },
     goodFor: ["home"],
   },
@@ -4325,7 +4325,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "push_then_hold", demo: "crash_push", product_reveal: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "正午阳光刺眼的卧室+手机显示12点整钩子，窗帘一拉画面瞬黑伸手不见五指，照度计数字对比+补觉人群点名收尾；遮光数据真实实测" },
     goodFor: ["home"],
   },
@@ -4339,7 +4339,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "crash_push", demo: "follow_track", product_reveal: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "孩子/宠物打翻酱料在地毯上的「完了」钩子，拉开隐形拉链拆下毯面塞进洗衣机，洗后如新铺回+对比传统地毯送洗价收尾" },
     goodFor: ["home"],
   },
@@ -4353,7 +4353,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "push_then_hold", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "租房不能打孔的痛点钩子，无痕贴挂上相框后开始加码——挂水瓶挂哑铃最后人吊上去，撕下墙面无痕特写+套装收尾；承重数字真实不虚标" },
     goodFor: ["home"],
   },
@@ -4367,7 +4367,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "studio_product",
     cameraPlan: { hook: "push_then_hold", pain_point: "focus_shift", demo: "arc_quarter", product_reveal: "lateral_track", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "白T加强光侧拍「最挑内衣的穿搭」钩子，普通款痕迹明显vs无痕款360度转身无痕对比，肤色可选+尺码表收尾；按平台内衣类目规范隔衣外穿展示" },
     goodFor: ["fashion"],
   },
@@ -4381,7 +4381,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「这套泳衣敢不敢下水」钩子，真实入水游两圈起身验三件事——不透不掉不勒痕，湿身状态色彩对比+速干计时收尾；下水画面真实拍摄" },
     goodFor: ["fashion"],
   },
@@ -4395,7 +4395,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", demo: "focus_shift", product_reveal: "pull_reveal", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "名画局部推镜「一千年前的穿搭」钩子，上妆着衣梳发的复原过程快剪，定格成画中同款构图原画与真人分屏对比+形制清单收尾；形制考据表述严谨" },
     goodFor: ["fashion"],
   },
@@ -4409,7 +4409,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "arc_quarter", product_reveal: "lateral_track", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「160/130斤的妹妹看过来」点名钩子，主播报自己身高体重上身试穿讲哪里藏肉，评论区报身高体重给你推码的互动收尾；身材数据真实，推码建议不绝对化" },
     goodFor: ["fashion"],
   },
@@ -4423,7 +4423,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", pain_point: "macro_glide", demo: "focus_shift", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "紫外线手电照普通T恤测试卡秒变紫色钩子，同样照防晒衣卡面几乎不变色，UPF50+吊牌特写+全家防晒清单收尾；UPF＞40且UVA透射率＜5%方可宣称防晒，需检测报告支撑不虚标" },
     goodFor: ["fashion"],
   },
@@ -4437,7 +4437,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "正午暴晒车顶铺两块面料钩子，测温枪逐一打点——普通面料52度凉感面料38度，数字大字上屏+接触凉感原理一句话收尾；温度数据真实实测" },
     goodFor: ["fashion"],
   },
@@ -4451,7 +4451,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "daylight_clean",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "隔镜片看测试卡「看到图案才是真偏光」钩子，镜头透过镜片拍水面车漆反光瞬间消失，旋转镜片变黑的屏幕验证+防伪提醒收尾；光学演示真实可复现" },
     goodFor: ["fashion"],
   },
@@ -4465,7 +4465,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "push_then_hold", demo: "arc_quarter", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「圆脸千万别戴这种」否定式钩子，同一张脸连试三副框型逐一点评显胖显小，报出脸型对号入座+多框型链接收尾，评论区晒脸求配镜" },
     goodFor: ["fashion"],
   },
@@ -4479,7 +4479,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "侧面怼拍书口密密麻麻彩色标签「这本我贴了87个标」钩子，快速翻页划线批注特写，念一句最戳的划线句+书单收尾，图书与文具索引贴双带" },
   },
   {
@@ -4492,7 +4492,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "slow_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "Day1惨不忍睹的断续弹奏钩子，Day30/Day60节点逐段升级，Day90流畅成曲收尾「零基础用的就是这把」+入门套装；进步过程真实记录不代弹" },
   },
   {
@@ -4505,7 +4505,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "空包开场「新入的谷今天上包」钩子，吧唧排列布局流苏挂件定位的强迫症式摆放过程，成品痛包出街回头率实拍+包体谷美双链接收尾" },
   },
   {
@@ -4518,7 +4518,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「三个月前送评的卡回来了」悬念钩子，拆评级壳遮住分数逐张翻面，高分出现的尖叫时刻+同分卡市价对比收尾；严禁稳赚升值等投资承诺话术，注意未成年人保护，评级结果不构成收益暗示" },
   },
   {
@@ -4531,7 +4531,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "lateral_track", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "老木工和新手各领同一把电钻钩子，同一任务分屏计时装置物架，新手也只慢两分钟「工具好谁用都行」+套装收尾；对比条件公平真实" },
     goodFor: ["home"],
   },
@@ -4545,7 +4545,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "push_then_hold", pain_point: "macro_glide", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「你以为洗干净的毛巾」钩子，浴缸放水加剂泡入数小时后水变浑褐的震撼揭示，打捞对比+清洁剂配方收尾；实验真实不加色素摆拍" },
     goodFor: ["home"],
   },
@@ -4559,7 +4559,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "arc_quarter", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "早9点坐下打卡「今天8小时不离椅」钩子，每2小时插播腰背状态报告+腰托调节演示，晚6点起身没扶腰的结论+参数收尾；时间戳连续真实" },
     goodFor: ["home", "digital"],
   },
@@ -4573,7 +4573,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "5分钟戴甲全程实拍「美甲店同款只要19块9」钩子，戴着打字开易拉罐洗碗的日常暴力实测，第7天完好特写+复用卸甲教学收尾；耐久测试真实" },
     goodFor: ["beauty"],
   },
@@ -4587,7 +4587,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", pain_point: "slow_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "低头俯拍发缝稀疏的扎心钩子「产后的我不敢扎马尾」，假发片一夹一抓融合发量翻倍，路人视角看不出破绽的验证+色号选择收尾；不做生发育发功效宣称" },
     goodFor: ["beauty"],
   },
@@ -4602,7 +4602,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "focus_shift", social_proof: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "开头不讲货先亮保障——真实退款记录与三大保障标识钩子，中段讲货每个卖点跟一句「不满意这单我赔」，「敢承诺才敢卖」收口引导下单；保障与赔付表述必须真实可举证" },
   },
   {
@@ -4615,7 +4615,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「关注我三年的老铁进来」点名钩子，晒进货凭证证明福利款让利+只给粉丝限量N单，点关注亮灯牌才有资格拍的门槛收尾；让利表述可举证，限时限量话术遵守价格法" },
   },
   {
@@ -4628,7 +4628,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "handheld_real", product_reveal: "macro_glide", social_proof: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「东北大集10块钱能买啥」钩子，逐摊试吃问价和摊主唠嗑砍价的巡游纪实，市集烟火气收在「同款干货小店直发，不用赶集也能买」" },
     goodFor: ["food"],
   },
@@ -4642,7 +4642,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「比官网便宜800敢不敢买」钩子，下单→开箱→官网序列号查验→激活日期核对的全程实录，「验完是真的，省下的钱不香吗」收尾；验真过程真实实拍不得伪造，价差表述可比对" },
     goodFor: ["digital"],
   },
@@ -4656,7 +4656,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "overhead_top", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「原价59我9块9拿下」价差钩子，生产日期与剩余保质期特写+「临期≠过期」科普+折扣算账三段，「手慢无这批只有200单」收尾；临期属性与剩余期限必须真实标注，原价表述遵守价格法" },
     goodFor: ["food"],
   },
@@ -4670,7 +4670,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「我花100块买了10件9块9的东西」预算命题钩子，逐件开箱按真香/能用/快跑分级排雷，只挂通过测试的两三件「这几个真能闭眼冲」收尾；分级结论真实不恰饭注水" },
   },
   {
@@ -4683,7 +4683,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "pov_walk", demo: "follow_track", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「义乌商贸城，全世界的圣诞树都从这发货」震撼钩子，走档口问批发价对比零售差价，「我谈好了按批发价给你们开团」收尾；批发价与差价必须真实不虚构" },
   },
   {
@@ -4696,7 +4696,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", pain_point: "focus_shift", demo: "arc_quarter", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「让造它的人自己用给你看」钩子，创始人/总裁亲自演示核心功能并正面回应差评质疑，「有问题直接@我」个人信誉背书收尾；出镜身份真实，回应差评不贬损他人" },
   },
   {
@@ -4709,7 +4709,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「旧冰箱不但不花钱扔还能抵800」钩子，旧机上门回收实拍+国补/平台补/换新三层补贴叠加算账上屏，「补贴池用完就没先锁资格」收尾；补贴政策有时效与地域限制，过期表述属虚假宣传" },
     goodFor: ["home", "digital"],
   },
@@ -4723,7 +4723,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "handheld_real", pain_point: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "重现去年送错礼社死名场面的喜剧钩子（离谱包包/踩雷色号），「今年学乖了」给出保命清单+踩雷原理，「离情人节还有N天现在下单还来得及」倒计时收尾；剧情演绎标注虚构" },
     goodFor: ["beauty", "fashion"],
   },
@@ -4737,7 +4737,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "「没有对象，七夕就不配过了吗」反问钩子，给自己下单的仪式感开箱+「我值得」独白，「这份礼先给自己」收尾；悦己叙事真诚不贩卖焦虑" },
   },
   {
@@ -4750,7 +4750,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", pain_point: "slow_push", demo: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「偷看了我妈的购物车，全是舍不得买的」钩子，逐件读购物车里的省钱理由并全部拍下，妈妈收货嘴硬眼红的反应收尾「你妈购物车里也藏着话」；情感真实不摆拍煽情" },
   },
   {
@@ -4763,7 +4763,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", pain_point: "slow_push", demo: "follow_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「我爸的钓箱比我岁数都大」钩子，深挖父亲沉默的爱好并整套升级装备，爸爸嘴上「乱花钱」手上已经用起来的反差收尾「他不说，但他想要」" },
   },
   {
@@ -4776,7 +4776,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "premium_gray",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「今年中秋礼盒卷疯了，我拆了12家」钩子，连续开盒评包装内容物单价，按送领导/送客户/送爸妈/送闺蜜分档给结论，「收藏这份清单照抄」收尾；涉酒水礼盒遵守酒类广告规范不诱导饮酒" },
     goodFor: ["food"],
   },
@@ -4790,7 +4790,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「以为618结束了？返场价比大促还狠」钩子，播报式盘点破价回归的漏网好价，「返场只有N天错过等半年」收尾；价格真实性高危红线——「比大促更低」必须可举证，严禁先涨后降" },
   },
   {
@@ -4803,7 +4803,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「双11购物车大公开，一共47件」钩子，逐件说加购理由当场执行必买/观望/踢出三判，「评论区交出你的购物车」观众陪审收尾；判断理由真实不软广注水" },
   },
   {
@@ -4816,7 +4816,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "focus_shift", social_proof: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「预算50，看谁的礼物最离谱」钩子，多人抽签交换拆箱翻车与惊喜反应对撞，「预算50/100/200的交换礼物清单我整理好了」收尾；多人反应真实，剧情类标注演绎" },
   },
   {
@@ -4829,7 +4829,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "push_then_hold", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「第一次当掌勺，30分钟出一桌硬菜」新手钩子，预制菜加热摆盘全程实拍+家人试吃验收，「年夜饭套餐提前囤除夕不慌」收尾；预制菜属性必须明示，食安与运输表述规范" },
     goodFor: ["food"],
   },
@@ -4843,7 +4843,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pull_reveal", demo: "overhead_top", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「过年回家，后备箱就是我的排面」钩子，清点给各亲戚的礼并讲分配逻辑（舅爱茶、姥腿疼、侄子上学），「亲戚礼一站备齐直接抄清单」收尾；涉白酒遵守酒类广告限制，保健品不得宣称疗效" },
   },
   {
@@ -4856,7 +4856,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crane_up", demo: "handheld_real", product_reveal: "macro_glide", social_proof: "follow_track", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "起网瞬间海量渔获的奇观钩子，船上现场分拣定级报当日船价，「今晚发冷链明早到你家」时效承诺收尾；产地真实性红线——必须真实实景拍摄，严禁绿幕假产地" },
     goodFor: ["food"],
   },
@@ -4870,7 +4870,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "handheld_real", demo: "macro_glide", product_reveal: "focus_shift", social_proof: "overhead_top", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「别人摘七分熟催熟，我们树上熟现摘」钩子，镜头随手摘果当场切开糖度计实测数字特写，催熟对比科普+「今天摘今天发就抢这三天」收尾；糖度数据与树上熟表述必须真实，实景拍摄" },
     goodFor: ["food"],
   },
@@ -4884,7 +4884,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "pov_walk", demo: "handheld_real", product_reveal: "macro_glide", social_proof: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「不打招呼直接杀到发货仓」钩子，随机指箱开箱验质查生产日期与库存环境，「验过的仓我才敢挂链接」收尾；抽检过程真实不彩排，验货结果如实呈现" },
   },
   {
@@ -4897,7 +4897,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "studio_product",
     cameraPlan: { hook: "crash_push", demo: "lateral_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「这5个打样款，只量产你们投出来的」钩子，逐款讲设计点发起评论区投票，「投票的人拿首发价，一周后开产」收尾；投票结果与量产承诺必须兑现，预售发货时限遵守平台规则" },
     goodFor: ["fashion"],
   },
@@ -4911,7 +4911,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "premium_gray",
     cameraPlan: { hook: "crane_up", demo: "lateral_track", product_reveal: "macro_glide", social_proof: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "电影感航拍+旁白抛行业问题「一杯好奶要过几道关」钩子，关键工序特写+一线员工人物访谈，片尾品牌标版轻CTA「看完再决定买不买」；工序与人物真实，纪录片质感克制不煽情" },
   },
   {
@@ -4924,7 +4924,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「每周三，这家店等于半价」固定周期锚点钩子，演示会员价与非会员价对比下单流程，「入会免费，下周三见」习惯养成收尾；会员价与门店价差必须真实" },
     goodFor: ["food"],
   },
@@ -4938,7 +4938,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「99的双人餐我按菜单价算了下」钩子，逐项核对菜单原价实拍分量、揪出隐藏消费（茶位费/限时段），「值就冲，坑我帮你踩了」收尾；菜单原价对比真实拍摄留证" },
     goodFor: ["food"],
   },
@@ -4952,7 +4952,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "pov_walk", demo: "arc_quarter", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「挂牌1200的房团购卖399，我住了一晚」钩子，过夜全流程实测——隔音分贝、床垫软硬、遮光、早餐逐项打分，「套券随时退不过期，先囤后约」收尾；套券规则表述与商品一致" },
   },
   {
@@ -4965,7 +4965,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "slow_push", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「同一间房，选对日期差400块」钩子，屏录翻日历找低价日期+同房型比价实操教学，「这几天是价格洼地直接订」收尾；比价截图真实同时段可复核" },
   },
   {
@@ -4978,7 +4978,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "food_appetizing",
     cameraPlan: { hook: "macro_glide", demo: "whip_pan", product_reveal: "follow_track", social_proof: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "前厅菜品诱人特写钩子，突然切到后厨明档——现切现炒、工位卫生、食材日期标签逐一扫过，「后厨敢给你看的店，团购券放心囤」收尾；后厨画面真实实拍" },
     goodFor: ["food"],
   },
@@ -4992,7 +4992,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "push_then_hold" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「不知道TA地址，也能把礼物送出去」钩子，演示发蓝包流程——选礼→发到聊天框→对方自填地址，对方拆礼反应收尾「现在就发一个试试」；流程演示与功能现状一致" },
   },
   {
@@ -5005,7 +5005,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "书中一个扎心金句或反常识观点钩子，翻开实体书讲透一页、镜头怼纸张印刷质感，「这套给孩子/给自己」收尾；引用观点忠于原书不断章取义" },
   },
   {
@@ -5018,7 +5018,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", demo: "follow_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "同龄博主状态对比钩子（40+的精气神），健康生活方式vlog中滋补品自然融入日常，预约直播/进群领食谱收尾；红线：严禁疾病治疗功效宣称，「指标改善」类表述高危禁用，只做生活方式叙事，保健食品需蓝帽子资质" },
     goodFor: ["food"],
   },
@@ -5033,7 +5033,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "slow_push", demo: "follow_track", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "慢动作+重低音配乐的「毫不费力的酷」出场钩子，商品作为加分道具融入连续摆拍动作，字幕打「+999 aura」式计分收尾引导下单；装酷叙事自洽不尬演" },
     goodFor: ["fashion"],
   },
@@ -5047,7 +5047,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", demo: "focus_shift", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "静态玩偶摆拍+字幕旁白狗血剧情钩子（误会/反转），商品作为剧情关键道具反复出镜，剧情悬念处停评论区追更收尾；必须用自制或AI原创角色，严禁使用他人IP玩偶，剧情标注虚构演绎" },
   },
   {
@@ -5060,7 +5060,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", pain_point: "crash_push", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "none", bgmDuck: false },
+    compose: { captionPreset: "bold", bgmDuck: false },
     scriptHint: { zh: "故意粗糙的手机竖拍+画板风大字箭头钩子，原生感口播直给卖点不绕弯，截图式促销卡收尾；丑是设计不是敷衍——低保真排版信息密度要高，卖点表述真实" },
   },
   {
@@ -5073,7 +5073,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「我们是XX店，当然……」自嘲开场钩子，连环「当然」清单展示行业怪癖同时带出商品细节，最后一条「当然」落在优惠上收尾；自嘲内容真实贴店铺人设" },
   },
   {
@@ -5086,7 +5086,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "premium_gray",
     cameraPlan: { hook: "slow_push", pain_point: "handheld_real", demo: "lateral_track", product_reveal: "crane_up", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「我说我家是做袜子的」平淡自述钩子，「他以为就是个小作坊」误解卡，连环揭示层层亮底牌（三代工厂/出口30国/明星同款），「现在直接卖给你」收尾；背书证据必须真实可查，不炫富导向" },
   },
   {
@@ -5099,7 +5099,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "forest_soft",
     cameraPlan: { hook: "push_then_hold", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "摆拍「表演型文艺人设」装备逐件上身钩子，自嘲式旁白拆解每件单品为何加分（帆布包/胶片机/有线耳机），「装也要装全套」合集收尾；自嘲玩梗不嘲讽真实人群" },
   },
   {
@@ -5112,7 +5112,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "push_then_hold", demo: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「符合一条弯一根手指」游戏规则钩子，五条痛点清单逐条报出镜头前弯手指，「弯了三根以上你需要它」转商品收尾；痛点清单避开医疗宣称（不提湿疹脱发等病症治疗）" },
   },
   {
@@ -5125,7 +5125,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "overhead_top", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "逐个揭晓商品必须当场锁进档位不可反悔的规则钩子，后出现的更强款造成「排早了」的懊悔喜剧，揭榜后报最优解挂车收尾；排位结论真实，懊悔反应可演绎但标注" },
   },
   {
@@ -5138,7 +5138,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "handheld_real", demo: "focus_shift", product_reveal: "macro_glide", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「老板让我随便发」越权感钩子，实习生视角吐槽式介绍商品与公司日常，「点赞过万我就不被开除」玩梗收尾；出镜员工需肖像与劳务授权，吐槽不涉不实信息" },
   },
   {
@@ -5151,7 +5151,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「今天CEO来打包」身份反差钩子，老板笨拙上岗被员工纠正的过程带出品控细节，「每单都这么打包」信任收尾；轮岗过程真实纪实，反差喜剧不摆拍造假" },
   },
   {
@@ -5164,7 +5164,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "lateral_track", product_reveal: "focus_shift", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "拦人逐件报穿搭价格钩子，单件累加计总价的清点节奏字幕跟跳，「同款/平替在橱窗」挂车收尾；路人出镜需肖像授权，报价真实" },
     goodFor: ["fashion"],
   },
@@ -5178,7 +5178,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "warm_life",
     cameraPlan: { hook: "macro_glide", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "手部特写开工+「讲个客人离谱事」钩子，双轨并行——手上工序展示工具材料、嘴上讲连载故事，故事讲完成品亮相工具清单挂车；故事标注演绎，工序真实" },
   },
   {
@@ -5191,7 +5191,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crane_up", demo: "follow_track", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "清晨集合空镜+人数逐渐聚拢的社群感钩子，跑团氛围混剪中装备特写反复出镜，「周六同一地点，装备清单在下方」社群式收尾；卖归属感不卖参数，氛围真实" },
   },
   {
@@ -5204,7 +5204,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", demo: "whip_pan", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "慢动作蓄力→急加速甩到商品特写的速度曲线钩子，随音乐反复慢-快-慢斜坡每次减速停在一个卖点，最后一次减速停在价格卡收尾；快闪画面注意光敏提示" },
   },
   {
@@ -5217,7 +5217,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "push_then_hold", demo: "focus_shift", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "手持圆形物→匹配切到同构图商品细节的智性钩子，连续五到八个同形状/同动作跨场景匹配剪讲一条使用链路，最后一个匹配落到价格收尾；构图同构要真对齐" },
   },
   {
@@ -5230,7 +5230,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "whip_pan", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "手/包裹/门框扫过镜头瞬间商品或场景被调包的魔术钩子，连续几次遮挡-调包展示色号型号前后效果，最后一次遮挡揭价格牌收尾；换款展示真实不偷换规格" },
   },
   {
@@ -5243,7 +5243,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "product_closeup",
     look: "studio_product",
     cameraPlan: { hook: "push_then_hold", demo: "macro_glide", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "首尾帧严格咬合的动作循环钩子（倒饮料→杯空→倒饮料），循环本身即演示，字幕层轮换卖点评论区问「看了几遍」收尾；专吃完播率，首尾衔接必须真无缝" },
   },
   {
@@ -5256,7 +5256,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", demo: "arc_quarter", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "模特手抓向镜头的鱼眼畸变大特写钩子，畸变构图下走位展示服饰轮廓与细节，怼镜定格+价格贴纸收尾；畸变是风格不遮商品关键细节" },
     goodFor: ["fashion"],
   },
@@ -5270,7 +5270,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "overhead_top", demo: "lateral_track", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "门店/工厂/市集被拍成玩具模型般小人国的移轴钩子，上帝视角讲生产陈列流程，镜头落回正常视角的商品特写挂车收尾；空间型叙事，场景真实" },
   },
   {
@@ -5283,7 +5283,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "tech_cool",
     cameraPlan: { hook: "crash_push", demo: "follow_track", product_reveal: "whip_pan", cta: "crane_up" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "穿越机从门头钻入的失重感钩子，一镜穿梭货架/后厨/产线掠过处即卖点，冲出窗口拉高俯瞰收品牌标；高速连续位移+窄缝穿越的一镜语言，实拍需场地许可与飞行安全" },
   },
   {
@@ -5296,7 +5296,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "handheld_real", product_reveal: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "奶奶毒舌宣言钩子（不服老人设），试用年轻人商品锐评每一件，「不许教我做事，链接在下面」收尾；老人形象是潮流主角不做消费式丑化，人物真实出镜" },
   },
   {
@@ -5309,7 +5309,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", demo: "focus_shift", product_reveal: "macro_glide", social_proof: "handheld_real", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "「让男友说出这是什么」钩子，连环猜名/猜用途/猜价格的外行喜剧每猜一次给正确科普，「他猜50其实199」反差落点挂车收尾；科普信息准确，猜谜互动真实" },
     goodFor: ["beauty"],
   },
@@ -5323,7 +5323,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "daylight_clean",
     cameraPlan: { hook: "pull_reveal", demo: "lateral_track", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "空教室毛坯态钩子，加速布置蒙太奇收纳装饰教具逐件安利，开学第一天成品揭晓清单挂车收尾；成品揭晓避免学生儿童出镜，教师侧视角吃返校季流量" },
   },
   {
@@ -5336,7 +5336,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "slow_push", demo: "overhead_top", product_reveal: "macro_glide", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "荒诞从零命题钩子（连酱油都自己酿），精致着装+低语旁白下的从零制作过程厨具食材自然出镜，成品优雅试吃器具清单挂车；表演性精致自洽，食品制作安全规范" },
     goodFor: ["food", "home"],
   },
@@ -5350,7 +5350,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "warm_life",
     cameraPlan: { hook: "crash_push", pain_point: "handheld_real", demo: "overhead_top", product_reveal: "focus_shift", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "emotional", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "「距婚礼90天」倒计时钩子，每集解决一个备婚事项（伴手礼/试妆/收纳）的连载结构，「同款备婚清单」挂车+追更收尾；人生节点强情绪窗口，清单真实可抄" },
   },
   {
@@ -5363,7 +5363,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "scene_demo",
     look: "studio_product",
     cameraPlan: { hook: "push_then_hold", demo: "lateral_track", product_reveal: "arc_quarter", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "平铺商品图「活过来」被数字人穿上的钩子，同一件衣在多身材多场景数字人身上快速轮换，「真人实拍见评论区」双保险收尾；AI生成内容必须打标识，不虚构上身效果误导版型面料" },
     goodFor: ["fashion"],
   },
@@ -5377,7 +5377,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "live_presenter",
     look: "daylight_clean",
     cameraPlan: { hook: "crash_push", pain_point: "slow_push", demo: "focus_shift", cta: "push_then_hold" },
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "AI素人对镜口播痛点钩子，标准证言结构（问题-试用-效果）批量变体不同开头做A/B投放；红线：AI标识必打，医疗/金融等数字人限制类目不可用，不得伪造真实消费者身份，效果表述不夸大" },
   },
   {
@@ -5390,7 +5390,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "daylight_clean",
     cameraPlan: { hook: "push_then_hold", demo: "focus_shift", product_reveal: "arc_quarter", cta: "slow_push" },
-    compose: { captionPreset: "standard", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "standard", bgmDuck: true },
     scriptHint: { zh: "观众投稿的真实房间照钩子，AI生成放入本店家具后的三种风格预览连切，「评论区发户型帮你改」互动收尾；AI标识必打，效果图与实物差异需声明防虚假宣传" },
     goodFor: ["home"],
   },
@@ -5404,7 +5404,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "night_neon",
     cameraPlan: { hook: "crash_push", demo: "whip_pan", product_reveal: "push_then_hold", cta: "slow_push" },
-    compose: { captionPreset: "bold", bgm: "energetic", bgmDuck: true },
+    compose: { captionPreset: "bold", bgmDuck: true },
     scriptHint: { zh: "荒诞AI缝合角色（商品拟人怪物）自报家门钩子，无厘头顺口溜式角色曲介绍卖点，角色口号洗脑重复收尾；AI标识必打，角色必须原创严禁缝合他人IP" },
   },
   {
@@ -5417,7 +5417,7 @@ export const AD_TEMPLATES: AdTemplate[] = [
     videoMode: "graphic_montage",
     look: "studio_product",
     cameraPlan: { hook: "push_then_hold", demo: "pull_reveal", product_reveal: "arc_quarter", cta: "slow_push" },
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: true },
+    compose: { captionPreset: "minimal", bgmDuck: true },
     scriptHint: { zh: "一张白底商品图孤立悬浮的钩子，场景从商品四周生长出来（厨房/露营地/梳妆台连换三场），定格最贴用户的场景挂车收尾；AI标识必打，生成场景不得虚构使用效果（如伪造防水实拍）" },
   },
 ];
@@ -5597,7 +5597,6 @@ const STYLE_VALUES = new Set([
   "comparison", "talking_head", "pain-point", "scenario", "auto",
 ]);
 const VIDEO_MODES = new Set(["product_closeup", "graphic_montage", "scene_demo", "live_presenter"]);
-const BGM_VALUES = new Set(["none", "upbeat", "chill", "energetic", "emotional"]);
 const QUALITY_VALUES = new Set(["fast", "standard", "hd"]);
 const SHOT_TYPES = new Set(["hook", "pain_point", "product_reveal", "demo", "social_proof", "cta"]);
 const GROUP_BY_MODE: Record<AdTemplate["videoMode"], AdTemplateGroupId> = {
@@ -5643,7 +5642,6 @@ export function sanitizeCustomAdTemplate(raw: unknown): AdTemplate | null {
   const composeRaw = (r.compose ?? {}) as Record<string, unknown>;
   const compose: StylePackCompose = {
     captionPreset: isCaptionPreset(composeRaw.captionPreset) ? composeRaw.captionPreset : "standard",
-    bgm: BGM_VALUES.has(String(composeRaw.bgm)) ? (String(composeRaw.bgm) as StylePackCompose["bgm"]) : "upbeat",
     bgmDuck: typeof composeRaw.bgmDuck === "boolean" ? composeRaw.bgmDuck : true,
     ...(QUALITY_VALUES.has(String(composeRaw.quality)) && { quality: String(composeRaw.quality) as StylePackCompose["quality"] }),
     ...(typeof composeRaw.productCard === "boolean" && { productCard: composeRaw.productCard }),
@@ -5879,7 +5877,6 @@ export function parseAdTemplateShareAny(raw: string): AdTemplatePackResult {
  * value the validator would reject.
  */
 export const AD_TEMPLATE_EDIT_VOCAB = {
-  bgm: [...BGM_VALUES] as NonNullable<StylePackCompose["bgm"]>[],
   quality: [...QUALITY_VALUES] as NonNullable<StylePackCompose["quality"]>[],
   shotTypes: [...SHOT_TYPES] as Shot["type"][],
 };

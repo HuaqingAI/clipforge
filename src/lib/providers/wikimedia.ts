@@ -150,7 +150,13 @@ async function searchWikimedia(
     const body = await res.text().catch(() => "");
     throw new Error(`Wikimedia 检索失败 ${res.status}: ${body.slice(0, 200)}`);
   }
-  const data = (await res.json()) as { query?: { pages?: Record<string, CommonsPage> } };
+  const data = (await res.json()) as {
+    error?: { code?: string; info?: string };
+    query?: { pages?: Record<string, CommonsPage> };
+  };
+  if (data.error) {
+    throw new Error(`Wikimedia 检索失败 ${data.error.code ?? "unknown"}: ${data.error.info ?? "API error"}`);
+  }
   const pages = data.query?.pages ? Object.values(data.query.pages) : [];
   return pages
     .map((p) => toWikimediaCandidate(p, mediaType))

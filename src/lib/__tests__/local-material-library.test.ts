@@ -94,7 +94,12 @@ describe("local material lifecycle", () => {
     await writeFile(join(directory, "movie.mp4.last.jpg"), "frame");
     await writeFile(join(directory, ".upload.part"), "partial");
     await mkdir(join(directory, "folder.png"));
-    await symlink(join(directory, "legacy.png"), join(directory, "linked.png"));
+    try {
+      await symlink(join(directory, "legacy.png"), join(directory, "linked.png"));
+    } catch (error) {
+      // Windows may deny symlink creation without Developer Mode; retain the other assertions.
+      if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+    }
     const rows = await listLocalMaterials(directory);
     expect(rows.map((r) => r.name)).toEqual(["legacy.png"]);
     expect(rows[0]).toMatchObject({

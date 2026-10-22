@@ -40,6 +40,8 @@ export interface ProviderConfig {
   headers?: Record<string, string>
   /** Platform-specific configuration */
   extra?: Record<string, unknown>
+  /** Non-secret local CLI account profile. Ignored by API-key providers. */
+  profileId?: string
 }
 
 // ==================== model types ====================

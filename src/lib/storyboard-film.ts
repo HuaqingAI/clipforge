@@ -14,6 +14,7 @@
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { getVideoParamSpec } from "@/lib/providers/atlas-video-params";
+import { arkSeedanceVersion } from "@/lib/ark-video-models";
 
 /** Seedance 2.5 duration bounds (schema: integer 4-30 seconds) */
 export const FILM_MIN_SECONDS = 4;
@@ -36,29 +37,32 @@ export function filmTotalSeconds(shots: Shot[]): number {
   return shots.reduce((sum, s) => sum + (Number.isFinite(s.duration) ? s.duration : 0), 0);
 }
 
-/** Fallback model for the one-call film pass, used when the configured model can't take references. */
-export const FILM_FALLBACK_MODEL = "bytedance/seedance-2.5/reference-to-video";
-
 export interface FilmModelChoice {
   /** The model that will actually be billed */
   model: string;
-  /** The configured model this replaced, when the pipeline had to switch away from it */
-  swappedFrom?: string;
 }
 
-/**
- * Resolve the model the film pass will actually bill.
- *
- * The one-call film pass needs a reference-to-video model, so anything else gets replaced by
- * the flagship fallback. That swap used to happen silently in the page handlers, which billed
- * people on a pricier model than the one sitting in their settings (issue #28). It stays a
- * swap — the pass genuinely cannot run without references — but `swappedFrom` makes it
- * reportable, so callers can show it and take consent before any money moves.
- */
+export class FilmModelSelectionError extends Error {
+  constructor(readonly code: "DEFAULT_VIDEO_MODEL_REQUIRED" | "VIDEO_MODEL_UNSUPPORTED_FOR_FILM", message: string, readonly englishMessage: string) {
+    super(message);
+    this.name = "FilmModelSelectionError";
+  }
+}
+
+/** Keep the user's selected model exactly; incompatible defaults must be corrected in Settings. */
 export function resolveFilmModel(configured?: string | null): FilmModelChoice {
-  const model = configured?.trim();
-  if (model && model.includes("/reference-to-video")) return { model };
-  return { model: FILM_FALLBACK_MODEL, ...(model ? { swappedFrom: model } : {}) };
+  const model = typeof configured === "string" ? configured.trim() : "";
+  if (!model) throw new FilmModelSelectionError(
+    "DEFAULT_VIDEO_MODEL_REQUIRED",
+    "请先在 设置 → 视频生成 → 默认视频模型 中选择模型，再开始整片自动编排。",
+    "Select a model in Settings → Video generation → Default video model before starting full-film orchestration.",
+  );
+  if (model && (model.includes("/reference-to-video") || arkSeedanceVersion(model))) return { model };
+  throw new FilmModelSelectionError(
+    "VIDEO_MODEL_UNSUPPORTED_FOR_FILM",
+    `默认视频模型 ${model} 不支持当前整片编排所需的参考图输入。请在 设置 → 视频生成 → 默认视频模型 中选择兼容模型。`,
+    `Default video model ${model} does not support the reference-image inputs required by this film workflow. Choose a compatible model in Settings → Video generation → Default video model.`,
+  );
 }
 
 /** The model's own longest single generation, when its schema declares a duration enum. */
@@ -250,7 +254,7 @@ export interface ReferenceQuotaCheck {
  * sheet = 10 refs against Seedance's 9-image cap.
  */
 export function referenceQuotaCheck(referenceImageCount: number, modelId: string): ReferenceQuotaCheck {
-  const limit = getVideoParamSpec(modelId)?.maxReferenceImages;
+  const limit = arkSeedanceVersion(modelId) ? 9 : getVideoParamSpec(modelId)?.maxReferenceImages;
   if (limit === undefined) return { ok: true, count: referenceImageCount };
   return { ok: referenceImageCount <= limit, count: referenceImageCount, limit };
 }

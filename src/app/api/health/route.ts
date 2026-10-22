@@ -27,6 +27,8 @@ export async function GET() {
   const ffmpeg = process.env.FFMPEG_PATH || "system";
 
   return NextResponse.json({
+    app: "clipforge",
+    instanceId: process.env.CLIPFORGE_INSTANCE_ID || null,
     version: process.env.npm_package_version || "unknown",
     time: new Date().toISOString(),
     runtime: {

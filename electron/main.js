@@ -138,6 +138,7 @@ async function startServer() {
     env: {
       ...process.env,
       NODE_ENV: "production",
+      CLIPFORGE_RUNTIME: "desktop",
       PORT: String(port),
       HOSTNAME: "127.0.0.1",
       APP_DATA_DIR: dataDir,

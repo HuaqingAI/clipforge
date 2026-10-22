@@ -2,11 +2,12 @@
 
 import { useModelCatalog } from "@/lib/hooks/use-model-catalog";
 import { ModelCatalogStatus } from "@/components/model-catalog-status";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   Select,
   SelectContent,
@@ -15,10 +16,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { LuUpload, LuPalette, LuZap, LuCheck, LuTriangleAlert } from "react-icons/lu";
-import { ATLAS_KEYS_URL } from "@/lib/atlas-onekey";
+import { LuUpload, LuPalette, LuTriangleAlert } from "react-icons/lu";
+import { ARK_STANDARD_BASE_URL, ARK_AGENT_PLAN_BASE_URL, isArkAgentPlanBase } from "@/lib/ark-config";
 import { useT } from "@/lib/i18n";
-import { useSettingsStore } from "@/lib/stores/settings-store";
+import { useSettingsStore, type ProviderSetting } from "@/lib/stores/settings-store";
 import { useBrandStore } from "@/lib/stores/brand-store";
 import {
   TTS_PROVIDERS,
@@ -33,6 +34,8 @@ import { LLM_PRESETS } from "@/lib/llm-presets";
 import { ModelPicker } from "@/components/settings/model-picker";
 import { GenerationSettings } from "@/components/generation-settings";
 import { PresenterManager } from "@/components/presenter-manager";
+import { KlingCliSettings } from "@/components/settings/kling-cli-settings";
+import { configuredCatalogProviders } from "@/lib/model-catalog";
 
 // default resolution options
 const resolutionOptions = [
@@ -162,6 +165,13 @@ const AI_PROVIDERS = [
   },
 ];
 
+// Keep these integrations available to existing projects while hiding their setup cards from the UI.
+const HIDDEN_AI_PROVIDER_KEYS = new Set(["atlas-cloud", "fal-ai", "replicate"]);
+const VISIBLE_AI_PROVIDERS = [
+  ...AI_PROVIDERS.filter((platform) => platform.key === "openai" && !HIDDEN_AI_PROVIDER_KEYS.has(platform.key)),
+  ...AI_PROVIDERS.filter((platform) => platform.key !== "openai" && !HIDDEN_AI_PROVIDER_KEYS.has(platform.key)),
+];
+
 // Map Chinese vendor names by key to i18n display names (English users would otherwise see hard-coded Chinese like "火山引擎/阿里百炼/硅基流动").
 // Only overrides vendors with Chinese names; others (Atlas Cloud/OpenAI, etc.) already use English brand names and use platform.name directly.
 // Note: platform.name is still used as the identity for enabledNames custom model filtering, so we only change the display, not name.
@@ -219,33 +229,6 @@ function PasswordInput({
   );
 }
 
-// custom toggle switch component
-function Toggle({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        checked ? "bg-primary" : "bg-muted"
-      }`}
-    >
-      <span
-        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-lg transition-transform duration-200 ${
-          checked ? "translate-x-4" : "translate-x-0"
-        }`}
-      />
-    </button>
-  );
-}
-
 export default function SettingsPage() {
   const t = useT("settings");
   // read settings from store
@@ -267,17 +250,7 @@ export default function SettingsPage() {
     setDefaultAspectRatio,
     setDefaultImageModel,
     setDefaultVideoModel,
-    applyAtlasOneKey,
   } = useSettingsStore();
-
-  // one-click Atlas onboarding: a single Key auto-configures LLM/image-gen/video-gen/TTS
-  const [atlasOneKey, setAtlasOneKey] = useState("");
-  const [atlasApplied, setAtlasApplied] = useState(false);
-  const applyOneKey = () => {
-    if (!atlasOneKey.trim()) return;
-    applyAtlasOneKey(atlasOneKey.trim());
-    setAtlasApplied(true);
-  };
 
   // TTS preview playback state
   const [ttsTestStatus, setTtsTestStatus] = useState<"idle" | "testing" | "error">("idle");
@@ -301,9 +274,17 @@ export default function SettingsPage() {
 
   // AI platform key connectivity test (real auth probe, not a fake test)
   const [providerTest, setProviderTest] = useState<Record<string, { state: "idle" | "testing" | "ok" | "invalid" | "unknown"; msg?: string }>>({});
+  const providerTestVersions = useRef<Record<string, number>>({});
+  const updateProvider = (key: string, setting: ProviderSetting) => {
+    setProvider(key, setting);
+    providerTestVersions.current[key] = (providerTestVersions.current[key] ?? 0) + 1;
+    setProviderTest((s) => ({ ...s, [key]: { state: "idle" } }));
+  };
   const testProvider = async (key: string) => {
     const p = providers[key];
     if (!p?.apiKey) return;
+    const version = (providerTestVersions.current[key] ?? 0) + 1;
+    providerTestVersions.current[key] = version;
     setProviderTest((s) => ({ ...s, [key]: { state: "testing" } }));
     try {
       const res = await fetch("/api/ai/test-provider", {
@@ -312,8 +293,10 @@ export default function SettingsPage() {
         body: JSON.stringify({ name: key, apiKey: p.apiKey, baseUrl: p.baseUrl }),
       });
       const data = await res.json();
+      if (providerTestVersions.current[key] !== version) return;
       setProviderTest((s) => ({ ...s, [key]: { state: data.status ?? "unknown", msg: data.message } }));
     } catch {
+      if (providerTestVersions.current[key] !== version) return;
       setProviderTest((s) => ({ ...s, [key]: { state: "unknown", msg: t("connectFailed") } }));
     }
   };
@@ -328,7 +311,7 @@ export default function SettingsPage() {
 
   // save feedback state
 
-  const enabledProviders = Object.entries(providers).filter(([, p]) => p.enabled && p.apiKey).map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
+  const enabledProviders = configuredCatalogProviders(providers);
   const catalog = useModelCatalog(enabledProviders);
   const imageModels = catalog.models.filter((model) => model.mediaType === "image");
   const videoModels = catalog.models.filter((model) => model.mediaType === "video");
@@ -339,22 +322,17 @@ export default function SettingsPage() {
   const imageModelOptions = mergeCustomModels(imageModels, customModels, "image", enabledNames);
   const videoModelOptions = mergeCustomModels(videoModels, customModels, "video", enabledNames);
 
-  // auto-select a default model after enabling a provider: if nothing is selected (or the selection is gone) and options exist, fall back to the first one
-  // — prevents the beginner trap of "set up a Key but generation fails because no default model was chosen"
+  // Image defaults retain their initial convenience selection. Video models are an explicit
+  // choice here, so catalog refreshes and provider-mode changes cannot change the billed model.
   const imageIds = imageModelOptions.map((m) => m.id).join(",");
-  const videoIds = videoModelOptions.map((m) => m.id).join(",");
+  const selectedVideoModel = videoModelOptions.find((model) => model.id === defaultVideoModel);
+  const videoSelectionUnavailable = Boolean(defaultVideoModel && !modelsLoading && (!selectedVideoModel || selectedVideoModel.extra?.available === false));
   useEffect(() => {
     if (imageModelOptions.length && !defaultImageModel) {
       setDefaultImageModel(imageModelOptions[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageIds]);
-  useEffect(() => {
-    if (videoModelOptions.length && !defaultVideoModel) {
-      setDefaultVideoModel(videoModelOptions[0].id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoIds]);
 
   // LLM connection test state
   const [llmTestStatus, setLlmTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
@@ -439,38 +417,6 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* beginner one-click setup: a single Atlas Key auto-configures LLM/image-gen/video-gen/TTS, skipping manual item-by-item setup */}
-        <div className="mb-8 rounded-2xl border border-primary/30 bg-primary/5 p-5">
-          <div className="flex items-center gap-2 mb-1">
-            <LuZap className="w-4 h-4 text-primary" />
-            <h2 className="font-semibold text-sm">{t("oneKeyTitle")}</h2>
-          </div>
-          <p className="text-xs text-muted-foreground mb-3">{t("oneKeyDesc")}</p>
-          {atlasApplied ? (
-            <div className="flex items-center gap-2 text-sm text-emerald-400">
-              <LuCheck className="w-4 h-4 shrink-0" />
-              <span>{t("oneKeyDone")}</span>
-            </div>
-          ) : (
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Input
-                type="password"
-                value={atlasOneKey}
-                onChange={(e) => setAtlasOneKey(e.target.value)}
-                placeholder={t("oneKeyPlaceholder")}
-                className="flex-1"
-              />
-              <Button onClick={applyOneKey} disabled={!atlasOneKey.trim()} className="brand-gradient text-white border-0 shrink-0">
-                <LuZap className="w-4 h-4 mr-1.5" />
-                {t("oneKeyCta")}
-              </Button>
-            </div>
-          )}
-          <a href={ATLAS_KEYS_URL} target="_blank" rel="noreferrer" className="inline-block mt-2 text-xs text-primary hover:underline">
-            {t("oneKeyGetKey")}
-          </a>
-        </div>
-
         {/* tabs */}
         <div className="md:flex md:items-start md:gap-8">
           {/* Section rail: vertical on desktop (native settings-window feel), horizontal scroll on mobile */}
@@ -495,11 +441,14 @@ export default function SettingsPage() {
           {tab === "providers" && (
           <section className="min-w-0 flex-1">
             <div className="space-y-4">
-              {AI_PROVIDERS.map((platform) => {
+              <KlingCliSettings onCatalogChanged={() => catalog.retry("kling-cli")} />
+              {VISIBLE_AI_PROVIDERS.map((platform) => {
                 const provider = providers[platform.key] ?? {
                   enabled: false,
                   apiKey: "",
                 };
+                const isArk = platform.key === "volcengine";
+                const arkAgentPlan = isArk && isArkAgentPlanBase(provider.baseUrl);
 
                 return (
                   <Card key={platform.key} className="glass-card">
@@ -531,16 +480,52 @@ export default function SettingsPage() {
                         </div>
 
                         {/* enable toggle */}
-                        <Toggle
+                        <ToggleSwitch
                           checked={provider.enabled}
                           onChange={(enabled) =>
-                            setProvider(platform.key, {
+                            updateProvider(platform.key, {
                               ...provider,
                               enabled,
                             })
                           }
                         />
                       </div>
+
+                      {isArk && (
+                        <div className="mt-4 space-y-1.5">
+                          <Label htmlFor="ark-api-mode" className="text-xs text-muted-foreground">
+                            {t("arkApiModeLabel")}
+                          </Label>
+                          <Select
+                            value={arkAgentPlan ? "agent-plan" : "standard"}
+                            onValueChange={(value) => {
+                              if (!value) return;
+                              updateProvider(platform.key, {
+                                ...provider,
+                                baseUrl: value === "agent-plan" ? ARK_AGENT_PLAN_BASE_URL : ARK_STANDARD_BASE_URL,
+                              });
+                            }}
+                          >
+                            <SelectTrigger id="ark-api-mode" className="w-full">
+                              <SelectValue>
+                                {(value: string) => t(value === "agent-plan" ? "arkApiModeAgentPlan" : "arkApiModeStandard")}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="standard">{t("arkApiModeStandard")}</SelectItem>
+                              <SelectItem value="agent-plan">{t("arkApiModeAgentPlan")}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            {t(arkAgentPlan ? "arkAgentPlanHint" : "arkStandardHint")}
+                          </p>
+                          {arkAgentPlan && (
+                            <p className="text-[11px] text-muted-foreground/80 leading-relaxed break-words">
+                              {t("arkAgentPlanModels")}
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {/* API Key input */}
                       <div className="mt-4">
@@ -550,12 +535,12 @@ export default function SettingsPage() {
                         <PasswordInput
                           value={provider.apiKey}
                           onChange={(apiKey) =>
-                            setProvider(platform.key, {
+                            updateProvider(platform.key, {
                               ...provider,
                               apiKey,
                             })
                           }
-                          placeholder={t("apiKeyPlaceholder", { name: platform.name })}
+                          placeholder={arkAgentPlan ? t("arkAgentPlanKeyPlaceholder") : t("apiKeyPlaceholder", { name: platform.name })}
                         />
                         {/* Key connectivity test: real auth probe ✓/✗/⚠ */}
                         <div className="mt-2 flex items-center gap-2">
@@ -587,7 +572,7 @@ export default function SettingsPage() {
                           <Input
                             value={provider.baseUrl ?? ""}
                             onChange={(e) =>
-                              setProvider(platform.key, {
+                              updateProvider(platform.key, {
                                 ...provider,
                                 baseUrl: e.target.value || undefined,
                               })
@@ -595,6 +580,9 @@ export default function SettingsPage() {
                             placeholder={t("providerBaseUrlPlaceholder")}
                             className="font-mono text-xs"
                           />
+                          {platform.key === "openai" && (
+                            <p className="mt-2 text-xs text-muted-foreground">{t("openaiBaseUrlHint")}</p>
+                          )}
                         </div>
                       </details>
                     </CardContent>
@@ -788,7 +776,7 @@ export default function SettingsPage() {
                         <p className="text-xs text-muted-foreground">{t("ttsSubtitle")}</p>
                       </div>
                     </div>
-                    <Toggle checked={tts.enabled} onChange={(v) => setTTS({ ...tts, enabled: v })} />
+                    <ToggleSwitch checked={tts.enabled} onChange={(v) => setTTS({ ...tts, enabled: v })} />
                   </div>
 
                   {tts.enabled && (
@@ -989,18 +977,20 @@ export default function SettingsPage() {
                           <SelectValue>
                             {(value: string) =>
                               videoModelOptions.find((m) => m.id === value)?.name ??
-                              (modelsLoading ? t("modelsLoading") : enabledProviders.length === 0 ? t("enableProviderFirst") : t("selectVideoModel"))
+                              (modelsLoading ? t("modelsLoading") : value ? t("videoModelUnavailable", { model: value }) : enabledProviders.length === 0 ? t("enableProviderFirst") : t("selectVideoModel"))
                             }
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
                           {videoModelOptions.map((m) => (
-                            <SelectItem key={m.id} value={m.id}>
+                            <SelectItem key={m.id} value={m.id} disabled={m.extra?.available === false}>
                               {m.name}{m.custom ? t("customModelSuffix") : ""}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">{t("defaultVideoModelScope")}</p>
+                      {videoSelectionUnavailable && <p role="alert" className="text-xs text-amber-600 dark:text-amber-400">{t("defaultVideoModelReselect")}</p>}
                     </div>
                     {/* default resolution */}
                     <div className="space-y-1.5">
@@ -1313,7 +1303,7 @@ function BrandSettings() {
               </div>
               <h3 className="font-semibold text-sm">{t("brandWatermarkTitle")}</h3>
             </div>
-            <Toggle
+            <ToggleSwitch
               checked={brand.watermark.enabled}
               onChange={(enabled) => updateWatermark({ enabled })}
             />
@@ -1383,7 +1373,7 @@ function BrandSettings() {
               </div>
               <h3 className="font-semibold text-sm">{t("brandOutroTitle")}</h3>
             </div>
-            <Toggle
+            <ToggleSwitch
               checked={brand.outroEnabled}
               onChange={(enabled) => updateBrand({ outroEnabled: enabled })}
             />

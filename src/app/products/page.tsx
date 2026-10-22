@@ -568,13 +568,17 @@ export default function ProductsPage() {
                         />
                         {/* Delete button */}
                         <button
+                          type="button"
+                          aria-label={t("removeImage")}
+                          title={t("removeImage")}
+                          disabled={isSaving}
                           onClick={() => removeImage(img.id)}
-                          className="absolute top-1 right-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                          className="absolute top-1 right-1 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity hover:bg-red-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:cursor-not-allowed disabled:bg-black/40"
                         >
                           <LuX className="w-3 h-3" />
                         </button>
                         {/* Hover overlay */}
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                        <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
                       </div>
                     ))}
                   </div>

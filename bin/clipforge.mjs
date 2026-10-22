@@ -8,7 +8,7 @@
  * Usage:
  *   node bin/clipforge.mjs create --topic "在家手冲咖啡" [--duration 25] [--style knowledge]
  *        [--footage auto|image|video] [--voice <id>] [--aspect 9:16|16:9|1:1]
- *        [--quality fast|standard|hd] [--bgm] [--bgm-mood upbeat] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--caption standard|bold|minimal|karaoke]
+ *        [--quality fast|standard|hd] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--caption standard|bold|minimal|karaoke]
  *        [--cta "👇 点击下方下单"] [--json]
  *   node bin/clipforge.mjs compose --project <id> [same compose options]   compose an existing project with script + assets
  *   node bin/clipforge.mjs list                     list projects
@@ -39,7 +39,6 @@ const NARRATION_STYLES = ["knowledge", "story", "lifestyle", "inspiration", "tra
 const FOOTAGE_KINDS = ["auto", "image", "video"];
 const ASPECT_RATIOS = ["9:16", "16:9", "1:1"];
 const QUALITY_PRESETS = ["fast", "standard", "hd"];
-const BGM_MOODS = ["upbeat", "chill", "energetic", "emotional"];
 const CAPTION_PRESETS = ["standard", "bold", "minimal", "karaoke"]; // caption style presets (mirrors src/lib/caption-presets.ts)
 
 function parseBgmVolume(value) {
@@ -96,8 +95,6 @@ export function composeBodyFromFlags(flags) {
   if (typeof flags.voice === "string") body.freeTts.voice = flags.voice;
   if (ASPECT_RATIOS.includes(flags.aspect)) body.aspectRatio = flags.aspect;
   if (QUALITY_PRESETS.includes(flags.quality)) body.renderPreset = flags.quality;
-  if (flags.bgm === true) body.freeBgm = true;
-  if (BGM_MOODS.includes(flags["bgm-mood"])) body.bgmMood = flags["bgm-mood"];
   const bgmVolume = parseBgmVolume(flags["bgm-volume"]);
   if (bgmVolume !== null) body.bgmVolume = bgmVolume;
   if (flags["audio-stems"] === true) body.exportAudioStems = true;
@@ -105,8 +102,8 @@ export function composeBodyFromFlags(flags) {
   if (flags.karaoke === true) body.karaoke = true;
   if (CAPTION_PRESETS.includes(flags.caption)) body.captionPreset = flags.caption;
   if (flags["product-card"] === true) body.productCard = true;
-  // AIGC visible badge is ON by default (2026-07 platform labeling rules); --no-ai-badge opts out.
-  // --ai-disclosure is kept as an accepted no-op for backward compatibility (it used to opt in).
+  // Visible corner labels are off by default; add one only when explicitly requested.
+  if (flags["ai-disclosure"] === true) body.aigcBadge = true;
   if (flags["no-ai-badge"] === true) body.aigcBadge = false;
   if (typeof flags.cta === "string" && flags.cta.trim()) body.ctaText = flags.cta.trim();
   return body;
@@ -748,7 +745,7 @@ const HELP = `ClipForge CLI · 命令行一句话出片
 用法：
   clipforge create --topic "在家手冲咖啡" [--duration 25] [--style knowledge]
                    [--footage auto|image|video] [--voice <id>] [--aspect 9:16|16:9|1:1]
-                   [--quality fast|standard|hd] [--bgm] [--bgm-mood upbeat] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--cta "..."] [--json]
+                   [--quality fast|standard|hd] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--cta "..."] [--json]
                    [--caption standard|bold|minimal|karaoke]   字幕样式预设(标准底板/重击大字/极简/逐字高亮)
   clipforge product --url "<商品链接>" [--style pain_point|scene|comparison|story|drama|reversal|interview|unboxing|product_pov|talking_head|auto] [--duration 30]
                    [--category beauty|food|home|fashion|tech|other] [--compose 同款成片选项]   贴链接→带货脚本(加 --compose 直接出片)

@@ -10,7 +10,6 @@ const UI_STYLE_VALUES = new Set([
   "comparison", "talking_head", "pain-point", "scenario", "auto",
 ]);
 const VIDEO_MODES = new Set(["product_closeup", "graphic_montage", "scene_demo", "live_presenter"]);
-const BGM_VALUES = new Set(["none", "upbeat", "chill", "energetic", "emotional"]);
 const GROUP_IDS = new Set(AD_TEMPLATE_GROUPS.map((g) => g.id));
 // new-project product-category vocabulary ("other" intentionally excluded — goodFor means "tuned for", not "allowed")
 const CATEGORY_VALUES = new Set(["beauty", "food", "home", "fashion", "digital"]);
@@ -58,7 +57,7 @@ describe("AD_TEMPLATES 库完整性", () => {
       if (tpl.compose.captionPreset) {
         expect((CAPTION_PRESET_IDS as readonly string[]).includes(tpl.compose.captionPreset)).toBe(true);
       }
-      if (tpl.compose.bgm) expect(BGM_VALUES.has(tpl.compose.bgm)).toBe(true);
+      expect(tpl.compose).not.toHaveProperty("bgm");
     }
   });
 
@@ -199,6 +198,7 @@ describe("sanitizeCustomAdTemplate AI 模板消毒", () => {
     expect(t.look).toBe("night_neon");
     expect(t.cameraPlan.hook).toBe("slow_push");
     expect(t.compose.quality).toBe("hd");
+    expect(t.compose).not.toHaveProperty("bgm");
     expect(t.goodFor).toEqual(["beauty"]);
   });
 
@@ -220,7 +220,7 @@ describe("sanitizeCustomAdTemplate AI 模板消毒", () => {
     // 仅 1 个合法运镜（<2）→ 回落默认编排
     expect(Object.keys(t.cameraPlan).length).toBeGreaterThan(1);
     expect(t.compose.captionPreset).toBe("standard");
-    expect(t.compose.bgm).toBe("upbeat");
+    expect(t.compose).not.toHaveProperty("bgm");
     expect(t.compose.quality).toBeUndefined();
     // 消毒后的模板能走脚本注入通道
     expect(adTemplateScriptDirective(t)).toContain("运镜编排");

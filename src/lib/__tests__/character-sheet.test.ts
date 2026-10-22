@@ -25,4 +25,37 @@ describe("多视图定妆 prompt", () => {
     expect(p).toContain("exactly identical in all four cells");
     expect(p).not.toMatch(/[一-鿿]/);
   });
+
+  it("多张人物图联合锁定身份，文字只补充且不套用新脸审美要求", () => {
+    const p = buildCharacterSheetPrompt("年轻女性，红色衬衫", "小美", 3);
+    expect(p).toContain("全部 3 张人物参考图都属于同一个人");
+    expect(p).toContain("联合所有参考图的不同角度");
+    expect(p).toContain("不能只使用第一张");
+    expect(p).toContain("保留本人五官");
+    expect(p).toContain("发型发色、身形和服装");
+    expect(p).toContain("参考图身份优先于文字");
+    expect(p).toContain("人物补充描述（小美）");
+    expect(p).toContain("左上=正面全身");
+    expect(p).not.toContain("清爽耐看的普通人长相");
+    expect(p).not.toContain("头身比约 1:7");
+  });
+
+  it("英文参考图提示保持原身份优先，不用普通人脸替换参考人物", () => {
+    const p = buildCharacterSheetPrompt("a woman wearing a red shirt", "Mei", 2);
+    expect(p).toContain("All 2 input reference images show the SAME person");
+    expect(p).toContain("Jointly study every reference");
+    expect(p).toContain("Reference identity takes priority over text");
+    expect(p).toContain("hairstyle and hair color, build, clothing");
+    expect(p).toContain("2x2 four-view");
+    expect(p).not.toContain("pleasant, ordinary-looking");
+    expect(p).not.toMatch(/[一-鿿]/);
+  });
+
+  it("仅有人物参考图也可以生成四视图，不插入空的外观设定", () => {
+    const p = buildCharacterSheetPrompt("", "Mei", 1);
+    expect(p).toContain("All 1 input reference images");
+    expect(p).toContain("front shoulders-up close-up");
+    expect(p).not.toContain("Supplementary character description");
+    expect(p).not.toContain("ordinary-looking");
+  });
 });

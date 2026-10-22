@@ -13,7 +13,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const rows = projectId ? await listAiTasks(projectId, activeOnly) : await listActiveAiTasksAllProjects();
-    return NextResponse.json(rows);
+    // Kling recovery includes pre-acknowledgement and import states, provided by /integrations/kling/jobs.
+    return NextResponse.json(rows.filter((row) => row.provider !== "kling-cli"));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : errText(req, "获取任务列表失败", "Failed to list tasks") },

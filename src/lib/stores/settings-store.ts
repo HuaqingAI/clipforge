@@ -11,6 +11,7 @@ import {
 } from "@/lib/gen-params";
 import { ATLAS_BASE_URL, ATLAS_LLM_BASE_URL, ATLAS_ONEKEY_MODELS, fillAtlasModelDefaults } from "@/lib/atlas-onekey";
 import type { MotionIntensity, MotionRealismTier } from "@/lib/motion-prompt";
+import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import {
   isProductionProfileId,
   productionProfilePatch,
@@ -22,6 +23,9 @@ export interface ProviderSetting {
   enabled: boolean;
   apiKey: string;
   baseUrl?: string;
+  /** CLI authentication is server managed, and must never be represented by a dummy key. */
+  authType?: "api-key" | "cli-oauth";
+  profileId?: string;
 }
 
 // LLM 配置
@@ -78,8 +82,7 @@ export interface SettingsState {
   chainMode: "pin" | "tail" | "off";
   // 全局画面风格 Look（look-presets.ts 预设 id，"none"=不加；同时注入生图 prompt 与 i2v 光线锚点）
   visualLook: string;
-  // UI complexity mode: "simple" keeps only the happy path (beginner default),
-  // "pro" reveals the director panel, per-shot camera tools, template workshop etc.
+  // Director mode is the only supported UI. "simple" remains in the type for legacy callers/data.
   uiMode: "simple" | "pro";
   // 面向创作目标的当前生产方案（原子更新下方 provider-agnostic 参数）
   activeProductionProfile: ProductionProfileId;
@@ -108,6 +111,7 @@ export interface SettingsState {
   setMotionRealism: (tier: MotionRealismTier) => void;
   setChainMode: (mode: "pin" | "tail" | "off") => void;
   setVisualLook: (look: string) => void;
+  /** Legacy action: always enables director mode, including calls from older UI bundles. */
   setUiMode: (mode: "simple" | "pro") => void;
   applyProductionProfile: (profile: ProductionProfileId) => void;
   /** 一个 Atlas Key 一键接入：脚本+看图+生图+生视频+配音全配好（不覆盖用户已选模型/已开的配音） */
@@ -165,6 +169,16 @@ export function migrateSettings(state: SettingsState): SettingsState {
   if (!isProductionProfileId(state?.activeProductionProfile)) {
     state.activeProductionProfile = "balanced";
   }
+  // v6: the visible video default and advanced generation parameters used to diverge.
+  // Honor the visible default for existing 720p/1080p settings, preserving other parameters.
+  // 480p remains an explicit advanced generation tier; composition has no 480p option.
+  if ((state?.defaultResolution === "720p" || state?.defaultResolution === "1080p") && state.videoParams?.resolution !== "480p") {
+    state.videoParams = { ...DEFAULT_VIDEO_PARAMS, ...state.videoParams, resolution: state.defaultResolution };
+  } else if (state?.videoParams?.resolution === "720p" || state?.videoParams?.resolution === "1080p") {
+    state.defaultResolution = state.videoParams.resolution;
+  }
+  // v7: all existing users receive the complete director workspace.
+  state.uiMode = "pro";
   return state;
 }
 
@@ -179,6 +193,7 @@ export const useSettingsStore = create<SettingsState>()(
         alibaba: { enabled: false, apiKey: "" },
         siliconflow: { enabled: false, apiKey: "" },
         openai: { enabled: false, apiKey: "" },
+        "kling-cli": { enabled: false, apiKey: "", authType: "cli-oauth" },
       },
       llm: {
         provider: "",
@@ -206,11 +221,11 @@ export const useSettingsStore = create<SettingsState>()(
       customModels: [],
       imageParams: DEFAULT_IMAGE_PARAMS,
       videoParams: DEFAULT_VIDEO_PARAMS,
-      motionIntensity: "normal",
-      motionRealism: "auto",
+      motionIntensity: DEFAULT_VIDEO_PROMPT_SETTINGS.motionIntensity,
+      motionRealism: DEFAULT_VIDEO_PROMPT_SETTINGS.motionRealism,
       chainMode: "pin",
-      visualLook: "none",
-      uiMode: "simple",
+      visualLook: DEFAULT_VIDEO_PROMPT_SETTINGS.visualLook,
+      uiMode: "pro",
       activeProductionProfile: "balanced",
       locale: DEFAULT_LOCALE,
       localeSource: "auto",
@@ -227,7 +242,8 @@ export const useSettingsStore = create<SettingsState>()(
       setTTS: (tts) => set({ tts }),
       setDefaultImageModel: (model) => set({ defaultImageModel: model }),
       setDefaultVideoModel: (model) => set({ defaultVideoModel: model }),
-      setDefaultResolution: (resolution) => set({ defaultResolution: resolution }),
+      setDefaultResolution: (resolution) =>
+        set((state) => ({ defaultResolution: resolution, videoParams: { ...state.videoParams, resolution } })),
       setSpendCapUsd: (usd) => set({ spendCapUsd: Number.isFinite(usd) && usd >= 0 ? usd : 0 }),
       setDefaultAspectRatio: (ratio) => set({ defaultAspectRatio: ratio }),
       addCustomModel: (model) =>
@@ -235,15 +251,18 @@ export const useSettingsStore = create<SettingsState>()(
       removeCustomModel: (id) =>
         set((state) => ({ customModels: state.customModels.filter((m) => m.id !== id) })),
       setImageParams: (params) => set({ imageParams: params }),
-      setVideoParams: (params) => set({ videoParams: params }),
+      setVideoParams: (params) => set({
+        videoParams: params,
+        ...(params.resolution === "720p" || params.resolution === "1080p" ? { defaultResolution: params.resolution } : {}),
+      }),
       setMotionIntensity: (intensity) => set({ motionIntensity: intensity }),
       setMotionRealism: (tier) => set({ motionRealism: tier }),
       setChainMode: (mode) => set({ chainMode: mode }),
       setVisualLook: (look) => set({ visualLook: look }),
-      setUiMode: (mode) => set({ uiMode: mode }),
+      setUiMode: () => set({ uiMode: "pro" }),
       applyProductionProfile: (profile) =>
         set((state) => productionProfilePatch(profile, state)),
-      // 一个 Atlas Key 一键接入全套：LLM 脚本 + Vision 看图 + 生图 + 生视频 + Atlas 配音
+      // One-key onboarding configures the account; video model selection stays explicit in Settings.
       applyAtlasOneKey: (apiKey) =>
         set((state) => {
           const key = apiKey.trim();
@@ -265,7 +284,6 @@ export const useSettingsStore = create<SettingsState>()(
               "atlas-cloud": { ...state.providers["atlas-cloud"], enabled: true, apiKey: key },
             },
             defaultImageModel: def.image,
-            defaultVideoModel: def.video,
             // 配音：之前没开过才默认接 Atlas TTS（复用同一个 Key），已配则保持不动
             tts: state.tts.enabled
               ? state.tts
@@ -283,8 +301,12 @@ export const useSettingsStore = create<SettingsState>()(
       // v4：补充面向创作目标的生产方案；旧设置迁移到兼顾质量与成本的 balanced。
       // v5：Atlas 一键接入曾把「素材网关」/api/v1 写进 LLM 地址，导致写脚本必 404（issue #24），
       // 迁到 OpenAI 兼容的聊天网关 /v1。
-      version: 5,
+      // v6: synchronize visible and advanced video resolution defaults; preserve explicit 480p.
+      // v7: retire beginner mode and persist director mode for existing users.
+      version: 7,
       migrate: (persisted) => migrateSettings(persisted as SettingsState),
+      // Normalize even unversioned imports or same-version storage containing the legacy value.
+      merge: (persisted, current) => ({ ...current, ...(persisted as Partial<SettingsState>), uiMode: "pro" }),
     }
   )
 );

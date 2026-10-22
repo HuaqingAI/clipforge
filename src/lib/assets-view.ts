@@ -21,6 +21,10 @@ export interface AssetItem {
   visualSource: Shot["visualSource"];
   status: "pending" | "generating" | "done" | "failed";
   thumbnailUrl?: string;
+  /** Playable video file, kept separately from its static thumbnail/keyframe. */
+  videoUrl?: string;
+  /** Actual input image used by a video, kept separately from its generated display poster. */
+  sourceImageUrl?: string;
   error?: string;
   /** Whether the asset is a video (animated shot / image-to-video) */
   isVideo?: boolean;
@@ -42,6 +46,11 @@ export interface AssetItem {
 /** Video asset file extensions (used to distinguish video vs. static image, determining thumbnail display and the "animate" entry point) */
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v)$/i;
 
+export function isKlingVideoSelection(value: string | undefined): boolean {
+  if (!value) return false;
+  try { const key: unknown = JSON.parse(value); return Array.isArray(key) && key[0] === "kling-cli"; } catch { return false; }
+}
+
 /** Subset of fields from GET /api/project/[id]/assets response rows that this module cares about */
 export interface SavedAssetRow {
   id?: string;
@@ -52,10 +61,27 @@ export interface SavedAssetRow {
   provider?: string | null;
   /** Static preview image for video assets (free-library videos populate this column); used as <img> thumbnail to avoid rendering an mp4 as an image */
   thumbnailPath?: string | null;
+  sourceKeyframeUrl?: string | null;
   selected?: boolean | null;
   createdAt?: Date | string | number | null;
   lastFrameUrl?: string | null;
   generationPlan?: GenerationControlSummary | null;
+}
+
+/** A generated poster must never be presented as the image used to create a video. */
+function videoSourceImage(saved: SavedAssetRow): string | undefined {
+  if (saved.sourceKeyframeUrl) return saved.sourceKeyframeUrl;
+
+  // Older Ark image-to-video records kept the submitted keyframe in thumbnailPath.
+  // Other providers and uploaded/stock videos use that column for display posters.
+  const isLegacyArk = saved.provider === "volcengine"
+    && (saved.type === "ai_generated" || saved.type === "ai_generate");
+  const isRepair = saved.generationPlan && "kind" in saved.generationPlan && saved.generationPlan.kind === "repair";
+  const isRepairFile = /(?:^|\/)repair-[^/]+\.(mp4|webm|mov|m4v)$/i.test(saved.filePath ?? "");
+  const thumbnail = saved.thumbnailPath;
+  if (!isLegacyArk || isRepair || isRepairFile || !thumbnail?.startsWith("/api/files/")) return undefined;
+  if (!/\.(jpe?g|png|webp|gif|avif)$/i.test(thumbnail) || /\.thumb\.jpg$/i.test(thumbnail)) return undefined;
+  return thumbnail;
 }
 
 /**
@@ -106,10 +132,12 @@ export function buildAssetRows(
         visualSource: s.visualSource,
         status: "done" as const,
         thumbnailUrl: isVideo && saved.thumbnailPath ? saved.thumbnailPath : saved.filePath,
+        videoUrl: isVideo ? saved.filePath : undefined,
+        sourceImageUrl: isVideo ? videoSourceImage(saved) : undefined,
         isVideo: isVideo || undefined,
         assetType: saved.type ?? undefined,
         assetProvider: saved.provider ?? undefined,
-        keyframeUrl: isVideo && saved.thumbnailPath ? saved.thumbnailPath : undefined,
+        keyframeUrl: isVideo ? saved.sourceKeyframeUrl ?? (saved.provider === "kling-cli" ? undefined : saved.thumbnailPath ?? undefined) : undefined,
         lastFrameUrl: isVideo && saved.lastFrameUrl ? saved.lastFrameUrl : undefined,
         generationPlan: saved.generationPlan ?? undefined,
       };

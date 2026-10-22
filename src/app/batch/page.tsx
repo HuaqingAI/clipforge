@@ -94,7 +94,7 @@ interface BatchTask {
   status: TaskStatus;
   projectId?: string; // project ID after successful generation, used for navigation
   error?: string;
-  /** anti-homogenization slot summary (hook/style/voice/BGM/captions) shown under the task */
+  /** anti-homogenization slot summary (hook/style/voice/captions) shown under the task */
   variation?: string;
 }
 
@@ -153,7 +153,7 @@ export default function BatchPage() {
   // Whether to auto-compose visuals + render after script generation (free path, no API key needed) — upgrades batch from "script only" to "one-click full video"
   const [autoCompose, setAutoCompose] = useState(true);
   const [productCard, setProductCard] = useState(true); // batch mode defaults to overlaying a product-card sticker (shown only when a product image is available)
-  // anti-homogenization: rotate hook/style/voice/BGM/captions per item so the batch doesn't ship N same-template videos (platforms suppress that account-wide)
+  // anti-homogenization: rotate hook/style/voice/captions per item so the batch doesn't ship N same-template videos (platforms suppress that account-wide)
   const [antiHomogeneity, setAntiHomogeneity] = useState(true);
   // post-batch template self-check (structure fingerprints across recent projects)
   const [homogeneity, setHomogeneity] = useState<{ verdict: string; message: { zh: string; en: string } } | null>(null);
@@ -266,8 +266,7 @@ export default function BatchPage() {
       body: JSON.stringify({
         freeTts: { enabled: true, ...(slot?.voice ? { voice: slot.voice } : {}) },
         ...(ctx.productCard && { productCard: true }),
-        // variation slot: BGM mood / karaoke captions rotate per item (undefined without the plan)
-        ...(slot?.bgm ? { freeBgm: true, ...(slot.bgmMood ? { bgmMood: slot.bgmMood } : {}) } : {}),
+        // variation slot: karaoke captions rotate per item (undefined without the plan)
         ...(slot?.karaoke ? { karaoke: true } : {}),
       }),
     });
@@ -346,6 +345,7 @@ export default function BatchPage() {
           videoMode: ctx.videoMode,
           productImages: product.images ?? [],
           llmConfig: {
+            provider: llm.provider,
             baseUrl: llm.baseUrl,
             apiKey: llm.apiKey,
             model: llm.model,
@@ -929,7 +929,7 @@ export default function BatchPage() {
                 {t("productCardLabel")}
               </label>
             )}
-            {/* anti-homogenization rotation: each item gets a different hook/style/voice/BGM/caption mix */}
+            {/* anti-homogenization rotation: each item gets a different hook/style/voice/caption mix */}
             <label className="flex items-center justify-center gap-2 mb-3 text-sm text-muted-foreground cursor-pointer select-none">
               <input
                 type="checkbox"

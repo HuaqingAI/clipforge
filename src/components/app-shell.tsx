@@ -6,7 +6,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { LanguageToggle } from "@/components/language-toggle";
 import { TaskCenter } from "@/components/task-center";
 import { useT } from "@/lib/i18n";
-import { useSettingsStore } from "@/lib/stores/settings-store";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,8 +19,6 @@ interface NavItem {
   key: string;
   href: string;
   icon: string;
-  /** Director-mode-only entrance: hidden in beginner mode so creation stays a single path (工作台) */
-  proOnly?: boolean;
 }
 
 // Sidebar navigation model: two labeled sections + settings pinned at the bottom.
@@ -31,10 +28,10 @@ const NAV_SECTIONS: { labelKey: string; items: NavItem[] }[] = [
     labelKey: "navSectionCreate",
     items: [
       { key: "navHome", href: "/start", icon: "home" },
-      { key: "navNew", href: "/project/new", icon: "plus", proOnly: true },
+      { key: "navNew", href: "/project/new", icon: "plus" },
       { key: "navClone", href: "/project/clone", icon: "flame" },
-      { key: "navMediaLab", href: "/media-lab", icon: "scan", proOnly: true },
-      { key: "navBatch", href: "/batch", icon: "layers", proOnly: true },
+      { key: "navMediaLab", href: "/media-lab", icon: "scan" },
+      { key: "navBatch", href: "/batch", icon: "layers" },
     ],
   },
   {
@@ -91,17 +88,13 @@ function NavIcon({ name }: { name: string }) {
  * mobile top bar. Mounted once in the root layout so every page shares ONE
  * logo, ONE language toggle and ONE set of module entrances.
  *
- * The sidebar carries two global switches:
- * - UI mode 小白/导演 — beginner mode keeps pages on the happy path, director
- *   mode reveals the pro tooling (director panel, per-shot camera etc.);
- * - collapse — icon-only rail, persisted per device.
+ * Director tools are always available. The icon-only rail preference is
+ * persisted per device.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const t = useT("common");
   const pathname = usePathname();
   const router = useRouter();
-  const uiMode = useSettingsStore((s) => s.uiMode);
-  const setUiMode = useSettingsStore((s) => s.setUiMode);
 
   // collapsed preference (loaded post-mount so SSR markup stays stable)
   const [collapsed, setCollapsed] = useState(false);
@@ -123,11 +116,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
   };
 
-  // beginner mode keeps ONE creation entrance (工作台); pro-only entrances stay in director mode
-  const sections = NAV_SECTIONS.map((s) => ({
-    ...s,
-    items: s.items.filter((i) => uiMode === "pro" || !i.proOnly),
-  })).filter((s) => s.items.length > 0);
+  const sections = NAV_SECTIONS;
   const visibleItems = sections.flatMap((s) => s.items);
 
   const active = visibleItems.reduce<string | null>((best, item) => {
@@ -173,23 +162,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className={`space-y-1 border-t border-border/50 py-3 ${collapsed ? "px-2" : "px-3"}`}>
-          {/* UI mode: beginner ⇄ director (hidden when collapsed — expand to switch) */}
           {!collapsed && (
-            <div className="mb-1 flex rounded-lg border border-border/50 p-0.5" title={t("uiModeTip")}>
-              {(["simple", "pro"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setUiMode(m)}
-                  className={`flex-1 rounded-md py-1.5 text-xs transition-colors ${
-                    uiMode === m
-                      ? "bg-primary/15 font-medium text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t(m === "simple" ? "uiModeSimple" : "uiModePro")}
-                </button>
-              ))}
+            <div className="mb-1 rounded-md bg-primary/15 py-1.5 text-center text-xs font-medium text-primary">
+              {t("uiModePro")}
             </div>
           )}
           {/* task center: cross-project running/attention feed (the "global" word would make eslint parse this comment as a globals directive) */}

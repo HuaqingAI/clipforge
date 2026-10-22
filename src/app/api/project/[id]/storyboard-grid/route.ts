@@ -1,20 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, stat } from "fs/promises";
 import { join } from "path";
 import { getDataDir } from "@/lib/paths";
 import { getDb } from "@/lib/db";
 import { scripts, assets } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
-import { toRemoteUsableImage } from "@/lib/remote-image";
+import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
 import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
+import { normalizeOpenAIBaseUrl } from "@/lib/openai-config";
+import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature } from "@/lib/storyboard-grid-cache";
+import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
+import { saveAssetCandidate } from "@/lib/asset-persistence";
 
 const execFileAsync = promisify(execFile);
+
+async function usableSelectedMedia(asset: typeof assets.$inferSelect): Promise<boolean> {
+  if (asset.status !== "done" || !asset.filePath || !/\.(png|jpe?g|webp|gif|avif|bmp|mp4|webm|mov|m4v)$/i.test(asset.filePath)) return false;
+  const local = resolveUploadFilePath(asset.filePath);
+  if (!local || !(await stat(local).catch(() => null))?.isFile()) return false;
+  try {
+    const media = await probeMedia(local);
+    return media.width > 0 && media.height > 0;
+  } catch { return false; }
+}
 
 /** Download or decode the generated grid image into the project uploads dir; returns the physical path + public path. */
 async function persistGridImage(projectId: string, sourceUrl: string): Promise<{ absPath: string; publicPath: string }> {
@@ -65,7 +79,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
-    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl } = body as {
+    if (body.provider === "kling-cli") return NextResponse.json({ error: "Kling CLI 首版仅支持素材页单镜头视频生成", code: "KLING_SCOPE_UNSUPPORTED" }, { status: 400 });
+    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl, productImageUrls, reuseExisting, preserveExisting } = body as {
       scriptId?: string;
       provider?: string;
       model?: string;
@@ -76,12 +91,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       characterSheetUrl?: string;
       /** Product photo — locks the product's appearance across all nine cells */
       productImageUrl?: string;
+      /** All uploaded product views, in display order; replaces the legacy single photo when provided. */
+      productImageUrls?: string[];
+      /** Reuse an unchanged, complete grid after a film-only failure; never resubmit automatically. */
+      reuseExisting?: boolean;
+      /** Keep usable selected takes and fill only missing keyframes. */
+      preserveExisting?: boolean;
     };
-    if (!scriptId || !providerName || !model) {
+    if (!scriptId) {
       return apiError(req, "缺少 scriptId / provider / model", "Missing scriptId / provider / model", 400);
-    }
-    if (!apiKey) {
-      return apiError(req, "缺少 API Key，请先在设置中配置生图平台", "Missing API key — configure an image provider in settings first", 400);
     }
 
     const db = getDb();
@@ -91,6 +109,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
     if (!script) return apiError(req, "脚本不存在", "Script not found", 404);
     const shots = Array.isArray(script.shots) ? script.shots : [];
+    const revision = scriptRevision(script);
+    const baselineAssets = filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), script);
+    const baselineByShot = new Map(shots.map((shot) => [shot.shotId, baselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null]));
+    const preserved = new Map<number, { shotId: number; filePath: string }>();
+    if (preserveExisting === true) {
+      const usable = await Promise.all(baselineAssets.map(async (asset) => await usableSelectedMedia(asset) ? asset : undefined));
+      for (const asset of usable) if (asset?.filePath && shots.some((shot) => shot.shotId === asset.shotId)) preserved.set(asset.shotId, { shotId: asset.shotId, filePath: asset.filePath });
+      if (shots.length && preserved.size === shots.length) {
+        return NextResponse.json({ gridPath: null, cells: shots.map((shot) => preserved.get(shot.shotId)!), count: shots.length, reused: true, preserved: true, generatedCount: 0 });
+      }
+    }
+    if (!providerName || !model) return apiError(req, "缺少 scriptId / provider / model", "Missing scriptId / provider / model", 400);
+    if (!apiKey) return apiError(req, "缺少 API Key，请先在设置中配置生图平台", "Missing API key — configure an image provider in settings first", 400);
     if (shots.length < 2) {
       return apiError(req, "分镜太少，九宫格至少需要 2 个分镜", "Too few shots — the grid needs at least 2", 400);
     }
@@ -104,8 +135,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // reference images (order matters — the prompt cites them by position):
-    // [character sheet?, product photo?]; local /api/files paths travel as Base64
-    const refInputs = [characterSheetUrl, productImageUrl].filter((u): u is string => !!u);
+    // [character sheet?, ...product photos]; local /api/files paths travel as Base64
+    const productRefs = (Array.isArray(productImageUrls) ? productImageUrls : [productImageUrl])
+      .filter((u): u is string => typeof u === "string" && u.trim().length > 0);
+    const sheetRef = typeof characterSheetUrl === "string" ? characterSheetUrl.trim() : "";
+    const refInputs = [...(sheetRef ? [sheetRef] : []), ...productRefs];
     const referenceImageUrls = (await Promise.all(refInputs.map(toRemoteUsableImage))).filter(
       (u): u is string => !!u
     );
@@ -113,9 +147,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // 1) one generation renders every shot — consistency is physical, not prompted;
     // with references attached the sheet pins the person and the photo pins the product
     const prompt = buildStoryboardGridPrompt(shots, script.characters, {
-      characterSheet: !!characterSheetUrl,
-      productImage: !!productImageUrl,
+      characterSheet: !!sheetRef,
+      productImageCount: productRefs.length,
     });
+    const signature = storyboardGridSignature({
+      scriptId,
+      shots,
+      characters: script.characters,
+      prompt,
+      referenceInputs: refInputs,
+      referenceContents: referenceImageUrls,
+      provider: providerName,
+      model,
+      baseUrl: providerName === "openai" ? normalizeOpenAIBaseUrl(baseUrl) : (baseUrl ?? "").trim().replace(/\/+$/, ""),
+      options: options ?? {},
+    });
+    if (reuseExisting === true) {
+      const selectedAssets = filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), script);
+      const cached = await reusableStoryboardGrid(id, signature, shots.map((shot) => shot.shotId), selectedAssets);
+      if (cached) {
+        return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true });
+      }
+    }
     const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
     const result = await provider.generateImage({
       ...(options ?? {}),
@@ -135,7 +188,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const dir = join(getDataDir(), "uploads", id);
     const saved: { shotId: number; filePath: string }[] = [];
+    let alternatives = 0;
     for (let i = 0; i < shots.length; i++) {
+      if (preserved.has(shots[i].shotId)) continue;
       const cell = cells[i];
       const fileName = `asset-${shots[i].shotId}-${Date.now()}-grid.png`;
       const outPath = join(dir, fileName);
@@ -148,8 +203,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ]);
       const filePath = `/api/files/${id}/${fileName}`;
       // Keep older takes for review/rollback while making this fresh grid cell active.
-      await db.update(assets).set({ selected: false }).where(and(eq(assets.projectId, id), eq(assets.shotId, shots[i].shotId)));
-      await db.insert(assets).values({
+      const asset = await saveAssetCandidate({
         projectId: id,
         shotId: shots[i].shotId,
         type: "ai_generated",
@@ -157,13 +211,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         provider: providerName,
         model,
         prompt: `[storyboard-grid 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
-        selected: true,
-        status: "done",
+        scope: assetScopeForShot(script, shots[i]),
+        selectedPolicy: { mode: "select-if-unchanged", baseline: { scriptId, scriptRevision: revision, selectedAssetId: baselineByShot.get(shots[i].shotId) ?? null } },
       });
+      if (!asset.selected) alternatives++;
       saved.push({ shotId: shots[i].shotId, filePath });
     }
 
-    return NextResponse.json({ gridPath: publicPath, cells: saved, count: saved.length });
+    // A film rejection should not make the same confirmed inputs buy another grid.
+    // A cache-write failure must not hide already-generated and saved paid assets.
+    const currentScripts = await db.select().from(scripts).where(eq(scripts.projectId, id));
+    const currentScript = currentScripts.find((item) => item.selected) ?? currentScripts[0];
+    const currentSelected = currentScript ? filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), currentScript) : [];
+    const fullMatchingGrid = saved.length === shots.length && !alternatives && currentScript?.id === scriptId && scriptRevision(currentScript) === revision &&
+      saved.every((cell) => currentSelected.filter((asset) => asset.shotId === cell.shotId).length === 1 && currentSelected.some((asset) => asset.shotId === cell.shotId && asset.filePath === cell.filePath && asset.status === "done"));
+    if (fullMatchingGrid) await saveStoryboardGridManifest(id, { version: 1, signature, gridPath: publicPath, cells: saved })
+      .catch((error) => console.error("保存九宫格复用记录失败:", error));
+    const responseCells = preserveExisting === true ? shots.map((shot) => preserved.get(shot.shotId) ?? saved.find((cell) => cell.shotId === shot.shotId)!) : saved;
+    return NextResponse.json({ gridPath: publicPath, cells: responseCells, count: responseCells.length, reused: false,
+      ...(preserveExisting === true ? { preservedCount: preserved.size, generatedCount: saved.length, savedAsAlternatives: alternatives } : {}) });
   } catch (error) {
     console.error("九宫格分镜生成失败:", error);
     return NextResponse.json(

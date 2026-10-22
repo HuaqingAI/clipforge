@@ -16,11 +16,11 @@ import type { Shot } from "@/lib/db/schema";
 import { JUDGE_META, type JudgeReport, autoApplicableRewrites, autoApplicableDescriptionRewrites } from "@/lib/script-judge";
 import { useTemplateStore } from "@/lib/stores/template-store";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { useCharacterStore } from "@/lib/stores/project-store";
-import { resolveDefaultModelTarget, buildImageOptions, buildVideoOptions, toEditVariant } from "@/lib/gen-params";
+import { StoryboardFilmPanel } from "@/components/storyboard-film-panel";
 import { useT, useLocale } from "@/lib/i18n";
 import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
+import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
 import { ProjectHeader } from "@/components/project-header";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
@@ -77,7 +77,6 @@ export default function ScriptPage() {
   const [genError, setGenError] = useState("");
   const { llm } = useSettingsStore();
   // beginner/director split: simple mode swaps the 3-column editor for a read-and-go card
-  const spendCapUsd = useSettingsStore((st) => st.spendCapUsd);
   const uiMode = useSettingsStore((st) => st.uiMode);
   const setUiMode = useSettingsStore((st) => st.setUiMode);
   // judge panel: four narrow judges tear the lines apart before generation money is spent
@@ -152,7 +151,7 @@ export default function ScriptPage() {
             projectId: id,
             topic: projectMeta.topic || projectName,
             targetDuration: 25,
-            llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model },
+            llmConfig: { provider: llm.provider, baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model },
           }
         : {
             projectId: id,
@@ -164,6 +163,7 @@ export default function ScriptPage() {
             videoMode: projectMeta.videoMode,
             productImages: projectMeta.productImages,
             llmConfig: {
+              provider: llm.provider,
               baseUrl: llm.baseUrl,
               apiKey: llm.apiKey,
               model: llm.model,
@@ -339,7 +339,7 @@ export default function ScriptPage() {
   const [autoModeTriggered, setAutoModeTriggered] = useState(false);
   // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
   // the AI chain stops at the script gate — money is only spent after one explicit click here
-  const [genPref, setGenPref] = useState<"free" | "ai">("free");
+  const [genPref, setGenPref] = useState<"free" | "ai">(SHOW_FREE_QUICK_CUT ? "free" : "ai");
   // presenter picked at creation time (?presenter=<id>) — resolved to their sheet for identity locking
   const [presenterParam, setPresenterParam] = useState("");
   useEffect(() => {
@@ -350,61 +350,6 @@ export default function ScriptPage() {
     if (p) setPresenterParam(p);
   }, []);
   // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
-  // Judge pass — the quality bar runs in BOTH hands-off chains, not just the pro editor.
-  // Four narrow judges tear the voiceover lines apart and their rewrites are applied
-  // automatically BEFORE any footage matching / generation money. Beginners never operate
-  // the panel — they just get the reworked lines (and the report stays visible in the
-  // editor). Missing LLM config or a failed pass skips silently: quality is best-effort,
-  // never a new failure mode for the chain.
-  const runJudgePass = async (scriptId: string, setStage: (s: string) => void) => {
-    if (!llm.baseUrl || !llm.model) return;
-    try {
-      setStage(t("autoJudging"));
-      const res = await fetch(`/api/project/${id}/script-judge`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scriptId,
-          llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model },
-        }),
-      });
-      if (!res.ok) return;
-      const report = (await res.json()) as JudgeReport;
-      setJudgeReport(report);
-      // tier gate: hands-off flow auto-applies invariant/default only; taste stays display-only
-      const autoRewrites = autoApplicableRewrites(report);
-      const autoDescRewrites = autoApplicableDescriptionRewrites(report);
-      if (!autoRewrites.length && !autoDescRewrites.length) return;
-      // merge voiceover + visual-judge description rewrites into one shotTexts PATCH
-      const patchByShot = new Map<number, { shotId: number; voiceover?: string; description?: string }>();
-      for (const r of autoRewrites) patchByShot.set(r.shotId, { shotId: r.shotId, voiceover: r.voiceover });
-      for (const r of autoDescRewrites) {
-        patchByShot.set(r.shotId, { ...(patchByShot.get(r.shotId) ?? { shotId: r.shotId }), description: r.description });
-      }
-      const applied = await fetch(`/api/project/${id}/scripts`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptId, shotTexts: Array.from(patchByShot.values()) }),
-      });
-      if (!applied.ok) return;
-      setJudgeApplied(true);
-      // local mirror so the simple card / editor show the reworked lines, not the stale ones
-      setScripts((prev) =>
-        prev.map((s) =>
-          s.id === scriptId
-            ? {
-                ...s,
-                shots: s.shots.map((sh) => {
-                  const p = patchByShot.get(sh.shotId);
-                  return p ? { ...sh, ...(p.voiceover && { voiceover: p.voiceover }), ...(p.description && { description: p.description }) } : sh;
-                }),
-              }
-            : s
-        )
-      );
-    } catch {
-      /* best-effort quality pass — the chain continues with the original lines */
-    }
-  };
-
   // The free chain now runs SERVER-SIDE (pipeline_runs): the page only starts a run and
   // observes it, so closing/refreshing the tab no longer kills the chain — reopening the
   // project re-attaches to the live run, and a failed run offers resume-from-breakpoint.
@@ -412,6 +357,7 @@ export default function ScriptPage() {
 
   /** Poll the project's latest pipeline run to a terminal status, mirroring stage labels. */
   const attachPipeline = async () => {
+    if (!SHOW_FREE_QUICK_CUT) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setResumableRun(null);
@@ -439,6 +385,7 @@ export default function ScriptPage() {
 
   /** Start (or resume) the server-side run, then attach as an observer. */
   const startPipeline = async (resume: boolean) => {
+    if (!SHOW_FREE_QUICK_CUT) return;
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
     setAutoFinishing(true);
@@ -466,8 +413,9 @@ export default function ScriptPage() {
   // On entry, look for a live or breakpointed run BEFORE any fresh auto start:
   // live → re-attach (the "came back after closing the tab" path);
   // failed → surface the resume/restart choice instead of silently starting over.
-  const [pipelineChecked, setPipelineChecked] = useState(false);
+  const [pipelineChecked, setPipelineChecked] = useState(!SHOW_FREE_QUICK_CUT);
   useEffect(() => {
+    if (!SHOW_FREE_QUICK_CUT) return;
     let cancelled = false;
     (async () => {
       try {
@@ -491,189 +439,29 @@ export default function ScriptPage() {
   // ?auto=1 fresh start (from the /start hero flows) — only after the re-attach check settled,
   // so an already-live or breakpointed run is never silently restarted from the top
   useEffect(() => {
-    if (!autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
+    if (!SHOW_FREE_QUICK_CUT || !autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
     setAutoModeTriggered(true);
     // the AI path lands on the "script ready" gate instead of auto-running the free chain
     if (genPref !== "ai") autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
   }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun]);
 
-  // ---- AI film chain (grid → one-call film): the paid path. The free script above is the
-  // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
-  // bill goes to the user's own model platform (open-source BYOK, ClipForge itself is free) ----
-  const { characters: presenterLib, updateCharacter } = useCharacterStore();
+  // Script and Assets open the same model-driven film surface.
+  const [filmOpen, setFilmOpen] = useState(false);
   const [aiFilming, setAiFilming] = useState(false);
-  const [aiFilmStage, setAiFilmStage] = useState("");
-  /** Ticked by the user to allow a generation whose estimate exceeds their spend cap */
-  const [overCapAck, setOverCapAck] = useState(false);
   const [aiFilmError, setAiFilmError] = useState("");
-  /** dryRun preview of the film pass — the paid submit needs an explicit confirm on this exact prompt */
-  const [filmPreview, setFilmPreview] = useState<{
-    prompt: string;
-    shotCount: number;
-    seconds: number;
-    /** The model that will actually be billed — not necessarily the one in settings */
-    model: string;
-    /** Set when the pipeline had to switch away from the configured model */
-    swappedFrom?: string;
-    scriptSeconds: number;
-    modelMaxSeconds: number;
-    durationOverflow: boolean;
-    referenceImages: number;
-    referenceQuota?: { ok: boolean; count: number; limit?: number };
-    dialogueWarnings: { index: number; seconds: number; count: number; limit: number }[];
-    /** Absent when the platform publishes no price — render that as unknown, never as free */
-    estimate?: { unitUsd: number; seconds: number; minUsd: number; maxUsd: number; tierMultiplier: number };
-  } | null>(null);
-
-  /** Free dryRun call — full film prompt + counts + warnings, nothing submitted, nothing billed. */
-  const fetchFilmPreview = async (scriptId: string) => {
-    const presenter = presenterLib.find((c) => c.id === presenterParam);
-    const res = await fetch(`/api/project/${id}/storyboard-film`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        scriptId,
-        dryRun: true,
-        // preview the CONFIGURED model: the route resolves it the same way the paid submit does,
-        // so a forced switch shows up in the confirm card instead of only on the invoice (issue #28)
-        model: useSettingsStore.getState().defaultVideoModel,
-        // a picked presenter WILL ride as a reference sheet (generated on demand later), so the
-        // preview must count its slot now — the dryRun branch only reads truthiness
-        ...(presenter && { characterSheetUrl: presenter.referenceImages?.[0] ?? "planned" }),
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || t("aiFilmFailed"));
-    return data as NonNullable<typeof filmPreview>;
-  };
-
-  // Phase 1 — quality + preview, all free: judge pass rewrites weak lines first, then a dryRun
-  // shows the exact film prompt / duration / reference count / density warnings. Money moves
-  // only after the user confirms THIS preview (text-level confirmation before any spend).
   const runAiFilm = async () => {
     if (!currentScript || aiFilming || autoFinishing) return;
-    setAiFilming(true);
-    setAiFilmError("");
-    setFilmPreview(null);
+    setAiFilming(true); setAiFilmError("");
     try {
-      // make sure the picked variant is the one the pipeline uses
-      await fetch(`/api/project/${id}/scripts`, {
+      const selected = await fetch(`/api/project/${id}/scripts`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ selectedScriptId: currentScript.id }),
-      }).catch(() => {});
-      // judge pass BEFORE the preview, so the confirm shows the final (reworked) lines
-      await runJudgePass(currentScript.id, setAiFilmStage);
-      setAiFilmStage(t("aiFilmPreviewing"));
-      setOverCapAck(false); // a fresh estimate must be acknowledged on its own merits
-      setFilmPreview(await fetchFilmPreview(currentScript.id));
-      setAiFilming(false); // hand over to the preview card; nothing has been billed yet
-    } catch (err) {
-      setAiFilmError(friendlyError(err, locale));
-      setAiFilming(false);
-    }
-  };
-
-  // Phase 2 — the confirmed spend. The confirmation is bound to the previewed prompt: a fresh
-  // dryRun must return the identical prompt (script edited in between → abort and re-preview).
-  const confirmAiFilm = async () => {
-    if (!currentScript || !filmPreview || aiFilming) return;
-    setAiFilming(true);
-    setAiFilmError("");
-    try {
-      setAiFilmStage(t("aiFilmVerifying"));
-      const fresh = await fetchFilmPreview(currentScript.id);
-      if (fresh.prompt !== filmPreview.prompt) {
-        // stale confirmation: show the new preview instead of submitting outdated content
-        setFilmPreview(fresh);
-        setAiFilming(false);
-        setAiFilmError(t("aiFilmPreviewChanged"));
-        return;
-      }
-      // resolve the configured default image + video models to their providers
-      setAiFilmStage(t("aiFilmResolve"));
-      const s = useSettingsStore.getState();
-      const [imgTarget, vidTarget] = await Promise.all([
-        resolveDefaultModelTarget(s.providers, s.defaultImageModel, s.customModels, "image"),
-        resolveDefaultModelTarget(s.providers, s.defaultVideoModel, s.customModels, "video"),
-      ]);
-      if (!imgTarget || !vidTarget) throw new Error(t("aiFilmNeedModels"));
-      // identity/product anchors: presenter sheet (picked at creation) + first product photo
-      const presenter = presenterLib.find((c) => c.id === presenterParam);
-      let sheet = presenter?.referenceImages?.[0];
-      // multi-view sheet on demand: a presenter picked at creation but never "sheeted" gets their
-      // 2x2 four-view reference generated right here (one square generation, physically the same
-      // person) and saved back to the library — identity stays locked across this film AND future
-      // ones. Needs an appearance description; failure just falls back to today's no-sheet path.
-      if (presenter && !sheet && presenter.appearance?.trim()) {
-        setAiFilmStage(t("aiFilmSheet"));
-        try {
-          const sheetRes = await fetch("/api/characters/sheet", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              appearance: presenter.appearance,
-              name: presenter.name,
-              provider: imgTarget.provider,
-              model: imgTarget.model,
-              apiKey: imgTarget.apiKey,
-              baseUrl: imgTarget.baseUrl,
-              options: buildImageOptions(s.imageParams ? { ...s.imageParams, aspectRatio: "1:1", count: 1 } : undefined),
-            }),
-          });
-          const sheetData = await sheetRes.json().catch(() => ({}));
-          if (sheetRes.ok && sheetData.url) {
-            sheet = sheetData.url as string;
-            updateCharacter(presenter.id, { referenceImages: [sheet, ...(presenter.referenceImages ?? []).slice(1)] });
-          }
-        } catch {
-          /* sheet is an upgrade, not a dependency — the grid still locks identity within this film */
-        }
-      }
-      const productRef = projectMeta?.productImages?.[0];
-      // 1) storyboard grid: ONE image generation renders every shot as a keyframe (identity locked)
-      setAiFilmStage(t("aiFilmGrid"));
-      const gridRes = await fetch(`/api/project/${id}/storyboard-grid`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scriptId: currentScript.id,
-          provider: imgTarget.provider,
-          model: sheet || productRef ? toEditVariant(imgTarget.model) : imgTarget.model,
-          apiKey: imgTarget.apiKey,
-          baseUrl: imgTarget.baseUrl,
-          ...(sheet && { characterSheetUrl: sheet }),
-          ...(productRef && { productImageUrl: productRef }),
-          options: buildImageOptions(s.imageParams ? { ...s.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
-        }),
       });
-      const gridData = await gridRes.json().catch(() => ({}));
-      if (!gridRes.ok) throw new Error(gridData.error || t("aiFilmFailed"));
-      // 2) film pass: all keyframes ride one reference-to-video call — native cuts + spoken lines
-      setAiFilmStage(t("aiFilmRender"));
-      const filmRes = await fetch(`/api/project/${id}/storyboard-film`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scriptId: currentScript.id,
-          provider: vidTarget.provider,
-          // confirmed in the preview card — never re-derived here, so what was shown is what bills
-          model: filmPreview.model,
-          spendCapUsd: s.spendCapUsd,
-          // the user ticked "spend anyway" against a cap-busting estimate
-          acknowledgeOverCap: overCapAck,
-          apiKey: vidTarget.apiKey,
-          baseUrl: vidTarget.baseUrl,
-          ...(sheet && { characterSheetUrl: sheet }),
-          options: buildVideoOptions(s.videoParams ? { ...s.videoParams, aspectRatio: "9:16" } : undefined),
-        }),
-      });
-      const filmData = await filmRes.json().catch(() => ({}));
-      if (!filmRes.ok) throw new Error(filmData.error || t("aiFilmFailed"));
-      // 3) the film landed in compositions — the export page shows it
-      setFilmPreview(null);
-      router.push(`/project/${id}/export`);
-    } catch (err) {
-      // keep the preview card open: retrying confirm re-verifies via a fresh dryRun
-      setAiFilmError(friendlyError(err, locale));
-      setAiFilming(false);
-    }
+      if (!selected.ok) throw new Error("无法保存所选脚本，请稍后重试。");
+      setFilmOpen(true);
+    } catch (failure) { setAiFilmError(friendlyError(failure, locale)); }
+    finally { setAiFilming(false); }
   };
 
   // switching scripts invalidates the report — it was ruled on another script's lines
@@ -853,95 +641,9 @@ export default function ScriptPage() {
 
   // Hands-off takeover: while the auto chain (free) or the AI film chain (paid) runs,
   // beginners see one progress card, not the editor
-  // dryRun preview card: the paid film call waits for an explicit confirm on this exact prompt
-  if (filmPreview && !aiFilming) {
-    const overQuota = filmPreview.referenceQuota && !filmPreview.referenceQuota.ok;
-    // cap gate: a priced run above the ceiling needs an explicit tick before it can be confirmed
-    const overCap = !!filmPreview.estimate && spendCapUsd > 0 && filmPreview.estimate.maxUsd > spendCapUsd;
-    return (
-      <div className="min-h-screen grid-bg">
-        {headerBar}
-        <main className="mx-auto max-w-2xl px-6 py-12">
-          <Card className="glass-card">
-            <CardContent className="space-y-4 p-6">
-              <h2 className="text-lg font-bold">🎬 {t("aiFilmPreviewTitle")}</h2>
-              <p className="text-sm text-muted-foreground">
-                {t("aiFilmPreviewMeta", { shots: filmPreview.shotCount, seconds: filmPreview.seconds, refs: filmPreview.referenceImages })}
-              </p>
-              {filmPreview.swappedFrom && (
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
-                  {t("aiFilmModelSwap", { from: filmPreview.swappedFrom, to: filmPreview.model })}
-                </div>
-              )}
-              {overQuota && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-xs text-destructive">
-                  {t("aiFilmQuotaWarn", { count: filmPreview.referenceQuota!.count, limit: filmPreview.referenceQuota!.limit ?? 0 })}
-                </div>
-              )}
-              {filmPreview.dialogueWarnings.length > 0 && (
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
-                  {t("aiFilmDensityWarn", { shots: filmPreview.dialogueWarnings.map((w) => `#${w.index + 1}`).join("、") })}
-                </div>
-              )}
-              {aiFilmError && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-xs text-destructive">{aiFilmError}</div>
-              )}
-              <div className="rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-xs">
-                {filmPreview.estimate ? (
-                  <>
-                    <span className="font-semibold tabular-nums">
-                      {filmPreview.estimate.tierMultiplier > 1
-                        ? t("aiFilmEstimateRange", {
-                            min: filmPreview.estimate.minUsd.toFixed(2),
-                            max: filmPreview.estimate.maxUsd.toFixed(2),
-                          })
-                        : t("aiFilmEstimate", { total: filmPreview.estimate.minUsd.toFixed(2) })}
-                    </span>
-                    {/* the arithmetic stays visible so a wrong per-second assumption is auditable */}
-                    <span className="ml-2 text-muted-foreground tabular-nums">
-                      {t("aiFilmEstimateFormula", {
-                        unit: filmPreview.estimate.unitUsd,
-                        seconds: filmPreview.estimate.seconds,
-                        model: filmPreview.model,
-                      })}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">{t("aiFilmEstimateUnknown", { model: filmPreview.model })}</span>
-                )}
-              </div>
-              {overCap && (
-                <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
-                  <input
-                    type="checkbox"
-                    checked={overCapAck}
-                    onChange={(e) => setOverCapAck(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 accent-primary"
-                  />
-                  <span>{t("aiFilmOverCap", { total: filmPreview.estimate!.maxUsd.toFixed(2), cap: spendCapUsd })}</span>
-                </label>
-              )}
-              <details className="rounded-lg border border-border/60 p-3 text-xs">
-                <summary className="cursor-pointer font-medium">{t("aiFilmPromptToggle")}</summary>
-                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-muted-foreground">{filmPreview.prompt}</pre>
-              </details>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button className="brand-gradient text-white" disabled={overQuota || (overCap && !overCapAck)} onClick={confirmAiFilm}>
-                  ✨ {t("aiFilmConfirm")}
-                </Button>
-                <Button variant="outline" onClick={() => { setFilmPreview(null); setAiFilmError(""); }}>
-                  {t("aiFilmBackToEdit")}
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
-            </CardContent>
-          </Card>
-        </main>
-      </div>
-    );
-  }
+  const aiFilmErrorPanel = aiFilmError && <p role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm text-destructive">{aiFilmError}</p>;
 
-  if ((autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
+  if ((SHOW_FREE_QUICK_CUT && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
@@ -954,7 +656,7 @@ export default function ScriptPage() {
           </div>
           <h2 className="text-xl font-bold">{t("autoModeTitle")}</h2>
           <p className="mt-2 text-sm text-primary">
-            {aiFilming ? (aiFilmStage || t("aiFilmRender")) : (autoFinishStage || t("autoFinishSelecting"))}
+            {aiFilming ? "正在打开整片计划…" : (autoFinishStage || t("autoFinishSelecting"))}
           </p>
           <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
             {aiFilming ? t("aiFilmHint") : t("autoModeHint")}
@@ -973,11 +675,15 @@ export default function ScriptPage() {
   return (
     <div className="min-h-screen grid-bg">
       {headerBar}
+      <StoryboardFilmPanel open={filmOpen && Boolean(currentScript)} onOpenChange={setFilmOpen}
+        projectId={id} scriptId={currentScript?.id ?? ""} presenterId={presenterParam}
+        onAssetsChanged={() => undefined} />
 
       <main className="mx-auto max-w-7xl px-6 py-8">
+        {aiFilmErrorPanel && <div className="mx-auto mb-5 max-w-2xl">{aiFilmErrorPanel}</div>}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
-        {resumableRun && !autoFinishing && !aiFilming && (
+        {SHOW_FREE_QUICK_CUT && resumableRun && !autoFinishing && !aiFilming && (
           <div className="mx-auto mb-5 max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
             <p className="text-sm font-medium text-amber-500">
               ⏸ {resumableRun.interrupted ? t("pipelineInterruptedTitle") : t("pipelineFailedTitle")}
@@ -1019,16 +725,16 @@ export default function ScriptPage() {
                 </p>
               </CardContent>
             </Card>
-            {(autoFinishError || aiFilmError) && (
+            {autoFinishError && (
               <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-xs text-destructive">
-                {autoFinishError || aiFilmError}
+                {autoFinishError}
               </div>
             )}
             <div className="flex flex-col items-center gap-3">
               {/* two finishing paths, primary = what was chosen on the studio card; the AI one
                   is the single paid click (billed to the user's own model platform) */}
-              <div className="grid w-full gap-2 sm:grid-cols-2">
-                <Button
+              <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT ? "sm:grid-cols-2" : ""}`}>
+                {SHOW_FREE_QUICK_CUT && <Button
                   size="lg"
                   variant={genPref === "ai" ? "outline" : "default"}
                   className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
@@ -1036,22 +742,22 @@ export default function ScriptPage() {
                   onClick={autoFinish}
                 >
                   {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
-                </Button>
+                </Button>}
                 <Button
                   size="lg"
-                  variant={genPref === "ai" ? "default" : "outline"}
-                  className={`w-full ${genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
+                  variant={!SHOW_FREE_QUICK_CUT || genPref === "ai" ? "default" : "outline"}
+                  className={`w-full ${!SHOW_FREE_QUICK_CUT || genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
                   disabled={autoFinishing || aiFilming || !currentScript}
                   onClick={runAiFilm}
                 >
-                  {`✨ ${t("aiFilmCta")}`}
+                  整片自动编排
                 </Button>
               </div>
-              <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>
+              {SHOW_FREE_QUICK_CUT && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
               <p className="text-center text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
               {/* quality reassurance: both paths run the judge panel automatically — Easy mode
                   hides the operation, never the quality features */}
-              <p className="text-center text-xs text-muted-foreground/80">⚖️ {t("autoJudgeNote")}</p>
+              <p className="text-center text-xs text-muted-foreground/80">视频模型在设置中统一选择，预览整片计划后再确认生成。</p>
               <div className="flex items-center gap-3">
                 <Button variant="outline" size="sm" className="text-xs" disabled={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
                   {t("regenerate")}
@@ -1152,7 +858,8 @@ export default function ScriptPage() {
                       <>⚖️ {t("judgeButton")}</>
                     )}
                   </Button>
-                  <Button
+                  <Button variant="outline" className="text-sm" disabled={aiFilming || !currentScript} onClick={() => void runAiFilm()}>整片自动编排</Button>
+                  {SHOW_FREE_QUICK_CUT && <Button
                     variant="outline"
                     className="text-sm"
                     disabled={autoFinishing}
@@ -1170,7 +877,7 @@ export default function ScriptPage() {
                         {t("autoFinish")}
                       </>
                     )}
-                  </Button>
+                  </Button>}
                   <Link href={`/project/${id}/assets`}>
                     <Button className="brand-gradient text-white text-sm" disabled={autoFinishing}>
                       {t("nextStepAssets")}

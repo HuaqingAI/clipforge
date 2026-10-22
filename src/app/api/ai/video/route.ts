@@ -5,6 +5,13 @@ import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
 import { apiError, errText } from "@/lib/api-error";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
+import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
+import { createKlingJob } from "@/lib/kling/jobs";
+import { klingJobView } from "@/lib/kling/repository";
+import { isKlingVideoSelection } from "@/lib/assets-view";
+import { validateVideoPrompt } from "@/lib/video-prompt";
+
+export const runtime = "nodejs";
 
 // AI video generation.
 //
@@ -13,7 +20,19 @@ import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
 // the error response carries the task ID and the row stays recoverable ("unknown"),
 // so the client can resume via /api/ai/video/task instead of paying again.
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return apiError(req, "请求体必须是 JSON 对象", "Request body must be a JSON object", 400);
+  if (body.provider === "kling-cli") {
+    try {
+      await assertKlingLocalRequest(req);
+      const job = await createKlingJob(body);
+      return NextResponse.json({ ...klingJobView(job), recoverable: true, pollAfterMs: 5000,
+        statusUrl: "/api/integrations/kling/jobs/" + job.id }, { status: 202, headers: { "Cache-Control": "no-store" } });
+    } catch (error) { return klingRouteError(error); }
+  }
+  if (isKlingVideoSelection(body.model) || isKlingVideoSelection(body.selectionKey)) {
+    return NextResponse.json({ error: "Kling CLI 请使用素材页的单镜头生成入口", code: "KLING_SCOPE_UNSUPPORTED" }, { status: 400 });
+  }
   const { provider: providerName, model, prompt, imageUrl, lastImageUrl, mode, apiKey, baseUrl, options, projectId, shotId, referenceVideoUrls, referenceImageUrls, referenceAudioUrls } = body;
   const controlPlan = sanitizeGenerationControlSummary(body.controlPlan);
 
@@ -23,6 +42,13 @@ export async function POST(req: NextRequest) {
 
   if (!apiKey) {
     return apiError(req, "缺少 API Key，请先在设置中配置对应平台", "Missing API Key, please configure the corresponding platform in settings first");
+  }
+
+  if (typeof prompt !== "string") return apiError(req, "提示词必须是文本", "Prompt must be text", 400);
+  const promptIssues = validateVideoPrompt(prompt);
+  if (promptIssues.length) return NextResponse.json({ error: promptIssues.map((issue) => issue.message).join(" "), code: "VIDEO_PROMPT_INVALID", issues: promptIssues }, { status: 400 });
+  if (options && typeof options === "object" && Object.hasOwn(options, "prompt") && options.prompt !== prompt) {
+    return apiError(req, "生成参数不能替换已确认的提示词", "Generation options cannot replace the confirmed prompt", 400);
   }
 
   try {

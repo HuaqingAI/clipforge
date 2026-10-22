@@ -6,6 +6,7 @@ import { getDb } from "@/lib/db";
 import { getDataDir } from "@/lib/paths";
 import { scripts as scriptsTable, assets as assetsTable, type Shot } from "@/lib/db/schema";
 import { fillShotStock, searchShotCandidates, persistCandidate, type ScoredStockCandidate } from "@/lib/stock-fill";
+import { filterAssetsForScript } from "@/lib/asset-context";
 import {
   shotQuery,
   scoreCandidate,
@@ -83,14 +84,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Preserve selected ready assets and pending generation. Failed attempts and inactive
   // historical takes must not prevent an empty shot from receiving a new candidate.
   const existing = await db
-    .select({ shotId: assetsTable.shotId })
+    .select()
     .from(assetsTable)
     .where(and(
       eq(assetsTable.projectId, id),
       eq(assetsTable.selected, true),
       inArray(assetsTable.status, ["pending", "generating", "done"]),
     ));
-  const already = new Set(existing.map((e) => e.shotId));
+  const already = new Set(filterAssetsForScript(existing, script).map((e) => e.shotId));
 
   // If the local material pool exists, include it in auto-fill: user-owned B-roll competes alongside free stock assets
   const materialsDir = join(getDataDir(), "uploads", id, "materials");

@@ -4,6 +4,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { getDb } from "@/lib/db";
+import { filterAssetsForScript } from "@/lib/asset-context";
 import { getDataDir } from "@/lib/paths";
 import { projects, scripts as scriptsTable, assets as assetsTable, compositions, generationReviews } from "@/lib/db/schema";
 import { runQc, expectedDimensions, type QcReport } from "@/lib/video-composer/qc";
@@ -111,7 +112,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from(assetsTable)
       .where(and(eq(assetsTable.projectId, id), eq(assetsTable.status, "done"), eq(assetsTable.selected, true)))
       .orderBy(desc(assetsTable.createdAt));
-    const current = rows;
+    const current = filterAssetsForScript(rows, latest);
     const reviewRows = await db.select().from(generationReviews).where(eq(generationReviews.projectId, id)).orderBy(desc(generationReviews.createdAt));
     const latestReviewByAsset = new Map<string, typeof generationReviews.$inferSelect>();
     for (const review of reviewRows) if (!latestReviewByAsset.has(review.assetId)) latestReviewByAsset.set(review.assetId, review);

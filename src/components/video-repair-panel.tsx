@@ -8,6 +8,8 @@ import { getVideoModelCapabilities } from "@/lib/model-capabilities";
 import type { Model } from "@/lib/providers/types";
 import type { ProviderSetting } from "@/lib/stores/settings-store";
 import type { RepairScope, TimedKeyframe, VideoRepairPreview, VideoRepairWarning } from "@/lib/video-repair-plan";
+import { isKlingVideoSelection } from "@/lib/assets-view";
+import Link from "next/link";
 
 interface AnchorOption {
   id: string;
@@ -41,6 +43,7 @@ export function VideoRepairPanel(props: {
 }) {
   const t = useT("production");
   const locale = useLocale();
+  const klingDefault = isKlingVideoSelection(props.defaultVideoModel);
   const repairModels = useMemo(() => props.models.filter((model) => {
     if (model.mediaType !== "video" || model.provider !== "atlas-cloud" || !props.providers[model.provider]?.apiKey) return false;
     const capabilities = getVideoModelCapabilities(model.id, model.supportsAudio, model.provider);
@@ -48,9 +51,9 @@ export function VideoRepairPanel(props: {
     const hasKnownReferenceSibling = /\/(?:text|image)-to-video$/.test(model.id) && capabilities.referenceVideo === true;
     return capabilities.referenceVideo === true && (isReferenceEndpoint || hasKnownReferenceSibling);
   }), [props.models, props.providers]);
-  const preferred = useMemo(() => repairModels.find((model) => model.id === props.defaultVideoModel)
+  const preferred = useMemo(() => klingDefault ? undefined : repairModels.find((model) => model.id === props.defaultVideoModel)
     ?? repairModels.find((model) => model.id === props.currentModel)
-    ?? repairModels[0], [props.currentModel, props.defaultVideoModel, repairModels]);
+    ?? repairModels[0], [klingDefault, props.currentModel, props.defaultVideoModel, repairModels]);
   const [modelKey, setModelKey] = useState("");
   const [scope, setScope] = useState<RepairScope>("temporal");
   const [start, setStart] = useState("");
@@ -61,6 +64,10 @@ export function VideoRepairPanel(props: {
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<"preview" | "execute" | null>(null);
   const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (klingDefault) { setModelKey(""); setPreview(null); setConfirmed(false); }
+  }, [klingDefault, props.defaultVideoModel]);
 
   useEffect(() => {
     if (!modelKey && preferred) setModelKey(`${preferred.provider}::${preferred.id}`);
@@ -153,10 +160,11 @@ export function VideoRepairPanel(props: {
         <span className="text-[10px] font-normal text-muted-foreground">{t("repairPreviewFirst")}</span>
       </summary>
       <div className="space-y-3 border-t border-primary/20 p-3">
+        {klingDefault && <p className="text-xs text-amber-600 dark:text-amber-400">{locale === "zh" ? "Kling CLI 首版暂不支持视频修复。可在素材页生成新镜头；使用本面板需手动选择已配置的其他修复模型。" : "Kling CLI does not support video repair yet. Generate a new shot on Assets, or explicitly select another configured repair model here."} <Link className="underline" href={`/project/${props.projectId}/assets`}>{locale === "zh" ? "打开素材页" : "Open Assets"}</Link></p>}
         <label className="block text-xs font-medium text-muted-foreground">
           {t("repairModel")}
           <select value={modelKey} onChange={(event) => { setModelKey(event.target.value); invalidate(); }} className="mt-1.5 h-11 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary">
-            {!repairModels.length && <option value="">{t("repairNoModel")}</option>}
+            {(!repairModels.length || klingDefault) && <option value="">{klingDefault && repairModels.length ? (locale === "zh" ? "手动选择修复平台与模型" : "Select a repair provider and model") : t("repairNoModel")}</option>}
             {repairModels.map((model) => <option key={`${model.provider}:${model.id}`} value={`${model.provider}::${model.id}`}>{model.name} · {model.provider}</option>)}
           </select>
         </label>

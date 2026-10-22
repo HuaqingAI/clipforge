@@ -49,6 +49,112 @@ describe("video model capabilities", () => {
     });
   });
 
+  it.each([
+    "doubao-seedance-2.5",
+    "doubao-seedance-2.0",
+    "doubao-seedance-2.0-fast",
+    "doubao-seedance-2.0-mini",
+    "doubao-seedance-2-5-260628",
+    "doubao-seedance-2-0-260128",
+  ])("recognizes the unified Ark video modes for %s without importing Atlas limits", (modelId) => {
+    const caps = getVideoModelCapabilities(modelId, undefined, "volcengine");
+    expect(caps).toMatchObject({
+      confidence: "inferred",
+      textToVideo: true,
+      imageToVideo: true,
+      referenceImages: true,
+      referenceVideo: true,
+      referenceAudio: true,
+      lastFrame: true,
+      nativeAudio: true,
+      temporalRetake: false,
+      regionMask: false,
+      multiKeyframes: false,
+      maxReferenceImages: 9,
+    });
+    expect(caps.durationValues).toBeUndefined();
+    expect(caps.resolutionValues).toBeUndefined();
+    expect(caps.aspectRatioValues).toBeUndefined();
+    expect(caps.videoEdit).toBe(!modelId.includes("2.5") && !modelId.includes("2-5"));
+  });
+
+  it("keeps AgentPlan 480p requests unchanged during preflight", () => {
+    const result = preflightVideoGeneration({
+      modelId: "doubao-seedance-2.5",
+      provider: "volcengine",
+      duration: 4,
+      resolution: "480p",
+      aspectRatio: "16:9",
+      chainMode: "pin",
+      audioEnabled: true,
+    });
+    expect(result.adjustments).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each([
+    "doubao-seedance-2.5",
+    "doubao-seedance-2.0",
+    "doubao-seedance-2.0-fast",
+    "doubao-seedance-2.0-mini",
+  ])("warns that Ark %s cannot pin an end frame alongside product or presenter references", (modelId) => {
+    const result = preflightVideoGeneration({
+      modelId,
+      provider: "volcengine",
+      resolution: "480p",
+      aspectRatio: "9:16",
+      chainMode: "pin",
+      referenceImageCount: 2,
+    });
+    expect(result.capabilities.lastFrame).toBe(true);
+    expect(result.capabilities.referenceImages).toBe(true);
+    expect(result.adjustments).toEqual([
+      { field: "chainMode", requested: "pin", effective: "off", code: "last-frame-as-reference" },
+    ]);
+    expect(result.warnings).toEqual(["last-frame-as-reference"]);
+  });
+
+  it("also previews the Ark end-frame fallback when using an audio reference", () => {
+    const result = preflightVideoGeneration({
+      modelId: "doubao-seedance-2.5",
+      provider: "volcengine",
+      resolution: "480p",
+      aspectRatio: "9:16",
+      chainMode: "pin",
+      referenceAudioCount: 1,
+    });
+    expect(result.adjustments).toContainEqual({
+      field: "chainMode", requested: "pin", effective: "off", code: "last-frame-as-reference",
+    });
+    expect(result.warnings).toContain("last-frame-as-reference");
+  });
+
+  it.each(["tail", "off"] as const)("does not warn about an Ark end frame for %s chaining", (chainMode) => {
+    const result = preflightVideoGeneration({
+      modelId: "doubao-seedance-2.5",
+      provider: "volcengine",
+      resolution: "480p",
+      aspectRatio: "9:16",
+      chainMode,
+      referenceImageCount: 2,
+    });
+    expect(result.adjustments).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("keeps Atlas chaining preflight unchanged when product references are present", () => {
+    const result = preflightVideoGeneration({
+      modelId: "bytedance/seedance-2.5/image-to-video",
+      provider: "atlas-cloud",
+      resolution: "720p",
+      aspectRatio: "9:16",
+      chainMode: "pin",
+      referenceImageCount: 2,
+    });
+    expect(result.adjustments.some((item) => item.code === "last-frame-as-reference")).toBe(false);
+    expect(result.warnings).not.toContain("last-frame-as-reference");
+  });
+
   it("keeps unknown custom models permissive", () => {
     const result = preflightVideoGeneration({
       modelId: "my-company/video-v9",

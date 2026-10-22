@@ -7,7 +7,8 @@ import { and, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { getDb } from "@/lib/db";
-import { assets, generationReviews } from "@/lib/db/schema";
+import { assets, generationReviews, scripts } from "@/lib/db/schema";
+import { assetMatchesScript, filterAssetsForScript } from "@/lib/asset-context";
 import { probeMedia } from "@/lib/media-probe";
 import { createProvider } from "@/lib/providers";
 import { ProviderError } from "@/lib/providers/base";
@@ -22,6 +23,7 @@ import {
 } from "@/lib/video-repair-plan";
 import { finalizeVideoRepair } from "@/lib/video-repair-finalize";
 import { extractFrameAtTime } from "@/lib/video-composer/frame-extract";
+import { isKlingVideoSelection } from "@/lib/assets-view";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,11 +54,15 @@ interface RepairRequest {
 
 async function loadRepairContext(projectId: string, assetId: string, reviewId: string) {
   const db = getDb();
-  const [[asset], [review], projectAssets] = await Promise.all([
+  const [[asset], [review], allAssets, scriptRows] = await Promise.all([
     db.select().from(assets).where(and(eq(assets.id, assetId), eq(assets.projectId, projectId))).limit(1),
     db.select().from(generationReviews).where(and(eq(generationReviews.id, reviewId), eq(generationReviews.projectId, projectId))).limit(1),
     db.select().from(assets).where(eq(assets.projectId, projectId)),
+    db.select().from(scripts).where(eq(scripts.projectId, projectId)),
   ]);
+  const script = scriptRows.find((row) => row.selected) ?? scriptRows[0];
+  if (asset && !assetMatchesScript(asset, script)) throw new Error("修复候选不属于当前脚本修订，请刷新后选择当前镜头");
+  const projectAssets = filterAssetsForScript(allAssets, script);
   if (!asset?.filePath || asset.status !== "done" || !VIDEO_EXT.test(asset.filePath)) throw new Error("请选择已完成的视频候选");
   if (!review || review.assetId !== asset.id) throw new Error("评估记录与候选不匹配，请刷新后重试");
   const sourcePath = resolveUploadFilePath(asset.filePath);
@@ -73,6 +79,7 @@ async function compilePreview(projectId: string, body: RepairRequest, forceOpera
   const assetId = typeof body.assetId === "string" && SAFE_ID.test(body.assetId) ? body.assetId : "";
   const reviewId = typeof body.reviewId === "string" && SAFE_ID.test(body.reviewId) ? body.reviewId : "";
   const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+  if (provider === "kling-cli" || isKlingVideoSelection(body.model)) throw new Error("Kling CLI 首版不支持自动修复，请使用素材页单镜头生成");
   const model = typeof body.model === "string" ? body.model.trim() : "";
   if (!assetId || !reviewId || !provider || !model) throw new Error("缺少候选、评估、平台或模型");
   const context = await loadRepairContext(projectId, assetId, reviewId);
@@ -209,6 +216,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let body: RepairRequest;
   try {
     body = await req.json();
+    if (body.provider === "kling-cli" || isKlingVideoSelection(body.model)) return NextResponse.json({ error: "Kling CLI 首版不支持自动修复，请使用单镜头入口", code: "KLING_SCOPE_UNSUPPORTED" }, { status: 400 });
   } catch {
     return apiError(req, "无效的修复参数", "Invalid repair payload", 400);
   }

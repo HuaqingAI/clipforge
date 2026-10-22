@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,28 @@ interface WorkRow {
   createdAt: string | null;
   url: string;
   thumbnailUrl: string | null;
+}
+
+interface ProjectDeleteIssue {
+  message: string;
+  blockingTasks: Array<{ kind: "kling_job" | "kling_film"; id: string; href: string }>;
+}
+
+function projectDeleteIssue(body: unknown, projectId: string, fallback: string): ProjectDeleteIssue {
+  const payload = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const message = typeof payload.error === "string" && payload.error.trim() ? payload.error : fallback;
+  const blockingTasks: ProjectDeleteIssue["blockingTasks"] = [];
+  if (payload.code === "PROJECT_HAS_UNRESOLVED_KLING_TASKS" && Array.isArray(payload.blockingTasks)) {
+    for (const value of payload.blockingTasks) {
+      if (!value || typeof value !== "object") continue;
+      const task = value as Record<string, unknown>;
+      if ((task.kind !== "kling_job" && task.kind !== "kling_film") || typeof task.id !== "string" || !task.id) continue;
+      const query = task.kind === "kling_film" ? "klingFilm" : "klingJob";
+      const href = `/project/${encodeURIComponent(projectId)}/assets?${query}=${encodeURIComponent(task.id)}`;
+      if (task.href === href) blockingTasks.push({ kind: task.kind, id: task.id, href });
+    }
+  }
+  return { message, blockingTasks };
 }
 
 // project status → the pipeline step to resume at (done lands on export where the film lives)
@@ -68,6 +90,12 @@ export default function ProjectsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"projects" | "works">("projects");
+  const [deleteIssues, setDeleteIssues] = useState<Record<string, ProjectDeleteIssue>>({});
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const deleting = useRef(new Set<string>());
+  const [workDeleteErrors, setWorkDeleteErrors] = useState<Record<string, string>>({});
+  const [deletingWorkIds, setDeletingWorkIds] = useState<Set<string>>(new Set());
+  const deletingWorks = useRef(new Set<string>());
 
   useEffect(() => {
     let cancelled = false;
@@ -119,14 +147,54 @@ export default function ProjectsPage() {
 
   // delete = destructive: text-level confirm first; the row disappears only after the API succeeds
   const handleDelete = async (p: ProjectRow) => {
+    if (deleting.current.has(p.id)) return;
     if (!window.confirm(t("deleteConfirm", { name: p.name || p.productName || t("untitled") }))) return;
+    deleting.current.add(p.id);
+    setDeletingIds(new Set(deleting.current));
+    setDeleteIssues((prev) => {
+      const next = { ...prev }; delete next[p.id]; return next;
+    });
     try {
-      const res = await fetch(`/api/project/${p.id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error(String(res.status));
+      const res = await fetch(`/api/project/${p.id}`, { method: "DELETE", headers: { "Accept-Language": locale } });
+      if (!res.ok) {
+        const body: unknown = await res.json().catch(() => null);
+        const issue = projectDeleteIssue(body, p.id, t("deleteFailed"));
+        setDeleteIssues((prev) => ({ ...prev, [p.id]: issue }));
+        return;
+      }
       setRows((prev) => prev.filter((r) => r.id !== p.id));
       setWorks((prev) => prev.filter((w) => w.projectId !== p.id));
     } catch {
-      window.alert(t("deleteFailed"));
+      setDeleteIssues((prev) => ({ ...prev, [p.id]: { message: t("deleteFailed"), blockingTasks: [] } }));
+    } finally {
+      deleting.current.delete(p.id);
+      setDeletingIds(new Set(deleting.current));
+    }
+  };
+
+  const handleDeleteWork = async (work: WorkRow) => {
+    if (deletingWorks.current.has(work.id)) return;
+    if (!window.confirm(t("deleteWorkConfirm", { name: work.label || work.productName || work.projectName || t("untitled") }))) return;
+    deletingWorks.current.add(work.id);
+    setDeletingWorkIds(new Set(deletingWorks.current));
+    setWorkDeleteErrors((prev) => {
+      const next = { ...prev }; delete next[work.id]; return next;
+    });
+    try {
+      const res = await fetch(`/api/works/${encodeURIComponent(work.id)}`, { method: "DELETE", headers: { "Accept-Language": locale } });
+      if (!res.ok) {
+        const body: unknown = await res.json().catch(() => null);
+        const payload = body && typeof body === "object" ? body as { error?: unknown } : {};
+        const message = typeof payload.error === "string" && payload.error.trim() ? payload.error : t("deleteWorkFailed");
+        setWorkDeleteErrors((prev) => ({ ...prev, [work.id]: message }));
+        return;
+      }
+      setWorks((prev) => prev.filter((item) => item.id !== work.id));
+    } catch {
+      setWorkDeleteErrors((prev) => ({ ...prev, [work.id]: t("deleteWorkFailed") }));
+    } finally {
+      deletingWorks.current.delete(work.id);
+      setDeletingWorkIds(new Set(deletingWorks.current));
     }
   };
 
@@ -226,14 +294,27 @@ export default function ProjectsPage() {
                             <p className="truncate text-xs font-medium">{w.productName || w.projectName || t("untitled")}</p>
                             <p className="truncate text-[11px] text-muted-foreground">{rel}</p>
                           </div>
-                          <a
-                            href={`${w.url}?download=1`}
-                            title={t("download")}
-                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                          >
-                            <LuDownload className="h-3.5 w-3.5" />
-                          </a>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <a
+                              href={`${w.url}?download=1`}
+                              title={t("download")}
+                              className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                            >
+                              <LuDownload className="h-3.5 w-3.5" />
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteWork(w)}
+                              title={t("deleteWork")}
+                              aria-label={t("deleteWork")}
+                              disabled={deletingWorkIds.has(w.id)}
+                              className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-red-500/15 hover:text-red-400 disabled:cursor-wait disabled:opacity-50"
+                            >
+                              {deletingWorkIds.has(w.id) ? <LuLoader className="h-3.5 w-3.5 animate-spin" /> : <LuTrash2 className="h-3.5 w-3.5" />}
+                            </button>
+                          </div>
                         </div>
+                        {workDeleteErrors[w.id] && <p role="alert" className="mx-2.5 mb-2.5 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">{workDeleteErrors[w.id]}</p>}
                       </CardContent>
                     </Card>
                   );
@@ -299,11 +380,28 @@ export default function ProjectsPage() {
                         type="button"
                         onClick={() => handleDelete(p)}
                         title={t("deleteProject")}
-                        className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground/70 opacity-100 transition-colors hover:bg-red-500/15 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100"
+                        aria-label={t("deleteProject")}
+                        disabled={deletingIds.has(p.id)}
+                        className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground/70 opacity-100 transition-colors hover:bg-red-500/15 hover:text-red-400 disabled:cursor-wait disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100"
                       >
-                        <LuTrash2 className="h-3.5 w-3.5" />
+                        {deletingIds.has(p.id) ? <LuLoader className="h-3.5 w-3.5 animate-spin" /> : <LuTrash2 className="h-3.5 w-3.5" />}
                       </button>
                     </div>
+                    {deleteIssues[p.id] && (
+                      <div role="alert" className="mx-3 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs">
+                        <p className="text-destructive">{deleteIssues[p.id].message}</p>
+                        {deleteIssues[p.id].blockingTasks.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                            {deleteIssues[p.id].blockingTasks.map((task, index) => (
+                              <Link key={`${task.kind}:${task.id}`} href={task.href} className="text-primary underline underline-offset-2">
+                                {t(task.kind === "kling_film" ? "deleteReviewFilm" : "deleteReviewJob")}
+                                {deleteIssues[p.id].blockingTasks.length > 1 ? ` ${index + 1}` : ""}
+                              </Link>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );

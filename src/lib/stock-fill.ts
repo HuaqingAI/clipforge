@@ -16,7 +16,8 @@ import { searchStock, searchAllStock, type StockSearchOptions } from "@/lib/prov
 import { broadenQuery, pickBestCandidate, authorKeyOf, fallbackLevelOf, type FallbackLevel } from "@/lib/stock-matcher";
 import { validateOrDelete } from "@/lib/media-validate";
 import { getDb } from "@/lib/db";
-import { assets as assetsTable } from "@/lib/db/schema";
+import { assets as assetsTable, scripts } from "@/lib/db/schema";
+import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { and, eq } from "drizzle-orm";
 
 export interface FillShotInput {
@@ -115,7 +116,11 @@ export async function persistCandidate(
 
   const db = getDb();
   const [row] = db.transaction((tx) => {
-    tx.update(assetsTable).set({ selected: false }).where(and(eq(assetsTable.projectId, projectId), eq(assetsTable.shotId, shotId))).run();
+    const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, projectId)).all();
+    const script = scriptRows.find((item) => item.selected) ?? scriptRows[scriptRows.length - 1];
+    const shot = script?.shots?.find((item) => item.shotId === shotId);
+    const candidates = tx.select().from(assetsTable).where(and(eq(assetsTable.projectId, projectId), eq(assetsTable.shotId, shotId))).all();
+    for (const candidate of filterAssetsForScript(candidates, script)) tx.update(assetsTable).set({ selected: false }).where(eq(assetsTable.id, candidate.id)).run();
     return tx.insert(assetsTable).values({
       projectId,
       shotId,
@@ -129,6 +134,7 @@ export async function persistCandidate(
       license: c.license,
       selected: true,
       status: "done",
+      ...(script && shot && assetScopeForShot(script, shot)),
     }).returning().all();
   });
 

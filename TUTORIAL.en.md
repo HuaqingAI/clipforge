@@ -77,7 +77,7 @@ Still stuck afterwards → [open an Issue](https://github.com/xixihhhh/clipforge
 | **One-tap full film** | All keyframes go to the video model at once, producing the whole film with native cuts and lines spoken in the character's own voice. |
 | **Judge panel** | Four narrow, bad-tempered judges (pacing / spoken voice / freshness / structure) tear the lines apart and rewrite them **before** anything costs money. Free. |
 | **Easy / Director mode** | Toggle at the bottom of the sidebar. Easy keeps the single one-tap path; Director unlocks storyboard and all pro tools. |
-| **AI labeling** | Chinese platforms require AI content to be labeled. ClipForge **does it by default** (opening badge + file metadata) — nothing for you to configure. |
+| **AI labeling** | Chinese platforms require AI content to be labeled. ClipForge **writes file metadata by default**; the visible opening badge is off by default and added only when explicitly enabled. |
 
 ---
 
@@ -364,7 +364,7 @@ What you'll use on the export page:
 
 **About compliance (matters on Chinese platforms — but you don't have to do anything):**
 
-- Every render **burns in an "AI generated" badge** at the start (top-left, ≥2s) and **writes implicit file metadata** (aligned with China's GB 45438-2025 standard);
+- The visible opening "AI generated" badge is **off by default and burned in only when explicitly enabled** (top-left, ≥2s); every render still **writes implicit file metadata** (aligned with China's GB 45438-2025 standard);
 - The script page **scans for ad-law risk words** with hover-over replacement suggestions;
 - A **pre-publish self-check** rates risk words, hook, duration, subtitles and CTA, and tells you how to fix each.
 
@@ -465,6 +465,7 @@ Director mode adds a four-step bar to every project: **Script → Assets → Vid
 | Section | What you can tune |
 |---|---|
 | **Voiceover (TTS)** | Toggle auto voice-over; free voices included, with **▶ preview this voice**; a configured paid TTS takes precedence |
+| **Replace original audio / Mix voiceover** | Both default off: preserve original audio and narrate only silent clips. Replace uses generated voiceover instead of original audio; Mix plays both together. Mutually exclusive; enable auto voiceover first |
 | **Background music** | Upbeat / chill / energetic / emotional, or upload your own mp3; **ducking** keeps narration clear |
 | **Voice grounding** | Adds room tone and removes the broadcast polish, so it sounds phone-real (on by default) |
 | **Subtitles** | Position (bottom / center / top) + four styles: Standard boxed / Bold punch (high-retention look) / Minimal / Karaoke |

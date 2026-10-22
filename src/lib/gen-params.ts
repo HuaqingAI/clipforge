@@ -10,8 +10,10 @@
  *   and attaches them to generation request options.
  */
 
+import { configuredCatalogProviders } from "@/lib/model-catalog";
+
 export type GenAspectRatio = "9:16" | "16:9" | "1:1";
-export type GenResolution = "720p" | "1080p";
+export type GenResolution = "480p" | "720p" | "1080p";
 export type GenMediaType = "image" | "video";
 
 /** User-defined custom model (any model id mounted on an existing platform) */
@@ -58,6 +60,8 @@ export interface VideoGenParams {
   seed?: number;
   /** Negative prompt */
   negativePrompt?: string;
+  /** Explicit false keeps generation silent; undefined preserves the model's audio strategy. */
+  audioEnabled?: boolean;
 }
 
 export const DEFAULT_IMAGE_PARAMS: ImageGenParams = {
@@ -81,6 +85,7 @@ export const ASPECT_RATIO_OPTIONS: { value: GenAspectRatio; label: string }[] = 
 ];
 
 export const RESOLUTION_OPTIONS: { value: GenResolution; label: string }[] = [
+  { value: "480p", label: "480p" },
   { value: "720p", label: "720p" },
   { value: "1080p", label: "1080p" },
 ];
@@ -100,8 +105,8 @@ export function imageSize(aspect: GenAspectRatio): { width: number; height: numb
 
 /** Resolution + aspect ratio → video dimensions */
 export function videoSize(resolution: GenResolution, aspect: GenAspectRatio): { width: number; height: number } {
-  const long = resolution === "1080p" ? 1920 : 1280;
-  const short = resolution === "1080p" ? 1080 : 720;
+  const long = resolution === "1080p" ? 1920 : resolution === "480p" ? 854 : 1280;
+  const short = resolution === "1080p" ? 1080 : resolution === "480p" ? 480 : 720;
   switch (aspect) {
     case "16:9":
       return { width: long, height: short };
@@ -160,6 +165,7 @@ export function buildVideoOptions(p: VideoGenParams | undefined): Record<string,
     ...(motionStrength != null && { motionStrength }),
     ...(seed != null && { seed }),
     ...(params.negativePrompt ? { negativePrompt: params.negativePrompt } : {}),
+    ...(typeof params.audioEnabled === "boolean" ? { audioEnabled: params.audioEnabled } : {}),
   };
 }
 
@@ -181,6 +187,9 @@ export interface GenModelTarget {
   model: string;
   apiKey: string;
   baseUrl?: string;
+  profileId?: string;
+  selectionKey?: string;
+  tool?: "text_to_video" | "image_to_video";
 }
 
 /**
@@ -189,17 +198,17 @@ export interface GenModelTarget {
  * is configured — callers surface their own "configure a provider" message.
  */
 export async function resolveDefaultModelTarget(
-  providers: Record<string, { enabled?: boolean; apiKey?: string; baseUrl?: string }>,
+  providers: Record<string, { enabled?: boolean; apiKey?: string; baseUrl?: string; profileId?: string }>,
   defaultModel: string | undefined,
   customModels: CustomModel[],
   mediaType: GenMediaType
 ): Promise<GenModelTarget | null> {
-  const enabled = Object.entries(providers)
-    .filter(([, p]) => p.enabled && p.apiKey)
-    .map(([name, p]) => ({ name, apiKey: p.apiKey!, baseUrl: p.baseUrl }));
+  const enabled = configuredCatalogProviders(providers, mediaType);
   if (enabled.length === 0 || !defaultModel) return null;
   try {
-    const res = await fetch("/api/ai/models", {
+    const request = enabled.some((provider) => provider.name === "kling-cli")
+      ? (await import("@/lib/kling/client")).klingFetch : fetch;
+    const res = await request("/api/ai/models", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ providers: enabled, mediaType }),
@@ -208,9 +217,17 @@ export async function resolveDefaultModelTarget(
     const data = await res.json();
     const merged = mergeCustomModels(data.models ?? [], customModels, mediaType, new Set(enabled.map((e) => e.name)));
     const model = merged.find((m) => m.id === defaultModel);
-    if (!model) return null;
+    if (!model || model.extra?.available === false) return null;
     const prov = enabled.find((e) => e.name === model.provider);
-    return prov ? { provider: prov.name, model: defaultModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl } : null;
+    if (!prov) return null;
+    return {
+      provider: prov.name, model: defaultModel, apiKey: prov.apiKey ?? "", baseUrl: prov.baseUrl,
+      ...(prov.name === "kling-cli" ? {
+        profileId: typeof model.extra?.profileId === "string" ? model.extra.profileId : prov.profileId,
+        selectionKey: model.id,
+        tool: model.extra?.tool === "text_to_video" || model.extra?.tool === "image_to_video" ? model.extra.tool : undefined,
+      } : {}),
+    };
   } catch {
     return null;
   }
@@ -226,6 +243,7 @@ export interface ModelLike {
   supportsAudio?: boolean;
   /** Marked as user-defined (UI may add a badge / distinguish the source) */
   custom?: boolean;
+  extra?: Record<string, unknown>;
 }
 
 /** Custom model → model list entry (reused by the dropdown and generation logic to resolve the platform Key/baseUrl) */
@@ -253,10 +271,12 @@ export function mergeCustomModels(
   enabledProviders?: Set<string>
 ): ModelLike[] {
   const extras = (customModels ?? [])
+    // CLI models require a live, account-owned descriptor; a manually entered ID cannot establish capabilities.
+    .filter((cm) => cm.provider !== "kling-cli")
     .filter((cm) => cm.mediaType === mediaType)
     .filter((cm) => !enabledProviders || enabledProviders.has(cm.provider))
     .map(customModelToModelLike)
     // Remove entries whose id already exists in the official list
-    .filter((cm) => !fetched.some((m) => m.id === cm.id));
+    .filter((cm) => !fetched.some((m) => m.id === cm.id && m.provider === cm.provider));
   return [...fetched, ...extras];
 }

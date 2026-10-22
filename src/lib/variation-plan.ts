@@ -1,6 +1,6 @@
 /**
  * Anti-homogenization variation plan — assigns each item in a batch a deliberately different
- * structural mix (opening hook mechanism / script style / voice / BGM mood / caption style /
+ * structural mix (opening hook mechanism / script style / voice / caption style /
  * duration jitter) so a batch doesn't ship N near-identical videos.
  *
  * Why (2026 survey): platforms now suppress template-repetitive output at the account level
@@ -25,9 +25,6 @@ export interface VariationSlot {
   /** free Edge TTS voice — only set when voice rotation is enabled */
   voice?: string;
   voiceLabel?: string;
-  /** free BGM on + mood (BGM is a strong differentiator; one slot per cycle stays BGM-free) */
-  bgm: boolean;
-  bgmMood?: "upbeat" | "chill" | "energetic" | "emotional";
   /** caption style alternation: karaoke word-highlight vs rapid short-sentence cards */
   karaoke: boolean;
   /** seconds added to the base duration (small jitter so videos don't all share one length) */
@@ -37,7 +34,6 @@ export interface VariationSlot {
 // Narration-form styles only: auto-generated A/B variants must not silently switch a project into a
 // dialogue/cast format (drama/interview/product_pov invent characters — that is an explicit user choice)
 const STYLE_POOL = ["pain_point", "scene", "comparison", "story", "reversal", "unboxing", "talking_head"] as const;
-const MOOD_POOL = ["upbeat", "chill", "energetic", "emotional"] as const;
 const DURATION_OFFSETS = [0, 3, -3, 5] as const;
 
 /** deterministic tiny PRNG (mulberry32) — reproducible plans for tests and reruns */
@@ -77,19 +73,14 @@ export function buildVariationPlan(opts: VariationPlanOpts): VariationSlot[] {
   const hookStart = start(hooks.length);
   const styleStart = start(STYLE_POOL.length);
   const voiceStart = start(Math.max(1, zhVoices.length));
-  const moodStart = start(MOOD_POOL.length);
 
   return Array.from({ length: count }, (_, i) => {
     const hook = hooks[(hookStart + i) % hooks.length];
     const voice = zhVoices.length > 0 ? zhVoices[(voiceStart + i) % zhVoices.length] : undefined;
-    // one slot per 4-cycle goes BGM-free (silence/original-pace is itself a variation dimension)
-    const bgm = (moodStart + i) % 4 !== 3;
     const slot: VariationSlot = {
       index: i,
       hookId: hook.id,
       hookName: hook.name,
-      bgm,
-      ...(bgm ? { bgmMood: MOOD_POOL[(moodStart + i) % MOOD_POOL.length] } : {}),
       karaoke: i % 2 === 1,
       durationOffset: DURATION_OFFSETS[i % DURATION_OFFSETS.length],
     };
@@ -108,7 +99,6 @@ export function describeSlot(slot: VariationSlot, styleNames: Record<string, str
   const bits = [`${zh ? "钩子" : "Hook"}:${slot.hookName}`];
   if (slot.styleType) bits.push(`${zh ? "风格" : "Style"}:${styleNames[slot.styleType] ?? slot.styleType}`);
   if (slot.voiceLabel) bits.push(`${zh ? "音色" : "Voice"}:${slot.voiceLabel.split(" ·")[0]}`);
-  bits.push(slot.bgm ? `BGM:${slot.bgmMood}` : zh ? "无BGM" : "no BGM");
   bits.push(slot.karaoke ? (zh ? "卡拉OK字幕" : "karaoke captions") : zh ? "短句卡字幕" : "card captions");
   if (slot.durationOffset !== 0) bits.push(`${zh ? "时长" : "len"}${slot.durationOffset > 0 ? "+" : ""}${slot.durationOffset}s`);
   return bits.join(" · ");

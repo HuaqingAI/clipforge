@@ -16,10 +16,10 @@ import { PerformanceFeedback } from "@/components/performance-feedback";
 
 import { PlatformExportPanel } from "@/components/platform-export-panel";
 
-// A/B variant presets: re-render one video per preset using existing params (subtitle style + BGM mood) to compare which converts better in ads (no key required throughout)
+// A/B variant presets: re-render one video per subtitle style to compare ad performance.
 const AB_PRESETS: { key: string; labelKey: string; compose: Record<string, unknown> }[] = [
-  { key: "karaoke", labelKey: "abVariantKaraoke", compose: { karaoke: true, bgmMood: "upbeat" } },
-  { key: "rapid", labelKey: "abVariantRapid", compose: { bgmMood: "energetic" } },
+  { key: "karaoke", labelKey: "abVariantKaraoke", compose: { karaoke: true } },
+  { key: "rapid", labelKey: "abVariantRapid", compose: { karaoke: false } },
 ];
 
 // script style → i18n key (resolved to translated text at render time)
@@ -68,7 +68,7 @@ export default function ExportPage() {
   const { llm } = useSettingsStore();
   const [productMeta, setProductMeta] = useState<{ productName: string; category: string; description: string; shopUrl?: string; affiliateCode?: string } | null>(null);
   const [publish, setPublish] = useState<{ loading: boolean; titles: string[]; hashtags: string[]; caption: string; commentKit?: CommentKit; shopLink?: string; error?: string; template?: boolean }>({ loading: false, titles: [], hashtags: [], caption: "" });
-  // A/B variant generation (re-render with different subtitle styles and BGM, one each, for ad comparison)
+  // A/B variant generation (re-render once per subtitle style for ad comparison)
   const [abVariants, setAbVariants] = useState<{ key: string; labelKey: string; status: "running" | "done" | "error"; url?: string }[]>([]);
   const [abRunning, setAbRunning] = useState(false);
 
@@ -81,7 +81,7 @@ export default function ExportPage() {
     try { await navigator.clipboard.writeText(text); showToast(t("copied")); } catch { showToast(t("copyFailed")); }
   };
 
-  // sequentially re-render each A/B variant (different subtitle style + BGM); produce a download link as each one completes; no key required throughout
+  // Sequentially render each subtitle variant and show a download link when it completes.
   const generateAbVariants = async () => {
     if (abRunning) return;
     setAbRunning(true);
@@ -95,7 +95,6 @@ export default function ExportPage() {
             resolution: composition?.resolution === "720p" ? "720p" : "1080p",
             aspectRatio: composition?.aspectRatio || "9:16",
             freeTts: { enabled: true },
-            freeBgm: true,
             ...p.compose,
           }),
         });
@@ -263,7 +262,7 @@ export default function ExportPage() {
     try {
       const r = await fetch(`/api/project/${id}/dub`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetLang: dubLang, llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model } }),
+        body: JSON.stringify({ targetLang: dubLang, llmConfig: { provider: llm.provider, baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model } }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || t("moreFailed"));
@@ -658,7 +657,7 @@ export default function ExportPage() {
             {/* performance feedback: backfill data after publishing → learn which style sells better */}
             <PerformanceFeedback projectId={id} />
 
-            {/* A/B variants: re-render one video per subtitle style + BGM combo to compare conversion rates in ads */}
+            {/* A/B variants: re-render one video per subtitle style to compare conversion rates in ads */}
             <Card className="glass-card">
               <CardContent className="p-5">
                 <div className="flex items-center justify-between mb-2">

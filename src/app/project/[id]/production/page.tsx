@@ -27,7 +27,6 @@ import {
   LuTags,
   LuThumbsDown,
   LuThumbsUp,
-  LuWandSparkles,
 } from "react-icons/lu";
 import { Button } from "@/components/ui/button";
 import { MasteringPanel } from "@/components/mastering-panel";
@@ -45,7 +44,6 @@ import {
   type ProjectMediaInsight,
   type ProductionSnapshot,
   type RepairAction,
-  type RoutingGoal,
   type SemanticAsset,
   type VersionTree,
   type VisualBible,
@@ -54,6 +52,8 @@ import {
 } from "@/lib/production-system";
 import type { Model } from "@/lib/providers/types";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { SHOW_TEXT_EDITOR } from "@/lib/ui-features";
+import { isKlingVideoSelection } from "@/lib/assets-view";
 import type { QcReport } from "@/lib/video-composer/qc";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
 import {
@@ -155,13 +155,13 @@ export default function ProductionPage() {
   const { id } = useParams<{ id: string }>();
   const t = useT("production");
   const locale = useLocale();
-  const { providers, customModels, defaultImageModel, defaultVideoModel, chainMode, llm, setDefaultVideoModel } = useSettingsStore();
+  const { providers, customModels, defaultImageModel, defaultVideoModel, chainMode, llm } = useSettingsStore();
+  const klingDefault = isKlingVideoSelection(defaultVideoModel);
   const [overview, setOverview] = useState<ProductionOverview | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [workflow, setWorkflow] = useState<WorkflowStagePlan[]>([]);
   const [bible, setBible] = useState<VisualBible>(EMPTY_BIBLE);
   const [intent, setIntent] = useState<CreativeIntent>(EMPTY_INTENT);
-  const [goal, setGoal] = useState<RoutingGoal>("balanced");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"workflow" | "memory" | "snapshot" | "qc" | "repair" | null>(null);
   const [status, setStatus] = useState("");
@@ -236,13 +236,13 @@ export default function ProductionPage() {
       observedReviews: observed?.reviews,
       rejectionRate: observed?.rejectionRate,
     };
-  }), { mode: "image-to-video", goal, requireLastFrame: chainMode !== "off" }), [chainMode, goal, modelQualityStats, videoModels]);
+  }), { mode: "image-to-video", goal: "balanced", requireLastFrame: chainMode !== "off" }), [chainMode, modelQualityStats, videoModels]);
 
   const estimate = useMemo(() => estimateProduction({
     shotCount: overview?.selectedScript?.shotCount || Math.max(1, overview?.counts.assets || 1), workflow,
     imageUnitUsd: priceOf(models.find((model) => model.id === defaultImageModel)),
-    videoUnitUsd: priceOf(models.find((model) => model.id === (routeDecision.selected?.id || defaultVideoModel))),
-  }), [defaultImageModel, defaultVideoModel, models, overview, routeDecision.selected?.id, workflow]);
+    videoUnitUsd: klingDefault ? undefined : priceOf(models.find((model) => model.id === (routeDecision.selected?.id || defaultVideoModel))),
+  }), [defaultImageModel, defaultVideoModel, klingDefault, models, overview, routeDecision.selected?.id, workflow]);
 
   const previewPlan = useMemo(() => buildPreviewPlan({ duration: overview?.selectedScript?.totalDuration || 15, hasGeneratedMotion: Boolean(overview?.counts.clips) }), [overview]);
   const diagnosis = overview?.latestFailure ? diagnoseGenerationFailure(overview.latestFailure.error) : null;
@@ -401,7 +401,9 @@ export default function ProductionPage() {
           <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{t("subtitle")}</p>
         </div>
         <div className="flex self-start gap-2 sm:self-auto">
-          <Link href={`/project/${id}/transcript`} className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/8 px-3 text-sm font-medium text-primary hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><LuScissors />{t("textEditor")}</Link>
+          {SHOW_TEXT_EDITOR && (
+            <Link href={`/project/${id}/transcript`} className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/8 px-3 text-sm font-medium text-primary hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><LuScissors />{t("textEditor")}</Link>
+          )}
           <Button variant="outline" className="h-10" disabled={busy === "snapshot"} onClick={() => patchProduction({ action: "snapshot" }, "snapshot")}>
             {busy === "snapshot" ? <LuLoaderCircle className="animate-spin motion-reduce:animate-none" /> : <LuGitBranch />}{t("snapshot")}
           </Button>
@@ -411,7 +413,7 @@ export default function ProductionPage() {
       <div role="status" aria-live="polite" className="mb-4 min-h-5 text-sm text-primary">{status}</div>
 
       <div className="mb-6 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-2xl border border-primary/25 bg-primary/8 p-4"><div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><LuBadgeDollarSign className="h-4 w-4 text-primary" />{t("cost")}</div><div className="text-xl font-bold tabular-nums">{t("usdRange", { min: estimate.rangeUsd.min.toFixed(2), max: estimate.rangeUsd.max.toFixed(2) })}</div><p className="mt-1 text-[11px] text-muted-foreground">{estimate.unknownCalls ? t("unknownCalls", { n: estimate.unknownCalls }) : t("priceKnown")}</p></div>
+        <div className="rounded-2xl border border-primary/25 bg-primary/8 p-4"><div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><LuBadgeDollarSign className="h-4 w-4 text-primary" />{t("cost")}</div><div className="text-xl font-bold tabular-nums">{klingDefault ? (locale === "zh" ? "Kling 官方积分" : "Kling account credits") : t("usdRange", { min: estimate.rangeUsd.min.toFixed(2), max: estimate.rangeUsd.max.toFixed(2) })}</div><p className="mt-1 text-[11px] text-muted-foreground">{klingDefault ? (locale === "zh" ? "请到素材页逐镜头确认费用与生成，当前不支持整片或批量自动编排。" : "Confirm each shot on Assets. Automatic full-film and batch generation are not available yet.") : estimate.unknownCalls ? t("unknownCalls", { n: estimate.unknownCalls }) : t("priceKnown")}</p></div>
         <div className="rounded-2xl border border-border/60 bg-card/55 p-4"><div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><LuClock3 className="h-4 w-4 text-primary" />{t("time")}</div><div className="text-xl font-bold tabular-nums">{t("minuteRange", { min: Math.max(1, Math.ceil(estimate.estimatedSeconds.min / 60)), max: Math.max(1, Math.ceil(estimate.estimatedSeconds.max / 60)) })}</div><p className="mt-1 text-[11px] text-muted-foreground">{t("shots", { n: overview.selectedScript?.shotCount || overview.counts.assets })}</p></div>
         <div className="rounded-2xl border border-border/60 bg-card/55 p-4"><div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><LuActivity className="h-4 w-4 text-primary" />{t("projectState")}</div><div className="text-xl font-bold">{overview.latestRun?.status ? t(`run_${overview.latestRun.status}`) : t("ready")}</div><p className="mt-1 text-[11px] text-muted-foreground">{t("outputCounts", { assets: overview.counts.assets, videos: overview.counts.compositions })}</p></div>
       </div>
@@ -512,11 +514,6 @@ export default function ProductionPage() {
         </div>
 
         <div className="min-w-0 space-y-5">
-          <Section title={t("router")} hint={t("routerHint")} icon={<LuWandSparkles className="h-4 w-4" />}>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 xl:grid-cols-2">{(["balanced", "cost", "speed", "quality", "consistency"] as RoutingGoal[]).map((item) => <button key={item} type="button" aria-pressed={goal === item} onClick={() => setGoal(item)} className={`min-h-9 rounded-lg border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-primary ${goal === item ? "border-primary/40 bg-primary/10 text-primary" : "border-border/60 text-muted-foreground hover:text-foreground"}`}>{t(`goal_${item}`)}</button>)}</div>
-            {routeDecision.selected ? <div className="mt-4 rounded-xl border border-primary/25 bg-primary/8 p-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-primary">{t("recommended")}</p><p className="mt-1 break-words text-sm font-semibold">{routeDecision.selected.name}</p><p className="mt-1 text-[11px] text-muted-foreground">{priceOf(videoModels.find((model) => model.id === routeDecision.selected?.id)) == null ? t("priceUnknown") : t("perCall", { price: priceOf(videoModels.find((model) => model.id === routeDecision.selected?.id))!.toFixed(3) })}</p>{modelQualityStats.find((stat) => stat.model === routeDecision.selected?.id) ? <p className="mt-1 text-[11px] text-muted-foreground">{t("modelQualityHistory", { score: modelQualityStats.find((stat) => stat.model === routeDecision.selected?.id)!.averageOverall, n: modelQualityStats.find((stat) => stat.model === routeDecision.selected?.id)!.reviews })}</p> : <p className="mt-1 text-[11px] text-muted-foreground">{t("modelNoHistory")}</p>}<Button className="mt-3 h-10 w-full" disabled={defaultVideoModel === routeDecision.selected.id} onClick={() => { setDefaultVideoModel(routeDecision.selected!.id); setStatus(t("modelApplied")); }}><LuCheck />{defaultVideoModel === routeDecision.selected.id ? t("applied") : t("applyModel")}</Button></div> : <p className="mt-4 text-sm text-muted-foreground">{t("noModel")}</p>}
-          </Section>
-
           <Section title={t("assets")} hint={t("assetCount", { n: overview.semanticAssets.length })} icon={<LuTags className="h-4 w-4" />}>
             {overview.semanticAssets.length ? <div className="space-y-3">{overview.semanticAssets.slice(0, 8).map((asset) => <div key={asset.id} className="rounded-xl border border-border/50 bg-background/30 p-3"><div className="flex items-center justify-between gap-2"><span className="text-xs font-medium">#{asset.shotId} · {asset.mediaType}</span><span className="text-[10px] text-muted-foreground">{asset.commercialStatus}</span></div><div className="mt-2 flex flex-wrap gap-1">{asset.tags.length ? asset.tags.slice(0, 6).map((tag) => <span key={tag} className="rounded-full bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground">{tag}</span>) : <span className="text-[11px] text-muted-foreground">{t("noTags")}</span>}</div></div>)}</div> : <p className="text-sm text-muted-foreground">{t("noTags")}</p>}
             {overview.mediaInsights.length > 0 && <div className="mt-4 border-t border-border/50 pt-3"><p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("mediaInsights")}</p>{overview.mediaInsights.slice(0, 3).map((insight) => <p key={insight.id} className="mb-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{insight.summary}</p>)}</div>}

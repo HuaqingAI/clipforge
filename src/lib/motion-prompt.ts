@@ -21,6 +21,8 @@ import type { Shot } from "@/lib/db/schema";
 import { REAL_FACE_CONSTRAINT } from "@/lib/presenters";
 import { emotionActingLine, shotEmotion } from "@/lib/emotion-acting";
 import type { ProductCategory } from "@/lib/script-engine/templates";
+import { joinVideoPromptParts } from "@/lib/video-prompt";
+import { VIDEO_AUDIO_DIRECTIONS, type VideoAudioMode } from "@/lib/video-audio";
 
 /** Camera-movement amplitude tier (Kling-style enumerated intensity instead of free text). */
 export type MotionIntensity = "subtle" | "normal" | "strong";
@@ -30,8 +32,10 @@ export interface MotionPromptInput {
   shotType?: Shot["type"] | string;
   /** The script engine's camera movement description (e.g. "特写 + 缓慢推近"); preferred over defaults */
   camera?: string;
-  /** Short scene description used as a semantic anchor (truncated; the first frame already fixes the scene) */
+  /** Complete scene direction, including exact display text and qualifications. Never truncate it. */
   description?: string;
+  /** Select one consistent sound direction; "none" leaves audio to the caller. */
+  audioMode?: VideoAudioMode;
   /** Apply product-fidelity constraints (product visible in frame — logo/text must not warp) */
   productShot?: boolean;
   /**
@@ -73,7 +77,7 @@ export interface MotionPromptInput {
    * Unlocks the category physical-realism layers:
    *  - category fidelity constraint (productShot): what "intact" means for THIS material
    *  - physical-interaction phrase (demo/product_reveal): action + material reaction
-   *  - both rotate deterministically via beatSeed against batch-level sameness
+   *  - only phrases grounded in the script are eligible for deterministic beatSeed rotation
    */
   category?: string;
   /**
@@ -110,10 +114,10 @@ const CAMERA_FALLBACK = { zh: "镜头缓慢推近主体", en: "slow push-in on t
 /** Per-shot-type subject micro-action — animates the still frame without re-imagining the scene. */
 const ACTION_DEFAULTS: Record<string, { zh: string; en: string }> = {
   hook: { zh: "画面主体动态醒目、能量感强", en: "the subject moves eye-catchingly with high energy" },
-  pain_point: { zh: "人物与环境自然轻微动作，情绪真实", en: "people and surroundings move subtly and naturally, authentic mood" },
-  product_reveal: { zh: "商品保持静置不动，仅光影流动与镜头移动，突出材质质感", en: "the product itself stays still; only light and camera move, emphasizing material texture" },
-  demo: { zh: "手部演示动作自然连贯", en: "hands demonstrate naturally and continuously" },
-  social_proof: { zh: "画面元素自然微动，生活气息真实", en: "scene elements drift subtly, believable everyday atmosphere" },
+  pain_point: { zh: "主体已有动作自然连贯，保持原图场景", en: "the subject's existing actions remain natural and coherent within the original scene" },
+  product_reveal: { zh: "保持商品原有外观与结构，仅呈现分镜已描述的动作", en: "preserve the product's original appearance and structure, showing only the actions described in the shot" },
+  demo: { zh: "保持原图主体与构图，仅呈现分镜已描述的动作", en: "preserve the original subject and composition, showing only the actions described in the shot" },
+  social_proof: { zh: "保持画面已有元素，已描述动作自然连贯", en: "preserve existing scene elements, keeping the described actions natural and coherent" },
   cta: { zh: "主体稳定醒目，画面收束聚焦", en: "the subject stays prominent and stable as the frame settles" },
 };
 
@@ -136,10 +140,10 @@ const TALKING_ACTION = {
  */
 const BEHAVIOR_BEATS: { zh: string; en: string }[] = [
   { zh: "说话间瞥了一眼旁边", en: "glances off to the side mid-sentence" },
-  { zh: "身体往后靠了一下又坐直", en: "leans back briefly, then settles forward again" },
+  { zh: "身体略微后移，再回到原来的姿态", en: "leans back briefly, then returns to the original posture" },
   { zh: "轻轻耸了下肩", en: "gives a small shrug" },
-  { zh: "换了一只手拿东西", en: "switches the object to the other hand" },
-  { zh: "被画外的动静吸引看了一眼", en: "gets briefly distracted by something off-screen" },
+  { zh: "双手短暂调整姿势后自然放松", en: "briefly adjusts the hands, then relaxes them naturally" },
+  { zh: "视线短暂移向画外再回到镜头", en: "briefly looks off-screen, then returns their gaze to the camera" },
   { zh: "说完自己先半笑了一下", en: "breaks into a half-smile at their own words" },
 ];
 
@@ -163,26 +167,22 @@ const PRODUCT_CONSTRAINT = {
  * failure mode each category actually exhibits (cream clumping, food crumbling, fabric
  * stiffening, glare on metal). Positive-phrased state descriptions, not negative lists.
  */
-const CATEGORY_CONSTRAINTS: Record<ProductCategory, { zh: string; en: string }> = {
+const CATEGORY_CONSTRAINTS: Record<Exclude<ProductCategory, "tech">, { zh: string; en: string }> = {
   beauty: {
-    zh: "膏体与液体质地均匀顺滑，涂抹推开自然服帖不结块",
-    en: "cream and liquid textures stay smooth and even, spreading naturally without clumping",
+    zh: "已有膏体与液体质地保持均匀顺滑，形态稳定不结块",
+    en: "existing cream and liquid textures stay smooth and even, holding their shape without clumping",
   },
   food: {
     zh: "食物色泽鲜亮自然、纹理清晰，形态完整不塌不散",
     en: "food keeps vivid natural color and clear texture, holding its shape without collapsing or crumbling",
   },
   home: {
-    zh: "部件开合顺畅到位，接缝与结构稳定不错位",
-    en: "parts open and close smoothly and precisely, seams and structure stay aligned and stable",
+    zh: "已有接缝与结构稳定对齐，部件形态保持完整",
+    en: "existing seams and structure stay aligned and stable, with the parts retaining their shape",
   },
   fashion: {
-    zh: "面料垂坠自然、褶皱柔软真实，版型放松不僵硬",
-    en: "fabric drapes naturally with soft believable creases, the fit stays relaxed, never stiff",
-  },
-  tech: {
-    zh: "金属与屏幕反光干净克制，接缝对齐，屏幕内容清晰稳定",
-    en: "metal and screen reflections stay clean and restrained, seams aligned, on-screen content sharp and stable",
+    zh: "已有面料保持自然垂坠与柔软真实的褶皱",
+    en: "existing fabric keeps its natural drape and soft believable creases",
   },
 };
 
@@ -251,7 +251,7 @@ function pickFrom<T>(pool: T[], seed: number): T {
 
 /** Normalize the free-form DB category string to a known category (undefined otherwise). */
 function normalizeCategory(category: string | undefined): ProductCategory | undefined {
-  return category && category in CATEGORY_CONSTRAINTS ? (category as ProductCategory) : undefined;
+  return category && Object.hasOwn(PHYSICAL_ACTION_LEXICON, category) ? (category as ProductCategory) : undefined;
 }
 
 /** Universal stability/artifact tail — cheap, consistent win against flicker and morphing. */
@@ -277,16 +277,6 @@ const SINGLE_SHOT = {
   en: "one continuous single take throughout, no cuts, no scene changes",
 };
 
-/**
- * Sound direction for audio-capable models (Seedance 2.0 generates audio; unspecified audio tends
- * toward random speech). Speech always comes from our TTS voice-over — clip audio must stay
- * ambient-only, since the composer surfaces native audio on shots WITHOUT a voice-over track.
- */
-const SOUND_DIRECTION = {
-  zh: "音效：自然环境音与动作音效贴合画面，无人声说话，环境底噪保持同一空间的延续感",
-  en: "sound: natural ambient and action sound effects matching the scene, no speech, the ambient noise floor stays continuous as one space",
-};
-
 /** Camera amplitude wording per intensity tier ("normal" keeps the baseline prompt unchanged). */
 const INTENSITY_LINES: Record<Exclude<MotionIntensity, "normal">, { zh: string; en: string }> = {
   subtle: { zh: "运镜幅度轻微克制，移动缓慢平稳", en: "camera movement stays subtle and restrained, slow and steady" },
@@ -294,7 +284,7 @@ const INTENSITY_LINES: Record<Exclude<MotionIntensity, "normal">, { zh: string; 
 };
 
 /** Camera-hold keywords (a locked-off camera instruction). */
-const STATIC_CAMERA_RE = /固定|静止|锁定|不动|fixed|static|locked/i;
+const STATIC_CAMERA_RE = /^\s*(?:static|fixed|locked(?:[- ]off)?|固定|静止|锁定)[。.!]?\s*$|(?:固定|静止|锁定)(?:镜头|机位|相机)|(?:镜头|机位|相机)[^，,。;；\n]{0,8}(?:固定|静止|锁定|不动)|(?:fixed|static|locked(?:[- ]off)?)\s+(?:camera|shot)|camera\s+(?:stays?\s+)?(?:fixed|static|locked)|locked[- ]off/i;
 /** Continuous camera-movement keywords. */
 const MOVING_CAMERA_RE =
   /环绕|环拍|推近|推进|拉远|拉近|横移|平移|摇镜|摇臂|甩镜|跟随|跟拍|升降|俯冲|orbit|push[- ]?in|pull[- ]?back|dolly|pan|tilt|track|crane|zoom|whip/i;
@@ -307,28 +297,89 @@ const SEQUENCE_RE = /先|后|然后|随后|接着|再|最后|结尾|开场|开�
  * conflict ONLY without a sequencing marker — "push in then hold" is valid direction.
  */
 export function hasCameraConflict(camera: string): boolean {
-  return STATIC_CAMERA_RE.test(camera) && MOVING_CAMERA_RE.test(camera) && !SEQUENCE_RE.test(camera);
+  const direction = unquoted(camera);
+  return STATIC_CAMERA_RE.test(direction) && MOVING_CAMERA_RE.test(positiveEvidence(direction)) && !SEQUENCE_RE.test(direction);
 }
 
-/** Max chars of the scene description kept as a semantic anchor (the first frame already fixes composition). */
-const DESC_ANCHOR_MAX = 60;
+/** Display text must not be mistaken for evidence of objects or actions in the scene. */
+function unquoted(text: string): string {
+  return text.replace(/“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"\n]*"/g, "");
+}
+
+/** A prohibition such as "不要添加屏幕" does not establish that a screen is present. */
+function positiveEvidence(text: string): string {
+  return unquoted(text).split(/[，,。;；!?！？\n]/).filter((clause) =>
+    !/(?:不|禁止|避免|无需|没有|未出现)|\b(?:no|not|without|avoid|never|don't)\b/i.test(clause),
+  ).join("；");
+}
+
+const STILL_SUBJECT_RE = /(?:商品|产品|主体|机身|杯身)[^，,。;；\n]{0,16}(?:静止|静置|不动|不转动|不旋转)|(?:product|subject|device|cup)\b[^,.;\n]{0,35}\b(?:still|stationary|static|motionless)\b/i;
+const SOLID_BACKGROUND_RE = /背景[^，,。;；\n]{0,20}(?:纯色|纯净|单色)|(?:纯色|纯净|单色)[^，,。;；\n]{0,12}背景|\b(?:solid|plain|uniform|seamless)\b[^,.;\n]{0,25}\bbackground\b/i;
+const HAND_EVIDENCE_RE = /手部|手指|手掌|双手|单手|\bhands?\b|\bfingers?\b/i;
+const STATIC_ACTION = {
+  zh: "主体保持静止，画面文字清晰稳定",
+  en: "the subject remains still, with sharp and stable on-screen text",
+};
+
+// Each candidate needs both its object/material AND its action in the script. Category or seed
+// alone never establishes a screen, an earbud, a lamp, or a new demonstration.
+const PHYSICAL_EVIDENCE: Record<ProductCategory, RegExp[][]> = {
+  beauty: [[/膏体|面霜|乳霜|cream/i, /涂抹|推开|抹开|spread|appl/i, /指腹|手指|finger/i, /皮肤|skin/i], [/泵头|pump/i, /按压|挤出|press|release/i, /手背|back of the hand/i], [/瓶盖|cap/i, /拧开|打开|twist|open/i, /膏体|cream/i]],
+  food: [[/掰开|掰断|snap|break/i, /酥脆|掉渣|crisp|flake/i], [/热气|steam/i, /酱汁|sauce/i], [/夹起|lift/i, /颤动|弹性|quiver|springy/i]],
+  home: [[/部件|盖子|moving part|lid/i, /开合|归位|close|shut/i], [/手掌|palm/i, /按压|press/i, /回弹|spring/i], [/水流|water/i, /冲过|冲洗|rinse|runs? over/i]],
+  fashion: [[/衣摆|hem/i, /转身|turn/i], [/面料|fabric/i, /捏起|pinch/i, /放|release/i], [/面料|fabric/i, /行走|走路|walk/i]],
+  tech: [[/屏幕|screen/i, /手指|finger/i, /滑|swipe/i], [/耳机|earbud/i, /充电仓|case/i, /放入|put|drop/i], [/金属|metal/i, /机身|device/i, /转动|旋转|rotate/i]],
+};
+const BACKGROUND_EVIDENCE = [
+  /窗帘|curtain/i,
+  /背景[^。;；\n]{0,20}(?:行人|有人|人物)|(?:person|people|someone)[^.;\n]{0,25}background|background[^.;\n]{0,25}(?:person|people|someone)/i,
+  /背景[^。;；\n]{0,20}灯|lamp[^.;\n]{0,25}background|background[^.;\n]{0,25}lamp/i,
+  /热饮|hot drink/i,
+  /(?:窗外|window).{0,20}(?:云|cloud)|(?:云|cloud).{0,20}(?:窗外|window)/i,
+  /背景[^。;；\n]{0,20}(?:绿植|叶片)|background[^.;\n]{0,25}(?:plant|leaves)/i,
+];
+const CATEGORY_EVIDENCE: Record<ProductCategory, RegExp> = {
+  beauty: /膏体|液体|面霜|乳霜|精华|cream|liquid|serum/i,
+  food: /食物|食品|饼干|酥脆|面包|蛋糕|food|cookie|bread|cake/i,
+  home: /部件|结构|接缝|parts?|structure|seams?/i,
+  fashion: /面料|衣料|衣服|衣摆|布料|fabric|cloth|dress|shirt|hem/i,
+  tech: /金属|屏幕|metal|screen/i,
+};
+
+function categoryConstraint(category: ProductCategory | undefined, evidence: string, lang: "zh" | "en"): string | undefined {
+  if (!category || !CATEGORY_EVIDENCE[category].test(evidence)) return;
+  if (category !== "tech") return CATEGORY_CONSTRAINTS[category][lang];
+  const parts: string[] = [];
+  if (/金属|metal/i.test(evidence)) parts.push(lang === "zh" ? "已有金属表面的反光干净克制" : "reflections on existing metal surfaces stay clean and restrained");
+  if (/屏幕|screen/i.test(evidence)) parts.push(lang === "zh" ? "已有屏幕内容清晰稳定" : "existing on-screen content stays sharp and stable");
+  return parts.join(lang === "zh" ? "，" : ", ");
+}
 
 /**
  * Build the i2v motion prompt for a shot. The camera line leads (motion is the message),
- * followed by subject action, an optional short scene anchor, fidelity constraints for product
+ * followed by subject action, the complete scene direction, fidelity constraints for product
  * shots, and the stability tail. Language follows the script (camera/description text).
  */
 export function buildMotionPrompt(input: MotionPromptInput): string {
-  const probe = `${input.camera ?? ""}${input.description ?? ""}`;
+  const probe = `${input.camera ?? ""}\n${input.description ?? ""}`.trim();
   // Empty inputs default to Chinese (domestic-first product)
   const lang: "zh" | "en" = probe && !hasCjk(probe) ? "en" : "zh";
   const type = String(input.shotType ?? "");
+  const anchor = (input.description ?? "").trim();
+  const direction = unquoted(probe);
+  const evidence = positiveEvidence(probe);
+  const stateEvidence = direction.split(/[，,。;；!?！？\n]/).filter((clause) =>
+    !/不要|不应|不得|禁止|避免|无需|没有|\b(?:not|never|avoid|don't|do not)\b/i.test(clause),
+  ).join("；");
 
   // Conflict lint: a self-contradictory scripted camera (hold + move, no sequencing) would yield
   // jerky indecisive motion — fall back to the shot type's single known-good instruction instead
   const scripted = input.camera?.trim();
   const camera =
     scripted && !hasCameraConflict(scripted) ? scripted : (CAMERA_DEFAULTS[type] ?? CAMERA_FALLBACK)[lang];
+  const fixedCamera = STATIC_CAMERA_RE.test(camera) && !MOVING_CAMERA_RE.test(positiveEvidence(camera));
+  const stillSubject = STILL_SUBJECT_RE.test(stateEvidence);
+  const solidBackground = SOLID_BACKGROUND_RE.test(evidence);
   const seed = input.beatSeed ?? 0;
   const realism: MotionRealismTier = input.realism ?? "auto";
   const category = realism === "off" ? undefined : normalizeCategory(input.category);
@@ -336,58 +387,67 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   const fullRealism = realism === "auto";
   // a speaking character overrides the per-type micro-action: the shot must read as
   // "mid-conversation", with two rotating behavior beats against batch-level repetition
-  let action = input.talking
+  let action = stillSubject ? STATIC_ACTION[lang] : input.talking
     ? `${TALKING_ACTION[lang]}${lang === "zh" ? "；" : "; "}${pickBehaviorBeats(seed, lang).join(lang === "zh" ? "、" : ", ")}`
     : (ACTION_DEFAULTS[type] ?? ACTION_FALLBACK)[lang];
+  if (!stillSubject && !input.talking && type === "demo" && HAND_EVIDENCE_RE.test(evidence)) {
+    action = lang === "zh" ? "分镜中已有的手部演示动作自然连贯" : "the hand demonstration already described in the shot stays natural and continuous";
+  }
   // demonstration shots with a known category get one "action + material reaction" phrase:
   // material feedback (spring-back, crumbs, ripple) is what separates footage from CG
-  if (fullRealism && category && PHYSICAL_ACTION_TYPES.has(type)) {
-    action += `${lang === "zh" ? "；" : "; "}${pickFrom(PHYSICAL_ACTION_LEXICON[category], seed)[lang]}`;
+  if (fullRealism && !stillSubject && !input.talking && category && PHYSICAL_ACTION_TYPES.has(type)) {
+    const supported = PHYSICAL_ACTION_LEXICON[category].filter((_, index) => PHYSICAL_EVIDENCE[category][index].every((rule) => rule.test(evidence)));
+    if (supported.length) {
+      action += `${lang === "zh" ? "；" : "; "}${pickFrom(supported, seed)[lang]}`;
+    }
   }
   // non-talking person shots get one emotion process phrase (trigger → body-first →
   // restrained face); talking shots already carry their own behavior direction
-  const emotion = fullRealism && !input.talking && input.personShot ? shotEmotion(type) : undefined;
-  const anchor = (input.description ?? "").trim().slice(0, DESC_ANCHOR_MAX);
-  const intensity = input.intensity && input.intensity !== "normal" ? INTENSITY_LINES[input.intensity][lang] : undefined;
-  // one living-background element for shots where a frozen backdrop would betray the render
-  const livingBg = fullRealism && (input.personShot || type === "demo") ? pickFrom(LIVING_BG, seed)[lang] : undefined;
-  const fabricLag = fullRealism && input.personShot;
+  const emotion = fullRealism && !stillSubject && !input.talking && input.personShot ? shotEmotion(type) : undefined;
+  const explicitSlowMove = /缓慢|慢速|轻微|克制|\bslow(?:ly)?\b|\bsubtle\b|\brestrained\b/i.test(camera);
+  const intensity = !fixedCamera && input.intensity && input.intensity !== "normal" && !(input.intensity === "strong" && explicitSlowMove)
+    ? INTENSITY_LINES[input.intensity][lang] : undefined;
+  // Only animate a background element that is actually described, never invent one by seed.
+  const backgroundEvidence = evidence.split("；").filter((clause) => !/静止|静置|静态|stationary|motionless|\bstill\b/i.test(clause)).join("；");
+  const stillBackground = /背景[^。;；\n]{0,12}(?:静止|静态|不动)|\bbackground\b[^.;\n]{0,25}\b(?:static|stationary|still|motionless)\b/i.test(stateEvidence);
+  const supportedBackgrounds = LIVING_BG.filter((_, index) => BACKGROUND_EVIDENCE[index].test(backgroundEvidence));
+  const livingBg = fullRealism && !stillSubject && !stillBackground && !solidBackground && (input.personShot || type === "demo") && supportedBackgrounds.length
+    ? pickFrom(supportedBackgrounds, seed)[lang] : undefined;
+  const fabricLag = fullRealism && !stillSubject && input.personShot;
+  const materialConstraint = categoryConstraint(category, evidence, lang);
+  const audioMode = input.audioMode ?? "ambient";
+  const sound = audioMode === "none" ? undefined : VIDEO_AUDIO_DIRECTIONS[audioMode][lang];
+  // A look must not override the explicit camera direction (e.g. phone_raw + locked-off CTA).
+  const opener = input.opener?.[lang];
+  const compatibleOpener = opener && !(fixedCamera && /手持|handheld|holding arm/i.test(opener))
+    && !(MOVING_CAMERA_RE.test(camera) && /固定|\bstatic\b|\bfixed\b|\bpropped\b/i.test(opener)) ? opener : undefined;
+  const look = input.look?.[lang];
+  const compatibleLook = look && !(MOVING_CAMERA_RE.test(camera) && /固定[^，,。]{0,12}(?:视角|机位)|\bfixed\b[^,.]{0,20}\b(?:viewpoint|camera|mount)\b/i.test(look)) ? look : undefined;
 
-  const parts: string[] = [];
-  if (lang === "zh") {
-    if (input.opener) parts.push(input.opener.zh);
-    parts.push(`运镜：${camera}`);
-    if (intensity) parts.push(intensity);
-    parts.push(`画面动态：${action}`);
-    if (emotion) parts.push(emotionActingLine(emotion, seed, "zh"));
-    if (livingBg) parts.push(livingBg);
-    if (fabricLag) parts.push(FABRIC_HAIR_LAG.zh);
-    if (anchor) parts.push(`场景：${anchor}`);
-    if (input.look) parts.push(`光线：${input.look.zh}`);
-    // chained clip: CHAIN_GUIDANCE already demands one continuous move; SINGLE_SHOT's
-    // "no scene changes" would contradict the transition into the next keyframe
-    parts.push(input.chainToNext ? CHAIN_GUIDANCE.zh : SINGLE_SHOT.zh);
-    if (input.personShot) parts.push(REAL_FACE_CONSTRAINT.zh);
-    if (input.productShot) parts.push(PRODUCT_CONSTRAINT.zh);
-    if (input.productShot && category) parts.push(CATEGORY_CONSTRAINTS[category].zh);
-    parts.push(SOUND_DIRECTION.zh);
-    parts.push(QUALITY_TAIL.zh);
-    return parts.join("。") + "。";
-  }
-  if (input.opener) parts.push(input.opener.en);
-  parts.push(`Camera: ${camera}`);
-  if (intensity) parts.push(intensity);
-  parts.push(`Motion: ${action}`);
-  if (emotion) parts.push(emotionActingLine(emotion, seed, "en"));
-  if (livingBg) parts.push(livingBg);
-  if (fabricLag) parts.push(FABRIC_HAIR_LAG.en);
-  if (anchor) parts.push(`Scene: ${anchor}`);
-  if (input.look) parts.push(`Lighting: ${input.look.en}`);
-  parts.push(input.chainToNext ? CHAIN_GUIDANCE.en : SINGLE_SHOT.en);
-  if (input.personShot) parts.push(REAL_FACE_CONSTRAINT.en);
-  if (input.productShot) parts.push(PRODUCT_CONSTRAINT.en);
-  if (input.productShot && category) parts.push(CATEGORY_CONSTRAINTS[category].en);
-  parts.push(SOUND_DIRECTION.en);
-  parts.push(QUALITY_TAIL.en);
-  return parts.join(". ") + ".";
+  const labels = lang === "zh"
+    ? { camera: "运镜：", motion: "画面动态：", scene: "场景：", light: "光线：" }
+    : { camera: "Camera: ", motion: "Motion: ", scene: "Scene: ", light: "Lighting: " };
+  const cameraParts = [`${labels.camera}${camera}`];
+  if (intensity) cameraParts.push(intensity);
+  const actionParts = [`${labels.motion}${action}`];
+  if (emotion) actionParts.push(emotionActingLine(emotion, seed, lang));
+  if (livingBg) actionParts.push(livingBg);
+  if (fabricLag) actionParts.push(FABRIC_HAIR_LAG[lang]);
+  const constraints: string[] = [];
+  if (compatibleLook) constraints.push(`${labels.light}${compatibleLook}`);
+  // Chained clips end in the next keyframe; other shots retain a continuous single take.
+  constraints.push(input.chainToNext ? CHAIN_GUIDANCE[lang] : SINGLE_SHOT[lang]);
+  if (input.personShot) constraints.push(REAL_FACE_CONSTRAINT[lang]);
+  if (input.productShot) constraints.push(PRODUCT_CONSTRAINT[lang]);
+  if (input.productShot && materialConstraint) constraints.push(materialConstraint);
+  constraints.push(QUALITY_TAIL[lang]);
+  const sections = [
+    compatibleOpener ?? "",
+    joinVideoPromptParts(cameraParts, lang),
+    joinVideoPromptParts(actionParts, lang),
+    anchor ? `${labels.scene}${anchor}` : "",
+    joinVideoPromptParts(constraints, lang),
+  ];
+  const visual = joinVideoPromptParts(sections, lang, "\n");
+  return sound ? `${visual}\n\n${joinVideoPromptParts([sound], lang)}` : visual;
 }

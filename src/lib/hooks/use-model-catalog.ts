@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { CatalogProvider, ModelCatalogResult, ModelCatalogStatus } from "@/lib/model-catalog";
+import { klingFetch } from "@/lib/kling/client";
 
 const EMPTY_MODELS: ModelCatalogResult["models"] = [];
 const EMPTY_STATUSES: ModelCatalogStatus[] = [];
@@ -22,7 +23,8 @@ export function useModelCatalog(providers: CatalogProvider[]) {
       void Promise.all(requested.map(async (provider) => {
         let result: ModelCatalogResult;
         try {
-          const response = await fetch("/api/ai/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providers: [provider], refresh: refresh.nonce > 0 }), signal: controller.signal });
+          const request = provider.name === "kling-cli" ? klingFetch : fetch;
+          const response = await request("/api/ai/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providers: [provider], refresh: refresh.nonce > 0 }), signal: controller.signal });
           if (!response.ok) throw new Error("CATALOG_UNAVAILABLE");
           result = await response.json();
         } catch {

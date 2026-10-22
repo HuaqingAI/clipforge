@@ -5,6 +5,7 @@ import {
   PRODUCTION_PROFILE_IDS,
   PRODUCTION_PROFILES,
 } from "@/lib/production-profiles";
+import { useSettingsStore } from "@/lib/stores/settings-store";
 
 describe("production profiles", () => {
   it("keeps every profile internally consistent", () => {
@@ -33,5 +34,20 @@ describe("production profiles", () => {
     expect(isProductionProfileId("balanced")).toBe(true);
     expect(isProductionProfileId("ultra")).toBe(false);
     expect(isProductionProfileId(null)).toBe(false);
+  });
+
+  it.each(["", "doubao-seedance-2.5", JSON.stringify(["kling-cli", "image_to_video", "kling-video-v4_0"])])("never replaces the explicit video default when applying profiles or onboarding: %s", (defaultVideoModel) => {
+    const previous = useSettingsStore.getState();
+    try {
+      useSettingsStore.setState({ defaultVideoModel });
+      for (const profile of PRODUCTION_PROFILE_IDS) {
+        useSettingsStore.getState().applyProductionProfile(profile);
+        expect(useSettingsStore.getState().defaultVideoModel).toBe(defaultVideoModel);
+      }
+      useSettingsStore.getState().applyAtlasOneKey("test-onboarding-key");
+      expect(useSettingsStore.getState().defaultVideoModel).toBe(defaultVideoModel);
+    } finally {
+      useSettingsStore.setState(previous);
+    }
   });
 });

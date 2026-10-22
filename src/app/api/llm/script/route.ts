@@ -3,6 +3,7 @@ import { getDataDir } from "@/lib/paths";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { generateScript, analyzeProduct } from "@/lib/script-engine/generator";
+import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import { styleNameMap, type ScriptStyleType } from "@/lib/script-engine/prompts";
 import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-patterns";
 import type { ProductCategory } from "@/lib/script-engine/templates";
@@ -206,6 +207,7 @@ export async function POST(req: NextRequest) {
     });
 
     // Persist: write generated scripts to the scripts table so the script/assets pages can read them by projectId
+    const generationMetadata = scriptGenerationMetadata(llmConfig, "commerce-script");
     let savedScripts = scripts;
     const projectId = body.projectId;
     if (projectId) {
@@ -237,6 +239,7 @@ export async function POST(req: NextRequest) {
               title: s.title,
               totalDuration: s.totalDuration,
               shots: s.shots,
+              generationMetadata,
               // dialogue-script cast (drama style) — read back at compose time for multi-voice TTS
               ...(s.characters?.length && { characters: s.characters }),
               selected: i === 0, // select the first script set by default
@@ -249,6 +252,7 @@ export async function POST(req: NextRequest) {
           styleType: r.styleType,
           totalDuration: r.totalDuration ?? 0,
           shots: r.shots ?? [],
+          generationMetadata: r.generationMetadata,
           selected: r.selected ?? false,
         })) as typeof scripts;
         // Sync project status and analysis result

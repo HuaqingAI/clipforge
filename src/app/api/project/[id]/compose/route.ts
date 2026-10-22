@@ -12,6 +12,7 @@ import { resolveRenderProfile, isRenderPreset } from "@/lib/compose-presets";
 import { isCaptionPreset, captionPresetOverrides, CAPTION_PRESETS } from "@/lib/caption-presets";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, assets as assetsTable, projects, compositions } from "@/lib/db/schema";
+import { filterAssetsForScript } from "@/lib/asset-context";
 import { eq } from "drizzle-orm";
 import { composeVideo, resolveChineseFontFamily, type ClipInput, type ComposeConfig } from "@/lib/video-composer/composer";
 import { extractFirstFrame } from "@/lib/video-composer/frame-extract";
@@ -19,20 +20,25 @@ import { buildSubtitleTimeline, padDurationsForFade, segmentBoundaries, type Tim
 import { buildKaraokeAss } from "@/lib/video-composer/karaoke";
 import { isAudibleFromVolumedetect } from "@/lib/video-composer/audio-probe";
 import { buildComplianceOverlays } from "@/lib/compliance-overlays";
-import { fetchFreeBgm, moodQueryForCategory, moodQueryForMood } from "@/lib/free-bgm";
 import { resolveBgmMix } from "@/lib/audio-mix";
 import { renderAudioStems } from "@/lib/audio-stems";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
 import { desc, and } from "drizzle-orm";
+import { readCompositionError, saveCompositionError } from "@/lib/composition-error";
 
 type ComposeRequestBody = {
+  scriptId?: unknown;
+  shotAssetSelections?: unknown;
+  transitionOverrides?: unknown;
   exportAudioStems?: boolean;
   voiceoverOverrides?: Array<{ shotId: number; voiceover: string }>;
   ttsConfig?: TTSConfig;
   freeTts?: { enabled?: boolean; voice?: string; rate?: string };
+  voiceoverMode?: "auto" | "replace" | "mix";
   renderPreset?: unknown;
   captionPreset?: unknown;
+  subtitles?: unknown;
   resolution?: "720p" | "1080p" | string;
   aspectRatio?: "9:16" | "16:9" | "1:1" | string;
   aigcBadge?: boolean;
@@ -40,8 +46,6 @@ type ComposeRequestBody = {
   ctaText?: string;
   aigcBadgeText?: string;
   bgmPath?: string;
-  freeBgm?: boolean;
-  bgmMood?: string;
   bgmVolume?: number;
   bgmDuck?: boolean;
   voiceGround?: boolean;
@@ -76,6 +80,7 @@ export async function GET(
       return NextResponse.json({ composition: null });
     }
     const c = rows[0];
+    const error = c.status === "failed" ? await readCompositionError(c.projectId, c.id) : null;
     // separator-agnostic: Windows rows store backslash absolute paths (issue #15)
     const fileName = fileNameOf(c.outputPath);
     const timelineUrl = fileName ? `/api/output/${id}/${encodeURIComponent(`${fileName}.timeline.json`)}` : null;
@@ -85,6 +90,7 @@ export async function GET(
         fileName,
         url: fileName ? `/api/output/${id}/${fileName}` : null,
         timelineUrl,
+        ...(error ? { error } : {}),
       },
     });
   } catch (error) {
@@ -133,6 +139,10 @@ export async function POST(
     const body: ComposeRequestBody = parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
       ? parsedBody as ComposeRequestBody
       : {};
+    if (body.subtitles !== undefined && typeof body.subtitles !== "boolean") {
+      return NextResponse.json({ error: "字幕开关格式无效，请选择是否使用字幕" }, { status: 400 });
+    }
+    const subtitles = body.subtitles !== false;
     const exportAudioStems = body.exportAudioStems === true;
     const db = getDb();
 
@@ -144,12 +154,36 @@ export async function POST(
     const project = projRows[0];
     const productImages = (project.productImages ?? []) as string[];
 
-    const scriptRows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id));
+    const scriptRows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id)).orderBy(desc(scriptsTable.createdAt));
     const selected = scriptRows.find((s) => s.selected) ?? scriptRows[0];
     if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
       return NextResponse.json({ error: "尚未生成脚本，无法合成" }, { status: 400 });
     }
+    if (body.scriptId !== undefined && body.scriptId !== selected.id) {
+      return NextResponse.json({ error: "当前脚本已切换，请刷新后重新选择镜头视频" }, { status: 409 });
+    }
     let shots = selected.shots as Shot[];
+    // Transitions describe entry into the named shot and affect this render only.
+    if (body.transitionOverrides !== undefined) {
+      if (!Array.isArray(body.transitionOverrides) || body.transitionOverrides.length > shots.length) {
+        return NextResponse.json({ error: "镜头转场设置格式无效" }, { status: 400 });
+      }
+      const validShotIds = new Set(shots.map((shot) => shot.shotId));
+      const transitionByShot = new Map<number, "direct_concat" | "ffmpeg_fade">();
+      for (const item of body.transitionOverrides) {
+        if (!item || typeof item !== "object" || Array.isArray(item)
+          || !Number.isSafeInteger(item.shotId) || !validShotIds.has(item.shotId)
+          || transitionByShot.has(item.shotId)
+          || (item.transition !== "direct_concat" && item.transition !== "ffmpeg_fade")) {
+          return NextResponse.json({ error: "镜头转场设置格式无效，请为每个镜头选择直接拼接或渐变过渡" }, { status: 400 });
+        }
+        transitionByShot.set(item.shotId, item.transition);
+      }
+      shots = shots.map((shot) => {
+        const transition = transitionByShot.get(shot.shotId);
+        return transition ? { ...shot, transition } : shot;
+      });
+    }
     // Variant-matrix voiceover overrides for hook A/B: applied in memory
     // for this render only — the stored script stays untouched, so each variant compose can
     // carry a different hook copy without mutating the project.
@@ -177,10 +211,39 @@ export async function POST(
     }
 
     // 已生成的素材（assets 表，按 shotId 索引）
-    const assetRows = await db.select().from(assetsTable).where(and(eq(assetsTable.projectId, id), eq(assetsTable.selected, true)));
+    const assetRows = filterAssetsForScript(await db.select().from(assetsTable).where(eq(assetsTable.projectId, id)).orderBy(desc(assetsTable.createdAt)), selected);
     const assetByShot = new Map<number, string>();
     for (const a of assetRows) {
-      if (a.filePath) assetByShot.set(a.shotId, a.filePath);
+      if (a.selected && a.status === "done" && a.filePath && !assetByShot.has(a.shotId)) assetByShot.set(a.shotId, a.filePath);
+    }
+    // Pin each requested take before starting background work. null pins product-image fallback.
+    // A missing/deleted take must
+    // ask the user to reselect instead of silently rendering a different video or product image.
+    const pinnedShotIds = new Set<number>();
+    if (body.shotAssetSelections !== undefined) {
+      if (!Array.isArray(body.shotAssetSelections) || body.shotAssetSelections.length > shots.length) {
+        return NextResponse.json({ error: "镜头视频选择格式无效" }, { status: 400 });
+      }
+      const seenShots = new Set<number>();
+      for (const item of body.shotAssetSelections) {
+        if (!item || typeof item !== "object" || Array.isArray(item)
+          || !Number.isSafeInteger(item.shotId) || !shots.some((shot) => shot.shotId === item.shotId)
+          || (item.assetId !== null && (typeof item.assetId !== "string" || !/^[a-zA-Z0-9-]+$/.test(item.assetId)))
+          || seenShots.has(item.shotId)) {
+          return NextResponse.json({ error: "镜头视频选择格式无效，请为每个镜头选择一个版本" }, { status: 400 });
+        }
+        seenShots.add(item.shotId);
+        if (item.assetId === null) {
+          assetByShot.delete(item.shotId);
+          continue;
+        }
+        pinnedShotIds.add(item.shotId);
+        const asset = assetRows.find((row) => row.id === item.assetId && row.shotId === item.shotId);
+        if (!asset || asset.status !== "done" || !asset.filePath || !toLocalPath(asset.filePath)) {
+          return NextResponse.json({ error: `镜头 ${item.shotId} 选择的素材已失效，请刷新后重新选择` }, { status: 409 });
+        }
+        assetByShot.set(item.shotId, asset.filePath);
+      }
     }
 
     // 可选 TTS 配音配置（前端从设置带入）
@@ -191,6 +254,10 @@ export async function POST(
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
     const freeTts = body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
     const useFreeTts = !ttsConfig && freeTts?.enabled === true;
+    // Both extra switches are off in auto mode: audible source audio takes priority.
+    const voiceoverMode = body.voiceoverMode === "replace" || body.voiceoverMode === "mix"
+      ? body.voiceoverMode
+      : "auto";
     const freeVoice = freeTts?.voice || DEFAULT_FREE_VOICE;
     const freeRate = typeof freeTts?.rate === "string" ? freeTts.rate : undefined;
     const ttsDir = join(getDataDir(), "uploads", id, "tts");
@@ -314,10 +381,8 @@ export async function POST(
       crf: profile.crf,
     };
 
-    // AIGC explicit badge (default ON): burned "内容由 AI 生成" corner label over the opening >=2s.
-    // 2026-07 platform rules require a visible AI mark (AI-synthesized audio alone also counts);
-    // opt out with body.aigcBadge=false — the release gate then reports the compliance risk.
-    const aigcBadge = body.aigcBadge !== false;
+    // 不自动往画面添加角标；仅在调用方明确开启时烧录。
+    const aigcBadge = body.aigcBadge === true;
 
     // Variant label (variant-matrix batch renders): surfaces on the export page's output list
     const label = typeof body.label === "string" && body.label.trim() ? body.label.trim().slice(0, 60) : undefined;
@@ -344,16 +409,18 @@ export async function POST(
       const ref = assetByShot.get(shot.shotId) ?? productImages[0];
       let local = toLocalPath(ref);
       if (!local) {
+        if (pinnedShotIds.has(shot.shotId)) throw new Error(`镜头 ${shot.shotId} 选择的素材已失效，请刷新后重新选择`);
         missing.push(shot.shotId);
         continue;
       }
-      // 视频素材 vs 静态图：视频自带音轨时用模型原生语音，不再叠 TTS（避免双重声音）
+      // 默认保留视频原声；覆盖/叠加模式允许有原声的镜头继续生成 TTS。
       // 注意：免费素材库（Wikimedia）也会返回 .ogv 等容器，必须纳入视频判定，否则被当静态图 → 冻结帧 + 丢音轨
       let isVideo = /\.(mp4|webm|mov|m4v|ogv|ogg|mkv|avi)$/i.test(local);
       // Broken-input gate: a video that ffprobe cannot time (truncated download, error page saved
       // as .mp4) would fail the whole single-pass filter_complex with an inscrutable error — swap
       // it for the product image instead of feeding it to ffmpeg, and log which shot degraded.
       if (isVideo && (await probeDuration(local)) <= 0) {
+        if (pinnedShotIds.has(shot.shotId)) throw new Error(`镜头 ${shot.shotId} 选中的视频无法解码，请重新选择视频版本后合成`);
         const fallback = toLocalPath(productImages[0]);
         console.warn(`[compose] 分镜 ${shot.shotId} 的视频素材无法解码（${local}），已降级为商品图兜底`);
         if (fallback && fallback !== local) {
@@ -366,10 +433,12 @@ export async function POST(
       }
       const nativeAudio = isVideo ? await videoHasAudio(local) : false;
       const vo =
-        shot.voiceover && !nativeAudio
+        shot.voiceover && (!nativeAudio || voiceoverMode !== "auto")
           ? await buildVoiceover(shot.shotId, shot.voiceover, shot.characterId ? characterVoices.get(shot.characterId) : undefined, shot.type)
           : undefined;
       const audioPath = vo?.file;
+      // A missing/failed voiceover keeps the original audio, including in replace mode.
+      const keepNativeAudio = nativeAudio && (!audioPath || voiceoverMode === "mix");
 
       // Effective duration (core fix for issue #14 "next segment starts before speech ends"):
       // 1) TTS narration → actual audio length + breathing gap (clamped 1.5–20s); when the probe
@@ -388,7 +457,11 @@ export async function POST(
         duration = Math.min(Math.max(voiceSec + VOICE_GAP, 1.5), 20);
         if (isVideo) {
           const mediaDur = await probeDuration(local);
-          if (mediaDur > 0) sourceDuration = mediaDur;
+          if (mediaDur > 0) {
+            sourceDuration = mediaDur;
+            // Mixing must preserve the original recording when it outlasts the narration.
+            if (keepNativeAudio) duration = Math.max(duration, mediaDur);
+          }
         }
       } else if (nativeAudio) {
         const mediaDur = await probeDuration(local);
@@ -403,9 +476,10 @@ export async function POST(
         filePath: local,
         duration,
         transition: shot.transition || "ai_start_end",
-        ...(isVideo ? { hasAudio: nativeAudio } : { motion: defaultMotion(shot) }),
+        ...(isVideo ? { hasAudio: keepNativeAudio } : { motion: defaultMotion(shot) }),
         ...(sourceDuration && { sourceDuration }),
         ...(audioPath && { audioPath }),
+        ...(audioPath && keepNativeAudio && { mixNativeAudio: true }),
       };
       rendered.push({ shot, clip, duration, voiceSec, ...(vo?.words ? { words: vo.words } : {}) });
     }
@@ -457,7 +531,7 @@ export async function POST(
       ...timeline.overlays,
     ];
 
-    // 可选叠加：片头 AIGC 合规角标（默认开）+ 片尾购买 CTA（带货转化），按 body 开关
+    // 可选叠加：片头角标（默认关）+ 片尾购买 CTA，按 body 开关
     overlays.push(
       ...buildComplianceOverlays(
         {
@@ -469,21 +543,8 @@ export async function POST(
       )
     );
 
-    // 背景音乐（可选）：① 用户上传的 bgmPath；② freeBgm=true 时自动取一条免费 CC 音乐。合成时混入并自动压低。
-    let bgmLocal = body.bgmPath ? toLocalPath(body.bgmPath) : undefined;
-    if (!bgmLocal && body.freeBgm === true) {
-      // 配乐情绪：① 用户在视频页显式选的 bgmMood 优先；② 否则按商品品类自动挑（美妆→upbeat / 美食→warm…）
-      const moodQuery =
-        typeof body.bgmMood === "string" && body.bgmMood
-          ? moodQueryForMood(body.bgmMood)
-          : moodQueryForCategory(project.productCategory);
-      const free = await fetchFreeBgm(id, moodQuery);
-      if (free) {
-        bgmLocal = free.localPath;
-        // CC 音乐多需署名：记录来源，便于导出 credits / 用户在成片署名（CC BY 等）
-        console.info(`[bgm] 免费配乐: ${free.author} · ${free.license} · ${free.sourceUrl}`);
-      }
-    }
+    // 仅混入用户明确提供的本地背景音乐，不自动检索或下载配乐。
+    const bgmLocal = body.bgmPath ? toLocalPath(body.bgmPath) : undefined;
 
     const hasVoiceTrack = rendered.some((item) => Boolean(item.clip.audioPath || item.clip.hasAudio));
     const bgmMix = resolveBgmMix({ volume: body.bgmVolume, duck: body.bgmDuck, hasVoice: hasVoiceTrack });
@@ -498,7 +559,7 @@ export async function POST(
         ...(body.voiceGround === false && { voiceGround: false }),
       },
       subtitle:
-        subtitleTexts.length > 0
+        subtitles && subtitleTexts.length > 0
           ? { texts: subtitleTexts, position: "bottom", ...captionPresetOverrides(captionPreset) }
           : undefined,
       overlays: overlays.length > 0 ? overlays : undefined,
@@ -506,7 +567,7 @@ export async function POST(
 
     // karaoke per-character subtitles (opt-in via the karaoke flag or captionPreset=karaoke):
     // whole-sentence ASS \k burn-in via libass, replacing the rapid short caption cards
-    const wantKaraoke = body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true);
+    const wantKaraoke = subtitles && (body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true));
     if (wantKaraoke && karaokeLines.length > 0) {
       const ass = buildKaraokeAss(karaokeLines, { fontName: resolveChineseFontFamily() });
       const assDir = join(getDataDir(), "output", id);
@@ -540,9 +601,10 @@ export async function POST(
         if (exportAudioStems) {
           try {
             renderedStems = await renderAudioStems({
-              clips: rendered.map((r) => ({ duration: r.duration, transition: r.clip.transition, audioPath: r.clip.audioPath })),
+              clips,
               bgmPath: bgmLocal,
               bgmVolume: bgmMix.volume,
+              voiceGround: config.output.voiceGround,
               totalDuration: timeline.total,
               outputDir: join(getDataDir(), "output", id, stemDirName),
             });
@@ -586,9 +648,7 @@ export async function POST(
         // 封面缩略图：抽首帧存成片旁（本地抽取永不过期），作品流/项目卡靠它凭画面找片；失败不阻断
         const thumbnailPath = await extractFirstFrame(outputPath);
         // 完成：更新合成记录与项目状态
-        // Persist bgmPath as well: credits and the release gate both read compositions.bgmPath to
-        // locate the BGM's .credit.json provenance sidecar, but nothing ever wrote the column, so
-        // BGM licensing (free CC attribution included) never reached the manifest.
+        // Keep explicit BGM provenance available to export credits and the release gate.
         await db
           .update(compositions)
           .set({ outputPath, status: "done", ...(thumbnailPath && { thumbnailPath }), ...(bgmLocal && { bgmPath: bgmLocal }) })
@@ -596,6 +656,10 @@ export async function POST(
         await db.update(projects).set({ status: "done", updatedAt: new Date() }).where(eq(projects.id, id));
       } catch (e) {
         console.error("后台合成失败:", e);
+        // Persist diagnostics before exposing failed status to polling clients.
+        await saveCompositionError(comp.projectId, comp.id, e).catch((writeError) => {
+          console.warn("保存合成错误详情失败:", writeError);
+        });
         await db.update(compositions).set({ status: "failed" }).where(eq(compositions.id, comp.id)).catch(() => {});
         await db.update(projects).set({ status: "video", updatedAt: new Date() }).where(eq(projects.id, id)).catch(() => {});
       }

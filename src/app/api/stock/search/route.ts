@@ -18,7 +18,8 @@ import {
 } from "@/lib/providers/stock-registry";
 import { broadenQuery } from "@/lib/stock-matcher";
 import { getDb } from "@/lib/db";
-import { assets as assetsTable } from "@/lib/db/schema";
+import { assets as assetsTable, scripts } from "@/lib/db/schema";
+import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { apiError, errText } from "@/lib/api-error";
 import { and, eq } from "drizzle-orm";
 
@@ -155,7 +156,11 @@ export async function POST(req: NextRequest) {
   const picked = candidates.slice(0, count);
   const saved: Array<Record<string, unknown>> = [];
   const db = getDb();
-  await db.update(assetsTable).set({ selected: false }).where(and(eq(assetsTable.projectId, projectId), eq(assetsTable.shotId, shotId)));
+  const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, projectId));
+  const script = scriptRows.find((row) => row.selected) ?? scriptRows[scriptRows.length - 1];
+  const shot = script?.shots?.find((row) => row.shotId === shotId);
+  const candidatesForShot = await db.select().from(assetsTable).where(and(eq(assetsTable.projectId, projectId), eq(assetsTable.shotId, shotId)));
+  for (const candidate of filterAssetsForScript(candidatesForShot, script)) await db.update(assetsTable).set({ selected: false }).where(eq(assetsTable.id, candidate.id));
 
   for (let i = 0; i < picked.length; i++) {
     const c = picked[i];
@@ -179,6 +184,7 @@ export async function POST(req: NextRequest) {
           license: c.license,
           selected: i === 0,
           status: "done",
+          ...(script && shot && assetScopeForShot(script, shot)),
         })
         .returning();
 

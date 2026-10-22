@@ -11,6 +11,7 @@ import { ReplicateProvider } from './replicate'
 import { AlibabaProvider } from './alibaba'
 import { SiliconFlowProvider } from './siliconflow'
 import { OpenAIProvider } from './openai'
+import { KlingCliProvider } from './kling-cli'
 
 // ==================== Provider 注册表 ====================
 
@@ -71,8 +72,15 @@ registerProvider({
 registerProvider({
   name: 'openai',
   displayName: 'OpenAI',
-  description: 'OpenAI 官方平台，支持 gpt-image-2 / gpt-image-1.5 图片生成与图生图编辑',
+  description: 'OpenAI 及兼容图片 API，支持 GPT Image 2.5 Flare / Sunburst、GPT Image 2 / 1.5，可自定义兼容 API 地址',
   factory: (config) => new OpenAIProvider(config),
+})
+
+registerProvider({
+  name: 'kling-cli',
+  displayName: 'Kling 官方 CLI',
+  description: '本机官方 CLI，使用独立 OAuth 账号生成单镜头视频',
+  factory: (config) => new KlingCliProvider(config),
 })
 
 // ==================== 工厂函数 ====================
@@ -159,3 +167,4 @@ export { VolcEngineProvider } from './volcengine'
 export { AlibabaProvider } from './alibaba'
 export { SiliconFlowProvider } from './siliconflow'
 export { OpenAIProvider } from './openai'
+export { KlingCliProvider } from './kling-cli'

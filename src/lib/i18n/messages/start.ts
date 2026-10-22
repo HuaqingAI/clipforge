@@ -91,11 +91,9 @@ export const start: NamespaceMessages = {
     atlasKeyInvalid: "Key 无效或无权限，请检查后重试",
     atlasConnectFailed: "连接失败，请检查网络后重试",
     atlasDismiss: "稍后再说",
-    // 主按钮 + 安心文案
+    // 主按钮
     ctaStart: "开始生成",
     busyDefault: "生成中…",
-    reassureLead: "还没配 Key？开始时一键接 ",
-    reassureTail: "——脚本 + 图 + 视频 + 配音，一个 Key 全搞定。",
     // 生成阶段提示
     stageCreate: "创建项目…",
     stageUpload: "上传商品图…",
@@ -251,11 +249,9 @@ export const start: NamespaceMessages = {
     atlasKeyInvalid: "Key invalid or unauthorized — check and retry",
     atlasConnectFailed: "Connection failed — check your network and retry",
     atlasDismiss: "Maybe later",
-    // 主按钮 + 安心文案
+    // 主按钮
     ctaStart: "Start generating",
     busyDefault: "Generating…",
-    reassureLead: "No key yet? Connect ",
-    reassureTail: " in one click — script + image + video + voiceover, all with a single key.",
     // 生成阶段提示
     stageCreate: "Creating project…",
     stageUpload: "Uploading product photos…",

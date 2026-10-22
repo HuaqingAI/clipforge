@@ -4,6 +4,9 @@ import { ProviderError } from "@/lib/providers/base";
 import { apiError, errText } from "@/lib/api-error";
 import { updateAiTaskByProviderTaskId, type AiTaskStatus } from "@/lib/ai-tasks";
 import type { TaskStatusEnum } from "@/lib/providers/types";
+import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
+import { queryKlingJob } from "@/lib/kling/jobs";
+import { getKlingJob, klingJobView } from "@/lib/kling/repository";
 
 // Query / resume a previously submitted video task by its provider task ID (issue #16).
 // POST because the request carries the API key — keys must never appear in URLs.
@@ -16,6 +19,14 @@ export async function POST(req: NextRequest) {
     return apiError(req, "请求体必须是 JSON 对象", "Request body must be a JSON object", 400);
   }
   const { provider: providerName, apiKey, baseUrl, taskId, wait } = body;
+  if (providerName === "kling-cli") {
+    try {
+      await assertKlingLocalRequest(req);
+      if (typeof body.jobId !== "string") return apiError(req, "Kling 恢复必须使用本地任务编号", "Kling recovery requires a local job ID", 400);
+      await queryKlingJob(body.jobId);
+      return NextResponse.json(klingJobView(getKlingJob(body.jobId)), { headers: { "Cache-Control": "no-store" } });
+    } catch (error) { return klingRouteError(error); }
+  }
 
   if (!providerName || !taskId) {
     return apiError(req, "缺少必要参数（provider / taskId）", "Missing required parameters (provider / taskId)");

@@ -79,6 +79,7 @@ export const newProject: NamespaceMessages = {
     dropHintClick: "点击上传",
     dropHintFormats: "支持 JPG / PNG / WebP，最多 5 张",
     imageAlt: "商品图片",
+    removeImage: "删除商品图片",
     // 商品信息表单
     stepInfoTitle: "填写商品信息",
     productNameLabel: "商品名称",
@@ -129,7 +130,7 @@ export const newProject: NamespaceMessages = {
     templateGeneric: "通用",
     // 成片模板：风格 + 运镜 + 画面 + 合成全链路预填
     adTemplateTitle: "成片模板（可选）",
-    adTemplateDesc: "一键套用完整成片配方：脚本风格 + 运镜编排 + 画面 Look + 字幕 BGM 合成配置，选完仍可逐项修改",
+    adTemplateDesc: "一键套用完整成片配方：脚本风格 + 运镜编排 + 画面 Look + 字幕合成配置，选完仍可逐项修改",
     adTemplateNone: "不用成片模板",
     adTemplateNoneDesc: "逐项自己配",
     adTemplateGoodMatch: "适合本类目",
@@ -172,7 +173,6 @@ export const newProject: NamespaceMessages = {
     adTplFieldHint: "创作指令（给脚本 AI 的一句话方向）",
     adTplCameraAuto: "跟随 AI",
     adTplComposeCaption: "字幕",
-    adTplComposeBgm: "BGM",
     adTplComposeQuality: "画质",
     adTplComposeQualityDefault: "默认",
     adTplComposeDuck: "BGM 闪避",
@@ -276,6 +276,7 @@ export const newProject: NamespaceMessages = {
     dropHintClick: "click to upload",
     dropHintFormats: "JPG / PNG / WebP supported, up to 5",
     imageAlt: "Product image",
+    removeImage: "Remove product image",
     // 商品信息表单
     stepInfoTitle: "Enter product details",
     productNameLabel: "Product name",
@@ -326,7 +327,7 @@ export const newProject: NamespaceMessages = {
     templateGeneric: "General",
     // One-click end-to-end ad template recipes
     adTemplateTitle: "Ad template (optional)",
-    adTemplateDesc: "One click applies a full recipe: script style + camera plan + visual look + caption/BGM compose config — everything stays editable",
+    adTemplateDesc: "One click applies a full recipe: script style + camera plan + visual look + caption compose config — everything stays editable",
     adTemplateNone: "No ad template",
     adTemplateNoneDesc: "Configure manually",
     adTemplateGoodMatch: "Category pick",
@@ -369,7 +370,6 @@ export const newProject: NamespaceMessages = {
     adTplFieldHint: "Creative directive (one line for the script AI)",
     adTplCameraAuto: "AI decides",
     adTplComposeCaption: "Captions",
-    adTplComposeBgm: "BGM",
     adTplComposeQuality: "Quality",
     adTplComposeQualityDefault: "Default",
     adTplComposeDuck: "BGM ducking",

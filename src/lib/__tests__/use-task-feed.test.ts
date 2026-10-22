@@ -2,6 +2,7 @@ import { act, createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTaskFeed, TASK_ACTIVE_POLL_MS, TASK_IDLE_POLL_MS, TASK_REQUEST_TIMEOUT_MS } from "@/lib/hooks/use-task-feed";
+import { TASK_FEED_REFRESH_EVENT } from "@/lib/task-feed";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -92,5 +93,95 @@ describe("任务中心后台观察", () => {
     expect(current).toMatchObject({ error: true, loading: false, updatedAt: null });
     await act(async () => current.refresh());
     expect(current.error).toBe(false);
+  });
+
+  it("本地任务变更后立即刷新，并继续按空列表频率轮询", async () => {
+    fetchMock.mockResolvedValueOnce(reply(busy));
+    await mount();
+    expect(current.feed.active).toHaveLength(1);
+    await act(async () => window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT)));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(current.feed).toEqual(empty);
+    await tick(TASK_IDLE_POLL_MS - 1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await tick(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([200, 500])("变更事件合并为一次后续读取，不采用状态为 %i 的旧请求", async (status) => {
+    await mount();
+    let finishOld!: (response: Response) => void;
+    let finishFresh!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finishOld = resolve; }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishFresh = resolve; }));
+    await act(async () => current.refresh());
+    await act(async () => {
+      window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT));
+      window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT));
+      window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => finishOld(status === 200 ? reply(busy) : new Response(null, { status })));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(current).toMatchObject({ feed: empty, loading: true, error: false });
+    await act(async () => finishFresh(reply(empty)));
+    expect(current).toMatchObject({ feed: empty, loading: false, error: false });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("隐藏时保留变更刷新，返回页面立即读取", async () => {
+    fetchMock.mockResolvedValueOnce(reply(busy));
+    await mount();
+    visibility = "hidden";
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT)));
+    await tick(TASK_IDLE_POLL_MS * 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(current.feed.active).toHaveLength(1);
+
+    visibility = "visible";
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(current.feed).toEqual(empty);
+  });
+
+  it("旧请求失效后页面隐藏时暂停补读，返回后恢复", async () => {
+    await mount();
+    let finishOld!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finishOld = resolve; }));
+    await act(async () => current.refresh());
+    await act(async () => window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT)));
+    visibility = "hidden";
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => finishOld(reply(busy)));
+    await tick(TASK_IDLE_POLL_MS * 2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(current.feed).toEqual(empty);
+
+    visibility = "visible";
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(current).toMatchObject({ feed: empty, loading: false, error: false });
+  });
+
+  it("卸载时清理变更监听，旧请求不再触发排队的刷新", async () => {
+    await mount();
+    let finishOld!: (response: Response) => void;
+    let signal!: AbortSignal;
+    fetchMock.mockImplementationOnce((_url, options) => new Promise<Response>((resolve) => {
+      signal = options.signal;
+      finishOld = resolve;
+    }));
+    await act(async () => current.refresh());
+    await act(async () => window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT)));
+    await act(async () => root.render(null));
+    expect(signal.aborted).toBe(true);
+    await act(async () => {
+      finishOld(reply(busy));
+      window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT));
+    });
+    await tick(TASK_IDLE_POLL_MS * 2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

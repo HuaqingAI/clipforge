@@ -64,6 +64,13 @@ export async function finalizeVideoRepair(input: {
       model: summary.model,
       prompt: input.prompt,
       generationPlan: summary,
+      sourceKeyframeUrl: source.sourceKeyframeUrl,
+      scope: {
+        sourceScriptId: source.sourceScriptId,
+        sourceShotKey: source.sourceShotKey,
+        sourceRevision: source.sourceRevision,
+        derivedFromAssetId: source.id,
+      },
     });
   } finally {
     if (replacementPath !== sourcePath && replacementPath !== outputPath) {

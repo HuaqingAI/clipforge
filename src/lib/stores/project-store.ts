@@ -10,8 +10,10 @@ export interface Character {
   description?: string;
   /** Appearance description (English, injected into AI prompts) */
   appearance?: string;
-  /** List of reference image URLs */
+  /** Generated identity sheets; the first sheet anchors downstream shots. */
   referenceImages: string[];
+  /** Optional uploaded portraits used together to generate or redo the identity sheet. */
+  sourceReferenceImages?: string[];
   /** Voice preference */
   voiceProfile?: CharacterVoiceProfile;
   /** Whether this is the default on-screen character */

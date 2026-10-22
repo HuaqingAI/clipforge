@@ -245,7 +245,7 @@ export function GenerationSettings() {
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">{t("resolution")}</Label>
-                <Select value={videoParams.resolution} onValueChange={(v) => setVideoParams({ ...videoParams, resolution: (v ?? "1080p") as typeof videoParams.resolution })}>
+                <Select value={videoParams.resolution} onValueChange={(v) => setVideoParams({ ...videoParams, resolution: (v ?? "720p") as typeof videoParams.resolution })}>
                   <SelectTrigger className="w-full">
                     <SelectValue>{(value: string) => labelOf(RESOLUTION_OPTIONS, value)}</SelectValue>
                   </SelectTrigger>

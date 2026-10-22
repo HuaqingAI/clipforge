@@ -64,6 +64,7 @@ export default function TopicProjectPage() {
           narrationStyle,
           targetDuration: Number(duration),
           llmConfig: {
+            provider: llm.provider,
             baseUrl: llm.baseUrl,
             apiKey: llm.apiKey,
             model: llm.model,

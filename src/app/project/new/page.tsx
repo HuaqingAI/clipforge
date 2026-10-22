@@ -55,13 +55,6 @@ const videoModeOptions = [
 ];
 
 // recipe-editor display labels for compose enums (bilingual data like the preset libraries, not i18n keys)
-const BGM_LABELS: Record<string, { zh: string; en: string }> = {
-  none: { zh: "无", en: "None" },
-  upbeat: { zh: "轻快", en: "Upbeat" },
-  chill: { zh: "舒缓", en: "Chill" },
-  energetic: { zh: "动感", en: "Energetic" },
-  emotional: { zh: "情感", en: "Emotional" },
-};
 const QUALITY_LABELS: Record<string, { zh: string; en: string }> = {
   fast: { zh: "快速", en: "Fast" },
   standard: { zh: "标准", en: "Standard" },
@@ -597,6 +590,7 @@ export default function NewProjectPage() {
           videoMode,
           productImages: paths,
           llmConfig: {
+            provider: llm.provider,
             baseUrl: llm.baseUrl,
             apiKey: llm.apiKey,
             model: llm.model,
@@ -740,13 +734,17 @@ export default function NewProjectPage() {
                       />
                       {/* delete button */}
                       <button
+                        type="button"
+                        aria-label={t("removeImage")}
+                        title={t("removeImage")}
+                        disabled={isSubmitting}
                         onClick={() => removeImage(img.id)}
-                        className="absolute top-1 right-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                        className="absolute top-1 right-1 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity hover:bg-red-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:cursor-not-allowed disabled:bg-black/40"
                       >
                         <LuX className="w-3 h-3" />
                       </button>
                       {/* hover overlay */}
-                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
                     </div>
                   ))}
                 </div>
@@ -1479,22 +1477,6 @@ export default function NewProjectPage() {
                       >
                         {CAPTION_PRESET_IDS.map((id) => (
                           <option key={id} value={id}>{locale === "zh" ? CAPTION_LABELS[id].zh : CAPTION_LABELS[id].en}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="text-[11px] text-muted-foreground">
-                      {t("adTplComposeBgm")}
-                      <select
-                        value={editorDraft.compose.bgm}
-                        onChange={(e) =>
-                          setEditorDraft((d) =>
-                            d ? { ...d, compose: { ...d.compose, bgm: e.target.value as AdTemplate["compose"]["bgm"] } } : d
-                          )
-                        }
-                        className={EDITOR_INPUT_CLS}
-                      >
-                        {AD_TEMPLATE_EDIT_VOCAB.bgm.map((b) => (
-                          <option key={b} value={b}>{locale === "zh" ? BGM_LABELS[b]?.zh ?? b : BGM_LABELS[b]?.en ?? b}</option>
                         ))}
                       </select>
                     </label>

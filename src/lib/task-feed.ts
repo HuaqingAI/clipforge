@@ -1,5 +1,5 @@
 export interface TaskRow {
-  kind: "transcript" | "transcript_failed" | "batch" | "paid" | "paid_unknown" | "pipeline" | "pipeline_interrupted" | "pipeline_failed" | "compose" | "done";
+  kind: "transcript" | "transcript_failed" | "batch" | "paid" | "paid_unknown" | "pipeline" | "pipeline_interrupted" | "pipeline_failed" | "compose" | "done" | "kling" | "kling_film";
   id: string;
   projectId?: string | null;
   projectName?: string;
@@ -14,15 +14,25 @@ export interface TaskRow {
   done?: number;
   failed?: number;
   createdAt?: string | null;
+  jobId?: string;
+  submissionState?: string;
+  remoteState?: string;
+  importState?: string;
+  blockedReason?: string;
+  shotId?: number;
+  filmRunId?: string;
+  ready?: number;
+  status?: string;
 }
 
 export interface TaskFeed { active: TaskRow[]; attention: TaskRow[]; recent: TaskRow[] }
 export const EMPTY_TASK_FEED: TaskFeed = { active: [], attention: [], recent: [] };
+export const TASK_FEED_REFRESH_EVENT = "clipforge:task-feed-refresh";
 
 /** 失败响应或错误形状不能被解释为“没有任务”。 */
 export function parseTaskFeed(value: unknown): TaskFeed {
   const raw = value as Partial<TaskFeed> | null;
-  const kinds = new Set<TaskRow["kind"]>(["transcript", "transcript_failed", "batch", "paid", "paid_unknown", "pipeline", "pipeline_interrupted", "pipeline_failed", "compose", "done"]);
+  const kinds = new Set<TaskRow["kind"]>(["transcript", "transcript_failed", "batch", "paid", "paid_unknown", "pipeline", "pipeline_interrupted", "pipeline_failed", "compose", "done", "kling", "kling_film"]);
   if (!raw || ![raw.active, raw.attention, raw.recent].every((rows) => Array.isArray(rows)
     && rows.every((row) => row && typeof row.id === "string" && row.id.length > 0 && kinds.has(row.kind)))) {
     throw new Error("INVALID_TASK_FEED");
@@ -33,6 +43,8 @@ export function parseTaskFeed(value: unknown): TaskFeed {
 export function taskHref(row: TaskRow): string {
   const project = row.projectId ? `/project/${encodeURIComponent(row.projectId)}` : null;
   switch (row.kind) {
+    case "kling_film": return project ? project + "/assets?klingFilm=" + encodeURIComponent(row.filmRunId ?? row.id) : "/projects";
+    case "kling": return project ? project + "/assets?klingJob=" + encodeURIComponent(row.jobId ?? row.id) : "/projects";
     case "batch": return "/batch";
     case "transcript":
     case "transcript_failed": return project ? `${project}/transcript${row.sourceId ? `?source=${encodeURIComponent(row.sourceId)}` : ""}` : "/projects";

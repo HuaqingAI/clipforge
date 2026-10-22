@@ -15,6 +15,10 @@ import type {
   ShotQualityContract,
 } from "@/lib/generation-quality";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
+import type { ScriptGenerationMetadata } from "@/lib/script-engine/provenance";
+export { klingProfiles, klingAuthSessions } from "@/lib/kling/profile-schema";
+export { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
+export { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
 
 // Projects table
 export const projects = sqliteTable("projects", {
@@ -65,6 +69,8 @@ export const scripts = sqliteTable("scripts", {
   title: text("title"),
   totalDuration: integer("total_duration"), // Total duration in seconds
   shots: text("shots", { mode: "json" }).$type<Shot[]>().default([]),
+  // Nullable for existing and manually imported scripts; never store LLM credentials here.
+  generationMetadata: text("generation_metadata", { mode: "json" }).$type<ScriptGenerationMetadata>(),
   // Dialogue-script cast (drama style): drives per-character TTS voices + visual-anchor prompts
   characters: text("characters", { mode: "json" }).$type<ScriptCharacter[]>(),
   selected: integer("selected", { mode: "boolean" }).default(false),
@@ -100,6 +106,11 @@ export const assets = sqliteTable("assets", {
   type: text("type", { enum: ["ai_generated", "product_image", "user_upload", "stock_footage"] }).notNull(),
   filePath: text("file_path"),
   thumbnailPath: text("thumbnail_path"),
+  sourceScriptId: text("source_script_id"),
+  sourceShotKey: text("source_shot_key"),
+  sourceRevision: text("source_revision"),
+  derivedFromAssetId: text("derived_from_asset_id"),
+  sourceKeyframeUrl: text("source_keyframe_url"),
   provider: text("provider"),
   model: text("model"),
   prompt: text("prompt"),

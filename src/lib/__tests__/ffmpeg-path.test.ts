@@ -1,9 +1,19 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { ffmpegBin, ffprobeBin } from "@/lib/ffmpeg-path";
 import { buildComposeCommand, type ComposeConfig } from "@/lib/video-composer/composer";
 
 const origFf = process.env.FFMPEG_PATH;
 const origFp = process.env.FFPROBE_PATH;
+const loadPackage = createRequire(import.meta.url);
+function expectedBinary(name: "ffmpeg" | "ffprobe"): string {
+  try {
+    const binary = name === "ffmpeg" ? loadPackage("ffmpeg-static") : loadPackage("@ffprobe-installer/ffprobe").path;
+    if (binary && existsSync(binary)) return binary;
+  } catch { /* System binary is the final fallback. */ }
+  return name;
+}
 
 afterEach(() => {
   if (origFf === undefined) delete process.env.FFMPEG_PATH;
@@ -13,11 +23,11 @@ afterEach(() => {
 });
 
 describe("ffmpeg/ffprobe 二进制路径解析", () => {
-  it("未注入时回退系统 ffmpeg/ffprobe（开发态不变）", () => {
+  it("未注入时优先使用已安装的打包二进制，再回退系统命令", () => {
     delete process.env.FFMPEG_PATH;
     delete process.env.FFPROBE_PATH;
-    expect(ffmpegBin()).toBe("ffmpeg");
-    expect(ffprobeBin()).toBe("ffprobe");
+    expect(ffmpegBin()).toBe(expectedBinary("ffmpeg"));
+    expect(ffprobeBin()).toBe(expectedBinary("ffprobe"));
   });
 
   it("注入绝对路径时返回该路径（Electron 随包二进制）", () => {
@@ -38,7 +48,7 @@ describe("ffmpeg/ffprobe 二进制路径解析", () => {
     expect(cmd).toContain(`"/with space/ffmpeg" -y`);
   });
 
-  it("未注入时 buildComposeCommand 仍以 ffmpeg 起手（向后兼容）", () => {
+  it("未注入时 buildComposeCommand 使用本机解析出的 ffmpeg 路径", () => {
     delete process.env.FFMPEG_PATH;
     const cfg: ComposeConfig = {
       projectId: "p1",
@@ -46,6 +56,6 @@ describe("ffmpeg/ffprobe 二进制路径解析", () => {
       output: { resolution: "1080p", aspectRatio: "9:16" },
     };
     const cmd = buildComposeCommand(cfg);
-    expect(cmd).toContain(`"ffmpeg" -y`);
+    expect(cmd).toContain(`"${expectedBinary("ffmpeg")}" -y`);
   });
 });

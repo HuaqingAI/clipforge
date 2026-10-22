@@ -57,12 +57,12 @@ function buildPrompt(productName: string, category: string, sellingPoints: strin
     `- look（画面光线色调）：${looks}`,
     `- 运镜预设 id：${cameras}`,
     `- group（模板分组）：${groups}`,
-    `- captionPreset：standard、bold、minimal、karaoke；bgm：none、upbeat、chill、energetic、emotional；quality：fast、standard、hd`,
+    `- captionPreset：standard、bold、minimal、karaoke；quality：fast、standard、hd`,
     `- cameraPlan 的键（镜头类型）：hook、pain_point、product_reveal、demo、social_proof、cta（选 3-5 个，值为运镜预设 id）`,
     ``,
     `要求：配方要针对这个商品的品类特性与卖点定制（如食品重食欲光与微距、数码重冷调与结构展示），scriptHint 用一句中文写清创意方向与叙事结构，内容真实合规（不得使用绝对化用语与虚假承诺）。`,
     `只输出一个 JSON 对象，不要任何其他文字，格式：`,
-    `{"name":{"zh":"模板名(≤8字)","en":"English name"},"tagline":{"zh":"一句话卖点","en":"one-line pitch"},"emoji":"一个emoji","group":"...","goodFor":["${category || "beauty"}"],"styleType":"...","videoMode":"...","look":"...","cameraPlan":{"hook":"...","product_reveal":"...","demo":"...","cta":"..."},"compose":{"captionPreset":"...","bgm":"...","bgmDuck":true,"quality":"standard","productCard":true},"scriptHint":{"zh":"创意方向一句话"}}`,
+    `{"name":{"zh":"模板名(≤8字)","en":"English name"},"tagline":{"zh":"一句话卖点","en":"one-line pitch"},"emoji":"一个emoji","group":"...","goodFor":["${category || "beauty"}"],"styleType":"...","videoMode":"...","look":"...","cameraPlan":{"hook":"...","product_reveal":"...","demo":"...","cta":"..."},"compose":{"captionPreset":"...","quality":"standard","productCard":true},"scriptHint":{"zh":"创意方向一句话"}}`,
   ].filter(Boolean).join("\n");
 }
 

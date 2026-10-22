@@ -2,11 +2,11 @@
  * Style packs — shareable, declarative "recipe" files for compose settings.
  *
  * The 2026 agent-skill wave made packaged video know-how (caption looks, pacing,
- * BGM choices) the community currency; this is ClipForge's novice-safe take on
+ * audio mixing) the community currency; this is ClipForge's novice-safe take on
  * "installing an external skill": a pack is pure JSON data — no code, no shell,
  * nothing executable — validated against a whitelist before anything is applied.
  *
- * Packs only carry compose-stage preferences today (caption preset, BGM mood,
+ * Packs only carry compose-stage preferences today (caption preset, BGM gain,
  * ducking, quality, aspect ratio, CTA, product card). Unknown fields are ignored
  * for forward compatibility; invalid values are dropped field-by-field rather
  * than failing the whole pack.
@@ -19,8 +19,6 @@ export const STYLE_PACK_FORMAT = "clipforge-style-pack@1";
 /** compose-stage preferences a pack may carry (all optional; whitelisted values only) */
 export interface StylePackCompose {
   captionPreset?: CaptionPresetId;
-  /** BGM mood, or "none" to turn BGM off */
-  bgm?: "none" | "upbeat" | "chill" | "energetic" | "emotional";
   /** BGM gain, 0.05..0.4; values outside the range are clamped on import. */
   bgmVolume?: number;
   bgmDuck?: boolean;
@@ -39,7 +37,6 @@ export interface StylePack {
   compose: StylePackCompose;
 }
 
-const BGM_VALUES = ["none", "upbeat", "chill", "energetic", "emotional"] as const;
 const QUALITY_VALUES = ["fast", "standard", "hd"] as const;
 const ASPECT_VALUES = ["9:16", "16:9", "1:1"] as const;
 
@@ -68,8 +65,7 @@ export function parseStylePack(jsonText: string): StylePack | null {
   const compose: StylePackCompose = {};
   const caption = pickEnum(c.captionPreset, CAPTION_PRESET_IDS);
   if (caption) compose.captionPreset = caption;
-  const bgm = pickEnum(c.bgm, BGM_VALUES);
-  if (bgm) compose.bgm = bgm;
+  // Legacy automatic-music choices are ignored; packs may still tune uploaded audio.
   if (typeof c.bgmVolume === "number" && Number.isFinite(c.bgmVolume)) {
     compose.bgmVolume = Math.round(Math.min(0.4, Math.max(0.05, c.bgmVolume)) * 100) / 100;
   }
@@ -104,29 +100,29 @@ export const BUILTIN_STYLE_PACKS: StylePack[] = [
   {
     format: STYLE_PACK_FORMAT,
     name: "带货重击 / Commerce Punch",
-    description: "大字重击字幕 + 欢快 BGM + 旁白闪避 + 商品卡，高转化快节奏带货 / bold captions, upbeat ducked BGM, product card",
+    description: "大字重击字幕 + 商品卡，快节奏带货 / bold captions and a product card for fast-paced commerce",
     author: "ClipForge",
-    compose: { captionPreset: "bold", bgm: "upbeat", bgmDuck: true, productCard: true, quality: "standard" },
+    compose: { captionPreset: "bold", productCard: true, quality: "standard" },
   },
   {
     format: STYLE_PACK_FORMAT,
     name: "卡拉OK爆款 / Karaoke Viral",
-    description: "逐字高亮字幕 + 动感 BGM，2026 爆款留存样式 / per-word karaoke captions with energetic ducked BGM",
+    description: "逐字高亮字幕，突出关键口播 / per-word karaoke captions that highlight the narration",
     author: "ClipForge",
-    compose: { captionPreset: "karaoke", bgm: "energetic", bgmDuck: true, quality: "standard" },
+    compose: { captionPreset: "karaoke", quality: "standard" },
   },
   {
     format: STYLE_PACK_FORMAT,
     name: "纪实极简 / Clean Documentary",
-    description: "极简字幕 + 舒缓 BGM，生活流/纪实感干净画面 / minimal captions and chill BGM for lifestyle content",
+    description: "极简字幕，生活流/纪实感干净画面 / minimal captions and a clean documentary look for lifestyle content",
     author: "ClipForge",
-    compose: { captionPreset: "minimal", bgm: "chill", bgmDuck: false, quality: "hd" },
+    compose: { captionPreset: "minimal", quality: "hd" },
   },
   {
     format: STYLE_PACK_FORMAT,
     name: "标准通用 / Standard",
-    description: "默认底板字幕 + 品类自动配乐，任何题材直接可用 / the safe default look for any topic",
+    description: "默认底板字幕，任何题材直接可用 / the safe default caption look for any topic",
     author: "ClipForge",
-    compose: { captionPreset: "standard", bgm: "upbeat", quality: "standard" },
+    compose: { captionPreset: "standard", quality: "standard" },
   },
 ];

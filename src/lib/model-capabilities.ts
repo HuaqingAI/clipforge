@@ -7,6 +7,7 @@ import {
   pickResolution,
 } from "@/lib/providers/atlas-video-params";
 import { modelSupportsLastFrame } from "@/lib/video-composer/transitions";
+import { arkSeedanceVersion } from "@/lib/ark-video-models";
 
 export type CapabilityConfidence = "known" | "inferred" | "unknown";
 
@@ -42,7 +43,8 @@ function advancedCapabilities(
   provider?: string,
 ): Pick<VideoModelCapabilities, "videoEdit" | "temporalRetake" | "regionMask" | "multiKeyframes" | "performanceReference"> {
   const id = modelId.toLowerCase();
-  const seedanceEdit = /seedance-2\.0/.test(id) && (referenceVideo === true || provider === "volcengine");
+  const seedance20 = /seedance-2\.0/.test(id) || (provider === "volcengine" && arkSeedanceVersion(id) === "2.0");
+  const seedanceEdit = seedance20 && (referenceVideo === true || provider === "volcengine");
   const known = referenceVideo !== null || referenceImages !== null;
   return {
     videoEdit: seedanceEdit ? true : referenceVideo === true ? false : referenceVideo,
@@ -60,7 +62,7 @@ export interface PreflightAdjustment {
   field: "duration" | "resolution" | "aspectRatio" | "chainMode";
   requested: string | number;
   effective: string | number;
-  code: "nearest-duration" | "mapped-resolution" | "adaptive-ratio" | "unsupported-last-frame";
+  code: "nearest-duration" | "mapped-resolution" | "adaptive-ratio" | "unsupported-last-frame" | "last-frame-as-reference";
 }
 
 export interface VideoGenerationPreflight {
@@ -72,6 +74,7 @@ export interface VideoGenerationPreflight {
     | "reference-images-trimmed"
     | "reference-conditioning-unavailable"
     | "reference-audio-unavailable"
+    | "last-frame-as-reference"
   >;
 }
 
@@ -97,10 +100,14 @@ function referenceCapabilities(modelId: string, provider?: string): Pick<VideoMo
     referenceVideo: referenceKnown ? true : explicitReferenceMode !== null ? false : null,
     referenceAudio: referenceKnown ? referenceAudio : explicitReferenceMode !== null ? false : null,
     ...(spec?.maxReferenceImages != null && { maxReferenceImages: spec.maxReferenceImages }),
+    ...(provider === "volcengine" && arkSeedanceVersion(modelId) && { maxReferenceImages: 9 }),
   };
 }
 
-function inferredModes(modelId: string): Pick<VideoModelCapabilities, "textToVideo" | "imageToVideo" | "referenceVideo"> {
+function inferredModes(modelId: string, provider?: string): Pick<VideoModelCapabilities, "textToVideo" | "imageToVideo" | "referenceVideo"> {
+  if (provider === "volcengine" && arkSeedanceVersion(modelId)) {
+    return { textToVideo: true, imageToVideo: true, referenceVideo: true };
+  }
   const id = modelId.toLowerCase();
   const explicit = /(?:text-to-video|\/t2v(?:-|$))/.test(id)
     ? "text"
@@ -120,7 +127,7 @@ function inferredModes(modelId: string): Pick<VideoModelCapabilities, "textToVid
 /** Normalize provider-specific video metadata into one UI-facing capability contract. */
 export function getVideoModelCapabilities(modelId: string, supportsAudio?: boolean, provider?: string): VideoModelCapabilities {
   const spec = getVideoParamSpec(modelId);
-  const modes = inferredModes(modelId);
+  const modes = inferredModes(modelId, provider);
   const references = referenceCapabilities(modelId, provider);
   if (!spec) {
     const hasInference = Object.values(modes).some((value) => value !== null);
@@ -130,8 +137,8 @@ export function getVideoModelCapabilities(modelId: string, supportsAudio?: boole
       ...modes,
       ...references,
       // An allowlist hit proves support; a miss on an unknown/custom model proves nothing.
-      lastFrame: modelId && modelSupportsLastFrame(modelId) ? true : null,
-      nativeAudio: supportsAudio ?? null,
+      lastFrame: modelId && (modelSupportsLastFrame(modelId) || (provider === "volcengine" && arkSeedanceVersion(modelId))) ? true : null,
+      nativeAudio: supportsAudio ?? (provider === "volcengine" && arkSeedanceVersion(modelId) ? true : null),
       ...advanced,
     };
   }
@@ -173,6 +180,17 @@ export function preflightVideoGeneration(input: {
   const spec = getVideoParamSpec(input.modelId);
   const adjustments: PreflightAdjustment[] = [];
   const warnings: VideoGenerationPreflight["warnings"] = [];
+
+  // Ark supports both modes separately, but forbids first/last frames alongside
+  // reference conditioning. Product/presenter references take priority; the
+  // planner submits keyframes as ordinary references instead of pinning a seam.
+  if (input.provider === "volcengine" && input.chainMode === "pin" && (
+    (input.referenceImageCount ?? 0) > 0 ||
+    ((input.referenceAudioCount ?? 0) > 0 && capabilities.referenceAudio === true)
+  )) {
+    adjustments.push({ field: "chainMode", requested: "pin", effective: "off", code: "last-frame-as-reference" });
+    warnings.push("last-frame-as-reference");
+  }
 
   if (!spec) {
     if (capabilities.confidence === "unknown") warnings.push("capabilities-unknown");

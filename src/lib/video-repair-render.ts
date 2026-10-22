@@ -4,6 +4,7 @@ import { dirname } from "path";
 import { promisify } from "util";
 import { buildAigcMetadataArgv } from "@/lib/compliance-metadata";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
+import { ffmpegFilterFileArgs } from "@/lib/ffmpeg-filter-file";
 import { probeMedia } from "@/lib/media-probe";
 import { validateMediaFile } from "@/lib/media-validate";
 import type { RepairWindow } from "@/lib/video-repair-plan";
@@ -33,6 +34,8 @@ export function buildVideoRepairInvocation(input: {
   sourceHasAudio: boolean;
   window: RepairWindow;
   contentId: string;
+  /** Resolved at render time to support the selected binary's filter-file syntax. */
+  filterFileOption?: "-filter_complex_script" | "-/filter_complex";
 }): VideoRepairInvocation {
   const sourceDuration = Math.max(0.5, input.sourceDuration);
   const start = Math.max(0, Math.min(sourceDuration - 0.01, input.window.start));
@@ -63,7 +66,7 @@ export function buildVideoRepairInvocation(input: {
     "-nostdin", "-v", "error", "-y",
     "-i", input.sourcePath,
     "-i", input.replacementPath,
-    "-filter_complex_script", filterFile,
+    input.filterFileOption ?? "-filter_complex_script", filterFile,
     "-map", "[vout]",
     ...(input.sourceHasAudio ? ["-map", "0:a:0"] : []),
     "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -91,6 +94,9 @@ export async function renderVideoRepair(input: {
   const end = Math.max(start + 0.01, Math.min(source.duration, input.window.end));
   if (replacement.duration + 0.1 < end - start) throw new Error("替换片段短于修复区间，未修改原镜头");
   await mkdir(dirname(input.outputPath), { recursive: true });
+  const binary = ffmpegBin();
+  const filterFile = `${input.outputPath}.filter.txt`;
+  const [filterFileOption] = await ffmpegFilterFileArgs(filterFile, binary);
   const invocation = buildVideoRepairInvocation({
     ...input,
     sourceDuration: source.duration,
@@ -99,11 +105,11 @@ export async function renderVideoRepair(input: {
     sourceFrameRate: source.frameRate,
     sourceHasAudio: source.hasAudio,
     window: { start, end },
+    filterFileOption,
   });
-  const filterFile = `${input.outputPath}.filter.txt`;
   await writeFile(filterFile, invocation.filterComplex, "utf8");
   try {
-    await withComposeSlot(() => execFileAsync(ffmpegBin(), invocation.args, {
+    await withComposeSlot(() => execFileAsync(binary, invocation.args, {
       timeout: COMPOSE_TIMEOUT_MS,
       maxBuffer: 50 * 1024 * 1024,
     }));

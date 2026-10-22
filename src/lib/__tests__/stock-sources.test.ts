@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   toOpenverseImageCandidate,
   toOpenverseAudioCandidate,
@@ -28,11 +28,23 @@ import {
   derivativeHeight,
   pickWikimediaVideoSrc,
   toWikimediaCandidate,
+  searchWikimediaAudio,
   type CommonsPage,
 } from "@/lib/providers/wikimedia";
 import { STOCK_SOURCES } from "@/lib/providers/stock-types";
 
 // ==================== Openverse ====================
+
+it("Wikimedia API 错误不会被误报为没有搜索结果", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    error: { code: "ratelimited", info: "Rate limit exceeded" },
+  }), { status: 200 })));
+  try {
+    await expect(searchWikimediaAudio("upbeat instrumental")).rejects.toThrow("ratelimited");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 describe("Openverse 归一化", () => {
   const IMG: OpenverseImage = {

@@ -3,7 +3,7 @@ import { mkdtemp, rm, access } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { promisify } from "util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { buildTranscriptRenderInvocation, renderTranscriptEdit } from "@/lib/transcript-render";
@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 describe("transcript render invocation", () => {
@@ -27,7 +28,7 @@ describe("transcript render invocation", () => {
       duration: 3,
     });
     expect(invocation.filterComplex).toContain("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vcat][acat]");
-    expect(invocation.filterComplex).toContain("[vbase]subtitles=/tmp/caption.ass:fontsdir=/tmp/fonts[vout]");
+    expect(invocation.filterComplex).toContain("[vbase]subtitles='/tmp/caption.ass':fontsdir='/tmp/fonts'[vout]");
     expect(invocation.outputArgs).toContain("[acat]");
     expect(invocation.outputArgs.at(-1)).toBe("/output.mp4");
   });
@@ -47,8 +48,9 @@ describe("transcript render invocation", () => {
 
 describe("transcript renderer integration", () => {
   it("creates a valid non-destructive cut with synchronized audio", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clipforge-text-edit-"));
+    const directory = await mkdtemp(join(tmpdir(), "clipforge text edit 测试 "));
     temporaryDirectories.push(directory);
+    vi.stubEnv("APP_DATA_DIR", join(directory, "data 测试"));
     const inputPath = join(directory, "source.mp4");
     const outputPath = join(directory, "edited.mp4");
     await execFileAsync(ffmpegBin(), [

@@ -3,6 +3,8 @@ import { join } from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
+import { buildClipAudioFilters, type ClipInput } from "@/lib/video-composer/composer";
+import { roomToneSource } from "@/lib/video-composer/voice-ground";
 
 const execFileAsync = promisify(execFile);
 const FADE_DURATION = 0.5;
@@ -11,6 +13,10 @@ export interface AudioStemClip {
   duration: number;
   transition: string;
   audioPath?: string;
+  type?: ClipInput["type"];
+  filePath?: string;
+  hasAudio?: boolean;
+  mixNativeAudio?: boolean;
 }
 
 export interface RenderAudioStemsInput {
@@ -19,6 +25,7 @@ export interface RenderAudioStemsInput {
   bgmVolume?: number;
   totalDuration: number;
   outputDir: string;
+  voiceGround?: boolean;
 }
 
 export interface RenderAudioStemsResult {
@@ -26,21 +33,35 @@ export interface RenderAudioStemsResult {
   bgmPath?: string;
 }
 
-function audioClipFilter(label: string, duration: number): string {
-  return `[${label}:a]aresample=44100,apad,atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS`;
+function hasNativeAudio(clip: AudioStemClip): boolean {
+  return clip.type === "video" && Boolean(clip.filePath && clip.hasAudio) && (!clip.audioPath || clip.mixNativeAudio === true);
 }
 
-function buildVoiceArgs(clips: AudioStemClip[], outputPath: string): string[] | null {
-  if (!clips.some((clip) => clip.audioPath)) return null;
+function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): string[] | null {
+  const { clips } = input;
+  const hasTtsTrack = clips.some((clip) => clip.audioPath);
+  if (!hasTtsTrack && !clips.some(hasNativeAudio)) return null;
   const args = ["-y"];
   const filters: string[] = [];
   let inputIndex = 0;
   clips.forEach((clip, index) => {
-    if (clip.audioPath) args.push("-i", clip.audioPath);
-    else args.push("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo");
-    const base = clip.audioPath ? audioClipFilter(String(inputIndex), clip.duration) : `[${inputIndex}:a]atrim=duration=${clip.duration.toFixed(3)},asetpts=PTS-STARTPTS`;
-    filters.push(`${base}[v${index}]`);
-    inputIndex += 1;
+    let ttsInput: string | undefined;
+    let nativeInput: string | undefined;
+    if (clip.audioPath) {
+      args.push("-i", clip.audioPath);
+      ttsInput = String(inputIndex++);
+    }
+    if (hasNativeAudio(clip)) {
+      args.push("-i", clip.filePath!);
+      nativeInput = String(inputIndex++);
+    }
+    filters.push(...buildClipAudioFilters({
+      duration: clip.duration,
+      outputLabel: `v${index}`,
+      ttsInput,
+      nativeInput,
+      voiceGround: input.voiceGround !== false && hasTtsTrack,
+    }));
   });
   let current = "v0";
   for (let i = 1; i < clips.length; i += 1) {
@@ -53,7 +74,12 @@ function buildVoiceArgs(clips: AudioStemClip[], outputPath: string): string[] | 
     }
     current = next;
   }
-  args.push("-filter_complex", filters.join(";"), "-map", `[${current}]`, "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2", outputPath);
+  if (input.voiceGround !== false) {
+    filters.push(`${roomToneSource(hasTtsTrack ? undefined : 0.004)}[roomtone]`);
+    filters.push(`[${current}][roomtone]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[voice_grounded]`);
+    current = "voice_grounded";
+  }
+  args.push("-filter_complex", filters.join(";"), "-map", `[${current}]`, "-t", input.totalDuration.toFixed(3), "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2", outputPath);
   return args;
 }
 
@@ -74,7 +100,7 @@ export async function renderAudioStems(input: RenderAudioStemsInput): Promise<Re
   await mkdir(input.outputDir, { recursive: true });
   const result: RenderAudioStemsResult = {};
   const voicePath = join(input.outputDir, "voice.wav");
-  const voiceArgs = buildVoiceArgs(input.clips, voicePath);
+  const voiceArgs = buildVoiceArgs(input, voicePath);
   if (voiceArgs) {
     await execFileAsync(ffmpegBin(), voiceArgs, { maxBuffer: 10 * 1024 * 1024 });
     result.voicePath = voicePath;

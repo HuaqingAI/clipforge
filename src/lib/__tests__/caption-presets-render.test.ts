@@ -19,6 +19,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { buildComposeInvocation, type ComposeConfig } from "@/lib/video-composer/composer";
 import { captionPresetOverrides } from "@/lib/caption-presets";
+import { ffmpegFilterFileArgs } from "@/lib/ffmpeg-filter-file";
 
 const run = promisify(execFile);
 
@@ -75,15 +76,16 @@ async function renderSubtitle(
   const inv = buildComposeInvocation(config);
   const filterFile = join(dir, `${dumpName ?? "case"}-${Math.abs(JSON.stringify(overrides).length)}.filter.txt`);
   await writeFile(filterFile, inv.filterComplex, "utf8");
+  const filterArgs = await ffmpegFilterFileArgs(filterFile, FF as string);
   // outputArgs[0..1] are ["-map", "[vN]"]; swap the encode+file tail for a single raw gray frame on stdout
   const { stdout } = await run(
     FF as string,
-    [...inv.inputArgs, "-filter_complex_script", filterFile, inv.outputArgs[0], inv.outputArgs[1], "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
+    [...inv.inputArgs, ...filterArgs, inv.outputArgs[0], inv.outputArgs[1], "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
     { encoding: "buffer", maxBuffer: 1e8 },
   );
   if (process.env.CAPTION_PRESET_DUMP && dumpName) {
     await mkdir(process.env.CAPTION_PRESET_DUMP, { recursive: true });
-    await run(FF as string, [...inv.inputArgs, "-filter_complex_script", filterFile, inv.outputArgs[0], inv.outputArgs[1], "-frames:v", "1", "-y", join(process.env.CAPTION_PRESET_DUMP, `${dumpName}.png`)]);
+    await run(FF as string, [...inv.inputArgs, ...filterArgs, inv.outputArgs[0], inv.outputArgs[1], "-frames:v", "1", "-y", join(process.env.CAPTION_PRESET_DUMP, `${dumpName}.png`)]);
   }
   let ink = 0; // bright pixels: white caption glyphs
   let dark = 0; // dark pixels: translucent box / black stroke (background Y≈65 counts as neither)

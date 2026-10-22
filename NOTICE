@@ -5,3 +5,15 @@ Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 See the LICENSE file for the full text. <https://www.gnu.org/licenses/agpl-3.0.txt>
 
 修改或再发布（含以网络服务形式提供）须公开源码、继续以 AGPL-3.0 发布，并保留本版权署名。
+
+Third-party source adaptation:
+
+src/lib/edge-tts-token.ts adapts the Edge Read Aloud v2 token implementation
+from rany2/edge-tts (src/edge_tts/drm.py), commit
+b2ffbdd9f43f28f03cc939b5de0f3964aa62d60e.
+Copyright (c) 2025- rany <rany@riseup.net>.
+Source: https://github.com/rany2/edge-tts
+This adapted module is licensed under the GNU Lesser General Public License v3.0.
+The TypeScript adaptation replaces the unrolled Python rounds with looped
+32-bit arithmetic and uses integer time calculations.
+See licenses/edge-tts-LICENSE and licenses/GPL-3.0.txt for the license texts.

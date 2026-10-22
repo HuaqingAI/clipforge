@@ -3,6 +3,7 @@ import { desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { getDb } from "@/lib/db";
 import { aiTasks, assets, compositions, pipelineRuns, projects, scripts, videoClips } from "@/lib/db/schema";
+import { filterAssetsForScript } from "@/lib/asset-context";
 import {
   buildVersionTree,
   sanitizeCreativeIntent,
@@ -26,7 +27,8 @@ async function projectRows(projectId: string) {
     db.select().from(videoClips).where(eq(videoClips.projectId, projectId)).orderBy(desc(videoClips.createdAt)),
     db.select().from(pipelineRuns).where(eq(pipelineRuns.projectId, projectId)).orderBy(desc(pipelineRuns.createdAt)),
   ]);
-  return { project: project[0], scripts: scriptRows, assets: assetRows, tasks: taskRows, compositions: compositionRows, clips: clipRows, runs: runRows };
+  const selected = scriptRows.find((row) => row.selected) ?? scriptRows[0];
+  return { project: project[0], scripts: scriptRows, assets: filterAssetsForScript(assetRows, selected), tasks: taskRows, compositions: compositionRows, clips: clipRows, runs: runRows };
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

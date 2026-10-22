@@ -9,6 +9,7 @@ import {
 } from "@/lib/assets-view";
 import type { Shot } from "@/lib/db/schema";
 import type { VideoControlSummary } from "@/lib/video-control-plan";
+import type { VideoRepairSummary } from "@/lib/video-repair-plan";
 
 // Create a minimal usable shot
 function shot(partial: Partial<Shot> & { shotId: number }): Shot {
@@ -27,6 +28,94 @@ function shot(partial: Partial<Shot> & { shotId: number }): Shot {
 }
 
 describe("buildAssetRows", () => {
+  it("keeps the actual video input separate from the generated poster", () => {
+    const [row] = buildAssetRows([shot({ shotId: 1, visualSource: "product_image" })], [{
+      shotId: 1,
+      filePath: "/api/files/p/kling/clip.mp4",
+      thumbnailPath: "/api/files/p/kling/clip.mp4.thumb.jpg",
+      sourceKeyframeUrl: "/api/files/p/kling/input.png",
+      status: "done",
+      type: "ai_generated",
+      provider: "kling-cli",
+    }], ["/api/files/p/product.jpg"]);
+    expect(row).toMatchObject({
+      thumbnailUrl: "/api/files/p/kling/clip.mp4.thumb.jpg",
+      videoUrl: "/api/files/p/kling/clip.mp4",
+      sourceImageUrl: "/api/files/p/kling/input.png",
+      keyframeUrl: "/api/files/p/kling/input.png",
+    });
+  });
+
+  it("uses the current adopted static image even when the script still says product image", () => {
+    const [row] = buildAssetRows([shot({ shotId: 1, visualSource: "product_image" })], [
+      { shotId: 1, filePath: "/api/files/p/old.jpg", status: "done", selected: false },
+      { shotId: 1, filePath: "/api/files/p/uploaded.webp", sourceKeyframeUrl: "/api/files/p/obsolete.png", status: "done", type: "user_upload", provider: "local", selected: true },
+    ], ["/api/files/p/product.jpg"]);
+    expect(row.thumbnailUrl).toBe("/api/files/p/uploaded.webp");
+    expect(row.sourceImageUrl).toBeUndefined();
+    expect(row.isVideo).toBeUndefined();
+  });
+
+  it("recovers a known older Ark input image from its historical thumbnail column", () => {
+    const [row] = buildAssetRows([shot({ shotId: 1 })], [{
+      shotId: 1, filePath: "/api/files/p/clip.mp4", thumbnailPath: "/api/files/p/input.png",
+      status: "done", type: "ai_generated", provider: "volcengine",
+    }], []);
+    expect(row.sourceImageUrl).toBe("/api/files/p/input.png");
+  });
+
+  it.each([
+    { provider: "kling-cli", type: "ai_generated" },
+    { provider: "volcengine", type: "stock_footage" },
+    { provider: "volcengine", type: "user_upload" },
+    { provider: "local", type: "user_upload" },
+    { provider: "pexels", type: "stock_footage" },
+    { provider: "unknown", type: "ai_generated" },
+    { provider: "volcengine", type: undefined },
+  ])("does not infer an input image from a $provider / $type display poster", ({ provider, type }) => {
+    const [row] = buildAssetRows([shot({ shotId: 1 })], [{
+      shotId: 1, filePath: "/api/files/p/clip.mp4", thumbnailPath: "/api/files/p/poster.jpg",
+      status: "done", provider, type,
+    }], []);
+    expect(row.thumbnailUrl).toBe("/api/files/p/poster.jpg");
+    expect(row.sourceImageUrl).toBeUndefined();
+  });
+
+  it.each([
+    "/api/files/p/clip.mp4.thumb.jpg",
+    "https://cdn.example/preview.jpg",
+    "/api/files/p/clip.mp4",
+  ])("does not present an unverified legacy Ark preview as its input: %s", (thumbnailPath) => {
+    const [row] = buildAssetRows([shot({ shotId: 1 })], [{
+      shotId: 1, filePath: "/api/files/p/clip.mp4", thumbnailPath,
+      status: "done", type: "ai_generated", provider: "volcengine",
+    }], []);
+    expect(row.sourceImageUrl).toBeUndefined();
+  });
+
+  it("does not infer an input from a repair poster but retains an explicitly recorded input", () => {
+    const generationPlan: VideoRepairSummary = {
+      version: 1, kind: "repair", operationId: "operation", sourceAssetId: "source", reviewId: "review", shotId: 1,
+      provider: "volcengine", model: "video-model", window: { start: 0, end: 3 }, requestedScope: "temporal",
+      effectiveScope: "full-frame", keyframes: [], strategy: "boundary-frames", generatedDuration: 3,
+      referenceCount: 2, audioMode: "preserve-source", warnings: [], planHash: "repair-hash",
+    };
+    const saved: SavedAssetRow = {
+      shotId: 1, filePath: "/api/files/p/repaired.mp4", thumbnailPath: "/api/files/p/poster.jpg",
+      status: "done", type: "ai_generated", provider: "volcengine", generationPlan,
+    };
+    expect(buildAssetRows([shot({ shotId: 1 })], [saved], [])[0].sourceImageUrl).toBeUndefined();
+    expect(buildAssetRows([shot({ shotId: 1 })], [{ ...saved, sourceKeyframeUrl: "/api/files/p/input.png" }], [])[0].sourceImageUrl).toBe("/api/files/p/input.png");
+  });
+
+  it("does not guess the input of an older repair file without its generation summary", () => {
+    const [row] = buildAssetRows([shot({ shotId: 1 })], [{
+      shotId: 1, filePath: "/api/files/p/repair-operation.mp4", thumbnailPath: "/api/files/p/preview.jpg",
+      status: "done", type: "ai_generated", provider: "volcengine",
+    }], []);
+    expect(row.sourceImageUrl).toBeUndefined();
+  });
+
   it("已落库且就绪的素材 → 就绪并带缩略图，透传 assetType", () => {
     const shots = [shot({ shotId: 1, visualSource: "ai_generate" })];
     const saved: SavedAssetRow[] = [

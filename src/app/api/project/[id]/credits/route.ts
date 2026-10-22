@@ -5,7 +5,8 @@ import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { getDb } from "@/lib/db";
 import { getDataDir } from "@/lib/paths";
-import { projects, assets as assetsTable, compositions } from "@/lib/db/schema";
+import { projects, assets as assetsTable, compositions, scripts } from "@/lib/db/schema";
+import { filterAssetsForScript } from "@/lib/asset-context";
 import { buildCreditsManifest, renderCreditsMarkdown, type BgmCredit } from "@/lib/asset-credits";
 import { apiError } from "@/lib/api-error";
 
@@ -36,7 +37,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     .from(assetsTable)
     .where(and(eq(assetsTable.projectId, id), eq(assetsTable.status, "done"), eq(assetsTable.selected, true)))
     .orderBy(desc(assetsTable.createdAt));
-  const current = rows;
+  const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
+  const current = filterAssetsForScript(rows, scriptRows.find((row) => row.selected) ?? scriptRows[0]);
   if (current.length === 0) {
     return apiError(req, "该项目还没有素材，先自动配画面或上传素材", "This project has no assets yet; auto-fill or upload materials first", 404);
   }
