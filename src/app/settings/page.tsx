@@ -30,7 +30,6 @@ import {
   type TTSProvider,
 } from "@/lib/tts-presets";
 import { mergeCustomModels } from "@/lib/gen-params";
-import { LLM_PRESETS } from "@/lib/llm-presets";
 import { ModelPicker } from "@/components/settings/model-picker";
 import { GenerationSettings } from "@/components/generation-settings";
 import { PresenterManager } from "@/components/presenter-manager";
@@ -596,25 +595,6 @@ export default function SettingsPage() {
                       </svg>
                     </div>
                     <h3 className="font-semibold text-sm">{t("llmProvider")}</h3>
-                  </div>
-
-                  {/* quick presets */}
-                  <div className="mb-4 p-3 rounded-lg bg-muted/50 border border-border/50">
-                    <p className="text-xs text-muted-foreground mb-2">{t("llmPresetHint")}</p>
-                    <div className="flex flex-wrap gap-2">
-                      {LLM_PRESETS.map((preset) => (
-                        <button
-                          key={preset.label}
-                          onClick={() => setLLM({ ...llm, baseUrl: preset.baseUrl, model: preset.model, visionModel: preset.model, ...(preset.apiKey ? { apiKey: preset.apiKey } : {}) })}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border border-border/50 bg-background hover:border-primary/40 hover:text-primary transition-colors"
-                        >
-                          {preset.label}
-                          {preset.tipKey && (
-                            <span className="text-[10px] text-muted-foreground/70">({t(preset.tipKey as Parameters<typeof t>[0])})</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
                   </div>
 
                   <div className="grid gap-4">
