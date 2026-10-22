@@ -350,17 +350,6 @@ export default function SettingsPage() {
     window.history.replaceState(null, "", url.toString());
   };
 
-  // 系统诊断信息（/api/health），报障截图用
-  const [diagnostics, setDiagnostics] = useState("");
-  const loadDiagnostics = async () => {
-    try {
-      const res = await fetch("/api/health");
-      setDiagnostics(JSON.stringify(await res.json(), null, 2));
-    } catch (e) {
-      setDiagnostics(String(e));
-    }
-  };
-
   // test LLM connection
   const [llmTestError, setLlmTestError] = useState("");
   // 连接通过但仍有值得知道的事（例如该模型输出上限极小）——绿灯照给，附一行提醒
@@ -1099,29 +1088,6 @@ export default function SettingsPage() {
         {/* zustand persists every change instantly — say so instead of showing a fake save button */}
         <p className="mt-8 text-xs text-muted-foreground">{t("autoSaveHint")}</p>
 
-        {/* 系统诊断：报障时让用户点开截图/复制，一次拿到版本、数据库、迁移、ffmpeg 状态（折叠，不与设置项抢注意力） */}
-        <details className="group mt-4 rounded-lg border border-border/40">
-          <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium text-muted-foreground hover:text-foreground">
-            <span>{t("diagnosticsTitle")}</span>
-            <svg className="size-4 transition-transform group-open:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6" /></svg>
-          </summary>
-          <div className="px-4 pb-4">
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={loadDiagnostics}>
-                {diagnostics ? t("diagnosticsRefresh") : t("diagnosticsShow")}
-              </Button>
-              {diagnostics && (
-                <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(diagnostics)}>
-                  {t("diagnosticsCopy")}
-                </Button>
-              )}
-            </div>
-            {diagnostics && (
-              <pre className="mt-3 max-h-64 overflow-auto rounded bg-muted/30 p-3 text-xs leading-relaxed whitespace-pre-wrap break-all">{diagnostics}</pre>
-            )}
-            <p className="mt-2 text-xs text-muted-foreground">{t("diagnosticsHint")}</p>
-          </div>
-        </details>
       </main>
     </div>
   );
