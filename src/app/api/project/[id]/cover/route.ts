@@ -4,9 +4,10 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { getDb } from "@/lib/db";
 import { getDataDir } from "@/lib/paths";
-import { compositions } from "@/lib/db/schema";
+import { compositions, projects } from "@/lib/db/schema";
 import { generateCover } from "@/lib/video-composer/cover";
 import { apiError, errText } from "@/lib/api-error";
+import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -28,6 +29,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!title) return apiError(req, "请提供封面标题", "Please provide a cover title");
 
   const db = getDb();
+  const [project] = await db
+    .select({ creativeProfile: projects.creativeProfile })
+    .from(projects)
+    .where(eq(projects.id, id))
+    .limit(1);
+  if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+  // Covers burn a large title into the extracted frame. Premium CG locks
+  // generated frame text, so an older client cannot request this sales output.
+  if (isPremiumProductCgProfile(project.creativeProfile)) {
+    return NextResponse.json(
+      {
+        error: errText(req, "高端家具产品 CG 不支持标题式封面文字", "High-end furniture product CG does not allow title-based cover text."),
+        code: "PREMIUM_CG_OUTPUT_POLICY",
+      },
+      { status: 400 },
+    );
+  }
   const [comp] = await db
     .select()
     .from(compositions)

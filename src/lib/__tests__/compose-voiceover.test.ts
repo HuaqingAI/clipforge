@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
@@ -11,6 +11,13 @@ import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
+import {
+  createCreativeProfileSnapshot,
+  createPremiumProductCgProfile,
+  createShortVideoSalesProfile,
+} from "@/lib/creative-profiles";
+import { AIGC_BADGE_DEFAULT_TEXT } from "@/lib/compliance-overlays";
+import { assetScopeForShot } from "@/lib/asset-context";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { buildComposeInvocation, FADE_DURATION, type ComposeConfig } from "@/lib/video-composer/composer";
 
@@ -66,7 +73,8 @@ beforeEach(() => {
   db.delete(schema.compositions).run();
   db.delete(schema.assets).run();
   db.delete(schema.scripts).run();
-  db.update(schema.projects).set({ productImages: [] }).where(eq(schema.projects.id, projectId)).run();
+  db.update(schema.projects).set({ productImages: [], creativeProfile: null, creativeConfigRevision: 0 })
+    .where(eq(schema.projects.id, projectId)).run();
   vi.clearAllMocks();
   state.freeTts.mockResolvedValue({ audio: shortNarration, words: [] });
   state.paidTts.mockResolvedValue(shortNarration);
@@ -93,6 +101,33 @@ function setShots(sources: Array<{ source: "audible" | "silent" | "no-audio"; vo
     projectId, shotId: index + 1, type: "ai_generated" as const, selected: true, status: "done" as const,
     filePath: `/api/files/${projectId}/${source.source}.mp4`,
   }))).run();
+}
+
+function markSelectedScriptAsPremium(profile = createPremiumProductCgProfile(), revision = 0) {
+  const script = db.select().from(schema.scripts).get()!;
+  db.update(schema.scripts).set({
+    styleType: "premium_product_cg",
+    creativeProfileSnapshot: createCreativeProfileSnapshot(profile, revision),
+  }).where(eq(schema.scripts.id, script.id)).run();
+  return script;
+}
+
+async function markSelectedAssetsAsTrustedPremiumCg() {
+  const script = db.select().from(schema.scripts).get()!;
+  const targetDir = join(directory, "uploads", projectId, "kling", "fixture");
+  await mkdir(targetDir, { recursive: true });
+  for (const asset of db.select().from(schema.assets).where(eq(schema.assets.projectId, projectId)).all()) {
+    const shot = script.shots?.find((item) => item.shotId === asset.shotId);
+    if (!shot || !asset.filePath) continue;
+    const filename = `${asset.shotId}-${basename(asset.filePath)}`;
+    const target = join(targetDir, filename);
+    await copyFile(join(directory, "uploads", projectId, basename(asset.filePath)), target);
+    db.update(schema.assets).set({
+      filePath: `/api/files/${projectId}/kling/fixture/${filename}`,
+      provider: "kling-cli",
+      ...assetScopeForShot(script, shot),
+    }).where(eq(schema.assets.id, asset.id)).run();
+  }
 }
 
 async function requestCompose(body: Record<string, unknown> = {}) {
@@ -418,6 +453,130 @@ describe("composition subtitles", () => {
     expect(state.render).not.toHaveBeenCalled();
     expect(db.select().from(schema.compositions).all()).toHaveLength(0);
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()).toEqual(projectBefore);
+  });
+});
+
+describe("premium furniture CG composition policy", () => {
+  it("rejects explicit subtitle, TTS, CTA and product-card requests before creating work", async () => {
+    setShots([{ source: "audible" }]);
+    const profile = createPremiumProductCgProfile();
+    markSelectedScriptAsPremium(profile);
+    db.update(schema.projects).set({ creativeProfile: profile }).where(eq(schema.projects.id, projectId)).run();
+    try {
+      const response = await requestCompose({
+        subtitles: true,
+        freeTts: { enabled: true },
+        voiceoverMode: "replace",
+        ctaText: "Buy now",
+        productCard: true,
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain("高端家具产品 CG");
+      expect(state.freeTts).not.toHaveBeenCalled();
+      expect(state.render).not.toHaveBeenCalled();
+      expect(db.select().from(schema.compositions).all()).toHaveLength(0);
+    } finally {
+      db.update(schema.projects).set({ creativeProfile: null }).where(eq(schema.projects.id, projectId)).run();
+    }
+  });
+
+  it("forces a pure visual render and drops legacy shot text overlays", async () => {
+    setShots([{ source: "audible" }]);
+    const script = db.select().from(schema.scripts).get()!;
+    const profile = createPremiumProductCgProfile();
+    db.update(schema.scripts).set({ shots: script.shots!.map((shot) => ({
+      ...shot,
+      textOverlay: { text: "Legacy sales copy", style: "highlight" as const },
+    })), styleType: "premium_product_cg", creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 0) }).where(eq(schema.scripts.id, script.id)).run();
+    db.update(schema.projects).set({ creativeProfile: profile }).where(eq(schema.projects.id, projectId)).run();
+    try {
+      await markSelectedAssetsAsTrustedPremiumCg();
+      const { config } = await compose();
+      expect(config.subtitle).toBeUndefined();
+      expect(config.overlays).toBeUndefined();
+      expect(config.productCard).toBeUndefined();
+      expect(state.freeTts).not.toHaveBeenCalled();
+      expect(state.paidTts).not.toHaveBeenCalled();
+      expect(config.clips[0].audioPath).toBeUndefined();
+      expect(config.clips[0].hasAudio).toBe(false);
+    } finally {
+      db.update(schema.projects).set({ creativeProfile: null }).where(eq(schema.projects.id, projectId)).run();
+    }
+  });
+
+  it("uses controlled Edge narration for restrained CG and keeps the default AIGC disclosure", async () => {
+    setShots([{ source: "audible" }]);
+    const script = db.select().from(schema.scripts).get()!;
+    const profile = createPremiumProductCgProfile({ narrationMode: "restrained" });
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 0),
+      shots: script.shots!.map((shot) => ({ ...shot, narration: "The walnut frame meets the woven seat with a quiet, precise line." })),
+    }).where(eq(schema.scripts.id, script.id)).run();
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+    }).where(eq(schema.projects.id, projectId)).run();
+    try {
+      await markSelectedAssetsAsTrustedPremiumCg();
+      const { config, timeline } = await compose({ aigcBadge: true });
+      expect(state.freeTts).toHaveBeenCalledTimes(1);
+      expect(state.paidTts).not.toHaveBeenCalled();
+      expect(config.subtitle).toBeUndefined();
+      expect(config.clips[0]).toMatchObject({ hasAudio: false, audioPath: expect.stringMatching(/\.mp3$/) });
+      expect(config.overlays).toHaveLength(1);
+      expect(config.overlays?.[0]).toMatchObject({ text: AIGC_BADGE_DEFAULT_TEXT, style: "badge", startTime: 0 });
+      expect(config.overlays?.[0].endTime).toBeGreaterThan(0);
+      expect(timeline.audioTracks.map((track) => track.role)).toEqual(["dialogue"]);
+      expect(db.select().from(schema.compositions).get()?.aigcBadge).toBe(true);
+    } finally {
+      db.update(schema.projects).set({ creativeProfile: null }).where(eq(schema.projects.id, projectId)).run();
+    }
+  });
+
+  it("rejects caption presets and custom AIGC copy for a CG render", async () => {
+    setShots([{ source: "audible" }]);
+    const profile = createPremiumProductCgProfile();
+    markSelectedScriptAsPremium(profile);
+    db.update(schema.projects).set({ creativeProfile: profile }).where(eq(schema.projects.id, projectId)).run();
+    try {
+      for (const body of [
+        { subtitles: false, captionPreset: "karaoke" },
+        { aigcBadge: true, aigcBadgeText: "Custom label" },
+      ]) {
+        const response = await requestCompose(body);
+        expect(response.status).toBe(400);
+        expect((await response.json()).code).toBe("PREMIUM_CG_OUTPUT_POLICY");
+      }
+      expect(state.render).not.toHaveBeenCalled();
+    } finally {
+      db.update(schema.projects).set({ creativeProfile: null }).where(eq(schema.projects.id, projectId)).run();
+    }
+  });
+
+  it("rejects a selected script whose frozen creative type or configuration is stale", async () => {
+    setShots([{ source: "audible" }]);
+    const profile = createPremiumProductCgProfile();
+    const script = db.select().from(schema.scripts).get()!;
+    db.update(schema.projects).set({ creativeProfile: profile, creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
+    try {
+      db.update(schema.scripts).set({
+        styleType: "premium_product_cg",
+        creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 2),
+      }).where(eq(schema.scripts.id, script.id)).run();
+      let response = await requestCompose();
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe("CREATIVE_PROFILE_MISMATCH");
+
+      db.update(schema.scripts).set({
+        creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+      }).where(eq(schema.scripts.id, script.id)).run();
+      response = await requestCompose();
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe("CREATIVE_CONFIG_STALE");
+      expect(state.render).not.toHaveBeenCalled();
+    } finally {
+      db.update(schema.projects).set({ creativeProfile: null, creativeConfigRevision: 0 }).where(eq(schema.projects.id, projectId)).run();
+    }
   });
 });
 

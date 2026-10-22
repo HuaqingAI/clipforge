@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "crypto";
 import { join } from "path";
 import { getDataDir } from "@/lib/paths";
 import { getDb } from "@/lib/db";
-import { scripts, assets, compositions, aiTasks } from "@/lib/db/schema";
+import { projects, scripts, assets, compositions, aiTasks } from "@/lib/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
 import { ProviderError } from "@/lib/providers/base";
@@ -30,8 +30,85 @@ import { apiError, errText } from "@/lib/api-error";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import { isKlingVideoSelection } from "@/lib/assets-view";
 import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
+import {
+  checkCreativeProfileContext,
+  isPremiumProductCgProfile,
+  isPremiumProductCgProject,
+} from "@/lib/creative-profiles";
+import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
+import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
+import { PREMIUM_CG_VIDEO_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
+
+/** Audio controls that providers accept directly or through their pass-through `extra` object. */
+const PREMIUM_CG_AUDIO_CONTROL_KEYS = new Set([
+  "audio",
+  "audioenabled",
+  "audioprompt",
+  "audioreference",
+  "audioreferenceurl",
+  "audioreferenceurls",
+  "audiourl",
+  "enableaudio",
+  "generateaudio",
+  "nativeaudio",
+  "referenceaudio",
+  "referenceaudiourl",
+  "referenceaudiourls",
+  "referenceaudios",
+  "sound",
+  "texttospeech",
+  "tts",
+  "ttsenabled",
+  "voiceover",
+]);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isPremiumCgAudioControl(key: string): boolean {
+  return PREMIUM_CG_AUDIO_CONTROL_KEYS.has(key.replace(/[_-]/g, "").toLowerCase());
+}
+
+/**
+ * Preserve the legacy sales request as-is. Premium CG owns every audio input on the
+ * server so a client cannot inject copy, a voice reference, or a provider-specific
+ * audio toggle after the persisted profile has selected silent or restrained narration.
+ */
+function controlledFilmOptions(
+  raw: unknown,
+  premiumNarrationMode?: "none" | "restrained",
+): Record<string, unknown> {
+  const options = isPlainRecord(raw) ? { ...raw } : {};
+  if (premiumNarrationMode === undefined) return options;
+
+  for (const key of Object.keys(options)) {
+    if (isPremiumCgAudioControl(key)) delete options[key];
+  }
+
+  // Provider adapters apply opaque extras after their typed request body. The CG branch owns
+  // the compiled prompt and project references, so no nested value may replace either one.
+  delete options.extra;
+  delete options.negativePrompt;
+  delete options.negative_prompt;
+
+  // Approved restrained narration is embedded by buildStoryboardFilmPrompt. No caller
+  // supplied voiceover, prompt, or reference audio is allowed through to a provider.
+  options.audioEnabled = premiumNarrationMode === "restrained";
+  options.negativePrompt = PREMIUM_CG_VIDEO_NEGATIVE_PROMPT;
+  return options;
+}
+
+function filmOutputDimensions(options: Record<string, unknown>): { width?: number; height?: number } {
+  return {
+    ...(typeof options.width === "number" && Number.isFinite(options.width) && { width: options.width }),
+    ...(typeof options.height === "number" && Number.isFinite(options.height) && { height: options.height }),
+  };
+}
 
 /** A shot's usable keyframe IMAGE: an image asset's filePath, or a video asset's preserved keyframe */
 function shotKeyframe(asset: { filePath?: string | null; thumbnailPath?: string | null } | undefined): string | undefined {
@@ -60,7 +137,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
-    if (body.action === "recover") return await recoverFilm(req, id, body);
+    if (body.action === "recover") {
+      const [project] = await getDb().select().from(projects).where(eq(projects.id, id));
+      if (!project) return apiError(req, "Project not found", "Project not found", 404);
+      if (isPremiumProductCgProject(project)) {
+        return NextResponse.json(
+          {
+            error: "Premium product CG does not recover legacy full-film outputs.",
+            code: "PREMIUM_CG_OUTPUT_POLICY",
+          },
+          { status: 409 },
+        );
+      }
+      return await recoverFilm(req, id, body);
+    }
     if (body.provider === "kling-cli" || isKlingVideoSelection(body.model)) {
       try {
         await assertKlingLocalRequest(req);
@@ -97,12 +187,48 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const db = getDb();
+    const [project] = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, id));
+    if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+
     const [script] = await db
       .select()
       .from(scripts)
       .where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
     if (!script) return apiError(req, "脚本不存在", "Script not found", 404);
+    const context = checkCreativeProfileContext(project, script);
+    if (!context.ok) {
+      return NextResponse.json({
+        error: context.code === "CREATIVE_CONFIG_STALE"
+          ? "脚本基于旧的创作设置生成，请重新生成脚本后再生成整片。"
+          : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+        code: context.code,
+        projectCreationType: context.projectProfile.creationType,
+        scriptCreationType: context.scriptProfile.creationType,
+        projectRevision: context.projectRevision,
+        scriptRevision: context.scriptRevision,
+      }, { status: 409 });
+    }
+    const creativeProfile = context.projectProfile;
+    const premiumCgProfile = isPremiumProductCgProfile(creativeProfile) ? creativeProfile : undefined;
+    const premiumCg = !!premiumCgProfile;
+    const filmOptions = controlledFilmOptions(options, premiumCgProfile?.narrationMode);
     const shots = Array.isArray(script.shots) ? script.shots : [];
+    if (premiumCg) {
+      const issues = lintCreativeProfileShots(creativeProfile, shots);
+      if (issues.length) {
+        return NextResponse.json({
+          error: "High-end furniture CG scripts cannot request generated text, promotional graphics, or unapproved narration.",
+          code: "CREATIVE_POLICY_VIOLATION",
+          issues,
+        }, { status: 400 });
+      }
+    }
+    // CG products never use a presenter identity reference. A stale client field cannot
+    // shift @Image indices or introduce a person into a product-film generation.
+    const effectiveCharacterSheetUrl = premiumCg ? undefined : characterSheetUrl;
     if (shots.length < 2) {
       return apiError(req, "分镜太少，一键整片至少需要 2 个分镜", "Too few shots — the film pass needs at least 2", 400);
     }
@@ -128,7 +254,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // preview names the same model the paid submit uses (issue #28)
     const choice = resolveFilmModel(model);
     const fit = filmDurationFit(shots, choice.model);
-    const prompt = buildStoryboardFilmPrompt(shots, script.characters, { characterSheet: !!characterSheetUrl });
+    const prompt = buildStoryboardFilmPrompt(shots, script.characters, {
+      characterSheet: !!effectiveCharacterSheetUrl,
+      creativeProfile,
+    });
     if (expectedPrompt !== undefined && typeof expectedPrompt !== "string") {
       return NextResponse.json({ error: errText(req, "整片确认信息无效，请重新预览后确认生成。", "Invalid film confirmation. Preview the plan again before generating."), errorCode: "FILM_CONFIRMATION_INVALID" }, { status: 422 });
     }
@@ -137,11 +266,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     if (dryRun) {
-      const previewOpts = (options ?? {}) as { width?: number; height?: number };
+      const previewOpts = filmOutputDimensions(filmOptions);
       const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), fit.seconds, previewOpts);
       // planned reference count: one keyframe per shot (+ the identity sheet when present) —
       // computable before the grid pass has actually rendered the keyframes
-      const plannedRefs = shots.length + (characterSheetUrl ? 1 : 0);
+      const plannedRefs = shots.length + (effectiveCharacterSheetUrl ? 1 : 0);
       return NextResponse.json({
         dryRun: true,
         prompt,
@@ -154,6 +283,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         referenceImages: plannedRefs,
         referenceQuota: referenceQuotaCheck(plannedRefs, choice.model),
         dialogueWarnings: dialogueDensityWarnings(shots),
+        creativeProfile,
         // undefined when the platform publishes no price — the UI must say "unknown", not "free"
         ...(estimate && { estimate }),
       });
@@ -181,7 +311,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // every shot needs a keyframe IMAGE (grid cells or per-shot stills) to cite as @ImageN
-    const assetRows = filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), script);
+    const scopedAssetRows = filterAssetsForScript(
+      await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
+      script,
+    );
+    const assetRows = premiumCg
+      ? filterTrustedPremiumCgAssets(scopedAssetRows, id, script)
+      : scopedAssetRows;
     const byShot = new Map(assetRows.map((a) => [a.shotId, a]));
     const keyframes: string[] = [];
     const missing: number[] = [];
@@ -200,9 +336,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     // remote providers can't reach localhost: local /api/files keyframes travel as Base64.
     // With a character sheet it leads the array (@Image1 = identity anchor, shots shift to @Image2..)
-    const refInputs = [...(characterSheetUrl ? [characterSheetUrl] : []), ...keyframes];
+    const refInputs = [...(effectiveCharacterSheetUrl ? [effectiveCharacterSheetUrl] : []), ...keyframes];
     inputReferences = [
-      ...(characterSheetUrl ? [{ url: characterSheetUrl, kind: "character-sheet" as const }] : []),
+      ...(effectiveCharacterSheetUrl ? [{ url: effectiveCharacterSheetUrl, kind: "character-sheet" as const }] : []),
       ...keyframes.map((url, index) => ({ url, kind: "shot" as const, shotId: shots[index].shotId })),
     ];
     // pre-spend quota gate: a reference count over the model's schema limit is a guaranteed
@@ -211,8 +347,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!quota.ok) {
       return apiError(
         req,
-        `参考图 ${quota.count} 张超过该模型上限 ${quota.limit} 张——减少分镜数${characterSheetUrl ? "，或去掉定妆照（少一张参考位）" : ""}后再试`,
-        `${quota.count} reference images exceed this model's limit of ${quota.limit} — reduce the shot count${characterSheetUrl ? " or drop the presenter sheet (frees one slot)" : ""} and retry`,
+        `参考图 ${quota.count} 张超过该模型上限 ${quota.limit} 张——减少分镜数${effectiveCharacterSheetUrl ? "，或去掉定妆照（少一张参考位）" : ""}后再试`,
+        `${quota.count} reference images exceed this model's limit of ${quota.limit} — reduce the shot count${effectiveCharacterSheetUrl ? " or drop the presenter sheet (frees one slot)" : ""} and retry`,
         400
       );
     }
@@ -221,7 +357,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const cap = Number(spendCapUsd);
     if (Number.isFinite(cap) && cap > 0 && !acknowledgeOverCap) {
       // compare the HIGH end: a floor-priced estimate is exactly what hid the real bill (issue #28)
-      const capOpts = (options ?? {}) as { width?: number; height?: number };
+      const capOpts = filmOutputDimensions(filmOptions);
       const estimate = estimateFilmSpend(await unitPriceUsd(choice.model, baseUrl), fit.seconds, capOpts);
       if (estimate && estimate.maxUsd > cap) {
         return apiError(
@@ -243,9 +379,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const dialogueWarnings = dialogueDensityWarnings(shots);
     const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
 
-    const opts = (options ?? {}) as { width?: number; height?: number };
+    const opts = filmOutputDimensions(filmOptions);
     const videoOptions = {
-      ...(options ?? {}),
+      ...filmOptions,
       modelId: choice.model,
       mode: "video-to-video" as const,
       prompt,
@@ -254,8 +390,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // portrait 720p unless the caller asked otherwise — maps to resolution+ratio provider-side
       width: opts.width ?? 720,
       height: opts.height ?? 1280,
-      // native speech IS the feature: dialogue lives in the prompt, audio must be on
-      audioEnabled: true,
+      // Sales films retain native dialogue. CG is silent by default; only an approved
+      // restrained-narration profile may request generated speech.
+      audioEnabled: !premiumCg || premiumCgProfile.narrationMode === "restrained",
     };
 
     // legacy single-phase path for providers without two-phase task support
@@ -263,7 +400,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const result = await provider.generateVideo(videoOptions);
       const rowId = result.taskId ? await recordAiTask({ projectId: id, provider: providerName, model: result.modelId || choice.model, mediaType: "video", mode: "video-to-video", prompt, taskId: result.taskId }) : null;
       try {
-        const saved = await persistFilm(id, result.videoUrls?.[0], result.modelId || choice.model, providerName, result.taskId);
+        const saved = await persistFilm(id, result.videoUrls?.[0], result.modelId || choice.model, providerName, result.taskId, script.id);
         await updateAiTask(rowId, { status: "completed", resultUrls: result.videoUrls, error: null });
         return NextResponse.json({ ...saved, taskId: result.taskId, modelId: result.modelId, seconds: duration, dialogueWarnings });
       } catch (failure) {
@@ -298,7 +435,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         );
       }
       await updateAiTask(rowId, { status: "processing", resultUrls: [videoUrl], error: null });
-      const saved = await persistFilm(id, videoUrl, modelId, providerName, taskId);
+      const saved = await persistFilm(id, videoUrl, modelId, providerName, taskId, script.id);
       await updateAiTask(rowId, { status: "completed", resultUrls: [videoUrl], error: null });
       return NextResponse.json({ ...saved, taskId, modelId, seconds: duration, dialogueWarnings });
     } catch (error) {
@@ -421,8 +558,37 @@ async function recoverFilm(req: NextRequest, projectId: string, body: Record<str
   }
 }
 
+class FilmPersistencePolicyError extends Error {
+  readonly code = "PREMIUM_CG_OUTPUT_POLICY";
+}
+
+/** A delayed result may only be written while the initiating project/script context remains current. */
+async function assertFilmPersistenceContext(projectId: string, scriptId?: string): Promise<void> {
+  const db = getDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
+  if (!project) throw new Error("PROJECT_NOT_FOUND");
+  if (!scriptId) {
+    if (isPremiumProductCgProject(project)) {
+      throw new FilmPersistencePolicyError("Premium product CG does not accept a recovered legacy full-film result.");
+    }
+    return;
+  }
+  const [script] = await db.select().from(scripts).where(and(eq(scripts.id, scriptId), eq(scripts.projectId, projectId)));
+  if (!script) throw new FilmPersistencePolicyError("The initiating script is no longer available.");
+  const context = checkCreativeProfileContext(project, script);
+  if (!context.ok) throw new FilmPersistencePolicyError("The creative profile changed while the film task was running.");
+}
+
 /** Download the generated film and register a stable composition for the original paid task. */
-async function persistFilm(projectId: string, videoUrl: string | undefined, model: string, provider: string, taskId?: string) {
+async function persistFilm(
+  projectId: string,
+  videoUrl: string | undefined,
+  model: string,
+  provider: string,
+  taskId?: string,
+  scriptId?: string,
+) {
+  await assertFilmPersistenceContext(projectId, scriptId);
   const stableTaskId = taskId || randomUUID();
   const existing = await savedFilm(projectId, provider, stableTaskId);
   if (existing) return existing;
@@ -431,6 +597,7 @@ async function persistFilm(projectId: string, videoUrl: string | undefined, mode
   if (!resp.ok) throw new Error(`下载成片失败: ${resp.status}`);
   const buf = Buffer.from(await resp.arrayBuffer());
   if (buf.length === 0) throw new Error("下载成片返回了空视频，原任务可继续恢复");
+  await assertFilmPersistenceContext(projectId, scriptId);
   const outputDir = join(getDataDir(), "output", projectId);
   await mkdir(outputDir, { recursive: true });
   const { compositionId, fileName, outputPath } = filmIdentity(projectId, provider, stableTaskId);

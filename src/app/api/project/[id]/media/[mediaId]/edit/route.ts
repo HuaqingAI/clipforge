@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, errText } from "@/lib/api-error";
 import { getDb } from "@/lib/db";
-import { mediaEdits, mediaSources } from "@/lib/db/schema";
+import { mediaEdits, mediaSources, projects } from "@/lib/db/schema";
 import { createTranscriptEditProposal } from "@/lib/transcript-edit-protocol";
 import { cancelTranscriptRender, retryTranscriptRender, reconcileTranscriptRenders, publicTranscriptEdit } from "@/lib/transcript-render-runner";
 import { enqueueTranscriptEdits } from "@/lib/transcript-edit-jobs";
@@ -10,6 +10,7 @@ import {
   DEFAULT_TRANSCRIPT_EDIT_PLAN,
   sanitizeTranscriptDocument,
 } from "@/lib/transcript-editor";
+import { isPremiumCgMediaEditBlocked, PREMIUM_CG_MEDIA_EDIT_FORBIDDEN } from "@/lib/premium-cg-media";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -106,6 +107,17 @@ export async function POST(
 
     reconcileTranscriptRenders(id);
     const db = getDb();
+    const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    if (!project) return apiError(req, "Project not found", "Project not found", 404);
+    if (isPremiumCgMediaEditBlocked(project)) {
+      return NextResponse.json(
+        {
+          error: "Premium product CG does not allow transcript-based media edits.",
+          code: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN,
+        },
+        { status: 409 },
+      );
+    }
     const [source] = await db.select().from(mediaSources)
       .where(and(eq(mediaSources.id, mediaId), eq(mediaSources.projectId, id))).limit(1);
     if (!source) return apiError(req, "素材不存在", "Media source not found", 404);
@@ -171,6 +183,12 @@ export async function POST(
     }
     if (error instanceof Error && /UNIQUE constraint failed/.test(error.message)) {
       return apiError(req, "相同剪辑操作已提交或版本已变化", "This edit was already submitted or the revision changed", 409);
+    }
+    if (error instanceof Error && error.message === PREMIUM_CG_MEDIA_EDIT_FORBIDDEN) {
+      return NextResponse.json(
+        { error: "Premium product CG does not allow transcript-based media edits.", code: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN },
+        { status: 409 },
+      );
     }
     console.error("Transcript edit start failed:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : errText(req, "启动文字剪辑失败", "Failed to start text edit") }, { status: 500 });

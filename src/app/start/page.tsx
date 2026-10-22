@@ -11,6 +11,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { CreationTypeGate } from "@/components/creation-type-gate";
 import { ProductionProfilePicker } from "@/components/production-profile-picker";
 import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useCharacterStore } from "@/lib/stores/project-store";
@@ -73,6 +74,7 @@ export default function StartPage() {
   const examples = getExampleProducts(locale);
 
   const [mode, setMode] = useState<Mode>("upload");
+  const [salesFlowChosen, setSalesFlowChosen] = useState(false);
   // generation-task mode: the free/paid fork, explicit with cost up front
   // (open-source BYOK — AI charges go to the user's own model platform, never to us)
   const [selectedGenMode, setGenMode] = useState<"free" | "ai">(SHOW_FREE_QUICK_CUT ? "free" : "ai");
@@ -370,7 +372,13 @@ export default function StartPage() {
     const res = await fetch("/api/topic/script", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: topic.trim(), narrationStyle: "knowledge", targetDuration: 25, llmConfig: llmConfig() }),
+      body: JSON.stringify({
+        topic: topic.trim(),
+        narrationStyle: "knowledge",
+        targetDuration: 25,
+        creativeProfile: { creationType: "short_video_sales" },
+        llmConfig: llmConfig(),
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok && !data.projectId) throw new Error(data.error || t("errTopicScript"));
@@ -383,7 +391,14 @@ export default function StartPage() {
     const projectRes = await fetch("/api/project", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: t("projectName", { name: productName }), productName, productCategory: "other", productDescription: sellingPoints, productImages: [] }),
+      body: JSON.stringify({
+        name: t("projectName", { name: productName }),
+        productName,
+        productCategory: "other",
+        productDescription: sellingPoints,
+        productImages: [],
+        creativeProfile: { creationType: "short_video_sales" },
+      }),
     });
     if (!projectRes.ok) {
       const errData = await projectRes.json().catch(() => ({}));
@@ -437,7 +452,11 @@ export default function StartPage() {
     const ingestRes = await fetch("/api/ingest/product", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: link.trim(), createProject: true }),
+      body: JSON.stringify({
+        url: link.trim(),
+        createProject: true,
+        creativeProfile: { creationType: "short_video_sales" },
+      }),
     });
     const data = await ingestRes.json().catch(() => ({}));
     if (!ingestRes.ok || !data.projectId) throw new Error(data.error || t("errIngest"));
@@ -466,6 +485,7 @@ export default function StartPage() {
 
   // actually run generation (shared by all modes); restore busy/stage on failure
   const runGeneration = async () => {
+    if (!salesFlowChosen) return;
     setBusy(true);
     setError(null);
     try {
@@ -481,7 +501,7 @@ export default function StartPage() {
   };
 
   const onStart = () => {
-    if (!canStart || busy) return;
+    if (!salesFlowChosen || !canStart || busy) return;
     // no LLM configured: expand the Atlas one-click setup panel inline (no navigation, no loss of filled content)
     if (!llmReady) {
       setNeedKey(true);
@@ -670,7 +690,9 @@ export default function StartPage() {
           <p className="cf-sub">{t("sub")}</p>
 
           <div className="cf-card" ref={cardRef}>
-            {busy ? (
+            {!salesFlowChosen ? (
+              <CreationTypeGate onSelectShortVideoSales={() => setSalesFlowChosen(true)} />
+            ) : busy ? (
               /* busy takeover: the whole card becomes a live checklist so the 20–60s
                  creation wait reads as progress, not a frozen button */
               <div className="cf-prog">
@@ -849,7 +871,7 @@ export default function StartPage() {
             )}
           </div>
 
-          {showGuide && (
+          {salesFlowChosen && showGuide && (
             <div className="cf-guide">
               <button type="button" className="cf-guide-close" onClick={dismissGuide} aria-label={t("guideClose")}>✕</button>
               <div className="cf-guide-title">{t("guideTitle")}</div>
@@ -885,7 +907,7 @@ export default function StartPage() {
             </div>
           )}
 
-          {SHOW_TREND_RADAR && trends.length > 0 && (
+          {salesFlowChosen && SHOW_TREND_RADAR && trends.length > 0 && (
             <div className="cf-trends">
               <div className="cf-trends-head">
                 <span className="cf-trends-lbl">{t("trendsLabel")}</span>
@@ -956,12 +978,14 @@ export default function StartPage() {
             </div>
           )}
 
-          <div className="cf-examples">
-            {t("examplesLabel")}
-            {examples.slice(0, 3).map((ex) => (
-              <button key={ex.id} type="button" className="cf-chip" onClick={() => fillExample(ex)}>{ex.name} ¥{ex.price}</button>
-            ))}
-          </div>
+          {salesFlowChosen && (
+            <div className="cf-examples">
+              {t("examplesLabel")}
+              {examples.slice(0, 3).map((ex) => (
+                <button key={ex.id} type="button" className="cf-chip" onClick={() => fillExample(ex)}>{ex.name} ¥{ex.price}</button>
+              ))}
+            </div>
+          )}
 
         </section>
       </div>

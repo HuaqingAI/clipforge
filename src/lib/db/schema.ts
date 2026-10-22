@@ -16,6 +16,10 @@ import type {
 } from "@/lib/generation-quality";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
 import type { ScriptGenerationMetadata } from "@/lib/script-engine/provenance";
+import type {
+  ProjectCreativeProfile,
+  ProjectCreativeProfileDrafts,
+} from "@/lib/creative-profiles";
 export { klingProfiles, klingAuthSessions } from "@/lib/kling/profile-schema";
 export { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
 export { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
@@ -44,6 +48,13 @@ export const projects = sqliteTable("projects", {
   brandId: text("brand_id"), // Linked brand settings
   templateId: text("template_id"), // Script template in use
   videoMode: text("video_mode", { enum: ["product_closeup", "graphic_montage", "scene_demo", "live_presenter"] }).default("product_closeup"), // Video mode
+  // The active creative profile is the source of truth for new generation. The legacy
+  // video_mode column remains populated so existing project views and integrations work.
+  creativeProfile: text("creative_profile", { mode: "json" }).$type<ProjectCreativeProfile>(),
+  // Keep the last configuration for each creation type so switching between sales and
+  // premium CG restores the user's deliberate settings instead of leaking defaults.
+  creativeProfileDrafts: text("creative_profile_drafts", { mode: "json" }).$type<ProjectCreativeProfileDrafts>(),
+  creativeConfigRevision: integer("creative_config_revision").notNull().default(0),
   sourceType: text("source_type", { enum: ["manual", "clone"] }).default("manual"), // manual=created by hand, clone=viral-video remake
   sourceVideoUrl: text("source_video_url"), // Source video URL for viral-video remakes
   characterId: text("character_id"), // On-screen character bound to the project (live_presenter mode only)
@@ -64,13 +75,19 @@ export const scripts = sqliteTable("scripts", {
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   version: integer("version").notNull().default(1),
   styleType: text("style_type", {
-    enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "custom"],
+    enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "premium_product_cg", "custom"],
   }).notNull(),
   title: text("title"),
   totalDuration: integer("total_duration"), // Total duration in seconds
   shots: text("shots", { mode: "json" }).$type<Shot[]>().default([]),
   // Nullable for existing and manually imported scripts; never store LLM credentials here.
   generationMetadata: text("generation_metadata", { mode: "json" }).$type<ScriptGenerationMetadata>(),
+  // Immutable creative context for this script version. It remains inspectable after a
+  // project switches creation type, while current generation keeps using projects.creativeProfile.
+  creativeProfileSnapshot: text("creative_profile_snapshot", { mode: "json" }).$type<{
+    profile: ProjectCreativeProfile;
+    creativeConfigRevision: number;
+  }>(),
   // Dialogue-script cast (drama style): drives per-character TTS voices + visual-anchor prompts
   characters: text("characters", { mode: "json" }).$type<ScriptCharacter[]>(),
   selected: integer("selected", { mode: "boolean" }).default(false),
@@ -420,6 +437,14 @@ export interface Shot {
   visualSource: "ai_generate" | "product_image" | "user_upload";
   transition: "ai_start_end" | "ai_reference" | "direct_concat" | "ffmpeg_fade";
   voiceover: string; // Voiceover copy
+  /** Premium furniture CG narrative role. Existing commerce shots keep this absent. */
+  beatRole?: "establish" | "form" | "material" | "craft" | "function" | "lifestyle" | "hero";
+  /** Pure visual direction for CG shots; never a request to render copy into the frame. */
+  visualIntent?: string;
+  /** Optional identifier for a verified product-fact source. */
+  productFeatureRef?: string;
+  /** Separate sparse narration field used by premium CG contracts. */
+  narration?: string;
   prompt?: string; // AI image/video generation prompt
   /** English stock-footage keywords for this shot (1-3), used to auto-match footage from free libraries (key for topic-based videos without a product) */
   stockKeywords?: string[];

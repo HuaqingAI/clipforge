@@ -26,6 +26,17 @@ import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
 import { desc, and } from "drizzle-orm";
 import { readCompositionError, saveCompositionError } from "@/lib/composition-error";
+import {
+  isPremiumProductCgProfile,
+  sanitizeCreativeProfile,
+  checkCreativeProfileContext,
+} from "@/lib/creative-profiles";
+import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
+import {
+  filterTrustedPremiumCgAssets,
+  hasTrustedPremiumCgAssetProvenance,
+  PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
+} from "@/lib/premium-cg-assets";
 
 type ComposeRequestBody = {
   scriptId?: unknown;
@@ -51,6 +62,13 @@ type ComposeRequestBody = {
   voiceGround?: boolean;
   karaoke?: boolean;
   productCard?: boolean;
+  /** Persisted profile when an older client cannot load the project record yet. */
+  creativeProfile?: unknown;
+  /** Compatibility policy accepted during the profile rollout. */
+  outputPolicy?: unknown;
+  ttsEnabled?: unknown;
+  ctaEnabled?: unknown;
+  editorialGraphics?: unknown;
   [key: string]: unknown;
 };
 
@@ -128,6 +146,60 @@ function defaultMotion(shot: Shot): string {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The profile migration briefly has two client shapes in circulation. The
+ * persisted project profile wins; request policy is only a fallback for callers
+ * that have not yet loaded that project field.
+ */
+function profileFromSnapshot(value: unknown): unknown {
+  return isRecord(value) ? value.profile : undefined;
+}
+
+function forbidsAddedFrameText(value: unknown): boolean {
+  if (value === "forbid-added") return true;
+  if (!isRecord(value)) return false;
+  if (value.generatedFrameText === "forbid-added" || value.textPolicy === "forbid-added") return true;
+  return isRecord(value.textPolicy) && value.textPolicy.generatedFrameText === "forbid-added";
+}
+
+function premiumCgComposeConflicts(body: ComposeRequestBody, narrationMode: "none" | "restrained"): boolean {
+  const freeTtsEnabled = isRecord(body.freeTts) && body.freeTts.enabled === true;
+  const requestedTtsConfig = isRecord(body.ttsConfig) && Object.keys(body.ttsConfig).length > 0;
+  const requestedVoiceoverOverride = Array.isArray(body.voiceoverOverrides) && body.voiceoverOverrides.length > 0;
+  const customAigcBadgeText = typeof body.aigcBadgeText === "string" && body.aigcBadgeText.trim().length > 0;
+  return body.subtitles === true
+    || body.karaoke === true
+    || body.captionPreset === "karaoke"
+    || body.productCard === true
+    || body.textOverlay !== undefined
+    || body.textOverlays !== undefined
+    || body.ctaEnabled === true
+    || body.editorialGraphics === true
+    || (typeof body.ctaText === "string" && body.ctaText.trim().length > 0)
+    || customAigcBadgeText
+    || (narrationMode === "none" && (
+      body.ttsEnabled === true
+      || freeTtsEnabled
+      || requestedTtsConfig
+      || requestedVoiceoverOverride
+      || body.voiceoverMode === "replace"
+      || body.voiceoverMode === "mix"
+    ))
+    || (narrationMode === "restrained" && (
+      // The profile owns the voice and replacement policy. Accepting a caller
+      // supplied provider or mix mode would let an old sales UI bypass it.
+      freeTtsEnabled
+      || requestedTtsConfig
+      || requestedVoiceoverOverride
+      || body.ttsEnabled === true
+      || body.voiceoverMode === "mix"
+    ));
+}
+
 // 合成视频：读取已选脚本分镜 + 已生成素材，用 FFmpeg 合成带运镜与中文字幕的成片
 export async function POST(
   req: NextRequest,
@@ -142,7 +214,7 @@ export async function POST(
     if (body.subtitles !== undefined && typeof body.subtitles !== "boolean") {
       return NextResponse.json({ error: "字幕开关格式无效，请选择是否使用字幕" }, { status: 400 });
     }
-    const subtitles = body.subtitles !== false;
+    const requestedSubtitles = body.subtitles !== false;
     const exportAudioStems = body.exportAudioStems === true;
     const db = getDb();
 
@@ -162,7 +234,87 @@ export async function POST(
     if (body.scriptId !== undefined && body.scriptId !== selected.id) {
       return NextResponse.json({ error: "当前脚本已切换，请刷新后重新选择镜头视频" }, { status: 409 });
     }
+    const projectProfile = sanitizeCreativeProfile(project.creativeProfile);
+    const scriptSnapshotProfile = sanitizeCreativeProfile(profileFromSnapshot(selected.creativeProfileSnapshot));
+
+    // A script snapshot is immutable provenance. Reject a type/revision
+    // mismatch before touching assets or creating a composition. Snapshotless
+    // rows are classified as legacy sales by the shared checker, so a stale
+    // sales script cannot enter a current CG production path.
+    if (projectProfile) {
+      const context = checkCreativeProfileContext(
+        {
+          creativeProfile: projectProfile,
+          videoMode: project.videoMode,
+          creativeConfigRevision: project.creativeConfigRevision,
+        },
+        {
+          styleType: selected.styleType,
+          creativeProfileSnapshot: selected.creativeProfileSnapshot,
+        },
+      );
+      if (!context.ok) {
+        return NextResponse.json(
+          {
+            error: context.code === "CREATIVE_PROFILE_MISMATCH"
+              ? "当前项目创作类型与脚本快照不一致，请重新生成脚本"
+              : "当前脚本使用的是旧版创作配置，请重新生成脚本",
+            code: context.code,
+            projectCreationType: context.projectProfile.creationType,
+            scriptCreationType: context.scriptProfile.creationType,
+            projectRevision: context.projectRevision,
+            scriptRevision: context.scriptRevision,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    // The persisted project profile is authoritative. A snapshot is a fallback
+    // only for migrated rows whose project profile is still null. Request body
+    // policy values are accepted solely for old clients with no persisted data.
+    const bodyProfile = sanitizeCreativeProfile(body.creativeProfile) ?? sanitizeCreativeProfile(body.outputPolicy);
+    const activeProfile = projectProfile ?? scriptSnapshotProfile ?? bodyProfile;
+    const premiumProfile = activeProfile?.creationType === "premium_product_cg" ? activeProfile : undefined;
+    const premiumCg = Boolean(premiumProfile)
+      || (!activeProfile && (isPremiumProductCgProfile(body.creativeProfile) || isPremiumProductCgProfile(body.outputPolicy)
+        || forbidsAddedFrameText(body.creativeProfile) || forbidsAddedFrameText(body.outputPolicy)));
+    const narrationMode: "none" | "restrained" = premiumProfile?.narrationMode ?? "none";
+    if (premiumCg && premiumCgComposeConflicts(body, narrationMode)) {
+      return NextResponse.json(
+        { error: "高端家具产品 CG 不支持字幕、编辑性文字、购买 CTA 或商品卡；旁白由创作档案统一控制", code: "PREMIUM_CG_OUTPUT_POLICY" },
+        { status: 400 },
+      );
+    }
+    // A premium CG project is visual-first. Omitted switches resolve to the
+    // profile's locked-off output policy; legacy projects preserve their default.
+    const subtitles = premiumCg ? false : requestedSubtitles;
     let shots = selected.shots as Shot[];
+    if (premiumProfile) {
+      // A silent CG profile deliberately discards historical sales narration.
+      // Restrained mode checks exactly the line that will reach controlled TTS
+      // (`narration` has precedence over legacy `voiceover`).
+      const policyShots = shots.map((shot) => {
+        if (premiumProfile.narrationMode === "none") {
+          return { ...shot, voiceover: "", narration: "" };
+        }
+        const narration = typeof shot.narration === "string" && shot.narration.trim()
+          ? shot.narration.trim()
+          : shot.voiceover;
+        return { ...shot, voiceover: narration, narration: "" };
+      });
+      const issues = lintCreativeProfileShots(premiumProfile, policyShots);
+      // textOverlay is removed below as a legacy executable field. Visual
+      // copy/marketing instructions and promotional narration require a fresh
+      // script instead of being silently rewritten at compose time.
+      const blocking = issues.filter((issue) => issue.code !== "text_overlay");
+      if (blocking.length > 0) {
+        return NextResponse.json(
+          { error: "高端家具产品 CG 脚本包含新增文字或营销指令，请重新生成脚本", code: "CREATIVE_POLICY_VIOLATION", issues: blocking },
+          { status: 400 },
+        );
+      }
+    }
     // Transitions describe entry into the named shot and affect this render only.
     if (body.transitionOverrides !== undefined) {
       if (!Array.isArray(body.transitionOverrides) || body.transitionOverrides.length > shots.length) {
@@ -200,6 +352,26 @@ export async function POST(
         return v ? { ...s, voiceover: v } : s;
       });
     }
+    if (premiumCg) {
+      // Stored overlays, presenter anchors, and sales voiceover fields are
+      // executable controls from older templates. Normalize them in memory so
+      // a render cannot reintroduce copy without mutating the saved script.
+      shots = shots.map((shot) => {
+        const clean: Shot = { ...shot };
+        delete clean.textOverlay;
+        delete clean.characterId;
+        if (narrationMode === "none") {
+          clean.voiceover = "";
+          delete clean.narration;
+        } else {
+          clean.voiceover = typeof clean.narration === "string" && clean.narration.trim()
+            ? clean.narration.trim()
+            : clean.voiceover?.trim() ?? "";
+          delete clean.narration;
+        }
+        return clean;
+      });
+    }
     // Dialogue-script cast (drama style): deterministic per-character Edge voices, free multi-voice
     // dialogue. Narrator shots (no characterId) keep the default/free voice below.
     const scriptCharacters = (selected.characters ?? []) as ScriptCharacter[];
@@ -211,7 +383,13 @@ export async function POST(
     }
 
     // 已生成的素材（assets 表，按 shotId 索引）
-    const assetRows = filterAssetsForScript(await db.select().from(assetsTable).where(eq(assetsTable.projectId, id)).orderBy(desc(assetsTable.createdAt)), selected);
+    const scopedAssetRows = filterAssetsForScript(
+      await db.select().from(assetsTable).where(eq(assetsTable.projectId, id)).orderBy(desc(assetsTable.createdAt)),
+      selected,
+    );
+    const assetRows = premiumCg
+      ? filterTrustedPremiumCgAssets(scopedAssetRows, id, selected)
+      : scopedAssetRows;
     const assetByShot = new Map<number, string>();
     for (const a of assetRows) {
       if (a.selected && a.status === "done" && a.filePath && !assetByShot.has(a.shotId)) assetByShot.set(a.shotId, a.filePath);
@@ -238,7 +416,16 @@ export async function POST(
           continue;
         }
         pinnedShotIds.add(item.shotId);
-        const asset = assetRows.find((row) => row.id === item.assetId && row.shotId === item.shotId);
+        const asset = scopedAssetRows.find((row) => row.id === item.assetId && row.shotId === item.shotId);
+        if (premiumCg && asset && !hasTrustedPremiumCgAssetProvenance(asset, id, selected)) {
+          return NextResponse.json(
+            {
+              error: "Premium product CG can only compose controlled storyboard or Kling outputs from the current script.",
+              code: PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
+            },
+            { status: 409 },
+          );
+        }
         if (!asset || asset.status !== "done" || !asset.filePath || !toLocalPath(asset.filePath)) {
           return NextResponse.json({ error: `镜头 ${item.shotId} 选择的素材已失效，请刷新后重新选择` }, { status: 409 });
         }
@@ -248,16 +435,22 @@ export async function POST(
 
     // 可选 TTS 配音配置（前端从设置带入）
     const ttsConfig: TTSConfig | undefined =
-      body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
+      !premiumCg && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
         ? body.ttsConfig
         : undefined;
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
-    const freeTts = body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
-    const useFreeTts = !ttsConfig && freeTts?.enabled === true;
+    const freeTts = premiumCg ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
+    // Restrained CG narration is a controlled post-production voice track. It
+    // uses the keyless Edge voice without exposing provider/voice switches to
+    // the request, and always replaces model-native speech when present.
+    const usePremiumRestrainedTts = Boolean(premiumProfile && narrationMode === "restrained");
+    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && !ttsConfig && freeTts?.enabled === true);
     // Both extra switches are off in auto mode: audible source audio takes priority.
-    const voiceoverMode = body.voiceoverMode === "replace" || body.voiceoverMode === "mix"
-      ? body.voiceoverMode
-      : "auto";
+    const voiceoverMode = usePremiumRestrainedTts
+      ? "replace"
+      : !premiumCg && (body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
+        ? body.voiceoverMode
+        : "auto";
     const freeVoice = freeTts?.voice || DEFAULT_FREE_VOICE;
     const freeRate = typeof freeTts?.rate === "string" ? freeTts.rate : undefined;
     const ttsDir = join(getDataDir(), "uploads", id, "tts");
@@ -381,7 +574,9 @@ export async function POST(
       crf: profile.crf,
     };
 
-    // 不自动往画面添加角标；仅在调用方明确开启时烧录。
+    // The AIGC disclosure is a deterministic compliance layer, not generated
+    // marketing copy. Premium CG may explicitly enable it; custom wording is
+    // rejected above so the platform default remains stable.
     const aigcBadge = body.aigcBadge === true;
 
     // Variant label (variant-matrix batch renders): surfaces on the export page's output list
@@ -438,7 +633,11 @@ export async function POST(
           : undefined;
       const audioPath = vo?.file;
       // A missing/failed voiceover keeps the original audio, including in replace mode.
-      const keepNativeAudio = nativeAudio && (!audioPath || voiceoverMode === "mix");
+      // Product-CG videos never inherit model-native speech. Silent CG uses
+      // visual-only footage; restrained CG replaces it with the profile-owned
+      // post-production narration. Ambient or music belongs in the explicit
+      // BGM layer where it remains reviewable.
+      const keepNativeAudio = !premiumCg && nativeAudio && (!audioPath || voiceoverMode === "mix");
 
       // Effective duration (core fix for issue #14 "next segment starts before speech ends"):
       // 1) TTS narration → actual audio length + breathing gap (clamped 1.5–20s); when the probe
@@ -527,15 +726,15 @@ export async function POST(
     );
     const subtitleTexts = timeline.cues;
     const karaokeLines = timeline.karaokeLines;
-    const overlays: { text: string; style: "title" | "highlight" | "price" | "badge"; startTime: number; endTime: number }[] = [
-      ...timeline.overlays,
-    ];
+    const overlays: { text: string; style: "title" | "highlight" | "price" | "badge"; startTime: number; endTime: number }[] = premiumCg
+      ? []
+      : [...timeline.overlays];
 
     // 可选叠加：片头角标（默认关）+ 片尾购买 CTA，按 body 开关
     overlays.push(
       ...buildComplianceOverlays(
         {
-          ctaText: typeof body.ctaText === "string" ? body.ctaText : undefined,
+          ctaText: !premiumCg && typeof body.ctaText === "string" ? body.ctaText : undefined,
           aigcBadge,
           aigcBadgeText: typeof body.aigcBadgeText === "string" ? body.aigcBadgeText : undefined,
         },
@@ -578,7 +777,7 @@ export async function POST(
     }
 
     // 商品卡贴片（opt-in）：用商品图首图 + 商品名做左下角挂车卡
-    if (body.productCard === true) {
+    if (!premiumCg && body.productCard === true) {
       const cardImg = toLocalPath(productImages[0]);
       if (cardImg) {
         config.productCard = {

@@ -12,6 +12,14 @@ import { buildShotVideoPrompt, normalizeVideoPromptSettings, type VideoPromptSet
 import { checkPromptConsistency, sanitizeCreativeIntent, sanitizeVisualBible } from "@/lib/production-system";
 import { validateVideoPrompt } from "@/lib/video-prompt";
 import { withVideoAudioMode, type VideoAudioMode } from "@/lib/video-audio";
+import {
+  checkCreativeProfileContext,
+  isPremiumProductCgProfile,
+  resolveCreativeProfile,
+  type ProjectCreativeProfile,
+} from "@/lib/creative-profiles";
+import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
+import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import { DEFAULT_FREE_VOICE } from "@/lib/tts-voices";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { getProfile } from "./profiles";
@@ -59,12 +67,22 @@ async function localMediaPath(url: string): Promise<string> {
     return file;
   } catch { throw fail("KLING_FILM_SOURCE_CHANGED", "原始素材已丢失、不可读或不在允许的本机素材目录中。"); }
 }
-function outputSettings(raw: unknown): KlingFilmOutputSettings {
+function outputSettings(raw: unknown, creativeProfile?: ProjectCreativeProfile): KlingFilmOutputSettings {
   if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw))) throw fail("KLING_FILM_OUTPUT_INVALID", "整片输出设置必须是对象。");
   const value = record(raw);
   const settings = { resolution: value.resolution ?? "720p", aspectRatio: value.aspectRatio ?? "9:16", audioStrategy: value.audioStrategy ?? "edge-tts", voice: value.voice ?? DEFAULT_FREE_VOICE, subtitles: value.subtitles ?? true };
   if (!["720p", "1080p"].includes(String(settings.resolution)) || !["9:16", "16:9", "1:1"].includes(String(settings.aspectRatio)) || !["edge-tts", "edge-tts-mix", "native"].includes(String(settings.audioStrategy)) || typeof settings.subtitles !== "boolean" || typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice)) throw fail("KLING_FILM_OUTPUT_INVALID", "整片分辨率、画幅、配音或字幕设置无效。");
-  return settings as KlingFilmOutputSettings;
+  const normalized = settings as KlingFilmOutputSettings;
+  if (!isPremiumProductCgProfile(creativeProfile)) return normalized;
+
+  // Premium product CG never sends a presenter-like native-audio request. Voice, when the
+  // project explicitly allows it, is added later from the approved script snapshot only.
+  return {
+    ...normalized,
+    audioStrategy: "edge-tts",
+    subtitles: false,
+    narrationMode: creativeProfile.narrationMode,
+  };
 }
 function audioValue(parameter: KlingParameter, enabled: boolean): string | number | boolean {
   const choices = parameter.allowedValues ?? (parameter.type === "boolean" ? [true, false] : parameter.default !== undefined ? [parameter.default] : []);
@@ -73,10 +91,21 @@ function audioValue(parameter: KlingParameter, enabled: boolean): string | numbe
   if (value === undefined) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", `当前模型未明确声明${enabled ? "开启" : "关闭"}原生音频的参数值，请更换音频策略或模型。`);
   return value;
 }
-function generationOptions(model: KlingVideoModelDescriptor, raw: Record<string, unknown>, output: KlingFilmOutputSettings, seconds: number, negativePrompt: string): { options: Record<string, string | number | boolean>; duration: number } {
+function generationOptions(
+  model: KlingVideoModelDescriptor,
+  raw: Record<string, unknown>,
+  output: KlingFilmOutputSettings,
+  seconds: number,
+  negativePrompt: string,
+  premiumCg = false,
+): { options: Record<string, string | number | boolean>; duration: number } {
   const duration = model.parameters.find((item) => DURATION_NAMES.includes(item.name));
   if (!duration) throw fail("KLING_FILM_DURATION_UNSUPPORTED", "当前模型没有可核验的视频时长声明，不能自动编排整片。");
   const source = { ...raw };
+  if (premiumCg) {
+    delete source.negative_prompt;
+    delete source.negativePrompt;
+  }
   const explicitValues = DURATION_NAMES.map((name) => raw[name]).filter((value) => value !== undefined && value !== "");
   if (new Set(explicitValues.map(String)).size > 1) throw fail("KLING_FILM_DURATION_UNSUPPORTED", "同一镜头不能设置相互冲突的时长参数。");
   const explicit = explicitValues[0];
@@ -90,11 +119,14 @@ function generationOptions(model: KlingVideoModelDescriptor, raw: Record<string,
   const aspect = model.parameters.find((item) => ASPECT_NAMES.includes(item.name));
   if (aspect && !ASPECT_NAMES.some((name) => source[name] !== undefined)) source[aspect.name] = output.aspectRatio;
   const audio = model.parameters.find((item) => AUDIO_NAMES.includes(item.name));
-  if (audio) { for (const name of AUDIO_NAMES) delete source[name]; source[audio.name] = audioValue(audio, output.audioStrategy !== "edge-tts"); }
+  const nativeAudio = output.audioStrategy !== "edge-tts" && output.narrationMode !== "none";
+  if (audio) { for (const name of AUDIO_NAMES) delete source[name]; source[audio.name] = audioValue(audio, nativeAudio); }
   else if (output.audioStrategy === "native") throw fail("KLING_FILM_AUDIO_UNSUPPORTED", "当前模型没有已适配的原生音频参数，请使用后期免费配音。");
   const negativeParameter = model.parameters.find((parameter) => ["negative_prompt", "negativePrompt"].includes(parameter.name));
   if (negativePrompt && negativeParameter) {
-    const existing = [source.negative_prompt, source.negativePrompt].filter((value) => value !== undefined && value !== null && value !== "");
+    const existing = premiumCg
+      ? []
+      : [source.negative_prompt, source.negativePrompt].filter((value) => value !== undefined && value !== null && value !== "");
     if (existing.some((value) => typeof value !== "string")) throw fail("KLING_FILM_INPUT_INVALID", "负面提示词必须是文本。");
     if (new Set(existing).size > 1) throw fail("KLING_FILM_INPUT_INVALID", "同一镜头不能设置相互冲突的负面提示词。");
     const mapped = klingModelOptions({ ...model, parameters: [negativeParameter] }, { negativePrompt: [...existing.slice(0, 1), negativePrompt].join(", ") });
@@ -105,13 +137,23 @@ function generationOptions(model: KlingVideoModelDescriptor, raw: Record<string,
   return { options: normalizeVideoParameters(model, source), duration: Number(chosen) };
 }
 function projectPromptRevision(project: typeof projects.$inferSelect): string {
-  return contentHash({ category: project.productCategory ?? null, creativeIntent: sanitizeCreativeIntent(project.creativeIntent), visualBible: sanitizeVisualBible(project.visualBible) });
+  return contentHash({
+    category: project.productCategory ?? null,
+    creativeIntent: sanitizeCreativeIntent(project.creativeIntent),
+    visualBible: sanitizeVisualBible(project.visualBible),
+    creativeProfile: resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode }),
+    creativeConfigRevision: project.creativeConfigRevision ?? 0,
+  });
 }
-function promptFor(shot: Shot, model: KlingVideoModelDescriptor, output: KlingFilmOutputSettings, ordinal: number, project: typeof projects.$inferSelect, settings: VideoPromptSettings): { prompt: string; negativePrompt: string } {
+function promptFor(shot: Shot, model: KlingVideoModelDescriptor, output: KlingFilmOutputSettings, ordinal: number, project: typeof projects.$inferSelect, settings: VideoPromptSettings, creativeProfile: ProjectCreativeProfile): { prompt: string; negativePrompt: string } {
   const audioMode: VideoAudioMode = output.audioStrategy === "edge-tts" ? "silent" : output.audioStrategy === "edge-tts-mix" ? "ambient" : "native";
-  const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible });
-  const parts = model.tool === "text_to_video" ? [shot.prompt?.trim() || shot.description, direction.prompt] : [direction.prompt];
-  if (output.audioStrategy === "native" && shot.voiceover?.trim()) parts.push(`原生音频必须逐字说出以下台词，不改写、不增添：${JSON.stringify(shot.voiceover.trim())}`);
+  const premiumCg = isPremiumProductCgProfile(creativeProfile);
+  const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible, creativeProfile });
+  // A legacy free-form prompt can contain sales language. CG always compiles from the controlled
+  // visual direction and profile policy instead of inheriting that older prompt field.
+  const parts = model.tool === "text_to_video" && !premiumCg ? [shot.prompt?.trim() || shot.description, direction.prompt] : [direction.prompt];
+  const approvedNarration = shot.narration?.trim() || shot.voiceover?.trim();
+  if (output.audioStrategy === "native" && output.narrationMode !== "none" && approvedNarration) parts.push(`原生音频必须逐字说出以下台词，不改写、不增添：${JSON.stringify(approvedNarration)}`);
   // Normalize legacy audio templates in both saved text-to-video prompts and motion text.
   const prompt = withVideoAudioMode(parts.join("\n"), audioMode);
   const issues = validateVideoPrompt(prompt);
@@ -147,26 +189,54 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === body.selectionKey);
   if (!model?.available) throw fail("KLING_MODEL_UNAVAILABLE", model?.disabledReason ?? "当前账号没有选择的可用视频模型。");
   if (model.inputSlots.filter((slot) => slot.required && slot.role === "image").length > 1 || model.inputSlots.some((slot) => slot.required && slot.role === "tailImage")) throw fail("KLING_FILM_MODEL_UNSUPPORTED", "当前整片编排只使用每镜头一张关键帧，此模型要求其他必填图片输入。");
-  const output = outputSettings(body.output);
-  if (output.audioStrategy === "native" && !model.capabilities.audio) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", "当前模型未声明原生音频能力，请选择免费配音。");
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, body.projectId as string)).get();
   if (!project) throw fail("KLING_PROJECT_NOT_FOUND", "项目不存在。");
   const scriptRows = db.select().from(scripts).where(eq(scripts.projectId, project.id)).all();
   const script = scriptRows.find((item) => item.selected) ?? scriptRows[0];
   if (!script || script.id !== body.scriptId) throw fail("KLING_CONTEXT_CHANGED", "所选脚本已变化，请刷新后重新预览。");
+  const context = checkCreativeProfileContext(project, script);
+  if (!context.ok) {
+    throw fail(
+      context.code,
+      context.code === "CREATIVE_CONFIG_STALE"
+        ? "脚本基于旧的创作配置，请重新生成脚本后再预览整片。"
+        : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+    );
+  }
+  const creativeProfile = context.projectProfile;
   const shots = script.shots ?? [];
+  if (isPremiumProductCgProfile(creativeProfile)) {
+    if (model.tool !== "image_to_video") {
+      throw fail("CREATIVE_POLICY_UNSUPPORTED", "高端家具产品 CG 整片仅支持已验证的图生视频模型。");
+    }
+    if (!Array.isArray(project.productImages) || !project.productImages.some((image) => typeof image === "string" && image.trim())) {
+      throw fail("PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED", "高端家具产品 CG 整片需要至少一张已保存的产品参考图。");
+    }
+    const issues = lintCreativeProfileShots(creativeProfile, shots);
+    if (issues.length) throw fail("CREATIVE_POLICY_VIOLATION", "高端家具产品 CG 脚本包含画面文字、营销图形或不符合旁白策略的内容，请修改脚本后重试。");
+  }
+  const output = outputSettings(body.output, creativeProfile);
+  if (output.audioStrategy === "native" && !model.capabilities.audio) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", "当前模型未声明原生音频能力，请选择免费配音。");
   if (!shots.length || shots.length > MAX_SHOTS || new Set(shots.map((shot) => shot.shotId)).size !== shots.length || shots.some((shot) => !Number.isSafeInteger(shot.shotId) || shot.shotId < 0 || !Number.isFinite(shot.duration) || shot.duration <= 0) || shots.reduce((sum, shot) => sum + shot.duration, 0) > MAX_SECONDS) throw fail("KLING_FILM_LIMIT_EXCEEDED", "整片需要 1–50 个有效镜头，总时长不能超过 600 秒。");
-  const selectedAssets = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, project.id), eq(assets.selected, true))).all(), script);
+  const scopedSelectedAssets = filterAssetsForScript(
+    db.select().from(assets).where(and(eq(assets.projectId, project.id), eq(assets.selected, true))).all(),
+    script,
+  );
+  const selectedAssets = isPremiumProductCgProfile(creativeProfile)
+    ? filterTrustedPremiumCgAssets(scopedSelectedAssets, project.id, script)
+    : scopedSelectedAssets;
   const runId = randomUUID(), now = Date.now(), warnings: string[] = [];
   const planned: Array<typeof klingFilmShots.$inferInsert> = [];
-  const reuseExistingVideos = body.reuseExistingVideos !== false;
+  // A selected video can be a legacy sales take. Premium CG always regenerates from a
+  // project-owned product/keyframe image instead of silently inserting that take into a film.
+  const reuseExistingVideos = !isPremiumProductCgProfile(creativeProfile) && body.reuseExistingVideos !== false;
   let generatedSeconds = 0;
   for (const [ordinal, shot] of shots.entries()) {
     const selected = selectedAssets.filter((asset) => asset.shotId === shot.shotId);
     if (selected.length > 1) throw fail("KLING_CONTEXT_CHANGED", `镜头 ${shot.shotId} 有多个选中素材，请先明确选择一个版本。`);
     const asset = selected[0];
-    const direction = promptFor(shot, model, output, ordinal, project, promptSettings);
+    const direction = promptFor(shot, model, output, ordinal, project, promptSettings, creativeProfile);
     const data: KlingFilmShotData = { shot: structuredClone(shot), source: "generate", prompt: direction.prompt, options: {}, missingKeyframe: false, inputs: [], baselineAssetId: asset?.id ?? null, attempt: 0 };
     let assetId: string | null = null;
     if (reuseExistingVideos && asset?.status === "done" && asset.filePath && VIDEO.test(asset.filePath)) {
@@ -183,7 +253,14 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
       }
     }
     if (data.source === "generate") {
-      const generated = generationOptions(model, record(body.options), output, shot.duration, direction.negativePrompt);
+      const generated = generationOptions(
+        model,
+        record(body.options),
+        output,
+        shot.duration,
+        direction.negativePrompt,
+        isPremiumProductCgProfile(creativeProfile),
+      );
       data.options = generated.options; data.generationDuration = generated.duration; generatedSeconds += generated.duration;
       if (model.tool === "image_to_video") {
         data.keyframeUrl = keyframe(asset, shot, project.productImages);
@@ -201,10 +278,10 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
   const snapshot = { shots: structuredClone(shots), ...(script.characters ? { characters: structuredClone(script.characters) } : {}) };
   const revision = scriptRevision(script);
   const projectRevision = projectPromptRevision(project);
-  const planHash = contentHash({ projectId: project.id, scriptId: script.id, scriptRevision: revision, script: snapshot, profileId: profile.id, principalKey: profile.principalKey, model, output, promptSettings, projectPromptRevision: projectRevision, reuseExistingVideos,
+  const planHash = contentHash({ projectId: project.id, scriptId: script.id, scriptRevision: revision, script: snapshot, profileId: profile.id, principalKey: profile.principalKey, model, output, promptSettings, creativeProfile, creativeConfigRevision: context.projectRevision, projectPromptRevision: projectRevision, reuseExistingVideos,
     shots: planned.map(({ shotId, ordinal, assetId, data }) => ({ shotId, ordinal, assetId, source: data.source, prompt: data.prompt, options: data.options, generationDuration: data.generationDuration, baselineAssetId: data.baselineAssetId, keyframeUrl: data.keyframeUrl, missingKeyframe: data.missingKeyframe, sourceFileHash: data.sourceFileHash, videoUrl: data.videoUrl, inputs: data.inputs.map(({ role, hash, sourceHash, sourceUrl }) => ({ role, hash, ...(sourceHash ? { sourceHash } : {}), sourceUrl })) })) });
   const run: KlingFilmRun = { id: runId, projectId: project.id, scriptId: script.id, profileId: profile.id, principalKey: profile.principalKey!, clientRequestId: null, status: "draft", leaseOwner: null, leaseExpiresAt: null,
-    data: { scriptRevision: revision, scriptSnapshot: snapshot, model: structuredClone(model), output, promptSettings, projectPromptRevision: projectRevision, planHash, expiresAt: now + PLAN_TTL_MS, reuseExistingVideos, warnings, stage: "计划待确认", authorizationEpoch: 0 }, createdAt: now, updatedAt: now };
+    data: { scriptRevision: revision, scriptSnapshot: snapshot, model: structuredClone(model), output, promptSettings, projectPromptRevision: projectRevision, creativeProfile: structuredClone(creativeProfile), creativeConfigRevision: context.projectRevision, planHash, expiresAt: now + PLAN_TTL_MS, reuseExistingVideos, warnings, stage: "计划待确认", authorizationEpoch: 0 }, createdAt: now, updatedAt: now };
   db.transaction((tx) => { assertContext(run, planned as KlingFilmShot[]); tx.insert(klingFilmRuns).values(run).run(); for (const item of planned) tx.insert(klingFilmShots).values(item).run(); });
   return klingFilmView(run);
 }
@@ -217,7 +294,28 @@ function assertContext(run: KlingFilmRun, shots: KlingFilmShot[]): void {
   const rows = db.select().from(scripts).where(eq(scripts.projectId, run.projectId)).all();
   const script = rows.find((item) => item.selected) ?? rows[0];
   if (!script || script.id !== run.scriptId || scriptRevision(script) !== run.data.scriptRevision || shots.length !== (script.shots?.length ?? 0)) throw fail("KLING_CONTEXT_CHANGED", "整片脚本已变化，请停止原计划并重新预览。");
-  const active = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, run.projectId), eq(assets.selected, true))).all(), script);
+  const context = checkCreativeProfileContext(project, script);
+  if (!context.ok) {
+    throw fail(
+      context.code,
+      context.code === "CREATIVE_CONFIG_STALE"
+        ? "项目创作配置已更新，请重新预览整片计划。"
+        : "当前整片脚本与项目创作类型不匹配，请重新生成脚本并预览。",
+    );
+  }
+  if (run.data.creativeConfigRevision !== undefined && run.data.creativeConfigRevision !== context.projectRevision) {
+    throw fail("KLING_CONTEXT_CHANGED", "整片计划使用的创作配置版本已过期，请重新预览。");
+  }
+  if (run.data.creativeProfile && contentHash(run.data.creativeProfile) !== contentHash(context.projectProfile)) {
+    throw fail("KLING_CONTEXT_CHANGED", "整片计划使用的创作档案已变化，请重新预览。");
+  }
+  const scopedActive = filterAssetsForScript(
+    db.select().from(assets).where(and(eq(assets.projectId, run.projectId), eq(assets.selected, true))).all(),
+    script,
+  );
+  const active = isPremiumProductCgProfile(context.projectProfile)
+    ? filterTrustedPremiumCgAssets(scopedActive, run.projectId, script)
+    : scopedActive;
   for (const shot of shots) {
     if (shot.ordinal < 0 || contentHash(script.shots?.[shot.ordinal]) !== contentHash(shot.data.shot)) throw fail("KLING_CONTEXT_CHANGED", "整片镜头顺序或内容已变化。");
     const selected = active.filter((asset) => asset.shotId === shot.shotId);

@@ -959,7 +959,14 @@ async function handleIngestProduct(args) {
   const url = String(args.url || "").trim();
   if (!/^https?:\/\/.+/i.test(url)) throw new Error("url 必须是合法的 http/https 商品链接");
   const createProject = args.createProject !== false; // create the project and download images by default
-  const data = await api("/api/ingest/product", { method: "POST", body: { url, createProject } });
+  const data = await api("/api/ingest/product", {
+    method: "POST",
+    body: {
+      url,
+      createProject,
+      ...(createProject && { creativeProfile: { creationType: "short_video_sales" } }),
+    },
+  });
   return ok({
     ok: true,
     projectId: data.projectId ?? null,
@@ -980,7 +987,10 @@ async function handleProductScript(args) {
   if (!/^https?:\/\/.+/i.test(url)) throw new Error("url 必须是合法的 http/https 商品链接");
 
   // Step 1: ingest the product (creates the project + downloads images; no LLM needed)
-  const ingest = await api("/api/ingest/product", { method: "POST", body: { url, createProject: true } });
+  const ingest = await api("/api/ingest/product", {
+    method: "POST",
+    body: { url, createProject: true, creativeProfile: { creationType: "short_video_sales" } },
+  });
   const projectId = ingest.projectId;
   if (!projectId) throw new Error("未能从该链接建项目（可能被反爬或缺少标准商品标签），请换一个链接或改用网页端上传商品图。");
   const productName = ingest.product?.title?.trim();

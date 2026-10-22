@@ -104,7 +104,7 @@ export async function createKlingLocalSession(req: NextRequest): Promise<NextRes
 
 export function klingRouteError(error: unknown): NextResponse {
   const problem = error as { code?: string; status?: number; message?: string; retryable?: boolean; jobId?: string };
-  const known = typeof problem.code === "string" && problem.code.startsWith("KLING_");
+  const known = typeof problem.code === "string" && /^(?:KLING|CREATIVE)_/.test(problem.code);
   return NextResponse.json({
     error: { code: known ? problem.code : "KLING_INTERNAL_ERROR", message: known ? problem.message : "Kling 本地操作失败，请检查环境与任务详情", retryable: problem.retryable ?? false },
     ...(problem.jobId && { jobId: problem.jobId }),

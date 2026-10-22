@@ -22,6 +22,15 @@ import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
 import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
 import { ProjectHeader } from "@/components/project-header";
+import {
+  createPremiumProductCgProfile,
+  createShortVideoSalesProfile,
+  resolveCreativeProfile,
+  sanitizeCreativeProfileDrafts,
+  type CreationType,
+  type ProjectCreativeProfile,
+  type ProjectCreativeProfileDrafts,
+} from "@/lib/creative-profiles";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
 const shotTypeLabels: Record<Shot["type"], { labelKey: string; color: string }> = {
@@ -39,7 +48,68 @@ const styleLabelKeys: Record<string, string> = {
   scene: "styleScene",
   comparison: "styleComparison",
   story: "styleStory",
+  premium_product_cg: "stylePremiumCg",
 };
+
+interface ProjectMeta {
+  productName: string;
+  category: string;
+  description: string;
+  productImages: string[];
+  videoMode: string;
+  contentType: string;
+  topic: string;
+  creativeProfile: ProjectCreativeProfile;
+  creativeProfileDrafts: ProjectCreativeProfileDrafts;
+  creativeConfigRevision: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonRecord(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function projectMetaFromResponse(value: unknown): ProjectMeta {
+  const project = isRecord(value) ? value : {};
+  const fallback = {
+    videoMode: project.videoMode,
+    targetDuration: project.targetDuration ?? project.duration,
+    styleType: project.styleType,
+  };
+  const creativeProfile = resolveCreativeProfile(parseJsonRecord(project.creativeProfile), fallback);
+  const parsedDrafts = sanitizeCreativeProfileDrafts(parseJsonRecord(project.creativeProfileDrafts)) ?? {};
+  const creativeProfileDrafts: ProjectCreativeProfileDrafts = {
+    short_video_sales: parsedDrafts.short_video_sales ?? createShortVideoSalesProfile(fallback),
+    premium_product_cg: parsedDrafts.premium_product_cg ?? createPremiumProductCgProfile(),
+  };
+  if (creativeProfile.creationType === "premium_product_cg") {
+    creativeProfileDrafts.premium_product_cg = creativeProfile;
+  } else {
+    creativeProfileDrafts.short_video_sales = creativeProfile;
+  }
+  return {
+    productName: typeof project.productName === "string" ? project.productName : "",
+    category: typeof project.productCategory === "string" ? project.productCategory : "",
+    description: typeof project.productDescription === "string" ? project.productDescription : "",
+    productImages: Array.isArray(project.productImages) ? project.productImages.filter((image): image is string => typeof image === "string") : [],
+    videoMode: creativeProfile.videoMode,
+    contentType: typeof project.contentType === "string" ? project.contentType : "product",
+    topic: typeof project.topic === "string" ? project.topic : "",
+    creativeProfile,
+    creativeProfileDrafts,
+    creativeConfigRevision: typeof project.creativeConfigRevision === "number" && Number.isSafeInteger(project.creativeConfigRevision)
+      ? project.creativeConfigRevision
+      : 0,
+  };
+}
 
 // structure of a script row returned from the backend scripts table
 interface DbScript {
@@ -64,15 +134,9 @@ export default function ScriptPage() {
   const [loading, setLoading] = useState(true);
   const [projectName, setProjectName] = useState("");
   // project metadata: reused when re-generating the script from the empty state
-  const [projectMeta, setProjectMeta] = useState<{
-    productName: string;
-    category: string;
-    description: string;
-    productImages: string[];
-    videoMode: string;
-    contentType: string;
-    topic: string;
-  } | null>(null);
+  const [projectMeta, setProjectMeta] = useState<ProjectMeta | null>(null);
+  const [creativeConfigSaving, setCreativeConfigSaving] = useState(false);
+  const [creativeConfigError, setCreativeConfigError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState("");
   const { llm } = useSettingsStore();
@@ -98,15 +162,7 @@ export default function ScriptPage() {
       if (projectRes.ok) {
         const proj = await projectRes.json();
         setProjectName(proj.name ?? proj.productName ?? "");
-        setProjectMeta({
-          productName: proj.productName ?? "",
-          category: proj.productCategory ?? "",
-          description: proj.productDescription ?? "",
-          productImages: Array.isArray(proj.productImages) ? proj.productImages : [],
-          videoMode: proj.videoMode ?? "product_closeup",
-          contentType: proj.contentType ?? "product",
-          topic: proj.topic ?? "",
-        });
+        setProjectMeta(projectMetaFromResponse(proj));
       }
       if (Array.isArray(dbScripts) && dbScripts.length > 0) {
         setScripts(
@@ -158,9 +214,11 @@ export default function ScriptPage() {
             productName: projectMeta.productName,
             category: projectMeta.category,
             productDescription: projectMeta.description,
-            targetDuration: 30,
-            styleType: "auto",
-            videoMode: projectMeta.videoMode,
+            targetDuration: projectMeta.creativeProfile.targetDuration,
+            styleType: projectMeta.creativeProfile.styleType,
+            videoMode: projectMeta.creativeProfile.videoMode,
+            creativeProfile: projectMeta.creativeProfile,
+            creativeProfileDrafts: projectMeta.creativeProfileDrafts,
             productImages: projectMeta.productImages,
             llmConfig: {
               provider: llm.provider,
@@ -187,6 +245,59 @@ export default function ScriptPage() {
     }
   };
 
+  const switchCreationType = async (nextType: CreationType) => {
+    if (!projectMeta || projectMeta.contentType === "topic" || creativeConfigSaving) return;
+    if (projectMeta.creativeProfile.creationType === nextType) return;
+
+    const currentProfile = projectMeta.creativeProfile;
+    const drafts: ProjectCreativeProfileDrafts = {
+      ...projectMeta.creativeProfileDrafts,
+      [currentProfile.creationType]: currentProfile,
+    };
+    const nextProfile = nextType === "premium_product_cg"
+      ? drafts.premium_product_cg ?? createPremiumProductCgProfile()
+      : drafts.short_video_sales ?? createShortVideoSalesProfile({ videoMode: projectMeta.videoMode });
+    const nextDrafts: ProjectCreativeProfileDrafts = {
+      ...drafts,
+      [nextType]: nextProfile,
+    };
+
+    setCreativeConfigSaving(true);
+    setCreativeConfigError("");
+    try {
+      const response = await fetch(`/api/project/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creativeProfile: nextProfile,
+          creativeProfileDrafts: nextDrafts,
+          expectedCreativeConfigRevision: projectMeta.creativeConfigRevision,
+          videoMode: nextProfile.videoMode,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (data.code === "CREATIVE_CONFIG_CONFLICT") {
+          setProjectMeta((previous) => previous
+            ? projectMetaFromResponse({
+                ...previous,
+                creativeProfile: data.creativeProfile,
+                creativeProfileDrafts: data.creativeProfileDrafts,
+                creativeConfigRevision: data.creativeConfigRevision,
+              })
+            : previous
+          );
+        }
+        throw new Error(data.error || t("creativeProfileSaveFailed"));
+      }
+      setProjectMeta(projectMetaFromResponse(data));
+    } catch (error) {
+      setCreativeConfigError(friendlyError(error, locale));
+    } finally {
+      setCreativeConfigSaving(false);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -201,15 +312,7 @@ export default function ScriptPage() {
           const proj = await projectRes.json();
           if (!cancelled) {
             setProjectName(proj.name ?? proj.productName ?? "");
-            setProjectMeta({
-              productName: proj.productName ?? "",
-              category: proj.productCategory ?? "",
-              description: proj.productDescription ?? "",
-              productImages: Array.isArray(proj.productImages) ? proj.productImages : [],
-              videoMode: proj.videoMode ?? "product_closeup",
-              contentType: proj.contentType ?? "product",
-              topic: proj.topic ?? "",
-            });
+            setProjectMeta(projectMetaFromResponse(proj));
           }
         }
         if (cancelled) return;
@@ -244,22 +347,23 @@ export default function ScriptPage() {
   }, [id]);
 
   const currentScript = scripts[selectedScript];
+  const isPremiumCgProject = projectMeta?.creativeProfile.creationType === "premium_product_cg";
   // pre-render ad compliance scan: rule-check the current script's voiceover and text overlays; warn on risky terms (non-blocking)
   const adViolations = useMemo(
-    () => (currentScript ? checkScriptCompliance(currentScript.shots as { voiceover?: string; textOverlay?: { text?: string } | null }[]) : []),
-    [currentScript]
+    () => (currentScript && !isPremiumCgProject ? checkScriptCompliance(currentScript.shots as { voiceover?: string; textOverlay?: { text?: string } | null }[]) : []),
+    [currentScript, isPremiumCgProject]
   );
   // pre-publish readiness check: inspect banned words / hook / duration / subtitles / CTA / three-act structure item by item (AIGC label is handled by the compose page, not checked here)
   const readiness = useMemo(
     () =>
-      currentScript
+      currentScript && !isPremiumCgProject
         ? checkPublishReadiness(currentScript.shots as Shot[], currentScript.totalDuration, {
             locale,
             // commerce hard rule "product visible in the first 3s" — only for product videos (topic videos have no productName)
             productName: projectMeta?.productName || undefined,
           })
         : null,
-    [currentScript, locale, projectMeta?.productName]
+    [currentScript, locale, projectMeta?.productName, isPremiumCgProject]
   );
 
   // template-related state
@@ -357,7 +461,7 @@ export default function ScriptPage() {
 
   /** Poll the project's latest pipeline run to a terminal status, mirroring stage labels. */
   const attachPipeline = async () => {
-    if (!SHOW_FREE_QUICK_CUT) return;
+    if (!SHOW_FREE_QUICK_CUT || isPremiumCgProject) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setResumableRun(null);
@@ -385,7 +489,7 @@ export default function ScriptPage() {
 
   /** Start (or resume) the server-side run, then attach as an observer. */
   const startPipeline = async (resume: boolean) => {
-    if (!SHOW_FREE_QUICK_CUT) return;
+    if (!SHOW_FREE_QUICK_CUT || isPremiumCgProject) return;
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
     setAutoFinishing(true);
@@ -415,7 +519,11 @@ export default function ScriptPage() {
   // failed → surface the resume/restart choice instead of silently starting over.
   const [pipelineChecked, setPipelineChecked] = useState(!SHOW_FREE_QUICK_CUT);
   useEffect(() => {
-    if (!SHOW_FREE_QUICK_CUT) return;
+    if (!SHOW_FREE_QUICK_CUT || !projectMeta) return;
+    if (isPremiumCgProject) {
+      setPipelineChecked(true);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -434,17 +542,17 @@ export default function ScriptPage() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount; attachPipeline is a stable page-level handler
-  }, [id]);
+  }, [id, isPremiumCgProject, projectMeta]);
 
   // ?auto=1 fresh start (from the /start hero flows) — only after the re-attach check settled,
   // so an already-live or breakpointed run is never silently restarted from the top
   useEffect(() => {
-    if (!SHOW_FREE_QUICK_CUT || !autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
+    if (!SHOW_FREE_QUICK_CUT || !projectMeta || isPremiumCgProject || !autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
     setAutoModeTriggered(true);
     // the AI path lands on the "script ready" gate instead of auto-running the free chain
     if (genPref !== "ai") autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun]);
+  }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun, isPremiumCgProject, projectMeta]);
 
   // Script and Assets open the same model-driven film surface.
   const [filmOpen, setFilmOpen] = useState(false);
@@ -566,6 +674,48 @@ export default function ScriptPage() {
 
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
   const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} />;
+  const creativeProfileSwitcher = projectMeta && projectMeta.contentType !== "topic" ? (
+    <Card className="glass-card mb-5">
+      <CardContent className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">{t("creativeTypeTitle")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("creativeTypeDesc")}</p>
+          </div>
+          <div className="flex gap-2" role="group" aria-label={t("creativeTypeTitle")}>
+            {([
+              { value: "short_video_sales" as const, labelKey: "creativeTypeSales" },
+              { value: "premium_product_cg" as const, labelKey: "creativeTypeCg" },
+            ]).map((option) => {
+              const selected = projectMeta.creativeProfile.creationType === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={creativeConfigSaving}
+                  onClick={() => void switchCreationType(option.value)}
+                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
+                    selected ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  {selected && "✓ "}{t(option.labelKey)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {projectMeta.creativeProfile.creationType === "premium_product_cg" && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span className="text-primary">{t("creativeTypeCgActive")}</span>
+            <span>{t("creativeProfileDuration", { n: projectMeta.creativeProfile.targetDuration })}</span>
+            <span>{projectMeta.creativeProfile.narrationMode === "none" ? t("creativeProfileVisualOnly") : t("creativeProfileRestrainedVoice")}</span>
+            <span>{t("creativeProfileNoText")}</span>
+          </div>
+        )}
+        {creativeConfigError && <p role="alert" className="mt-2 text-xs text-destructive">{creativeConfigError}</p>}
+      </CardContent>
+    </Card>
+  ) : null;
 
   // loading: skeleton screen (mimics the script card layout; feels faster than a spinner and reduces perceived wait)
   if (loading) {
@@ -600,6 +750,7 @@ export default function ScriptPage() {
       <div className="min-h-screen grid-bg">
         {headerBar}
         <div className="mx-auto max-w-md flex flex-col items-center justify-center py-28 px-6 text-center">
+          <div className="w-full text-left">{creativeProfileSwitcher}</div>
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/40 mb-5">
             <LuWand className="w-8 h-8 text-muted-foreground" />
           </div>
@@ -643,7 +794,7 @@ export default function ScriptPage() {
   // beginners see one progress card, not the editor
   const aiFilmErrorPanel = aiFilmError && <p role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm text-destructive">{aiFilmError}</p>;
 
-  if ((SHOW_FREE_QUICK_CUT && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
+  if ((SHOW_FREE_QUICK_CUT && !isPremiumCgProject && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
@@ -680,10 +831,11 @@ export default function ScriptPage() {
         onAssetsChanged={() => undefined} />
 
       <main className="mx-auto max-w-7xl px-6 py-8">
+        {creativeProfileSwitcher}
         {aiFilmErrorPanel && <div className="mx-auto mb-5 max-w-2xl">{aiFilmErrorPanel}</div>}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
-        {SHOW_FREE_QUICK_CUT && resumableRun && !autoFinishing && !aiFilming && (
+        {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && resumableRun && !autoFinishing && !aiFilming && (
           <div className="mx-auto mb-5 max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
             <p className="text-sm font-medium text-amber-500">
               ⏸ {resumableRun.interrupted ? t("pipelineInterruptedTitle") : t("pipelineFailedTitle")}
@@ -733,8 +885,8 @@ export default function ScriptPage() {
             <div className="flex flex-col items-center gap-3">
               {/* two finishing paths, primary = what was chosen on the studio card; the AI one
                   is the single paid click (billed to the user's own model platform) */}
-              <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT ? "sm:grid-cols-2" : ""}`}>
-                {SHOW_FREE_QUICK_CUT && <Button
+              <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT && !isPremiumCgProject ? "sm:grid-cols-2" : ""}`}>
+                {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <Button
                   size="lg"
                   variant={genPref === "ai" ? "outline" : "default"}
                   className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
@@ -745,15 +897,15 @@ export default function ScriptPage() {
                 </Button>}
                 <Button
                   size="lg"
-                  variant={!SHOW_FREE_QUICK_CUT || genPref === "ai" ? "default" : "outline"}
-                  className={`w-full ${!SHOW_FREE_QUICK_CUT || genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
+                  variant={!SHOW_FREE_QUICK_CUT || isPremiumCgProject || genPref === "ai" ? "default" : "outline"}
+                  className={`w-full ${!SHOW_FREE_QUICK_CUT || isPremiumCgProject || genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
                   disabled={autoFinishing || aiFilming || !currentScript}
                   onClick={runAiFilm}
                 >
                   整片自动编排
                 </Button>
               </div>
-              {SHOW_FREE_QUICK_CUT && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
+              {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
               <p className="text-center text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
               {/* quality reassurance: both paths run the judge panel automatically — Easy mode
                   hides the operation, never the quality features */}
@@ -842,24 +994,24 @@ export default function ScriptPage() {
                   <TabsTrigger value="text">{t("tabText")}</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    className="text-sm"
-                    disabled={judging}
-                    onClick={runJudge}
-                    title={t("judgeHint")}
-                  >
-                    {judging ? (
-                      <>
-                        <LuLoaderCircle className="w-4 h-4 mr-1 animate-spin" />
-                        {t("judging")}
-                      </>
-                    ) : (
-                      <>⚖️ {t("judgeButton")}</>
-                    )}
-                  </Button>
+                  {!isPremiumCgProject && <Button
+                      variant="outline"
+                      className="text-sm"
+                      disabled={judging}
+                      onClick={runJudge}
+                      title={t("judgeHint")}
+                    >
+                      {judging ? (
+                        <>
+                          <LuLoaderCircle className="w-4 h-4 mr-1 animate-spin" />
+                          {t("judging")}
+                        </>
+                      ) : (
+                        <>⚖️ {t("judgeButton")}</>
+                      )}
+                    </Button>}
                   <Button variant="outline" className="text-sm" disabled={aiFilming || !currentScript} onClick={() => void runAiFilm()}>整片自动编排</Button>
-                  {SHOW_FREE_QUICK_CUT && <Button
+                  {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <Button
                     variant="outline"
                     className="text-sm"
                     disabled={autoFinishing}

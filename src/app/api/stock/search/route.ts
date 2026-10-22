@@ -18,10 +18,12 @@ import {
 } from "@/lib/providers/stock-registry";
 import { broadenQuery } from "@/lib/stock-matcher";
 import { getDb } from "@/lib/db";
-import { assets as assetsTable, scripts } from "@/lib/db/schema";
+import { assets as assetsTable, projects, scripts } from "@/lib/db/schema";
 import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { apiError, errText } from "@/lib/api-error";
 import { and, eq } from "drizzle-orm";
+import { isPremiumProductCgProject } from "@/lib/creative-profiles";
+import { PREMIUM_CG_STOCK_FILL_FORBIDDEN } from "@/lib/stock-fill";
 
 /** validate projectId to prevent path traversal (consistent with the upload route) */
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
@@ -92,6 +94,27 @@ export async function POST(req: NextRequest) {
 
   if (!query) {
     return apiError(req, "请填写检索词（建议英文，召回更好）", "Please enter a search query (English recommended for better recall)");
+  }
+
+  // Reject a Premium CG download before contacting an external stock provider.
+  // Preview-only search remains read-only and cannot become a selected project asset.
+  if (download) {
+    const requestedProjectId = String(body.projectId ?? "");
+    if (!requestedProjectId || !SAFE_ID.test(requestedProjectId)) {
+      return apiError(req, "download=true requires a valid projectId", "A valid projectId is required when download=true");
+    }
+    const db = getDb();
+    const [project] = await db.select().from(projects).where(eq(projects.id, requestedProjectId));
+    if (!project) return apiError(req, "Project not found", "Project not found", 404);
+    if (isPremiumProductCgProject(project)) {
+      return NextResponse.json(
+        {
+          error: "Premium product CG does not allow stock footage or stock image downloads.",
+          code: PREMIUM_CG_STOCK_FILL_FORBIDDEN,
+        },
+        { status: 409 },
+      );
+    }
   }
 
   const searchOpts = { apiKeys, mediaType, perPage, orientation, minSec, maxSec };

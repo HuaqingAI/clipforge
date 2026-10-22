@@ -12,6 +12,12 @@ import { AD_TEMPLATE_GROUPS, listAdTemplates, getAdTemplate, adTemplateScriptDir
 import { CAMERA_PRESETS } from "@/lib/camera-presets";
 import { LOOK_PRESETS } from "@/lib/look-presets";
 import { CAPTION_PRESET_IDS, type CaptionPresetId } from "@/lib/caption-presets";
+import {
+  createPremiumCgRecipeSnapshot,
+  PREMIUM_CG_RECIPES,
+  type PremiumCgRecipeId,
+  type PremiumCgRecipeSnapshot,
+} from "@/lib/premium-cg-recipes";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -54,6 +60,11 @@ const videoModeOptions = [
   { value: "live_presenter", labelKey: "modePresenterLabel", descKey: "modePresenterDesc", icon: LuVideo },
 ];
 
+const cgVideoModeCopy: Record<CgVideoMode, { labelKey: string; descKey: string }> = {
+  product_closeup: { labelKey: "cgModeCloseupLabel", descKey: "cgModeCloseupDesc" },
+  scene_demo: { labelKey: "cgModeSceneLabel", descKey: "cgModeSceneDesc" },
+};
+
 // recipe-editor display labels for compose enums (bilingual data like the preset libraries, not i18n keys)
 const QUALITY_LABELS: Record<string, { zh: string; en: string }> = {
   fast: { zh: "快速", en: "Fast" },
@@ -95,6 +106,100 @@ const styleOptions = [
   { value: "auto", labelKey: "styleAutoLabel", descKey: "styleAutoDesc" },
 ];
 
+type CreationType = "short_video_sales" | "premium_product_cg";
+type CgVideoMode = "product_closeup" | "scene_demo";
+type CgSetting = "studio" | "modern_home";
+type CgNarrationMode = "none" | "restrained";
+type CgSoundMode = "ambient" | "music" | "restrained-voice";
+
+interface SalesCreativeDraft {
+  creationType: "short_video_sales";
+  id: "short_video_sales_v1";
+  profileId: "short_video_sales_v1";
+  styleType: string;
+  videoMode: string;
+  targetDuration: number;
+  selectedTemplateId: string | null;
+  selectedAdTemplateId: string;
+  selectedCharacterId: string | null;
+  recipeSnapshot?: {
+    kind: "sales-template-selection";
+    scriptTemplateId?: string;
+    adTemplateId?: string;
+  };
+}
+
+interface PremiumCgCreativeDraft {
+  creationType: "premium_product_cg";
+  id: "premium_product_cg_v1";
+  profileId: "premium_product_cg_v1";
+  styleType: "premium_product_cg";
+  videoMode: CgVideoMode;
+  targetDuration: 15 | 30 | 60;
+  narrationMode: CgNarrationMode;
+  soundMode: CgSoundMode;
+  textPolicy: {
+    generatedFrameText: "forbid-added";
+    productMarkings: "preserve-reference";
+    captions: false;
+    editorialGraphics: false;
+    productCard: false;
+    cta: "none";
+    brandEndCard: false;
+  };
+  visualDirection: {
+    setting: CgSetting;
+    look: string;
+    cameraSafety: "reference-limited";
+  };
+  recipeSnapshot: PremiumCgRecipeSnapshot;
+  promptCompilerVersion: "premium-furniture-cg-1";
+}
+
+type CreativeProfileDrafts = {
+  short_video_sales: SalesCreativeDraft;
+  premium_product_cg: PremiumCgCreativeDraft;
+};
+
+const DEFAULT_CG_DRAFT: PremiumCgCreativeDraft = {
+  creationType: "premium_product_cg",
+  id: "premium_product_cg_v1",
+  profileId: "premium_product_cg_v1",
+  styleType: "premium_product_cg",
+  videoMode: "product_closeup",
+  targetDuration: 30,
+  narrationMode: "none",
+  soundMode: "ambient",
+  textPolicy: {
+    generatedFrameText: "forbid-added",
+    productMarkings: "preserve-reference",
+    captions: false,
+    editorialGraphics: false,
+    productCard: false,
+    cta: "none",
+    brandEndCard: false,
+  },
+  visualDirection: {
+    setting: "studio",
+    look: "controlled neutral studio light, calm architectural backdrop, measured silhouette and edge highlights",
+    cameraSafety: "reference-limited",
+  },
+  recipeSnapshot: createPremiumCgRecipeSnapshot(),
+  promptCompilerVersion: "premium-furniture-cg-1",
+};
+
+function createSalesRecipeSnapshot(
+  selectedTemplateId: string | null,
+  selectedAdTemplateId: string,
+): SalesCreativeDraft["recipeSnapshot"] {
+  if (!selectedTemplateId && !selectedAdTemplateId) return undefined;
+  return {
+    kind: "sales-template-selection",
+    ...(selectedTemplateId && { scriptTemplateId: selectedTemplateId }),
+    ...(selectedAdTemplateId && { adTemplateId: selectedAdTemplateId }),
+  };
+}
+
 export default function NewProjectPage() {
   const router = useRouter();
   const t = useT("newProject");
@@ -112,12 +217,122 @@ export default function NewProjectPage() {
   const [scriptStyle, setScriptStyle] = useState("auto");
   const [videoMode, setVideoMode] = useState<string>("product_closeup");
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+  const [creationType, setCreationType] = useState<CreationType | null>(null);
+  const [creativeProfileDrafts, setCreativeProfileDrafts] = useState<CreativeProfileDrafts>({
+    short_video_sales: {
+      creationType: "short_video_sales",
+      id: "short_video_sales_v1",
+      profileId: "short_video_sales_v1",
+      styleType: "auto",
+      videoMode: "product_closeup",
+      targetDuration: 30,
+      selectedTemplateId: null,
+      selectedAdTemplateId: "",
+      selectedCharacterId: null,
+    },
+    premium_product_cg: DEFAULT_CG_DRAFT,
+  });
 
   // additional field state
   const [priceRange, setPriceRange] = useState<string>("");
   const [targetAudience, setTargetAudience] = useState<string[]>([]);
   const [platforms, setPlatforms] = useState<string[]>(["douyin"]);
   const [usageAdvantage, setUsageAdvantage] = useState("");
+
+  const premiumCgDraft = creativeProfileDrafts.premium_product_cg;
+  const hasChosenCreationType = creationType !== null;
+  const isPremiumCg = creationType === "premium_product_cg";
+
+  const updatePremiumCgDraft = (update: Partial<PremiumCgCreativeDraft>) => {
+    setCreativeProfileDrafts((prev) => ({
+      ...prev,
+      premium_product_cg: { ...prev.premium_product_cg, ...update },
+    }));
+  };
+
+  const selectPremiumCgRecipe = (recipeId: PremiumCgRecipeId) => {
+    const recipe = PREMIUM_CG_RECIPES.find((item) => item.id === recipeId);
+    if (!recipe) return;
+    updatePremiumCgDraft({
+      recipeSnapshot: createPremiumCgRecipeSnapshot(recipeId),
+      videoMode: recipe.videoMode,
+      visualDirection: {
+        ...premiumCgDraft.visualDirection,
+        setting: recipe.setting,
+        look: recipe.visualLook,
+      },
+    });
+    setVideoMode(recipe.videoMode);
+  };
+
+  // Mode and setting are convenient entry points, but each resolves to a complete
+  // curated recipe so the persisted snapshot can never contradict the visual plan.
+  const selectPremiumCgVideoMode = (nextMode: CgVideoMode) => {
+    const current = PREMIUM_CG_RECIPES.find((item) => item.id === premiumCgDraft.recipeSnapshot.recipeId);
+    const recipe = current?.videoMode === nextMode
+      ? current
+      : PREMIUM_CG_RECIPES.find((item) => (
+        item.videoMode === nextMode && item.setting === premiumCgDraft.recipeSnapshot.setting
+      )) ?? PREMIUM_CG_RECIPES.find((item) => item.videoMode === nextMode) ?? PREMIUM_CG_RECIPES[0];
+    selectPremiumCgRecipe(recipe.id);
+  };
+
+  const selectPremiumCgSetting = (nextSetting: CgSetting) => {
+    const current = PREMIUM_CG_RECIPES.find((item) => item.id === premiumCgDraft.recipeSnapshot.recipeId);
+    const recipe = current?.setting === nextSetting
+      ? current
+      : PREMIUM_CG_RECIPES.find((item) => (
+        item.setting === nextSetting && item.videoMode === premiumCgDraft.recipeSnapshot.videoMode
+      )) ?? PREMIUM_CG_RECIPES.find((item) => item.setting === nextSetting) ?? PREMIUM_CG_RECIPES[0];
+    selectPremiumCgRecipe(recipe.id);
+  };
+
+  const persistSalesDraft = () => {
+    setCreativeProfileDrafts((prev) => ({
+      ...prev,
+      short_video_sales: {
+        ...prev.short_video_sales,
+        styleType: scriptStyle,
+        videoMode,
+        targetDuration: Number(duration),
+        selectedTemplateId,
+        selectedAdTemplateId,
+        selectedCharacterId,
+        recipeSnapshot: createSalesRecipeSnapshot(selectedTemplateId, selectedAdTemplateId),
+      },
+    }));
+  };
+
+  const switchCreationType = (nextType: CreationType) => {
+    if (nextType === creationType) return;
+    if (nextType === "premium_product_cg") {
+      if (creationType !== "premium_product_cg") persistSalesDraft();
+      const cg = creativeProfileDrafts.premium_product_cg;
+      setCreationType(nextType);
+      setScriptStyle("premium_product_cg");
+      setVideoMode(cg.videoMode);
+      setDuration(String(cg.targetDuration));
+      setSelectedCharacterId(null);
+      setSelectedTemplateId(null);
+      setSelectedAdTemplateId("");
+      return;
+    }
+
+    const sales = creativeProfileDrafts.short_video_sales;
+    if (creationType === "premium_product_cg") {
+      updatePremiumCgDraft({
+        videoMode: videoMode === "scene_demo" ? "scene_demo" : "product_closeup",
+        targetDuration: Number(duration) as PremiumCgCreativeDraft["targetDuration"],
+      });
+    }
+    setCreationType(nextType);
+    setScriptStyle(sales.styleType);
+    setVideoMode(sales.videoMode);
+    setDuration(String(sales.targetDuration));
+    setSelectedTemplateId(sales.selectedTemplateId);
+    setSelectedAdTemplateId(sales.selectedAdTemplateId);
+    setSelectedCharacterId(sales.selectedCharacterId);
+  };
 
   // multi-select toggle helpers
   const toggleAudience = (tag: string) => {
@@ -468,7 +683,7 @@ export default function NewProjectPage() {
   }, [libraryProducts, prefillFromProduct]);
 
   // form validation
-  const isValid = productName.trim().length > 0 && images.length >= 1;
+  const isValid = hasChosenCreationType && productName.trim().length > 0 && images.length >= 1;
 
   // summary badge for the folded templates drawer: surfaces what's currently applied while closed
   const pickedAdTpl = resolveAdTemplate(selectedAdTemplateId);
@@ -480,9 +695,43 @@ export default function NewProjectPage() {
     .filter(Boolean)
     .join(" · ");
 
+  const buildCreativeConfig = () => {
+    // The visible controls are shared by both creation types. Only write them
+    // back to the active draft, otherwise a CG selection would overwrite the
+    // user's saved sales style and template choices.
+    const salesDraft: SalesCreativeDraft = isPremiumCg
+      ? creativeProfileDrafts.short_video_sales
+      : {
+          ...creativeProfileDrafts.short_video_sales,
+          styleType: scriptStyle,
+          videoMode,
+          targetDuration: Number(duration),
+          selectedTemplateId,
+          selectedAdTemplateId,
+          selectedCharacterId,
+          recipeSnapshot: createSalesRecipeSnapshot(selectedTemplateId, selectedAdTemplateId),
+        };
+    const cgDraft: PremiumCgCreativeDraft = isPremiumCg
+      ? {
+          ...premiumCgDraft,
+          videoMode: videoMode === "scene_demo" ? "scene_demo" : "product_closeup",
+          targetDuration: Number(duration) as PremiumCgCreativeDraft["targetDuration"],
+        }
+      : premiumCgDraft;
+    const drafts: CreativeProfileDrafts = {
+      short_video_sales: salesDraft,
+      premium_product_cg: cgDraft,
+    };
+    return {
+      creativeProfile: isPremiumCg ? cgDraft : salesDraft,
+      creativeProfileDrafts: drafts,
+    };
+  };
+
   // submission handler
   // paste product link → backend scrapes and parses (title / price / images) + creates a commerce project → navigate directly to the script page
   const handleIngest = async () => {
+    if (creationType !== "short_video_sales") return;
     const url = ingestUrl.trim();
     if (!/^https?:\/\/.+/i.test(url)) {
       setIngestError(t("ingestErrorUrl"));
@@ -491,10 +740,17 @@ export default function NewProjectPage() {
     setIngestError("");
     setIngesting(true);
     try {
+      const creativeConfig = buildCreativeConfig();
       const res = await fetch("/api/ingest/product", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, createProject: true }),
+        body: JSON.stringify({
+          url,
+          createProject: true,
+          videoMode,
+          creativeProfile: creativeConfig.creativeProfile,
+          creativeProfileDrafts: creativeConfig.creativeProfileDrafts,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.projectId) throw new Error(data.error || t("ingestErrorFail"));
@@ -506,23 +762,31 @@ export default function NewProjectPage() {
   };
 
   const handleSubmit = async () => {
-    if (!isValid || isSubmitting) return;
+    if (!creationType || !isValid || isSubmitting) return;
 
     setIsSubmitting(true);
     setError(null);
 
     try {
+      const creativeConfig = buildCreativeConfig();
       // step 1: create the project (get projectId first)
-      setProgress({ step: "creating", percent: 15, message: t("progressCreating") });
+      setProgress({
+        step: "creating",
+        percent: 15,
+        message: t(isPremiumCg ? "progressCreatingCg" : "progressCreating"),
+      });
       const projectRes = await fetch("/api/project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: `${productName} 推广`,
+          name: `${productName}${t(isPremiumCg ? "projectNameCgSuffix" : "projectNameSalesSuffix")}`,
           productName,
           productCategory: category,
           productDescription: sellingPoints,
           productImages: [],
+          videoMode,
+          creativeProfile: creativeConfig.creativeProfile,
+          creativeProfileDrafts: creativeConfig.creativeProfileDrafts,
         }),
       });
       if (!projectRes.ok) throw new Error(t("errorCreateFailed"));
@@ -531,7 +795,7 @@ export default function NewProjectPage() {
       // ad template: apply the global look now and hand the compose recipe to the
       // video page (localStorage, same client-side convention as the template store);
       // AI custom and "my templates" are stored inline (custom:<json>) since they have no builtin id
-      const adTemplate = resolveAdTemplate(selectedAdTemplateId);
+      const adTemplate = !isPremiumCg ? resolveAdTemplate(selectedAdTemplateId) : null;
       if (adTemplate) {
         setVisualLook(adTemplate.look);
         try {
@@ -542,7 +806,11 @@ export default function NewProjectPage() {
       }
 
       // step 2: upload images (with projectId)
-      setProgress({ step: "uploading", percent: 35, message: t("progressUploading") });
+      setProgress({
+        step: "uploading",
+        percent: 35,
+        message: t(isPremiumCg ? "progressUploadingCg" : "progressUploading"),
+      });
       const formData = new FormData();
       images.forEach((img) => formData.append("files", img.file));
       formData.append("projectId", project.id);
@@ -561,14 +829,18 @@ export default function NewProjectPage() {
       });
 
       // step 3: generate the script
-      setProgress({ step: "generating", percent: 60, message: t("progressGenerating") });
+      setProgress({
+        step: "generating",
+        percent: 60,
+        message: t(isPremiumCg ? "progressGeneratingCg" : "progressGenerating"),
+      });
       // if a presenter character was selected, include their info
-      const selectedCharacter = selectedCharacterId
+      const selectedCharacter = !isPremiumCg && selectedCharacterId
         ? characters.find((c) => c.id === selectedCharacterId)
         : null;
 
       // apply template: serialize the selected template's shot structure as a reference for the AI to follow (actually consuming the template, not just decorative)
-      const selectedTemplate = selectedTemplateId
+      const selectedTemplate = !isPremiumCg && selectedTemplateId
         ? templates.find((t) => t.id === selectedTemplateId)
         : null;
       const referenceStructure = selectedTemplate
@@ -588,6 +860,8 @@ export default function NewProjectPage() {
           targetDuration: parseInt(duration),
           styleType: scriptStyle,
           videoMode,
+          creativeProfile: creativeConfig.creativeProfile,
+          creativeProfileDrafts: creativeConfig.creativeProfileDrafts,
           productImages: paths,
           llmConfig: {
             provider: llm.provider,
@@ -596,12 +870,16 @@ export default function NewProjectPage() {
             model: llm.model,
             visionModel: llm.visionModel,
           },
-          priceRange,
-          targetAudience: targetAudience.join(","),
-          platforms: platforms.join(","),
-          usageAdvantage,
+          ...(isPremiumCg
+            ? { usageAdvantage }
+            : {
+                priceRange,
+                targetAudience: targetAudience.join(","),
+                platforms: platforms.join(","),
+                usageAdvantage,
+              }),
           // pass the selected template ID + structure (so the AI genuinely follows the template rhythm)
-          ...(selectedTemplateId && { templateId: selectedTemplateId }),
+          ...(!isPremiumCg && selectedTemplateId && { templateId: selectedTemplateId }),
           ...(referenceStructure && { referenceStructure }),
           // ad-template creative direction: look + per-shot-type camera plan for the script LLM
           ...(adTemplate && { customRequirements: adTemplateScriptDirective(adTemplate) }),
@@ -617,13 +895,17 @@ export default function NewProjectPage() {
       });
 
       // increment use count when a template was applied
-      if (selectedTemplateId) {
+      if (!isPremiumCg && selectedTemplateId) {
         incrementUseCount(selectedTemplateId);
       }
       if (!scriptRes.ok) throw new Error(t("errorScriptFailed"));
 
       // step 4: done
-      setProgress({ step: "done", percent: 100, message: t("progressDone") });
+      setProgress({
+        step: "done",
+        percent: 100,
+        message: t(isPremiumCg ? "progressDoneCg" : "progressDone"),
+      });
       await new Promise((r) => setTimeout(r, 800));
       router.push(`/project/${project.id}/script`);
     } catch (err) {
@@ -639,36 +921,87 @@ export default function NewProjectPage() {
         {/* page title */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight">
-            {t("pageTitlePrefix")}<span className="brand-gradient-text">{t("pageTitleAccent")}</span>
+            {t("pageTitlePrefix")}<span className="brand-gradient-text">{t(
+              isPremiumCg
+                ? "pageTitleAccentCg"
+                : hasChosenCreationType
+                  ? "pageTitleAccent"
+                  : "pageTitleAccentGeneral"
+            )}</span>
           </h1>
           <p className="text-sm text-muted-foreground mt-1.5">
-            {t("pageSubtitle")}
+            {t(
+              isPremiumCg
+                ? "pageSubtitleCg"
+                : hasChosenCreationType
+                  ? "pageSubtitle"
+                  : "pageSubtitleGeneral"
+            )}
           </p>
         </div>
 
-        {/* LLM not configured warning */}
-        {!isLLMConfigured && (
-          <Link href="/settings?tab=llm">
-            <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3 cursor-pointer hover:bg-amber-500/15 transition-colors">
-              <LuCircleAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-medium text-amber-200">{t("llmWarnTitle")}</p>
-                <p className="text-xs text-amber-300/80 mt-0.5">{t("llmWarnDesc")}<span className="underline">{t("llmWarnCta")}</span></p>
-              </div>
-            </div>
-          </Link>
-        )}
-
         <div className="space-y-6">
-          {/* step 1 — product source: upload / paste a link / one-tap example, all in ONE card
+          <Card className="glass-card">
+            <CardContent className="p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">1</span>
+                <span className="text-sm font-semibold">{t("creationTypeTitle")}</span>
+              </div>
+              <Label className="text-sm font-medium mb-3 block">{t("creationTypeLabel")}</Label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {([
+                  { value: "short_video_sales" as const, icon: LuZap, labelKey: "creationTypeSalesLabel", descKey: "creationTypeSalesDesc" },
+                  { value: "premium_product_cg" as const, icon: LuBox, labelKey: "creationTypeCgLabel", descKey: "creationTypeCgDesc" },
+                ]).map((option) => {
+                  const Icon = option.icon;
+                  const selected = creationType === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => switchCreationType(option.value)}
+                      disabled={isSubmitting || ingesting}
+                      className={`relative flex items-start gap-3 p-3.5 rounded-lg border text-left transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                        selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
+                      }`}
+                    >
+                      <Icon className={`w-5 h-5 shrink-0 mt-0.5 ${selected ? "text-primary" : "text-muted-foreground"}`} />
+                      <div>
+                        <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>{t(option.labelKey)}</span>
+                        <span className="text-xs text-muted-foreground mt-0.5 block">{t(option.descKey)}</span>
+                      </div>
+                      {selected && <div className="absolute top-2.5 right-2.5"><div className="h-2 w-2 rounded-full brand-gradient" /></div>}
+                    </button>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
+          {hasChosenCreationType && (
+            <>
+          {/* LLM configuration becomes actionable after the creation type is chosen. */}
+          {!isLLMConfigured && (
+            <Link href="/settings?tab=llm">
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3 cursor-pointer hover:bg-amber-500/15 transition-colors">
+                <LuCircleAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-200">{t("llmWarnTitle")}</p>
+                  <p className="text-xs text-amber-300/80 mt-0.5">{t("llmWarnDesc")}<span className="underline">{t("llmWarnCta")}</span></p>
+                </div>
+              </div>
+            </Link>
+          )}
+
+          {/* step 2 — product source: upload / paste a link / one-tap example, all in ONE card
               (was three stacked cards competing for the same "where do I start" decision) */}
           <Card className="glass-card">
             <CardContent className="p-5">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">1</span>
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">2</span>
                   <span className="text-sm font-semibold">
-                    {t("stepUploadTitle")}
+                    {t(isPremiumCg ? "stepUploadTitleCg" : "stepUploadTitle")}
                     <span className="text-destructive ml-0.5">*</span>
                   </span>
                 </div>
@@ -707,11 +1040,11 @@ export default function NewProjectPage() {
                     </div>
                     <div>
                       <p className="text-sm font-medium">
-                        {t("dropHintPrefix")}
+                        {t(isPremiumCg ? "cgDropHintPrefix" : "dropHintPrefix")}
                         <span className="brand-gradient-text font-semibold">{t("dropHintClick")}</span>
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {t("dropHintFormats")}
+                        {t(isPremiumCg ? "cgDropHintFormats" : "dropHintFormats")}
                       </p>
                     </div>
                   </div>
@@ -729,7 +1062,7 @@ export default function NewProjectPage() {
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={img.url}
-                        alt={t("imageAlt")}
+                        alt={t(isPremiumCg ? "cgImageAlt" : "imageAlt")}
                         className="h-full w-full object-cover"
                       />
                       {/* delete button */}
@@ -750,43 +1083,51 @@ export default function NewProjectPage() {
                 </div>
               )}
 
-              {/* alternative source: paste a product URL (auto-grabs title / price / images and creates the project) */}
-              <div className="mt-4 pt-4 border-t border-border/40">
-                <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
-                  <LuLink2 className="w-3.5 h-3.5" />
-                  {t("sourceIngestLead")}
-                </p>
-                <div className="flex gap-2">
-                  <Input
-                    value={ingestUrl}
-                    onChange={(e) => setIngestUrl(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleIngest();
-                    }}
-                    placeholder={t("ingestPlaceholder")}
-                    disabled={ingesting}
-                  />
-                  <Button type="button" onClick={handleIngest} disabled={ingesting || !ingestUrl.trim()} className="shrink-0">
-                    {ingesting ? <LuLoader className="w-4 h-4 animate-spin" /> : t("ingestBtn")}
-                  </Button>
+              {isPremiumCg ? (
+                <div className="mt-4 rounded-lg border border-primary/25 bg-primary/[0.04] px-3.5 py-3">
+                  <p className="text-xs leading-relaxed text-muted-foreground">{t("cgReferenceGuidance")}</p>
                 </div>
-                {ingestError && <p className="text-xs text-destructive mt-2">{ingestError}</p>}
-              </div>
+              ) : (
+                <>
+                  {/* alternative source: paste a product URL (auto-grabs title / price / images and creates the project) */}
+                  <div className="mt-4 pt-4 border-t border-border/40">
+                    <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
+                      <LuLink2 className="w-3.5 h-3.5" />
+                      {t("sourceIngestLead")}
+                    </p>
+                    <div className="flex gap-2">
+                      <Input
+                        value={ingestUrl}
+                        onChange={(e) => setIngestUrl(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleIngest();
+                        }}
+                        placeholder={t("ingestPlaceholder")}
+                        disabled={ingesting}
+                      />
+                      <Button type="button" onClick={handleIngest} disabled={ingesting || !ingestUrl.trim()} className="shrink-0">
+                        {ingesting ? <LuLoader className="w-4 h-4 animate-spin" /> : t("ingestBtn")}
+                      </Button>
+                    </div>
+                    {ingestError && <p className="text-xs text-destructive mt-2">{ingestError}</p>}
+                  </div>
 
-              {/* alternative source: one-tap example products (zero-barrier trial) */}
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="text-xs text-muted-foreground">{t("sourceExampleLead")}</span>
-                {getExampleProducts(locale).map((ex) => (
-                  <button
-                    key={ex.id}
-                    type="button"
-                    onClick={() => fillExample(ex)}
-                    className="px-2.5 py-1 rounded-full text-xs border border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40 hover:text-foreground transition-all"
-                  >
-                    {ex.name} ¥{ex.price}
-                  </button>
-                ))}
-              </div>
+                  {/* alternative source: one-tap example products (zero-barrier trial) */}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{t("sourceExampleLead")}</span>
+                    {getExampleProducts(locale).map((ex) => (
+                      <button
+                        key={ex.id}
+                        type="button"
+                        onClick={() => fillExample(ex)}
+                        className="px-2.5 py-1 rounded-full text-xs border border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40 hover:text-foreground transition-all"
+                      >
+                        {ex.name} ¥{ex.price}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -794,8 +1135,8 @@ export default function NewProjectPage() {
           <Card className="glass-card">
             <CardContent className="p-5 space-y-5">
               <div className="flex items-center gap-2 mb-4">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">2</span>
-                <span className="text-sm font-semibold">{t("stepInfoTitle")}</span>
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">3</span>
+                <span className="text-sm font-semibold">{t(isPremiumCg ? "stepInfoTitleCg" : "stepInfoTitle")}</span>
               </div>
               {/* product name */}
               <div className="space-y-2">
@@ -805,7 +1146,7 @@ export default function NewProjectPage() {
                 </Label>
                 <Input
                   id="productName"
-                  placeholder={t("productNamePlaceholder")}
+                  placeholder={t(isPremiumCg ? "productNamePlaceholderCg" : "productNamePlaceholder")}
                   value={productName}
                   onChange={(e) => setProductName(e.target.value)}
                   className="bg-muted/30 border-border/50 focus:border-primary"
@@ -816,13 +1157,13 @@ export default function NewProjectPage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="sellingPoints" className="text-sm font-medium">
-                    {t("sellingPointsLabel")}
+                    {t(isPremiumCg ? "cgProductFactsLabel" : "sellingPointsLabel")}
                   </Label>
                   <span className="text-xs text-muted-foreground">{t("optional")}</span>
                 </div>
                 <Textarea
                   id="sellingPoints"
-                  placeholder={t("sellingPointsPlaceholder")}
+                  placeholder={t(isPremiumCg ? "cgProductFactsPlaceholder" : "sellingPointsPlaceholder")}
                   value={sellingPoints}
                   onChange={(e) => setSellingPoints(e.target.value)}
                   rows={3}
@@ -834,13 +1175,13 @@ export default function NewProjectPage() {
                   gate the flow — the default view stays name + selling points only */}
               <details className="group pt-1">
                 <summary className="flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden text-sm text-muted-foreground hover:text-foreground transition-colors">
-                  <span>{t("moreInfoSummary")}</span>
+                  <span>{t(isPremiumCg ? "cgMoreInfoSummary" : "moreInfoSummary")}</span>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 transition-transform group-open:rotate-180">
                     <path d="m6 9 6 6 6-6" />
                   </svg>
                 </summary>
                 <div className="mt-4 space-y-5">
-                  <p className="text-xs text-muted-foreground">{t("moreInfoHint")}</p>
+                  <p className="text-xs text-muted-foreground">{t(isPremiumCg ? "cgMoreInfoHint" : "moreInfoHint")}</p>
 
                   {/* product category */}
                   <div className="space-y-2">
@@ -865,6 +1206,8 @@ export default function NewProjectPage() {
                     </Select>
                   </div>
 
+              {!isPremiumCg && (
+                <>
               {/* price range */}
               <div className="space-y-2">
                 <Label className="text-sm font-medium">{t("priceLabel")}</Label>
@@ -945,15 +1288,20 @@ export default function NewProjectPage() {
                 </div>
               </div>
 
+                </>
+              )}
+
               {/* usage and advantages */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="usageAdvantage" className="text-sm font-medium">{t("usageLabel")}</Label>
+                  <Label htmlFor="usageAdvantage" className="text-sm font-medium">
+                    {t(isPremiumCg ? "cgUsageLabel" : "usageLabel")}
+                  </Label>
                   <span className="text-xs text-muted-foreground">{t("optional")}</span>
                 </div>
                 <Textarea
                   id="usageAdvantage"
-                  placeholder={t("usagePlaceholder")}
+                  placeholder={t(isPremiumCg ? "cgUsagePlaceholder" : "usagePlaceholder")}
                   value={usageAdvantage}
                   onChange={(e) => setUsageAdvantage(e.target.value)}
                   rows={3}
@@ -969,8 +1317,8 @@ export default function NewProjectPage() {
           <Card className="glass-card">
             <CardContent className="p-5">
               <div className="flex items-center gap-2 mb-4">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">3</span>
-                <span className="text-sm font-semibold">{t("stepConfigTitle")}</span>
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">4</span>
+                <span className="text-sm font-semibold">{t(isPremiumCg ? "stepConfigTitleCg" : "stepConfigTitle")}</span>
               </div>
 
               {/* target duration */}
@@ -979,7 +1327,10 @@ export default function NewProjectPage() {
                 {durationOptions.map((opt) => (
                   <button
                     key={opt.value}
-                    onClick={() => setDuration(opt.value)}
+                    onClick={() => {
+                      setDuration(opt.value);
+                      if (isPremiumCg) updatePremiumCgDraft({ targetDuration: Number(opt.value) as PremiumCgCreativeDraft["targetDuration"] });
+                    }}
                     className={`relative flex items-center justify-center h-11 rounded-lg border text-sm font-medium transition-all ${
                       duration === opt.value
                         ? "border-primary bg-primary/10 text-primary"
@@ -1001,15 +1352,21 @@ export default function NewProjectPage() {
               <div className="my-5 border-t border-border/40" />
 
               {/* video mode */}
-              <Label className="text-sm font-medium mb-3 block">{t("videoModeLabel")}</Label>
+              <Label className="text-sm font-medium mb-3 block">
+                {t(isPremiumCg ? "cgVideoModeLabel" : "videoModeLabel")}
+              </Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {videoModeOptions.map((opt) => {
+                {videoModeOptions.filter((opt) => !isPremiumCg || opt.value === "product_closeup" || opt.value === "scene_demo").map((opt) => {
                   const Icon = opt.icon;
+                  const copy = isPremiumCg
+                    ? cgVideoModeCopy[opt.value as CgVideoMode]
+                    : { labelKey: opt.labelKey, descKey: opt.descKey };
                   return (
                     <button
                       key={opt.value}
                       onClick={() => {
-                        setVideoMode(opt.value);
+                        if (isPremiumCg) selectPremiumCgVideoMode(opt.value as CgVideoMode);
+                        else setVideoMode(opt.value);
                         // non-presenter mode: clear the character selection
                         if (opt.value !== "live_presenter") {
                           setSelectedCharacterId(null);
@@ -1024,9 +1381,9 @@ export default function NewProjectPage() {
                       <Icon className={`w-5 h-5 shrink-0 mt-0.5 ${videoMode === opt.value ? "text-primary" : "text-muted-foreground"}`} />
                       <div>
                         <span className={`text-sm font-medium ${videoMode === opt.value ? "text-primary" : "text-foreground"}`}>
-                          {t(opt.labelKey)}
+                          {t(copy.labelKey)}
                         </span>
-                        <span className="text-xs text-muted-foreground mt-0.5 block">{t(opt.descKey)}</span>
+                        <span className="text-xs text-muted-foreground mt-0.5 block">{t(copy.descKey)}</span>
                       </div>
                       {videoMode === opt.value && (
                         <div className="absolute top-2.5 right-2.5">
@@ -1038,9 +1395,15 @@ export default function NewProjectPage() {
                 })}
               </div>
 
+              {isPremiumCg && videoMode === "scene_demo" && (
+                <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3.5 py-3">
+                  <p className="text-xs leading-relaxed text-amber-200/90">{t("cgSceneReferenceWarning")}</p>
+                </div>
+              )}
+
               {/* presenter character lives right under the mode picker: choosing
                   "live presenter" reveals it in place instead of a far-away card */}
-              {videoMode === "live_presenter" && characters.length > 0 && (
+              {!isPremiumCg && videoMode === "live_presenter" && characters.length > 0 && (
                 <>
                   <div className="my-5 border-t border-border/40" />
                   <div className="flex items-center justify-between mb-3">
@@ -1089,6 +1452,130 @@ export default function NewProjectPage() {
                   </div>
                 </>
               )}
+
+              {isPremiumCg && (
+                <div className="mt-5 space-y-5 border-t border-border/40 pt-5">
+                  <div>
+                    <Label className="text-sm font-medium mb-1 block">
+                      {locale === "zh" ? "产品影片配方" : "Product-film recipe"}
+                    </Label>
+                    <p className="mb-3 text-xs text-muted-foreground">
+                      {locale === "zh"
+                        ? "配方只调整镜头观察重点与场景，不会开启字幕、商品卡或购买引导。"
+                        : "Recipes adjust visual emphasis and setting only; they never enable captions, product cards, or CTAs."}
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {PREMIUM_CG_RECIPES.map((recipe) => {
+                        const selected = premiumCgDraft.recipeSnapshot.recipeId === recipe.id;
+                        return (
+                          <button
+                            key={recipe.id}
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => selectPremiumCgRecipe(recipe.id)}
+                            className={`relative flex min-h-24 flex-col items-start p-3 rounded-lg border text-left transition-all ${
+                              selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
+                            }`}
+                          >
+                            <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>
+                              {locale === "zh" ? recipe.name.zh : recipe.name.en}
+                            </span>
+                            <span className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                              {locale === "zh" ? recipe.description.zh : recipe.description.en}
+                            </span>
+                            {selected && <span className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full brand-gradient" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-medium mb-3 block">{t("cgSettingLabel")}</Label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {([
+                        { value: "studio" as const, labelKey: "cgSettingStudio", descKey: "cgSettingStudioDesc" },
+                        { value: "modern_home" as const, labelKey: "cgSettingHome", descKey: "cgSettingHomeDesc" },
+                      ]).map((option) => {
+                        const selected = premiumCgDraft.visualDirection.setting === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => selectPremiumCgSetting(option.value)}
+                            className={`relative flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
+                              selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
+                            }`}
+                          >
+                            <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>{t(option.labelKey)}</span>
+                            <span className="text-xs text-muted-foreground mt-0.5">{t(option.descKey)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-medium mb-3 block">{t("cgNarrationLabel")}</Label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {([
+                        { value: "none" as const, labelKey: "cgNarrationNone", descKey: "cgNarrationNoneDesc" },
+                        { value: "restrained" as const, labelKey: "cgNarrationRestrained", descKey: "cgNarrationRestrainedDesc" },
+                      ]).map((option) => {
+                        const selected = premiumCgDraft.narrationMode === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => updatePremiumCgDraft({
+                              narrationMode: option.value,
+                              soundMode: option.value === "none" && premiumCgDraft.soundMode === "restrained-voice" ? "ambient" : premiumCgDraft.soundMode,
+                            })}
+                            className={`relative flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
+                              selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
+                            }`}
+                          >
+                            <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>{t(option.labelKey)}</span>
+                            <span className="text-xs text-muted-foreground mt-0.5">{t(option.descKey)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm font-medium mb-3 block">{t("cgSoundLabel")}</Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {([
+                        { value: "ambient" as const, labelKey: "cgSoundAmbient" },
+                        { value: "music" as const, labelKey: "cgSoundMusic" },
+                        { value: "restrained-voice" as const, labelKey: "cgSoundVoice" },
+                      ]).map((option) => {
+                        const selected = premiumCgDraft.soundMode === option.value;
+                        const disabled = option.value === "restrained-voice" && premiumCgDraft.narrationMode === "none";
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => updatePremiumCgDraft({ soundMode: option.value })}
+                            className={`flex items-center justify-center min-h-11 px-3 rounded-lg border text-sm font-medium transition-all ${
+                              selected ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                            } disabled:cursor-not-allowed disabled:opacity-40`}
+                          >
+                            {t(option.labelKey)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-primary/25 bg-primary/[0.04] px-3.5 py-3">
+                    <p className="text-sm font-medium text-primary">{t("cgTextPolicyTitle")}</p>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t("cgTextPolicyDesc")}</p>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -1096,15 +1583,17 @@ export default function NewProjectPage() {
           <Card className="glass-card">
             <CardContent className="p-5">
               <div className="flex items-center gap-2 mb-4">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">4</span>
-                <span className="text-sm font-semibold">{t("stepStyleTitle")}</span>
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">5</span>
+                <span className="text-sm font-semibold">{t(isPremiumCg ? "stepStyleTitleCg" : "stepStyleTitle")}</span>
               </div>
-              <Label className="text-sm font-medium mb-3 block">{t("scriptStyleLabel")}</Label>
+              <Label className="text-sm font-medium mb-3 block">
+                {t(isPremiumCg ? "cgScriptStyleLabel" : "scriptStyleLabel")}
+              </Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {styleOptions.map((opt) => (
+                {(isPremiumCg ? [{ value: "premium_product_cg", labelKey: "stylePremiumCgLabel", descKey: "stylePremiumCgDesc" }] : styleOptions).map((opt) => (
                   <button
                     key={opt.value}
-                    onClick={() => setScriptStyle(opt.value)}
+                    onClick={() => !isPremiumCg && setScriptStyle(opt.value)}
                     className={`relative flex flex-col items-start p-3.5 rounded-lg border text-left transition-all ${
                       scriptStyle === opt.value
                         ? "border-primary bg-primary/10"
@@ -1136,9 +1625,21 @@ export default function NewProjectPage() {
             </CardContent>
           </Card>
 
+          {isPremiumCg && (
+            <Card className="glass-card">
+              <CardContent className="p-5">
+                <div className="flex items-center gap-2">
+                  <LuBox className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">{t("cgProfileSummaryTitle")}</span>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("cgProfileSummaryDesc")}</p>
+              </CardContent>
+            </Card>
+          )}
+
           {/* templates drawer: hit-structure templates + ad recipes, folded by default —
               powerful but optional, so they no longer dominate the create flow */}
-          <Card className="glass-card">
+          {!isPremiumCg && <Card className="glass-card">
             <CardContent className="p-5">
               <details className="group">
                 <summary className="flex items-center justify-between gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
@@ -1655,7 +2156,7 @@ export default function NewProjectPage() {
                 </div>
               </details>
             </CardContent>
-          </Card>
+          </Card>}
 
           {/* submit button */}
           <div className="pt-2 pb-10">
@@ -1699,8 +2200,8 @@ export default function NewProjectPage() {
                 </>
               ) : (
                 <>
-                  <LuZap className="w-5 h-5 mr-2" />
-                  {t("submitGenerate")}
+                  {isPremiumCg ? <LuBox className="w-5 h-5 mr-2" /> : <LuZap className="w-5 h-5 mr-2" />}
+                  {t(isPremiumCg ? "submitGenerateCg" : "submitGenerate")}
                 </>
               )}
             </Button>
@@ -1709,11 +2210,13 @@ export default function NewProjectPage() {
                 {!isLLMConfigured
                   ? t("hintNeedLlm")
                   : !isValid
-                    ? t("hintNeedInput")
-                    : t("hintReady")}
+                    ? t(isPremiumCg ? "hintNeedInputCg" : "hintNeedInput")
+                    : t(isPremiumCg ? "hintReadyCg" : "hintReady")}
               </p>
             )}
           </div>
+            </>
+          )}
         </div>
       </main>
     </div>

@@ -16,9 +16,35 @@ import { searchStock, searchAllStock, type StockSearchOptions } from "@/lib/prov
 import { broadenQuery, pickBestCandidate, authorKeyOf, fallbackLevelOf, type FallbackLevel } from "@/lib/stock-matcher";
 import { validateOrDelete } from "@/lib/media-validate";
 import { getDb } from "@/lib/db";
-import { assets as assetsTable, scripts } from "@/lib/db/schema";
+import { assets as assetsTable, projects, scripts } from "@/lib/db/schema";
 import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { and, eq } from "drizzle-orm";
+import { isPremiumProductCgProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
+
+export const PREMIUM_CG_STOCK_FILL_FORBIDDEN = "PREMIUM_CG_STOCK_FILL_FORBIDDEN";
+
+export class PremiumCgStockFillForbiddenError extends Error {
+  readonly code = PREMIUM_CG_STOCK_FILL_FORBIDDEN;
+
+  constructor() {
+    super("Premium product CG cannot adopt stock footage. Use controlled product-reference generation instead.");
+    this.name = "PremiumCgStockFillForbiddenError";
+  }
+}
+
+/** Shared policy check for route callers and internal pipelines. */
+export function isPremiumCgStockFillBlocked(projectId: string): boolean {
+  const project = getDb()
+    .select({ creativeProfile: projects.creativeProfile, videoMode: projects.videoMode })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .get();
+  return Boolean(project && isPremiumProductCgProfile(resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode })));
+}
+
+function assertStockFillAllowed(projectId: string): void {
+  if (isPremiumCgStockFillBlocked(projectId)) throw new PremiumCgStockFillForbiddenError();
+}
 
 export interface FillShotInput {
   projectId: string;
@@ -103,6 +129,9 @@ export async function persistCandidate(
   query: string,
   c: ScoredStockCandidate
 ): Promise<Record<string, unknown>> {
+  // This exported persistence primitive is also used by the semantic route path. Keep the
+  // policy here so a future caller cannot bypass the route-level stock-fill rejection.
+  assertStockFillAllowed(projectId);
   const stockDir = join(getUploadsDir(), projectId, "stock");
   await mkdir(stockDir, { recursive: true });
   const base = `${c.source}_${c.id}_${Date.now()}_${shotId}`;
@@ -148,6 +177,9 @@ export async function persistCandidate(
  */
 export async function fillShotStock(input: FillShotInput): Promise<Record<string, unknown> | null> {
   const { projectId, shotId, query, source, searchOpts, usedIds, sameSourceAuthors, slotSec, subjectEn } = input;
+  // Reject before searching/downloading so direct library callers cannot source arbitrary B-roll
+  // for a Premium CG project.
+  assertStockFillAllowed(projectId);
 
   const search = await searchShotCandidates(query, source, searchOpts, { subjectEn });
   // A generic "abstract background / lifestyle" hit technically fills the slot but makes a

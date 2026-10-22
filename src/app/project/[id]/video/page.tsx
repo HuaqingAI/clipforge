@@ -18,6 +18,7 @@ import { decodeStoredAdTemplate, adTemplateStorageKey, adTemplateAppliedKey } fr
 import { buildHookVariants } from "@/lib/script-engine/hook-variants";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
+import { sanitizeCreativeProfile, type PremiumProductCgProfile } from "@/lib/creative-profiles";
 import { ProjectHeader } from "@/components/project-header";
 import { FreeVoicePreview } from "@/components/free-voice-preview";
 import { ShotVideoPicker, buildShotAssetSelections, selectedShotAsset, type ShotVideoAsset } from "@/components/shot-video-picker";
@@ -66,6 +67,19 @@ interface ComposeConfig {
   bgmVolume: number;
   /** voice grounding: TTS de-broadcast chain + room-tone bed (default on; off = clean studio read) */
   voiceGround: boolean;
+}
+
+function lockPremiumCgComposeConfig(config: ComposeConfig): ComposeConfig {
+  return {
+    ...config,
+    ttsEnabled: false,
+    voiceoverMode: "auto",
+    subtitles: false,
+    captionPreset: "standard",
+    ctaEnabled: false,
+    ctaText: "",
+    productCard: false,
+  };
 }
 
 // 免费配音音色（微软 Edge keyless TTS，无需 Key）——与后端 FREE_TTS_VOICES 对应
@@ -122,6 +136,9 @@ export default function VideoPage() {
     return asset?.filePath ? [[shotId, asset.filePath]] : [];
   })), [clips, savedAssets]);
   const [projectName, setProjectName] = useState("");
+  const [premiumCgProfile, setPremiumCgProfile] = useState<PremiumProductCgProfile | null>(null);
+  const premiumCg = premiumCgProfile !== null;
+  const premiumCgRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
@@ -178,6 +195,8 @@ export default function VideoPage() {
       setLoading(true);
       setLoadError(null);
       setAssetSelectionError(null);
+      premiumCgRef.current = false;
+      setPremiumCgProfile(null);
       try {
         const [projectRes, scriptsRes, assetsRes] = await Promise.all([
           fetch(`/api/project/${id}`),
@@ -192,9 +211,14 @@ export default function VideoPage() {
         if (project) {
           setProjectName(project.name ?? project.productName ?? "");
           setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
+          const creativeProfile = sanitizeCreativeProfile(project.creativeProfile);
+          const cgProfile = creativeProfile?.creationType === "premium_product_cg" ? creativeProfile : null;
+          premiumCgRef.current = Boolean(cgProfile);
+          setPremiumCgProfile(cgProfile);
+          if (cgProfile) setConfig(lockPremiumCgComposeConfig);
           if (Array.isArray(project.productionWorkflow)) {
             const voiceStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "voice");
-            if (voiceStage) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
+            if (voiceStage && !cgProfile) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
           }
         }
         setSavedAssets(Array.isArray(assets) ? assets : []);
@@ -265,6 +289,7 @@ export default function VideoPage() {
   const [packNotice, setPackNotice] = useState<string | null>(null);
 
   const applyStylePack = (pack: StylePack) => {
+    if (premiumCgRef.current) return;
     const p = pack.compose;
     setConfig((c) => ({
       ...c,
@@ -419,7 +444,7 @@ export default function VideoPage() {
 
   /** Run the matrix: sequential compose per combo, each polled by its own compositionId. */
   const runMatrix = async () => {
-    if (matrixRunning || isComposing || selectingAsset.current || !scriptId || matrixCombos.length === 0) return;
+    if (premiumCg || matrixRunning || isComposing || selectingAsset.current || !scriptId || matrixCombos.length === 0) return;
     const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
     const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setMatrixRunning(true);
@@ -440,17 +465,17 @@ export default function VideoPage() {
             resolution: config.resolution,
             renderPreset: config.renderPreset,
             aspectRatio: config.aspectRatio,
-            subtitles: config.subtitles,
+            subtitles: premiumCg ? false : config.subtitles,
             label: combo.label,
-            ...(hookShot && { voiceoverOverrides: [{ shotId: hookShot.shotId, voiceover: hookShot.voiceover ?? "" }] }),
-            ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
-            ...(config.productCard && { productCard: true }),
-            captionPreset: combo.caption,
+            ...(!premiumCg && hookShot && { voiceoverOverrides: [{ shotId: hookShot.shotId, voiceover: hookShot.voiceover ?? "" }] }),
+            ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
+            ...(!premiumCg && config.productCard && { productCard: true }),
+            ...(!premiumCg && { captionPreset: combo.caption }),
             ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-            ...(!config.voiceGround && { voiceGround: false }),
-            ...(config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
-            ...(config.ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
-            ...(config.ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
+            ...(!premiumCg && !config.voiceGround && { voiceGround: false }),
+            ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
+            ...(!premiumCg && config.ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
+            ...(!premiumCg && config.ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
           }),
         });
         const data = await res.json();
@@ -515,19 +540,19 @@ export default function VideoPage() {
           resolution: config.resolution,
           renderPreset: config.renderPreset,
           aspectRatio: config.aspectRatio,
-          subtitles: config.subtitles,
-          ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
-          ...(config.productCard && { productCard: true }),
-          ...(config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
+          subtitles: premiumCg ? false : config.subtitles,
+          ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
+          ...(!premiumCg && config.productCard && { productCard: true }),
+          ...(!premiumCg && config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
           ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-          ...(!config.voiceGround && { voiceGround: false }),
+          ...(!premiumCg && !config.voiceGround && { voiceGround: false }),
           // 开启配音时：已配付费 TTS 走付费；否则走免费 Edge keyless TTS（无需 Key），合成为每镜生成口播音轨
-          ...(config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
-          ...(config.ttsEnabled && paidTtsReady && {
+          ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
+          ...(!premiumCg && config.ttsEnabled && paidTtsReady && {
             // 解析后的完整配置（含平台、复用的 Key、默认 baseUrl/模型/音色、可选 GroupId）
             ttsConfig: resolveTTSConfig(tts, providers),
           }),
-          ...(config.ttsEnabled && !paidTtsReady && {
+          ...(!premiumCg && config.ttsEnabled && !paidTtsReady && {
             freeTts: { enabled: true, voice: config.freeVoice },
           }),
         }),
@@ -726,7 +751,7 @@ export default function VideoPage() {
             <h2 className="text-base font-semibold">{t("composeSettings")}</h2>
 
             {/* style packs: apply a whole look at once; import shared packs / export the current settings */}
-            <Card className="glass-card">
+            {!premiumCg && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("stylePackLabel")}</Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -769,10 +794,10 @@ export default function VideoPage() {
                 {packNotice && <p className="text-[11px] text-primary">{packNotice}</p>}
                 <p className="text-[11px] text-muted-foreground">{t("stylePackHint")}</p>
               </CardContent>
-            </Card>
+            </Card>}
 
             {/* 配音设置 */}
-            <Card className="glass-card">
+            {!premiumCg && <Card className="glass-card">
               <CardContent className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">{t("ttsLabel")}</Label>
@@ -866,10 +891,10 @@ export default function VideoPage() {
                   </button>
                 </div>
               </CardContent>
-            </Card>
+            </Card>}
 
             {/* 字幕设置 */}
-            <Card className="glass-card">
+            {!premiumCg && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("subtitleLabel")}</Label>
                 <div className="flex items-center justify-between">
@@ -926,10 +951,10 @@ export default function VideoPage() {
                   <p className="text-[11px] text-muted-foreground">{t(`captionPresetDesc_${config.captionPreset}`)}</p>
                 </div>
               </CardContent>
-            </Card>
+            </Card>}
 
             {/* 带货转化：购买 CTA 片尾 */}
-            <Card className="glass-card">
+            {!premiumCg && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("complianceLabel")}</Label>
                 <div className="flex items-center justify-between">
@@ -965,7 +990,7 @@ export default function VideoPage() {
                   </button>
                 </div>
               </CardContent>
-            </Card>
+            </Card>}
 
             {/* 画面设置 */}
             <Card className="glass-card">
@@ -1140,7 +1165,7 @@ export default function VideoPage() {
 
               {/* Variant matrix: hook × caption × BGM combos as
                   labeled outputs — same assets, compose-only reruns, zero AI-gen cost */}
-              {clips.length > 0 && (
+              {!premiumCg && clips.length > 0 && (
                 <div className="rounded-lg border border-border/50 bg-muted/10 p-3 space-y-2">
                   <button
                     type="button"

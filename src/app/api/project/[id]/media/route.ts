@@ -12,6 +12,7 @@ import { probeMedia } from "@/lib/media-probe";
 import { validateOrDelete } from "@/lib/media-validate";
 import { fileNameOf, getUploadsDir } from "@/lib/paths";
 import { publicMediaComposition, publicMediaSource } from "@/lib/public-media-source";
+import { isPremiumCgMediaEditBlocked, PREMIUM_CG_MEDIA_EDIT_FORBIDDEN } from "@/lib/premium-cg-media";
 
 import { reconcileTranscriptRenders, publicTranscriptEdit } from "@/lib/transcript-render-runner";
 
@@ -101,8 +102,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const db = getDb();
-  const project = await db.select({ id: projects.id }).from(projects).where(eq(projects.id, id)).limit(1);
+  const project = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
   if (!project[0]) return apiError(req, "项目不存在", "Project not found", 404);
+
+  if (isPremiumCgMediaEditBlocked(project[0])) {
+    return NextResponse.json(
+      {
+        error: "Premium product CG does not import arbitrary video for transcript editing.",
+        code: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN,
+      },
+      { status: 409 },
+    );
+  }
 
   const directory = join(getUploadsDir(), id, "imported");
   await mkdir(directory, { recursive: true });

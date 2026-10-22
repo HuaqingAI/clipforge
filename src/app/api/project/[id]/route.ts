@@ -6,8 +6,18 @@ import { join } from "path";
 import { getDb } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { getUploadsDir, getOutputDir } from "@/lib/paths";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
+import {
+  createPremiumProductCgProfile,
+  createShortVideoSalesProfile,
+  resolveCreativeProfile,
+  sanitizeCreativeProfileDrafts,
+  validateCreativeProfileInput,
+  type CreativeProfileFallback,
+  type ProjectCreativeProfile,
+  type ProjectCreativeProfileDrafts,
+} from "@/lib/creative-profiles";
 
 // Project ids are UUIDs; validate before using one in a filesystem path (guards the rm below against traversal)
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
@@ -42,6 +52,84 @@ const VALID_STATUS = new Set([
   "done",
 ]);
 
+const VALID_VIDEO_MODES = new Set([
+  "product_closeup",
+  "graphic_montage",
+  "scene_demo",
+  "live_presenter",
+]);
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: JsonRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function creativeFallback(value: {
+  videoMode?: unknown;
+  creativeSettings?: unknown;
+  templateId?: unknown;
+} | JsonRecord): CreativeProfileFallback {
+  return {
+    videoMode: value.videoMode,
+    creativeSettings: value.creativeSettings,
+    recipeSnapshot: value.templateId ? { templateId: value.templateId } : undefined,
+  };
+}
+
+function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
+  if (hasOwn(value, "creativeProfile")) return value.creativeProfile;
+  if (hasOwn(value, "profile")) return value.profile;
+  if (!hasOwn(value, "creationType") && !hasOwn(value, "profileId") && !hasOwn(value, "creativeProfileId")) {
+    return undefined;
+  }
+  const profile: JsonRecord = {};
+  for (const key of [
+    "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
+    "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
+    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+  ]) {
+    if (hasOwn(value, key)) profile[key] = value[key];
+  }
+  if (profile.targetDuration === undefined && profile.duration !== undefined) profile.targetDuration = profile.duration;
+  if (profile.composeSnapshot === undefined && profile.compose !== undefined) profile.composeSnapshot = profile.compose;
+  return profile;
+}
+
+function hasProfileSettings(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return [
+    "styleType", "videoMode", "targetDuration", "duration", "narrationMode", "soundMode",
+    "textPolicy", "visualDirection", "brandEndCard", "composeSnapshot", "compose",
+    "creativeSettings", "recipeSnapshot",
+  ].some((key) => hasOwn(value, key));
+}
+
+function mergeCreativeProfileDrafts(
+  profile: ProjectCreativeProfile,
+  existing: unknown,
+  incoming: unknown,
+  fallback: CreativeProfileFallback,
+): ProjectCreativeProfileDrafts {
+  const drafts: ProjectCreativeProfileDrafts = {
+    ...(sanitizeCreativeProfileDrafts(existing) ?? {}),
+    ...(sanitizeCreativeProfileDrafts(incoming) ?? {}),
+  };
+  if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
+  if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
+  if (profile.creationType === "premium_product_cg") drafts.premium_product_cg = profile;
+  else drafts.short_video_sales = profile;
+  return drafts;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 // Fetch a single project
 export async function GET(
   req: NextRequest,
@@ -73,13 +161,20 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const body = await req.json();
+    const parsedBody: unknown = await req.json();
+    if (!isRecord(parsedBody)) {
+      return NextResponse.json({ error: "Project payload must be a JSON object." }, { status: 400 });
+    }
+    const body = parsedBody;
     const db = getDb();
+    const profileInput = requestedCreativeProfile(body);
+    const hasDraftUpdate = hasOwn(body, "creativeProfileDrafts");
+    const hasCreativeConfigUpdate = profileInput !== undefined || hasDraftUpdate;
 
     // Only pick allowlisted fields; discard dangerous fields such as id/createdAt
     const updates: Record<string, unknown> = {};
     for (const field of PATCHABLE_FIELDS) {
-      if (field in body) {
+      if (hasOwn(body, field) && !(hasCreativeConfigUpdate && field === "videoMode")) {
         updates[field] = body[field];
       }
     }
@@ -89,8 +184,129 @@ export async function PATCH(
       return apiError(req, "非法的项目状态值", "Invalid project status value", 400);
     }
 
+    if ("videoMode" in updates && !VALID_VIDEO_MODES.has(String(updates.videoMode))) {
+      return NextResponse.json({ error: "Invalid videoMode value." }, { status: 400 });
+    }
+
+    if (hasCreativeConfigUpdate) {
+      const expectedRevision = body.expectedCreativeConfigRevision ?? body.creativeConfigRevision;
+      if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 0) {
+        return NextResponse.json(
+          { error: "creativeConfigRevision is required for a creative configuration update." },
+          { status: 400 },
+        );
+      }
+      if (hasDraftUpdate && !isRecord(body.creativeProfileDrafts)) {
+        return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
+      }
+
+      const [current] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+      if (!current) {
+        return NextResponse.json({ error: "Project not found." }, { status: 404 });
+      }
+      if (current.creativeConfigRevision !== expectedRevision) {
+        return NextResponse.json({
+          error: "Creative configuration was changed by another session. Refresh before saving.",
+          code: "CREATIVE_CONFIG_CONFLICT",
+          creativeProfile: current.creativeProfile,
+          creativeProfileDrafts: current.creativeProfileDrafts,
+          creativeConfigRevision: current.creativeConfigRevision,
+        }, { status: 409 });
+      }
+
+      const fallback = creativeFallback(current);
+      const currentProfile = resolveCreativeProfile(current.creativeProfile, fallback);
+      const incomingDrafts = hasDraftUpdate ? body.creativeProfileDrafts : undefined;
+      const preliminaryDrafts = mergeCreativeProfileDrafts(
+        currentProfile,
+        current.creativeProfileDrafts,
+        incomingDrafts,
+        fallback,
+      );
+      let nextProfile = currentProfile;
+
+      if (profileInput !== undefined) {
+        const profileResult = validateCreativeProfileInput(profileInput);
+        if ("error" in profileResult) {
+          return NextResponse.json({ error: profileResult.error }, { status: 400 });
+        }
+        // Identity only means restore the saved configuration for the selected creation type.
+        nextProfile = hasProfileSettings(profileInput)
+          ? profileResult.profile
+          : profileResult.profile.creationType === "premium_product_cg"
+            ? preliminaryDrafts.premium_product_cg ?? profileResult.profile
+            : preliminaryDrafts.short_video_sales ?? profileResult.profile;
+      } else if (hasDraftUpdate) {
+        const incoming = sanitizeCreativeProfileDrafts(incomingDrafts);
+        const activeDraft = currentProfile.creationType === "premium_product_cg"
+          ? incoming?.premium_product_cg
+          : incoming?.short_video_sales;
+        if (activeDraft) nextProfile = activeDraft;
+      }
+
+      const nextDrafts = mergeCreativeProfileDrafts(
+        nextProfile,
+        current.creativeProfileDrafts,
+        incomingDrafts,
+        fallback,
+      );
+      const currentDrafts = mergeCreativeProfileDrafts(
+        currentProfile,
+        current.creativeProfileDrafts,
+        undefined,
+        fallback,
+      );
+      const changed = current.creativeProfile === null
+        || !sameJson(currentProfile, nextProfile)
+        || !sameJson(currentDrafts, nextDrafts)
+        || current.videoMode !== nextProfile.videoMode;
+      const nextRevision = changed ? expectedRevision + 1 : expectedRevision;
+
+      const result = await db
+        .update(projects)
+        .set({
+          ...updates,
+          videoMode: nextProfile.videoMode,
+          creativeProfile: nextProfile,
+          creativeProfileDrafts: nextDrafts,
+          creativeConfigRevision: nextRevision,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(projects.id, id), eq(projects.creativeConfigRevision, expectedRevision)))
+        .returning();
+
+      if (result.length === 0) {
+        const [latest] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+        if (!latest) return NextResponse.json({ error: "Project not found." }, { status: 404 });
+        return NextResponse.json({
+          error: "Creative configuration was changed by another session. Refresh before saving.",
+          code: "CREATIVE_CONFIG_CONFLICT",
+          creativeProfile: latest.creativeProfile,
+          creativeProfileDrafts: latest.creativeProfileDrafts,
+          creativeConfigRevision: latest.creativeConfigRevision,
+        }, { status: 409 });
+      }
+      return NextResponse.json(result[0]);
+    }
+
     if (Object.keys(updates).length === 0) {
       return apiError(req, "没有可更新的字段", "No updatable fields provided", 400);
+    }
+
+    // Older projects without a stored profile retain their direct videoMode update path. Once a
+    // profile exists, every mode change must go through the revisioned creative configuration.
+    if ("videoMode" in updates) {
+      const [current] = await db
+        .select({ creativeProfile: projects.creativeProfile })
+        .from(projects)
+        .where(eq(projects.id, id))
+        .limit(1);
+      if (current?.creativeProfile) {
+        return NextResponse.json(
+          { error: "Update videoMode through creativeProfile with creativeConfigRevision." },
+          { status: 400 },
+        );
+      }
     }
 
     const result = await db

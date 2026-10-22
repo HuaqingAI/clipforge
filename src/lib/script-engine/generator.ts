@@ -7,17 +7,26 @@
 import OpenAI from "openai";
 import {
   SYSTEM_PROMPT,
+  PREMIUM_PRODUCT_CG_SYSTEM_PROMPT,
   PRODUCT_ANALYSIS_PROMPT,
   TOPIC_SYSTEM_PROMPT,
   buildUserPrompt,
   buildBatchPrompt,
   buildTopicBatchPrompt,
+  premiumProductCgProfileForInput,
   type ScriptGenerationInput,
   type TopicScriptInput,
 } from "./prompts";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { createLLMClient, withLLMErrors, LLMRequestError, jsonModeParams } from "@/lib/llm-error";
 import { stripThinkBlocks } from "@/lib/llm-clean";
+import {
+  createPremiumProductCgProfile,
+  PREMIUM_PRODUCT_CG_STYLE,
+  sanitizeCreativeProfile,
+  type PremiumProductCgProfile,
+} from "@/lib/creative-profiles";
+import { lintCreativeProfileShot, type CreativePolicyLintIssue } from "@/lib/creative-policy-lint";
 
 // ==================== Type definitions ====================
 
@@ -204,6 +213,7 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
   const validTypes: Shot["type"][] = ["hook", "pain_point", "product_reveal", "demo", "social_proof", "cta"];
   const validTransitions: Shot["transition"][] = ["ai_start_end", "ai_reference", "direct_concat", "ffmpeg_fade"];
   const validSources: Shot["visualSource"][] = ["ai_generate", "product_image", "user_upload"];
+  const validBeatRoles: NonNullable<Shot["beatRole"]>[] = ["establish", "form", "material", "craft", "function", "lifestyle", "hero"];
 
   const validMotions: NonNullable<Shot["motion"]>[] = ["zoom_in_slow", "pan_left", "pan_right", "ken_burns", "static"];
 
@@ -223,6 +233,10 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
     // Default transition matches the schema (videoClips.transitionType) and UI default (ai_start_end)
     transition: validTransitions.includes(shot.transition as Shot["transition"]) ? (shot.transition as Shot["transition"]) : "ai_start_end",
     voiceover: sanitizeVoiceover(shot.voiceover || ""),
+    ...(validBeatRoles.includes(shot.beatRole as NonNullable<Shot["beatRole"]>) && { beatRole: shot.beatRole }),
+    ...(typeof shot.visualIntent === "string" && shot.visualIntent.trim() && { visualIntent: shot.visualIntent.trim() }),
+    ...(typeof shot.productFeatureRef === "string" && shot.productFeatureRef.trim() && { productFeatureRef: shot.productFeatureRef.trim() }),
+    ...(typeof shot.narration === "string" && shot.narration.trim() && { narration: sanitizeVoiceover(shot.narration) }),
     prompt: shot.prompt || undefined,
     // Pass through LLM-generated extended fields (video mode) so they are not silently dropped
     ...(stockKeywords?.length && { stockKeywords }),
@@ -235,6 +249,51 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
       },
     }),
   };
+}
+
+/**
+ * Removes executable overlay/character fields from a premium CG shot and reports remaining unsafe
+ * visual or narration instructions. The caller decides whether an issue should trigger an LLM repair.
+ */
+export function sanitizePremiumProductCgShot(
+  shot: Shot,
+  profile: PremiumProductCgProfile,
+): { shot: Shot; issues: CreativePolicyLintIssue[] } {
+  const voiceover = profile.narrationMode === "none" ? "" : shot.voiceover;
+  const narration = profile.narrationMode === "none" ? "" : shot.narration;
+  const issues = lintCreativeProfileShot(profile, { ...shot, voiceover, narration });
+  // Keep the policy boundary explicit: these fields are executable downstream controls, so they
+  // must be removed from the object that reaches composition even when the model emitted them.
+  const withoutForbiddenFields = { ...shot };
+  delete withoutForbiddenFields.textOverlay;
+  delete withoutForbiddenFields.characterId;
+  delete withoutForbiddenFields.narration;
+  return {
+    shot: {
+      ...withoutForbiddenFields,
+      voiceover,
+      ...(narration ? { narration } : {}),
+    },
+    issues,
+  };
+}
+
+function premiumProfileForValidation(
+  fallbackStyleType: string,
+  creativeProfile?: unknown,
+): PremiumProductCgProfile | undefined {
+  const profile = sanitizeCreativeProfile(creativeProfile);
+  if (profile?.creationType === "premium_product_cg") return profile;
+  return fallbackStyleType === PREMIUM_PRODUCT_CG_STYLE ? createPremiumProductCgProfile() : undefined;
+}
+
+function throwOnPremiumCgPolicyIssues(issues: CreativePolicyLintIssue[]): void {
+  // textOverlay is removed structurally before it can reach composition. Visual and narration
+  // directives need an LLM repair because deleting arbitrary prose could change product meaning.
+  const blocking = issues.filter((issue) => issue.code !== "text_overlay");
+  if (blocking.length === 0) return;
+  const fields = [...new Set(blocking.map((issue) => `shot ${issue.shotId ?? "?"} ${issue.field}`))].join(", ");
+  throw new Error(`Premium product CG policy violation in ${fields}: generated text, promotional graphics, and promotional narration are not allowed.`);
 }
 
 /**
@@ -264,20 +323,33 @@ export function validateCharacters(raw: unknown): ScriptCharacter[] | undefined 
 /**
  * Validate and correct a complete script object.
  */
-function validateScript(raw: Record<string, unknown>, fallbackStyleType: string): GeneratedScript {
+function validateScript(
+  raw: Record<string, unknown>,
+  fallbackStyleType: string,
+  creativeProfile?: unknown,
+): GeneratedScript {
+  const premiumProfile = premiumProfileForValidation(fallbackStyleType, creativeProfile);
   const shots = Array.isArray(raw.shots)
-    ? (raw.shots as Partial<Shot>[]).map((s, i) => validateShot(s, i))
+    ? (raw.shots as Partial<Shot>[]).map((s, i) => {
+      const validated = validateShot(s, i);
+      if (!premiumProfile) return validated;
+      const sanitized = sanitizePremiumProductCgShot(validated, premiumProfile);
+      throwOnPremiumCgPolicyIssues(sanitized.issues);
+      return sanitized.shot;
+    })
     : [];
 
   const totalDuration = typeof raw.totalDuration === "number"
     ? raw.totalDuration
     : shots.reduce((sum, s) => sum + s.duration, 0);
 
-  const characters = validateCharacters(raw.characters);
+  const characters = premiumProfile ? undefined : validateCharacters(raw.characters);
 
   return {
     title: (raw.title as string) || "未命名脚本",
-    styleType: (raw.styleType as string) || fallbackStyleType,
+    // The server-selected fallback is authoritative. A model may not silently turn a CG brief into
+    // a talking-head or CTA script by returning a different raw styleType.
+    styleType: premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : fallbackStyleType,
     totalDuration,
     shots,
     ...(characters && { characters }),
@@ -338,6 +410,8 @@ export async function completeWithJsonRetry<T>(
 export async function generateScript(input: ScriptInput): Promise<GeneratedScript[]> {
   const client = createClient(input.llmConfig);
   const userPrompt = buildBatchPrompt(input, batchCountFor(input.llmConfig.baseUrl));
+  const premiumProfile = premiumProductCgProfileForInput(input);
+  const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
   // Transient free-endpoint failures retry inside the client; unparseable replies retry once with
   // the parse error echoed back. json_object mode is safe here: the batch prompt's top level is
@@ -347,16 +421,16 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
     {
       model: input.llmConfig.model,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.8,
+      temperature: premiumProfile ? 0.65 : 0.8,
       max_tokens: 16000,
       ...reasoningParams(input.llmConfig.baseUrl),
       ...jsonModeParams(input.llmConfig.baseUrl),
     },
     input.llmConfig,
-    (content) => parseScriptResponse(content, input.styleType),
+    (content) => parseScriptResponse(content, fallbackStyleType, premiumProfile),
   );
 }
 
@@ -403,16 +477,18 @@ export async function generateTopicScript(input: TopicScriptGenInput): Promise<G
 export async function generateSingleScript(input: ScriptInput): Promise<GeneratedScript> {
   const client = createClient(input.llmConfig);
   const userPrompt = buildUserPrompt(input);
+  const premiumProfile = premiumProductCgProfileForInput(input);
+  const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
   return completeWithJsonRetry(
     client,
     {
       model: input.llmConfig.model,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.8,
+      temperature: premiumProfile ? 0.65 : 0.8,
       ...reasoningParams(input.llmConfig.baseUrl),
       ...jsonModeParams(input.llmConfig.baseUrl),
     },
@@ -425,7 +501,7 @@ export async function generateSingleScript(input: ScriptInput): Promise<Generate
       } catch {
         throw new Error(`LLM 返回的内容不是合法 JSON${truncationHint(jsonStr)}: ${jsonStr.substring(0, 200)}`);
       }
-      return validateScript(parsed, input.styleType);
+      return validateScript(parsed, fallbackStyleType, premiumProfile);
     },
   );
 }
@@ -446,6 +522,8 @@ export function generateScriptStream(
   const run = async () => {
     const client = createClient(input.llmConfig);
     const userPrompt = buildUserPrompt(input);
+    const premiumProfile = premiumProductCgProfileForInput(input);
+    const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
     let fullContent = "";
 
@@ -455,10 +533,10 @@ export function generateScriptStream(
           client.chat.completions.create({
             model: input.llmConfig.model,
             messages: [
-              { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
               { role: "user", content: userPrompt },
             ],
-            temperature: 0.8,
+            temperature: premiumProfile ? 0.65 : 0.8,
             stream: true,
             ...reasoningParams(input.llmConfig.baseUrl),
           }, {
@@ -476,7 +554,7 @@ export function generateScriptStream(
       }
 
       // Parse the complete result after streaming finishes
-      const scripts = parseScriptResponse(fullContent, input.styleType);
+      const scripts = parseScriptResponse(fullContent, fallbackStyleType, premiumProfile);
       callbacks.onComplete?.(scripts);
     } catch (error) {
       // User-initiated cancellation is not an error
@@ -502,6 +580,7 @@ export function createScriptStream(input: ScriptInput): ReadableStream<Uint8Arra
     async start(controller) {
       const client = createClient(input.llmConfig);
       const userPrompt = buildUserPrompt(input);
+      const premiumProfile = premiumProductCgProfileForInput(input);
 
       try {
         const stream = await withLLMErrors(
@@ -509,10 +588,10 @@ export function createScriptStream(input: ScriptInput): ReadableStream<Uint8Arra
             client.chat.completions.create({
               model: input.llmConfig.model,
               messages: [
-                { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
                 { role: "user", content: userPrompt },
               ],
-              temperature: 0.8,
+            temperature: premiumProfile ? 0.65 : 0.8,
               stream: true,
               ...reasoningParams(input.llmConfig.baseUrl),
             }),
@@ -643,7 +722,11 @@ export function isRealVoiceover(voiceover: string): boolean {
  * Parse LLM script response content.
  * Handles multiple return formats (single object, array, nested object, etc.)
  */
-export function parseScriptResponse(content: string, fallbackStyleType: string): GeneratedScript[] {
+export function parseScriptResponse(
+  content: string,
+  fallbackStyleType: string,
+  creativeProfile?: unknown,
+): GeneratedScript[] {
   const jsonStr = extractJSON(content);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let parsed: any;
@@ -674,9 +757,11 @@ export function parseScriptResponse(content: string, fallbackStyleType: string):
   // compositing / rendering would have nothing to work with, yet would not report an error.
   // Filter out null/non-object elements first: LLM occasionally emits [null, {...}], and validateScript
   // reads raw.shots on its first line, which throws on null and corrupts the entire parse.
+  const premiumProfile = premiumProfileForValidation(fallbackStyleType, creativeProfile);
+  const authoritativeStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : fallbackStyleType;
   const scripts = rawScripts
     .filter((raw): raw is Record<string, unknown> => typeof raw === "object" && raw !== null)
-    .map((raw) => validateScript(raw, fallbackStyleType))
+    .map((raw) => validateScript(raw, authoritativeStyleType, premiumProfile))
     .filter((s) => s.shots.length > 0);
   if (scripts.length === 0) {
     throw new Error("LLM 未生成有效分镜（脚本为空），请重试或调整输入");
@@ -686,6 +771,10 @@ export function parseScriptResponse(content: string, fallbackStyleType: string):
   // silent video with no captions, yet every stage downstream would report success. Weak local models
   // fail exactly this way — correct JSON shape, empty content (verified with qwen2.5:0.5b on Ollama,
   // issue #19 follow-up). Fail loudly and name the fix instead of handing back an unusable script.
+  // A premium profile with narrationMode:none is intentionally silent. All other profiles retain
+  // the legacy protection against weak models emitting structurally valid but unusable empty copy.
+  if (premiumProfile?.narrationMode === "none") return scripts;
+
   const withVoiceover = scripts.filter((s) => s.shots.some((shot) => isRealVoiceover(shot.voiceover)));
   if (withVoiceover.length === 0) {
     throw new LLMRequestError(

@@ -66,6 +66,7 @@ import {
   type CreativeIntent,
   type VisualBible,
 } from "@/lib/production-system";
+import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 // shot type labels (label changed to i18n key in the assets namespace, resolved per locale)
 const shotTypeLabels: Record<Shot["type"], { key: string; color: string }> = {
@@ -152,6 +153,7 @@ function AssetsPageContent() {
   const [projectCategory, setProjectCategory] = useState<string>("");
   const [projectCreativeIntent, setProjectCreativeIntent] = useState<CreativeIntent>({ subject: "" });
   const [projectVisualBible, setProjectVisualBible] = useState<VisualBible>({ characterAnchors: [], productAnchors: [], wardrobeAnchors: [], environmentAnchors: [], lightingAnchors: [], forbiddenChanges: [] });
+  const [projectCreativeProfile, setProjectCreativeProfile] = useState<unknown>();
   // real tail frames of videos generated THIS session (shotId → extracted last-frame URL);
   // tail-chain mode starts the next shot from here for a pixel-continuous cut
   const lastFrameByShot = useRef(new Map<number, string>());
@@ -224,7 +226,12 @@ function AssetsPageContent() {
   const klingCapacityBlocked = Boolean(klingConcurrency && (klingConcurrency.blockedByUnknownSubmission || klingConcurrency.active >= klingConcurrency.max));
   const klingCapacityMessage = klingConcurrency?.blockedByUnknownSubmission ? "此账号有提交结果不明的任务，请先核对原任务再继续。" : `当前账号已占用全部 ${KLING_MAX_CONCURRENT_SHOTS} 个生成名额，请等待镜头完成后再提交。`;
   const klingEnabled = providers["kling-cli"]?.enabled === true;
-  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible });
+  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile });
+  const premiumCg = isPremiumProductCgProfile(projectCreativeProfile);
+  const premiumCgVisualOnly = premiumCg && projectCreativeProfile.narrationMode === "none";
+  // Premium CG always starts from the supplied furniture reference. Sales users may still
+  // choose a freer text-to-image treatment through the existing toggle.
+  const productReferenceLocked = premiumCg || productSafe;
 
   const motionDraftValid = Boolean(motionDraft && motionDraft.selectionKey === defaultVideoModel
     && motionDraft.scriptId === scriptId && motionDraft.configurationKey === videoConfigurationKey
@@ -264,6 +271,7 @@ function AssetsPageContent() {
           setProductImages(imgs);
           setContentType(typeof project.contentType === "string" ? project.contentType : "");
           setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
+          setProjectCreativeProfile(project.creativeProfile);
           setProjectCreativeIntent(sanitizeCreativeIntent(project.creativeIntent));
           setProjectVisualBible(sanitizeVisualBible(project.visualBible));
           const requestedPresenter = new URLSearchParams(window.location.search).get("presenter");
@@ -317,6 +325,7 @@ function AssetsPageContent() {
     const savedAssets = assetsRes.ok ? await assetsRes.json() : [];
     if (request !== assetsRequest.current) return;
     const imgs: string[] = project && Array.isArray(project.productImages) ? project.productImages : [];
+    setProjectCreativeProfile(project?.creativeProfile);
     const selected = Array.isArray(scripts)
       ? scripts.find((s: { selected?: boolean }) => s.selected) ?? scripts[0]
       : null;
@@ -726,6 +735,7 @@ function AssetsPageContent() {
         category: projectCategory,
         creativeIntent: projectCreativeIntent,
         visualBible: projectVisualBible,
+        creativeProfile: projectCreativeProfile,
       });
       // diagnosis retake (user-initiated, billed): patch exactly ONE dimension onto the prompt.
       // Base = the freshly rebuilt prompt — deterministic, so with unchanged settings it equals
@@ -739,31 +749,31 @@ function AssetsPageContent() {
       const assetIndex = assets.findIndex((item) => item.shotId === shotId);
       const previousAsset = assetIndex > 0 ? assets[assetIndex - 1] : undefined;
       const previousTail = previousAsset?.lastFrameUrl ?? (previousAsset ? lastFrameByShot.current.get(previousAsset.shotId) : undefined);
-      const characterReference = asset?.characterId
+      const characterReference = !premiumCg && asset?.characterId
         ? presenterLib.find((character) => character.id === asset.characterId)?.referenceImages?.[0] ?? presenterSheet
         : undefined;
-      const productReference = productSafe && (asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
+      const productReference = productReferenceLocked && (premiumCg || asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
         ? productImages[0]
         : undefined;
       const controlPlan = buildVideoControlPlan({
         provider: videoModelTarget.provider,
         modelId: videoModelTarget.model,
-        // Explicit silence and Kling's own confirmation must not inherit native dialogue directions.
-        supportsAudio: videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
+        // Pure-visual CG and Kling's own confirmation must not inherit native dialogue directions.
+        supportsAudio: premiumCgVisualOnly || videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
         firstFrameUrl: effectiveFirstFrame,
         lastFrameUrl: chainFrame,
-        characterReferenceUrl: characterReference,
+        characterReferenceUrl: premiumCg ? undefined : characterReference,
         productReferenceUrl: productReference,
         continuityReferenceUrl: previousTail,
-        voiceover: asset?.voiceover,
-        speakerVisible: Boolean(asset?.characterId),
+        voiceover: premiumCgVisualOnly ? "" : asset?.voiceover,
+        speakerVisible: premiumCg ? false : Boolean(asset?.characterId),
         description: asset?.description,
         locale,
       });
       if (controlPlan.promptSuffix) finalPrompt = joinVideoPromptParts([finalPrompt, controlPlan.promptSuffix], locale, "\n");
       if (videoModelTarget.provider !== "kling-cli") {
         finalPrompt = withVideoAudioMode(finalPrompt,
-          videoParams.audioEnabled === false ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
+          premiumCgVisualOnly || videoParams.audioEnabled === false ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
       }
       const consistencyFailure = checkPromptConsistency(finalPrompt, projectVisualBible).find((issue) => issue.severity === "fail");
       if (consistencyFailure) {
@@ -781,14 +791,24 @@ function AssetsPageContent() {
       if (asset?.duration) {
         videoOptions.duration = Math.min(15, Math.max(4, Math.round(asset.duration)));
       }
-      if (controlPlan.audioMode === "native") {
+      if (premiumCgVisualOnly) {
+        // Keep the browser-side confirmation honest. The route derives the same policy from the
+        // persisted project profile and remains authoritative if a request is forged.
+        videoOptions.audioEnabled = false;
+        delete videoOptions.voiceover;
+        delete videoOptions.audioPrompt;
+        delete videoOptions.audioUrl;
+        delete videoOptions.audioReferenceUrl;
+        delete videoOptions.tts;
+        delete videoOptions.ttsEnabled;
+      } else if (controlPlan.audioMode === "native") {
         videoOptions.audioEnabled = true;
         if (asset?.voiceover?.trim()) videoOptions.voiceover = asset.voiceover.trim();
         if (controlPlan.audioPrompt) videoOptions.audioPrompt = controlPlan.audioPrompt;
       }
       const referenceImageUrls = controlPlan.referenceInputs.filter((item) => item.mediaType === "image").map((item) => item.url);
       const referenceVideoUrls = controlPlan.referenceInputs.filter((item) => item.mediaType === "video").map((item) => item.url);
-      const referenceAudioUrls = controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
+      const referenceAudioUrls = premiumCgVisualOnly ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
       const controlSummary = sanitizeVideoControlSummary(controlPlan);
       const generate = async () => {
         const promptIssues = validateVideoPrompt(finalPrompt);
@@ -818,6 +838,7 @@ function AssetsPageContent() {
             // issue #16: identify the task server-side so the paid task ID is persisted
             // against this project/shot and stays recoverable after timeout or restart
             projectId: id,
+            scriptId,
             shotId,
             // user-defined video parameters (aspect ratio / resolution / duration / frame rate / motion / seed / negative prompt)
             options: videoOptions,
@@ -848,7 +869,7 @@ function AssetsPageContent() {
             asset, selectionKey: videoModelTarget.model, provider: videoModelTarget.provider, scriptId, configurationKey: videoConfigurationKey,
             profileId: videoModelTarget.profileId, prompt: finalPrompt,
             firstFrameUrl: effectiveFirstFrame, lastFrameUrl: controlPlan.lastFrameUrl,
-            referenceImages: [...new Set([...referenceImageUrls, ...productImages, ...(characterReference ? [characterReference] : [])])],
+            referenceImages: [...new Set([...referenceImageUrls, ...productImages, ...(!premiumCg && characterReference ? [characterReference] : [])])],
             apiImages: [
               ...(controlPlan.firstFrameUrl ? [{ label: "首帧", url: controlPlan.firstFrameUrl }] : []),
               ...(controlPlan.lastFrameUrl ? [{ label: "尾帧", url: controlPlan.lastFrameUrl }] : []),
@@ -877,7 +898,7 @@ function AssetsPageContent() {
         });
       }
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, klingCapacityBlocked, klingCapacityMessage, pendingTasks, unresolvedMotionShots, scriptId, id, videoParams, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, visualLook, productSafe, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, klingCapacityBlocked, klingCapacityMessage, pendingTasks, unresolvedMotionShots, scriptId, id, videoParams, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, premiumCg, premiumCgVisualOnly, visualLook, productSafe, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
   );
 
   // actually generate a single asset. Returns the saved static keyframe URL (undefined on failure) so
@@ -926,23 +947,26 @@ function AssetsPageContent() {
 
       // product fidelity: AI shot featuring product + product image available + toggle on → redraw with product image (image-to-image, locks in the product subject)
       const useProductSafe =
-        productSafe && !!productImages[0] && PRODUCT_SHOT_TYPES.has(asset.type);
+        productReferenceLocked && !!productImages[0] && (premiumCg || PRODUCT_SHOT_TYPES.has(asset.type));
       const genModel = useProductSafe ? toEditVariant(modelTarget.model) : modelTarget.model;
       const genMode = useProductSafe ? "image-to-image" : "text-to-image";
       const basePrompt = asset.prompt || asset.description;
       // cast shots: pin the anti-"AI face" realism constraint onto the keyframe too,
       // so the person is ordinary-looking from the very first frame the i2v runs on
-      const castSuffix = asset.characterId ? `。${realFaceLine(basePrompt)}` : "";
+      const castSuffix = !premiumCg && asset.characterId ? `。${realFaceLine(basePrompt)}` : "";
       // global look: one lighting/palette block across every keyframe keeps shots in one video
       // from drifting between styles (the LLM improvises style words per shot otherwise)
-      const lookText = lookImageSuffix(visualLook, basePrompt);
+      const lookText = premiumCg ? "" : lookImageSuffix(visualLook, basePrompt);
       const lookSuffix = lookText ? `。${lookText}` : "";
       // frame-position directive: a keyframe is the frozen instant JUST BEFORE the action,
       // holding visible potential energy — gives the i2v pass a beat to play out instead of
       // animating an already-completed pose
       const frameSuffix = `。${keyframeInstantLine(basePrompt)}`;
+      const productIdentitySuffix = premiumCg
+        ? " Preserve the supplied product's visible silhouette, proportions, materials, colors, seams, hardware, and existing markings. Re-render only the described setting, background, and lighting."
+        : "。严格保持商品的外观、包装、颜色、logo 和文字完全不变，只重绘符合描述的场景、背景与光线。";
       const shotPrompt = useProductSafe
-        ? `${basePrompt}。严格保持商品的外观、包装、颜色、logo 和文字完全不变，只重绘符合描述的场景、背景与光线。${castSuffix}${lookSuffix}${frameSuffix}`
+        ? `${basePrompt}${productIdentitySuffix}${castSuffix}${lookSuffix}${frameSuffix}`
         : `${basePrompt}${castSuffix}${lookSuffix}${frameSuffix}`;
       const projectDirection = compileCreativePrompt({
         ...projectCreativeIntent,
@@ -967,6 +991,9 @@ function AssetsPageContent() {
             baseUrl: modelTarget.baseUrl,
             mode: genMode,
             prompt: genPrompt,
+            projectId: id,
+            scriptId,
+            shotId,
             ...(useProductSafe && { imageUrl: productImages[0] }),
             // user-defined image parameters (aspect ratio → dimensions / count / steps / guidance / seed / negative prompt)
             options: (() => {
@@ -1017,7 +1044,7 @@ function AssetsPageContent() {
         return undefined;
       }
     },
-    [assets, id, modelTarget, productImages, productSafe, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, visualLook, generateMotion, t]
+    [assets, id, scriptId, modelTarget, productImages, productSafe, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, visualLook, generateMotion, t]
   );
 
   // storyboard grid: ONE image generation renders every shot as a 3x3 grid cell (person /
@@ -1030,8 +1057,8 @@ function AssetsPageContent() {
     try {
       // identity/product anchoring: with a presenter sheet or product photo attached the
       // grid runs in edit mode (multi-reference) — field-proven to lock person AND product
-      const productRefs = productSafe ? productImages : [];
-      const hasRefs = !!presenterSheet || productRefs.length > 0;
+      const productRefs = productReferenceLocked ? productImages : [];
+      const hasRefs = (!premiumCg && !!presenterSheet) || productRefs.length > 0;
       const res = await fetch(`/api/project/${id}/storyboard-grid`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1041,7 +1068,7 @@ function AssetsPageContent() {
           model: hasRefs ? toEditVariant(modelTarget.model) : modelTarget.model,
           apiKey: modelTarget.apiKey,
           baseUrl: modelTarget.baseUrl,
-          ...(presenterSheet && { characterSheetUrl: presenterSheet }),
+          ...(!premiumCg && presenterSheet && { characterSheetUrl: presenterSheet }),
           productImageUrls: productRefs,
           // the grid itself is 9:16 so each of the 3x3 cells is exactly 9:16 too
           options: buildImageOptions(imageParams ? { ...imageParams, aspectRatio: "9:16", count: 1 } : undefined),
@@ -1056,7 +1083,7 @@ function AssetsPageContent() {
     } finally {
       setIsGridGenerating(false);
     }
-  }, [id, scriptId, modelTarget, imageParams, isGridGenerating, presenterSheet, productSafe, productImages, reloadAssets, t]);
+  }, [id, scriptId, modelTarget, imageParams, isGridGenerating, presenterSheet, premiumCg, productSafe, productImages, reloadAssets, t]);
 
   // generate all in one click (sequential, to avoid hitting platform rate limits with concurrent requests).
   // With auto-motion on, this runs TWO passes: (1) every static keyframe, (2) keyframe-chained i2v per shot —
@@ -1110,6 +1137,7 @@ function AssetsPageContent() {
         lastFrameUrl={motionDraft?.lastFrameUrl}
         defaultParameters={motionDraft?.klingParameters}
         referenceImages={motionDraft?.referenceImages ?? []}
+        forceSilent={premiumCgVisualOnly}
         onRefreshTasks={reloadKlingJobs}
         onSubmitted={(jobId) => { finishMotionDraft(); setKlingJobId(jobId); void reloadKlingJobs(); }}
       />
@@ -1121,7 +1149,7 @@ function AssetsPageContent() {
       />}
       <KlingJobDetail jobId={klingJobId} open={klingJobId !== null} onOpenChange={(open) => { if (!open) { setKlingJobId(null); clearTaskQuery("job"); } }} onChanged={() => { void reloadKlingJobs(); void reloadAssets(); }} />
       <StoryboardFilmPanel open={klingFilmOpen && !!scriptId} onOpenChange={(open) => { setKlingFilmOpen(open); if (!open) { setFilmTaskId(undefined); setKlingFilmRunId(undefined); clearTaskQuery("film"); } }}
-        projectId={id} scriptId={scriptId} presenterId={presenterId}
+        projectId={id} scriptId={scriptId} presenterId={premiumCg ? undefined : presenterId}
         initialRunId={klingFilmRunId} initialTaskId={filmTaskId} onAssetsChanged={reloadAssets} />
 
       {/* single hidden input reused for every per-shot upload; target shot tracked in pendingUploadShot */}
@@ -1255,7 +1283,7 @@ function AssetsPageContent() {
           </Link>
           {/* Presenter picker: characters from the library; ones with a multi-view sheet
               anchor the person's identity through the grid and film passes */}
-          {presenterLib.length > 0 && (
+          {!premiumCg && presenterLib.length > 0 && (
             <div
               className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1.5 h-8"
               title={t("presenterTip")}
@@ -1278,7 +1306,7 @@ function AssetsPageContent() {
           )}
           {/* Visual-look picker with enumerated lighting/palette
               panel): applies to keyframe image prompts AND pins lighting through the i2v pass */}
-          <div
+          {!premiumCg && <div
             className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1.5 h-8"
             title={t("lookTip")}
           >
@@ -1305,7 +1333,7 @@ function AssetsPageContent() {
                 ))}
               </optgroup>
             </select>
-          </div>
+          </div>}
           {videoModelTarget && !isKlingDefault && (
             <div
               className="flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1 h-8"
@@ -1387,7 +1415,7 @@ function AssetsPageContent() {
               {t("autoMotion")}{autoMotion ? t("on") : t("off")}
             </button>
           )}
-          {productImages.length > 0 && (
+          {!premiumCg && productImages.length > 0 && (
             <button
               type="button"
               onClick={() => setProductSafe((v) => !v)}
@@ -1414,8 +1442,8 @@ function AssetsPageContent() {
             resolution={videoParams.resolution}
             aspectRatio={videoParams.aspectRatio}
             chainMode={chainMode}
-            audioEnabled={videoModelTarget.supportsAudio === true}
-            referenceImageCount={Number(Boolean(presenterSheet)) + Number(Boolean(productSafe && productImages[0]))}
+            audioEnabled={!premiumCgVisualOnly && videoModelTarget.supportsAudio === true}
+            referenceImageCount={Number(!premiumCg && Boolean(presenterSheet)) + Number(Boolean(productReferenceLocked && productImages[0]))}
           />
         )}
 

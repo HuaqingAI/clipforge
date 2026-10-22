@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { CreationTypeGate } from "@/components/creation-type-gate";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { mergeCustomModels, buildVideoOptions } from "@/lib/gen-params";
 import { referenceModelFor, buildReplicatePrompt, REPLICATE_MAX_REF_SEC, type ReplicateShot } from "@/lib/replicate-plan";
@@ -53,6 +54,7 @@ const SHOW_MODEL_TIER_REPLICATION = false;
 export default function ClonePage() {
   const t = useT("clone");
   const router = useRouter();
+  const [salesFlowChosen, setSalesFlowChosen] = useState(false);
   const { llm, providers, defaultVideoModel, customModels, videoParams } = useSettingsStore();
   const klingDefault = isKlingVideoSelection(defaultVideoModel);
 
@@ -179,6 +181,7 @@ export default function ClonePage() {
 
   /** shared step: create the clone project + upload product images, return { projectId, paths } */
   const createCloneProject = useCallback(async (): Promise<{ projectId: string; paths: string[] }> => {
+    if (!salesFlowChosen) throw new Error("Choose a creation type before creating a project.");
     const projRes = await fetch("/api/project", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -188,6 +191,7 @@ export default function ClonePage() {
         productDescription: productFeatures,
         productImages: [],
         sourceType: "clone",
+        creativeProfile: { creationType: "short_video_sales" },
         ...(videoUrl.trim() && { sourceVideoUrl: videoUrl.trim() }),
       }),
     });
@@ -209,7 +213,7 @@ export default function ClonePage() {
       body: JSON.stringify({ productImages: paths }),
     });
     return { projectId: project.id, paths };
-  }, [productName, productFeatures, productImages, videoUrl, t]);
+  }, [salesFlowChosen, productName, productFeatures, productImages, videoUrl, t]);
 
   /**
    * Model-tier one-shot replication (Seedance 2.0 reference-to-video): the analyzed
@@ -275,7 +279,7 @@ export default function ClonePage() {
    * never read by the script API.)
    */
   const handleGenerate = useCallback(async () => {
-    if (isGenerating) return;
+    if (!salesFlowChosen || isGenerating) return;
     if (!llm.apiKey) {
       setGenError(t("errorNoLlm"));
       return;
@@ -320,7 +324,7 @@ export default function ClonePage() {
       setGenError(err instanceof Error ? err.message : t("errorCloneFailed"));
       setIsGenerating(false);
     }
-  }, [isGenerating, llm, productName, productFeatures, refAnalysis, createCloneProject, router, t]);
+  }, [salesFlowChosen, isGenerating, llm, productName, productFeatures, refAnalysis, createCloneProject, router, t]);
 
   /** handle file selection / upload */
   const handleFiles = useCallback(
@@ -381,6 +385,26 @@ export default function ClonePage() {
     productImages.length > 0 &&
     productName.trim() !== "" &&
     productFeatures.trim() !== "";
+
+  if (!salesFlowChosen) {
+    return (
+      <div className="min-h-screen grid-bg">
+        <main className="mx-auto max-w-4xl px-6 py-10">
+          <div className="mb-10 text-center">
+            <h1 className="text-3xl font-bold tracking-tight mb-3">
+              <span className="brand-gradient-text">{t("heroTitle")}</span>
+            </h1>
+            <p className="text-muted-foreground text-base max-w-lg mx-auto">{t("heroSubtitle")}</p>
+          </div>
+          <Card className="glass-card">
+            <CardContent className="p-6">
+              <CreationTypeGate onSelectShortVideoSales={() => setSalesFlowChosen(true)} />
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen grid-bg">

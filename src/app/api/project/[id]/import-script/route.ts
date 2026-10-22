@@ -4,6 +4,11 @@ import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects } from "@/lib/db/schema";
 import { splitNarrationIntoShots } from "@/lib/script-import";
 import { apiError } from "@/lib/api-error";
+import {
+  createCreativeProfileSnapshot,
+  isPremiumProductCgProfile,
+  resolveCreativeProfile,
+} from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -28,39 +33,57 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const db = getDb();
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
+  if (project) {
+    const profile = resolveCreativeProfile(project.creativeProfile, {
+      videoMode: project.videoMode,
+    });
+    if (isPremiumProductCgProfile(profile)) {
+      return NextResponse.json({
+        error: "Premium product CG requires structured visual beats; the narration importer cannot turn sales copy into CG scene descriptions.",
+        code: "CG_STRUCTURED_IMPORT_REQUIRED",
+      }, { status: 409 });
+    }
+  }
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
 
   const shots = splitNarrationIntoShots(text);
   if (!shots.length) return apiError(req, "脚本无法切分出分镜（缺少有效文案）", "Could not split the script into shots (no valid copy)", 422);
   const totalDuration = shots.reduce((sum, s) => sum + s.duration, 0);
 
-  // Get the next version number; deselect old scripts and mark the newly imported script as current
-  const [latest] = await db
-    .select({ version: scriptsTable.version })
-    .from(scriptsTable)
-    .where(eq(scriptsTable.projectId, id))
-    .orderBy(desc(scriptsTable.version))
-    .limit(1);
-  const nextVersion = (latest?.version ?? 0) + 1;
-  await db.update(scriptsTable).set({ selected: false }).where(eq(scriptsTable.projectId, id));
-
   const title =
     typeof body.title === "string" && body.title.trim()
       ? body.title.trim().slice(0, 80)
       : (shots[0]?.voiceover ?? "导入脚本").slice(0, 30);
 
-  const [row] = await db
-    .insert(scriptsTable)
-    .values({
-      projectId: id,
-      version: nextVersion,
-      styleType: "custom",
-      title,
-      totalDuration,
-      shots,
-      selected: true,
-    })
-    .returning();
+  const [row] = db.transaction((tx) => {
+    const [latest] = tx
+      .select({ version: scriptsTable.version })
+      .from(scriptsTable)
+      .where(eq(scriptsTable.projectId, id))
+      .orderBy(desc(scriptsTable.version))
+      .limit(1)
+      .all();
+    const nextVersion = (latest?.version ?? 0) + 1;
+    tx.update(scriptsTable).set({ selected: false }).where(eq(scriptsTable.projectId, id)).run();
+    return tx
+      .insert(scriptsTable)
+      .values({
+        projectId: id,
+        version: nextVersion,
+        styleType: "custom",
+        title,
+        totalDuration,
+        shots,
+        selected: true,
+        creativeProfileSnapshot: createCreativeProfileSnapshot(
+          project.creativeProfile,
+          project.creativeConfigRevision,
+          { styleType: "custom", videoMode: project.videoMode },
+        ),
+      })
+      .returning()
+      .all();
+  });
 
-  return NextResponse.json({ scriptId: row.id, version: nextVersion, shots: shots.length, totalDuration });
+  return NextResponse.json({ scriptId: row.id, version: row.version, shots: shots.length, totalDuration });
 }

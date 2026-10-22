@@ -39,8 +39,8 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 const originalPrompt = "Slow dolly forward. Preserve product identity.";
 const silentAudioDirection = `${VIDEO_AUDIO_DIRECTIONS.silent.en}.`;
 const nativeAudioDirection = `${VIDEO_AUDIO_DIRECTIONS.native.en}.`;
-async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string } = {}) {
-  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={overrides.preparedPrompt ?? originalPrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={[]} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
+async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; forceSilent?: boolean } = {}) {
+  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={overrides.preparedPrompt ?? originalPrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={[]} forceSilent={overrides.forceSilent} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
 }
 function confirmCheckbox() { return container.querySelector('input[type="checkbox"]') as HTMLInputElement; }
 function submitButton() { return Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("确认生成此镜头"))!; }
@@ -458,6 +458,20 @@ describe("Kling single-shot UI", () => {
     const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
     expect(request.options).toEqual({ duration: 5 });
     expect(request.prompt).toBe(displayedPrompt);
+  });
+
+  it("locks a pure-visual generation to silent even when the Kling model exposes native audio", async () => {
+    const audioModel = { ...model, parameters: [...model.parameters, { name: "sound", type: "boolean" as const, required: true, default: true }], capabilities: { ...model.capabilities, audio: true } };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [audioModel] }) : json({ jobId: "job-1" }, 202)));
+    await mountGenerator(model.selectionKey, { audioEnabled: true }, { forceSilent: true });
+    expect(soundSelect()).toBeNull();
+    expect(promptTextarea().value.endsWith(silentAudioDirection)).toBe(true);
+
+    await act(async () => confirmCheckbox().click());
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request.options).toEqual({ duration: 5, sound: false });
+    expect(request.prompt.endsWith(silentAudioDirection)).toBe(true);
   });
 
   it.each([

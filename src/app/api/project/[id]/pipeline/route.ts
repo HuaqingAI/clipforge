@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { pipelineRuns } from "@/lib/db/schema";
-import { apiError } from "@/lib/api-error";
+import { pipelineRuns, projects } from "@/lib/db/schema";
+import { apiError, errText } from "@/lib/api-error";
 import { startPipelineRun, isPipelineRunActive, type PipelineLlmConfig } from "@/lib/pipeline-runner";
 import { isPipelineStage } from "@/lib/pipeline-stages";
 import { getLatestPipelineRun } from "@/lib/pipeline-history";
+import { isPremiumProductCgProject } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -31,6 +32,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     };
 
     const db = getDb();
+    // This pipeline judges sales copy, sources stock footage, and starts the legacy
+    // free-TTS composer. Premium product CG has a separate controlled storyboard path.
+    // Check before inspecting or mutating a prior run so resume/idempotency cannot bypass it.
+    const [project] = await db
+      .select({ creativeProfile: projects.creativeProfile, videoMode: projects.videoMode })
+      .from(projects)
+      .where(eq(projects.id, id))
+      .limit(1);
+    if (project && isPremiumProductCgProject(project)) {
+      return NextResponse.json(
+        {
+          error: errText(
+            req,
+            "高端家具产品 CG 不支持带货自动成片流水线，请使用受控分镜 CG 生成流程。",
+            "High-end furniture product CG does not allow the sales auto-production pipeline. Use the controlled storyboard CG generation flow.",
+          ),
+          code: "PREMIUM_CG_OUTPUT_POLICY",
+        },
+        { status: 400 },
+      );
+    }
     const latest = getLatestPipelineRun(id);
 
     // idempotency: one live run per project

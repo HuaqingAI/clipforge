@@ -7,6 +7,15 @@ import { scripts as scriptsTable, projects } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
+import {
+  createPremiumProductCgProfile,
+  createShortVideoSalesProfile,
+  sanitizeCreativeProfileDrafts,
+  validateCreativeProfileInput,
+  type CreativeProfileFallback,
+  type ProjectCreativeProfileDrafts,
+  type ShortVideoSalesProfile,
+} from "@/lib/creative-profiles";
 
 const VALID_NARRATION = new Set<TopicNarrationStyle>([
   "knowledge",
@@ -15,6 +24,92 @@ const VALID_NARRATION = new Set<TopicNarrationStyle>([
   "inspiration",
   "travel",
 ]);
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: JsonRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
+  if (hasOwn(value, "creativeProfile")) return value.creativeProfile;
+  if (hasOwn(value, "profile")) return value.profile;
+  if (!hasOwn(value, "creationType") && !hasOwn(value, "profileId") && !hasOwn(value, "creativeProfileId")) {
+    return undefined;
+  }
+
+  const profile: JsonRecord = {};
+  for (const key of [
+    "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
+    "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
+    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+  ]) {
+    if (hasOwn(value, key)) profile[key] = value[key];
+  }
+  if (profile.targetDuration === undefined && profile.duration !== undefined) profile.targetDuration = profile.duration;
+  if (profile.composeSnapshot === undefined && profile.compose !== undefined) profile.composeSnapshot = profile.compose;
+  return profile;
+}
+
+function creativeFallback(value: JsonRecord): CreativeProfileFallback {
+  return {
+    styleType: value.styleType,
+    videoMode: value.videoMode,
+    targetDuration: value.targetDuration ?? value.duration,
+    composeSnapshot: value.composeSnapshot ?? value.compose,
+    creativeSettings: value.creativeSettings,
+    recipeSnapshot: value.recipeSnapshot,
+  };
+}
+
+function createProfileDrafts(
+  profile: ShortVideoSalesProfile,
+  rawDrafts: unknown,
+  fallback: CreativeProfileFallback,
+): ProjectCreativeProfileDrafts {
+  const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
+  if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
+  if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
+  drafts.short_video_sales = profile;
+  return drafts;
+}
+
+type TopicProjectCreativeConfig = {
+  creativeProfile: ShortVideoSalesProfile;
+  creativeProfileDrafts: ProjectCreativeProfileDrafts;
+};
+
+type TopicProjectCreativeConfigResult =
+  | TopicProjectCreativeConfig
+  | { error: string; code?: "CREATIVE_PROFILE_REQUIRED" | "TOPIC_CREATIVE_PROFILE_UNSUPPORTED" };
+
+function topicProjectCreativeConfig(body: JsonRecord): TopicProjectCreativeConfigResult {
+  const requestedProfile = requestedCreativeProfile(body);
+  if (requestedProfile === undefined) {
+    return {
+      error: "Choose a creation type before creating a project.",
+      code: "CREATIVE_PROFILE_REQUIRED",
+    };
+  }
+
+  const profileResult = validateCreativeProfileInput(requestedProfile);
+  if ("error" in profileResult) return { error: profileResult.error ?? "Invalid creative profile." };
+  if (profileResult.profile.creationType !== "short_video_sales") {
+    return {
+      error: "Topic projects currently support the short-video sales creation type.",
+      code: "TOPIC_CREATIVE_PROFILE_UNSUPPORTED",
+    };
+  }
+
+  return {
+    creativeProfile: profileResult.profile,
+    creativeProfileDrafts: createProfileDrafts(profileResult.profile, body.creativeProfileDrafts, creativeFallback(body)),
+  };
+}
 
 /** truncate topic to a project name (keep first 20 characters) */
 function topicToName(topic: string): string {
@@ -27,12 +122,16 @@ function topicToName(topic: string): string {
  * Completes in a single request: create project (contentType=topic) + generate multiple narration scripts with English search keywords and persist them.
  * The frontend can then call /api/project/[id]/stock-fill to auto-fill footage → /api/project/[id]/compose to render.
  *
- * body: { topic, narrationStyle?, targetDuration?, count?, platforms?, projectId?, llmConfig }
+ * body: { topic, narrationStyle?, targetDuration?, count?, platforms?, projectId?, creativeProfile?, llmConfig }
  */
 export async function POST(req: NextRequest) {
-  let body: Record<string, unknown>;
+  let body: JsonRecord;
   try {
-    body = await req.json();
+    const parsedBody: unknown = await req.json();
+    if (!isRecord(parsedBody)) {
+      return apiError(req, "Request body must be a JSON object", "Request body must be a JSON object", 400);
+    }
+    body = parsedBody;
   } catch {
     return apiError(req, "请求体不是合法 JSON", "Request body is not valid JSON");
   }
@@ -40,6 +139,17 @@ export async function POST(req: NextRequest) {
   const topic = typeof body.topic === "string" ? body.topic.trim() : "";
   if (!topic) {
     return apiError(req, "请填写一句话主题", "Please enter a one-sentence topic");
+  }
+
+  // Existing topic projects remain regenerable without resending their profile. New projects must
+  // record an explicit user choice so this alternate entry point cannot recreate the legacy default.
+  let projectId = typeof body.projectId === "string" && body.projectId.trim() ? body.projectId.trim() : "";
+  if (!projectId && hasOwn(body, "creativeProfileDrafts") && !isRecord(body.creativeProfileDrafts)) {
+    return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
+  }
+  const projectCreativeConfig = projectId ? undefined : topicProjectCreativeConfig(body);
+  if (projectCreativeConfig && "error" in projectCreativeConfig) {
+    return NextResponse.json(projectCreativeConfig, { status: 400 });
   }
 
   const llmConfig = body.llmConfig as { provider?: string; baseUrl?: string; apiKey?: string; model?: string } | undefined;
@@ -58,7 +168,6 @@ export async function POST(req: NextRequest) {
   const db = getDb();
 
   // use an existing project or create a new topic project (create before generation so a draft project exists for retry even if generation fails)
-  let projectId = typeof body.projectId === "string" && body.projectId ? body.projectId : "";
   if (projectId) {
     const exists = await db
       .select({ id: projects.id, contentType: projects.contentType })
@@ -75,9 +184,22 @@ export async function POST(req: NextRequest) {
       );
     }
   } else {
+    if (!projectCreativeConfig || "error" in projectCreativeConfig) {
+      return NextResponse.json({ error: "Creative profile is required for project creation." }, { status: 400 });
+    }
+    const { creativeProfile, creativeProfileDrafts } = projectCreativeConfig;
     const [created] = await db
       .insert(projects)
-      .values({ name: topicToName(topic), contentType: "topic", topic, status: "draft" })
+      .values({
+        name: topicToName(topic),
+        contentType: "topic",
+        topic,
+        status: "draft",
+        videoMode: creativeProfile.videoMode,
+        creativeProfile,
+        creativeProfileDrafts,
+        creativeConfigRevision: 1,
+      })
       .returning();
     projectId = created.id;
   }

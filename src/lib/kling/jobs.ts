@@ -26,12 +26,116 @@ import { klingFilmRuns } from "./film-schema";
 import { KLING_MAX_CONCURRENT_SHOTS, klingJobHasUnknownSubmission, klingJobOccupiesGenerationSlot } from "./concurrency";
 import { cleanupDeletedKlingJobs } from "./delete-job";
 import { isKlingRuntimeEnabled } from "./runtime";
+import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
+import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
+import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
+import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
+import { KLING_AUDIO_PARAMETER_NAMES } from "./model-options";
+import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
 const runtime = globalState.__clipforgeKlingJobs ??= { bootId: randomUUID(), busy: false, bindingSecret: randomUUID() };
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const GENERATION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+
+function disabledAudioValue(parameter: KlingParameter): string | number | boolean | undefined {
+  const candidates = parameter.allowedValues ?? (parameter.default !== undefined ? [parameter.default] : []);
+  const disabled = new Set(["false", "off", "no", "0", "disabled", "disable"]);
+  const matched = candidates.find((value) => disabled.has(String(value).toLowerCase()));
+  if (matched !== undefined) return matched;
+  return parameter.type === "boolean" && !parameter.allowedValues ? false : undefined;
+}
+
+/** CG narration is composed from the approved script later; the image-to-video provider stays silent. */
+const PREMIUM_CG_NEGATIVE_PARAMETER_NAMES = ["negative_prompt", "negativePrompt"];
+
+function premiumCgVideoOptions(
+  model: KlingVideoModelDescriptor,
+  raw: Record<string, unknown>,
+  negativePrompt?: string,
+): Record<string, string | number | boolean> {
+  const source = { ...raw };
+  for (const key of KLING_AUDIO_PARAMETER_NAMES) delete source[key];
+  // A provider-specific negative prompt is still a model instruction. Premium CG owns it
+  // together with the positive prompt so a browser cannot weaken the no-added-text policy.
+  for (const key of PREMIUM_CG_NEGATIVE_PARAMETER_NAMES) delete source[key];
+  const negative = model.parameters.find((parameter) => PREMIUM_CG_NEGATIVE_PARAMETER_NAMES.includes(parameter.name));
+  if (negativePrompt && negative) source[negative.name] = negativePrompt;
+  const normalized = normalizeVideoParameters(model, source);
+  const audio = model.parameters.find((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
+  if (!audio) {
+    if (model.capabilities.audio) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", "当前 Kling 模型无法可靠关闭原生音频，不能用于高端家具产品 CG。", 422);
+    return normalized;
+  }
+  const disabled = disabledAudioValue(audio);
+  if (disabled === undefined) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", "当前 Kling 模型未声明可关闭的音频参数，不能用于高端家具产品 CG。", 422);
+  normalized[audio.name] = disabled;
+  return normalized;
+}
+
+type KlingReferenceInput = { role: "image" | "tailImage"; sourceUrl: string };
+
+function premiumCgReferenceInputs(
+  project: typeof projects.$inferSelect,
+  script: typeof scripts.$inferSelect,
+  shotId: number,
+): KlingReferenceInput[] {
+  const selectedAssets = filterTrustedPremiumCgAssets(filterAssetsForScript(
+    getDb().select().from(assets).where(and(
+      eq(assets.projectId, project.id),
+      eq(assets.selected, true),
+      eq(assets.status, "done"),
+    )).all(),
+    script,
+  ), project.id, script);
+  // The server derives the entire reference chain. Client-provided first/last/reference
+  // URLs are intentionally absent here: a saved product image or selected keyframe is the
+  // only source that can reach the paid request.
+  const resolved = resolvePremiumCgVideoReferences({
+    productImages: project.productImages,
+    selectedAssets,
+    shotIds: script.shots?.map((shot) => shot.shotId) ?? [],
+    shotId,
+  });
+  if (!resolved.ok) {
+    throw new KlingError(
+      resolved.code,
+      resolved.code === "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED"
+        ? "高端家具产品 CG 需要至少一张已保存的产品参考图。"
+        : "高端家具产品 CG 只能使用已保存的产品图片和当前项目已选关键帧。",
+      422,
+    );
+  }
+  const imageUrls = [...new Set([resolved.imageUrl, ...resolved.referenceImageUrls])];
+  return [
+    ...imageUrls.map((sourceUrl) => ({ role: "image" as const, sourceUrl })),
+    ...(resolved.lastImageUrl ? [{ role: "tailImage" as const, sourceUrl: resolved.lastImageUrl }] : []),
+  ];
+}
+
+function creativeProfileContextError(context: ReturnType<typeof checkCreativeProfileContext>): KlingError | undefined {
+  if (context.ok) return undefined;
+  return new KlingError(
+    context.code,
+    context.code === "CREATIVE_CONFIG_STALE"
+      ? "脚本基于旧的创作配置，请重新生成脚本后再生成视频。"
+      : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+    409,
+  );
+}
+
+function assertCreativeProfileContext(
+  project: Parameters<typeof checkCreativeProfileContext>[0],
+  script: Parameters<typeof checkCreativeProfileContext>[1],
+) {
+  const context = checkCreativeProfileContext(project, script);
+  const error = creativeProfileContextError(context);
+  if (error) throw error;
+  return context;
+}
+
 export interface KlingFilmShotContext {
   filmRunId: string;
   filmShotId: string;
@@ -121,12 +225,12 @@ export async function createKlingFilmShotJob(raw: unknown, context: KlingFilmSho
 async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<KlingJob> {
   const request = requestPayload(raw);
   const linkage = film ? { filmRunId: film.filmRunId, filmShotId: film.filmShotId, expectedInputHashes: film.expectedInputHashes } : undefined;
-  const payloadHash = contentHash(film ? { request, linkage } : request);
-  const existing = getDb().select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
-  if (existing) {
-    getKlingJob(existing.id);
-    if (existing.data.payloadHash !== payloadHash) throw new KlingError("KLING_REQUEST_CONFLICT", "相同请求编号不能使用不同的生成内容", 409);
-    return existing;
+  // Preserve the cheap idempotent path for legacy/sales requests. Premium requests are
+  // canonicalized below before this same check, so a changed client prompt cannot reuse a job.
+  const preliminary = getDb().select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
+  if (preliminary && preliminary.data.payloadHash === contentHash(film ? { request, linkage } : request)) {
+    getKlingJob(preliminary.id);
+    return preliminary;
   }
   let profile = getProfile(request.profileId);
   if (profile.environmentState !== "ready" || profile.disabledAt) throw new KlingError("KLING_ENVIRONMENT_REQUIRED", "请先在设置页检测 Kling CLI 环境", 409);
@@ -146,30 +250,71 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   }
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === request.selectionKey);
   if (!model?.available) throw new KlingError("KLING_MODEL_UNAVAILABLE", model?.disabledReason ?? "当前账号没有此可用视频模型，请重新选择", 422);
-  if ((model.tool === "image_to_video") !== (request.mode === "image-to-video")) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "生成模式与选择的模型工具不一致", 422);
   const db = getDb();
-  if (!db.select().from(projects).where(eq(projects.id, request.projectId)).get()) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
+  const project = db.select().from(projects).where(eq(projects.id, request.projectId)).get();
+  if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
   const allScripts = db.select().from(scripts).where(eq(scripts.projectId, request.projectId)).all();
   const script = allScripts.find((item) => item.selected) ?? allScripts[0];
   const shot = script?.shots?.find((item) => item.shotId === request.shotId);
   if (!script || script.id !== request.scriptId || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
-  const eligible = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, request.projectId), eq(assets.shotId, request.shotId), eq(assets.selected, true))).all(), script);
-  if (request.expectedSelectedAssetId !== undefined && (eligible[0]?.id ?? null) !== request.expectedSelectedAssetId) throw new KlingError("KLING_CONTEXT_CHANGED", "当前镜头素材已变化，请刷新后生成", 409);
-  const options = normalizeVideoParameters(model, request.options ?? {});
-  const id = randomUUID();
-  const refs = [
+  const creativeContext = assertCreativeProfileContext(project, script);
+  const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
+  let mode = request.mode;
+  let prompt = request.prompt;
+  let refs: KlingReferenceInput[] = [
     ...(request.imageUrl ? [{ role: "image" as const, sourceUrl: request.imageUrl }] : []),
     ...(request.referenceImageUrls ?? []).map((sourceUrl) => ({ role: "image" as const, sourceUrl })),
     ...(request.lastImageUrl ? [{ role: "tailImage" as const, sourceUrl: request.lastImageUrl }] : []),
   ];
+  let options: Record<string, string | number | boolean>;
+  if (premiumCg) {
+    const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
+    if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端家具产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
+    if (model.tool !== "image_to_video") throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "高端家具产品 CG 仅支持已验证的图生视频模型。", 422);
+    const compiled = compilePremiumCgVideoPrompt(shot, creativeContext.projectProfile);
+    prompt = compiled.prompt;
+    mode = "image-to-video";
+    refs = premiumCgReferenceInputs(project, script, request.shotId);
+    options = premiumCgVideoOptions(model, request.options ?? {}, compiled.negativePrompt);
+  } else {
+    if ((model.tool === "image_to_video") !== (mode === "image-to-video")) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "生成模式与选择的模型工具不一致", 422);
+    options = normalizeVideoParameters(model, request.options ?? {});
+  }
+  const scopedEligible = filterAssetsForScript(
+    db.select().from(assets).where(and(eq(assets.projectId, request.projectId), eq(assets.shotId, request.shotId), eq(assets.selected, true))).all(),
+    script,
+  );
+  const eligible = premiumCg
+    ? filterTrustedPremiumCgAssets(scopedEligible, request.projectId, script)
+    : scopedEligible;
+  if (request.expectedSelectedAssetId !== undefined && (eligible[0]?.id ?? null) !== request.expectedSelectedAssetId) throw new KlingError("KLING_CONTEXT_CHANGED", "当前镜头素材已变化，请刷新后生成", 409);
+  const effectiveRequest = premiumCg
+    ? {
+      ...request,
+      mode,
+      prompt,
+      imageUrl: refs.find((ref) => ref.role === "image")?.sourceUrl,
+      referenceImageUrls: refs.filter((ref) => ref.role === "image").slice(1).map((ref) => ref.sourceUrl),
+      lastImageUrl: refs.find((ref) => ref.role === "tailImage")?.sourceUrl,
+      options,
+    }
+    : request;
+  const payloadHash = contentHash(film ? { request: effectiveRequest, linkage } : effectiveRequest);
+  const existing = db.select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
+  if (existing) {
+    getKlingJob(existing.id);
+    if (existing.data.payloadHash !== payloadHash) throw new KlingError("KLING_REQUEST_CONFLICT", "相同请求编号不能使用不同的生成内容", 409);
+    return existing;
+  }
+  const id = randomUUID();
   const inputs = await prepareKlingInputs(id, model, refs);
   if (film?.expectedInputHashes !== undefined && canonicalJson(inputs.map(({ role, hash }) => ({ role, hash }))) !== canonicalJson(film.expectedInputHashes)) throw new KlingError("KLING_INPUT_CHANGED", "整片参考图与已确认的输入快照不一致，已阻止生成。", 409);
-  const args = buildKlingVideoArguments(model, request.prompt, options, inputs, id);
+  const args = buildKlingVideoArguments(model, prompt, options, inputs, id);
   const now = Date.now();
   const data: KlingJobData = {
     scriptRevision: scriptRevision(script), shotKey: shotKey(script.id, shot), expectedSelectedAssetId: eligible[0]?.id ?? null,
-    payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt: request.prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script), ...(linkage ? { linkage } : {}) }),
-    model, prompt: request.prompt, options, inputs, args, accountLabel: profile.accountSummary?.displayName ?? profile.accountSummary?.id,
+    payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script), ...(linkage ? { linkage } : {}) }),
+    model, prompt, options, inputs, args, accountLabel: profile.accountSummary?.displayName ?? profile.accountSummary?.id,
     videoPromptAudit: { version: VIDEO_PROMPT_VERSION, sourceShot: structuredClone(shot) },
     cliVersion: profile.cliVersion, adapterVersion: KLING_ADAPTER_VERSION,
     authorizedBootId: runtime.bootId, authorizedUntil: now + 120_000, authorizationEpoch: 1, billingAcknowledgedAt: now, queryAttempts: 0,
@@ -197,8 +342,11 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
       Object.assign(error, { jobId: conflict.id }); throw error;
     }
     if (accountJobs.filter(klingJobOccupiesGenerationSlot).length >= KLING_MAX_CONCURRENT_SHOTS) throw concurrencyLimit();
+    const latestProject = tx.select().from(projects).where(eq(projects.id, request.projectId)).get();
     const latestScript = tx.select().from(scripts).where(eq(scripts.id, script.id)).get();
     if (!latestScript || scriptRevision(latestScript) !== data.scriptRevision) throw new KlingError("KLING_CONTEXT_CHANGED", "准备期间脚本已变化，请重新确认", 409);
+    if (!latestProject) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
+    assertCreativeProfileContext(latestProject, latestScript);
     tx.insert(klingJobs).values({
       id, profileId: profile.id, principalKey: profile.principalKey!, region: profile.region, clientRequestId: request.clientRequestId,
       projectId: request.projectId, scriptId: script.id, shotId: request.shotId, submissionState: "prepared", data, createdAt: now, updatedAt: now,
@@ -255,10 +403,42 @@ async function checkedProfile(job: KlingJob, lease: KlingLease) {
 
 function assertCurrentContext(job: KlingJob): void {
   const db = getDb();
+  const project = db.select().from(projects).where(eq(projects.id, job.projectId)).get();
+  if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在，已阻止首次生成。", 404);
   const rows = db.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
   const selected = rows.find((row) => row.selected) ?? rows[0];
   if (!selected || selected.id !== job.scriptId || scriptRevision(selected) !== job.data.scriptRevision) throw new KlingError("KLING_CONTEXT_CHANGED", "原脚本或所选脚本已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
-  const active = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(), selected);
+  const creativeContext = assertCreativeProfileContext(project, selected);
+  if (isPremiumProductCgProfile(creativeContext.projectProfile)) {
+    const shot = selected.shots?.find((item) => item.shotId === job.shotId);
+    if (!shot) throw new KlingError("KLING_CONTEXT_CHANGED", "原镜头已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
+    const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
+    if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端家具产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
+    if (job.data.model.tool !== "image_to_video") throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 必须使用图生视频模型，请重新创建任务。", 422);
+    const compiled = compilePremiumCgVideoPrompt(shot, creativeContext.projectProfile);
+    if (job.data.prompt !== compiled.prompt) {
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 未使用当前脚本的服务端提示词，请重新创建任务。", 422);
+    }
+    const expectedReferences = premiumCgReferenceInputs(project, selected, job.shotId);
+    if (canonicalJson(job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl }))) !== canonicalJson(expectedReferences)) {
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 参考图不再属于当前项目白名单，请重新创建任务。", 422);
+    }
+    const expectedOptions = premiumCgVideoOptions(job.data.model, job.data.options, compiled.negativePrompt);
+    if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) {
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 未满足当前音频或提示词策略，请重新创建任务。", 422);
+    }
+    const expectedArgs = buildKlingVideoArguments(job.data.model, compiled.prompt, expectedOptions, job.data.inputs, job.id);
+    if (canonicalJson(expectedArgs) !== canonicalJson(job.data.args)) {
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 参数已失去服务端约束，请重新创建任务。", 422);
+    }
+  }
+  const scopedActive = filterAssetsForScript(
+    db.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(),
+    selected,
+  );
+  const active = isPremiumProductCgProfile(creativeContext.projectProfile)
+    ? filterTrustedPremiumCgAssets(scopedActive, job.projectId, selected)
+    : scopedActive;
   if ((active[0]?.id ?? null) !== job.data.expectedSelectedAssetId) throw new KlingError("KLING_CONTEXT_CHANGED", "当前镜头素材已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
 }
 
@@ -303,6 +483,9 @@ async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promi
         const claimed = getDb().transaction((tx) => {
           assertKlingJobLease(jobId);
           assertDispatchCapacity(job, tx.select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
+          // The profile check must happen in the same immediate transaction as the paid-dispatch claim.
+          // A profile edit between the earlier preflight and this point invalidates the prepared job.
+          assertCurrentContext(job);
           // Root's synchronous guard reads the parent run inside the same SQLite transaction as this claim.
           if (grant) assertFilmDispatchAllowed(grant);
           return tx.update(klingJobs).set({

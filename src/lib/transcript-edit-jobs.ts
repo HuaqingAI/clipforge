@@ -1,13 +1,16 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { compositions, mediaEdits, type mediaSources } from "@/lib/db/schema";
+import { compositions, mediaEdits, projects, type mediaSources } from "@/lib/db/schema";
 import type { TranscriptDocument } from "@/lib/transcript-editor";
 import type { TranscriptEditProposal } from "@/lib/transcript-edit-protocol";
 import { startTranscriptRender } from "@/lib/transcript-render-runner";
+import { isPremiumCgMediaEditBlocked, PREMIUM_CG_MEDIA_EDIT_FORBIDDEN } from "@/lib/premium-cg-media";
 
 /** One transaction reserves all revision numbers; either every batch item is queued or none is. */
 export function enqueueTranscriptEdits(source: typeof mediaSources.$inferSelect, transcript: TranscriptDocument, items: { proposal: TranscriptEditProposal; label?: string }[], batchId?: string) {
   const db = getDb();
+  const project = db.select().from(projects).where(eq(projects.id, source.projectId)).get();
+  if (project && isPremiumCgMediaEditBlocked(project)) throw new Error(PREMIUM_CG_MEDIA_EDIT_FORBIDDEN);
   const created = db.transaction((tx) => {
     const latest = tx.select().from(mediaEdits).where(eq(mediaEdits.sourceId, source.id)).orderBy(desc(mediaEdits.revision)).get();
     if ((latest?.revision ?? 0) !== items[0].proposal.latestRevision) throw new Error("EDIT_REVISION_CONFLICT");

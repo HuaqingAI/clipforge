@@ -77,7 +77,8 @@ function loadPlan(runId: string): { run: KlingFilmRun; shots: KlingFilmShot[]; c
   const settings = run.data.output;
   if (!["720p", "1080p"].includes(settings.resolution) || !["9:16", "16:9", "1:1"].includes(settings.aspectRatio) ||
     !["edge-tts", "edge-tts-mix", "native"].includes(settings.audioStrategy) || typeof settings.subtitles !== "boolean" ||
-    typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice)) throw failure("KLING_FILM_OUTPUT_INVALID", "整片输出配置无效，请重新预览整片计划。");
+    typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice) ||
+    (settings.narrationMode !== undefined && !["none", "restrained"].includes(settings.narrationMode))) throw failure("KLING_FILM_OUTPUT_INVALID", "整片输出配置无效，请重新预览整片计划。");
   const shots = db.select().from(klingFilmShots).where(eq(klingFilmShots.runId, runId)).orderBy(asc(klingFilmShots.ordinal)).all();
   const snapshot = run.data.scriptSnapshot.shots;
   if (!snapshot.length || shots.length !== snapshot.length || shots.some((item, ordinal) => {
@@ -180,7 +181,7 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
       throw failure("KLING_FILM_COMPOSITION_CONFLICT", "整片合成编号已关联其他输出，请刷新任务后恢复。");
     }
     if (!current) tx.insert(compositions).values({ id: compositionId, projectId: run.projectId, resolution: run.data.output.resolution,
-      aspectRatio: run.data.output.aspectRatio, ttsEnabled: run.data.output.audioStrategy !== "native", status: "pending", label: "Kling 自动整片" }).run();
+      aspectRatio: run.data.output.aspectRatio, ttsEnabled: run.data.output.audioStrategy !== "native" && run.data.output.narrationMode !== "none", status: "pending", label: "Kling 自动整片" }).run();
   });
   try {
     await mkdir(dirname(outputPath), { recursive: true });
@@ -212,10 +213,11 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
         assertOwned();
         const native = run.data.output.audioStrategy === "native";
         const mix = run.data.output.audioStrategy === "edge-tts-mix";
+        const narrationDisabled = run.data.output.narrationMode === "none";
         if (native && stripPauseMarks(shot.data.shot.voiceover ?? "").trim() && !source.probe.hasAudio) {
           throw failure("KLING_FILM_NATIVE_AUDIO_MISSING", `镜头 ${shot.shotId} 有台词但视频没有原生音轨，不能按原生音轨策略合成。请使用带音轨的素材，或创建使用免费配音的新计划。`);
         }
-        const speech = native ? undefined : await narration(shot, run.data.output.voice, workDir);
+        const speech = native || narrationDisabled ? undefined : await narration(shot, run.data.output.voice, workDir);
         assertOwned();
         const duration = native ? source.probe.duration : Math.max(shot.data.shot.duration, mix ? source.probe.duration : 0, speech ? speech.duration + 0.45 : 0);
         rendered.push({ shot, clip: { type: "video", filePath: source.path, sourceDuration: source.probe.duration, duration,
@@ -226,9 +228,10 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
       const durations = padDurationsForFade(rendered.map((item) => ({ duration: item.clip.duration, transition: item.clip.transition, hasVoice: Boolean(item.clip.hasAudio || item.clip.audioPath) })));
       rendered.forEach((item, index) => { item.clip.duration = durations[index]; });
       const timeline = buildSubtitleTimeline(rendered.map((item) => {
-        const overlay = item.shot.data.shot.textOverlay;
+        const premiumCg = run.data.output.narrationMode !== undefined;
+        const overlay = premiumCg ? undefined : item.shot.data.shot.textOverlay;
         return { duration: item.clip.duration, transition: item.clip.transition,
-          voiceover: run.data.output.subtitles ? stripPauseMarks(item.shot.data.shot.voiceover ?? "") : undefined,
+          voiceover: !premiumCg && run.data.output.subtitles ? stripPauseMarks(item.shot.data.shot.voiceover ?? "") : undefined,
           voiceSec: item.voiceSec, words: item.words,
           ...(overlay && overlay.style !== "subtitle" ? { overlay: { text: overlay.text, style: overlay.style } } : {}) };
       }));

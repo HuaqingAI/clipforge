@@ -9,6 +9,7 @@ import { useT } from "@/lib/i18n";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { CreationTypeGate } from "@/components/creation-type-gate";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -39,6 +40,7 @@ export default function TopicProjectPage() {
   const isLLMConfigured = llm.apiKey.length > 0;
 
   const [topic, setTopic] = useState("");
+  const [salesFlowChosen, setSalesFlowChosen] = useState(false);
   const [narrationStyle, setNarrationStyle] = useState("knowledge");
   const [duration, setDuration] = useState("25");
 
@@ -48,7 +50,7 @@ export default function TopicProjectPage() {
   const isValid = topic.trim().length >= 2;
 
   const handleGenerate = async () => {
-    if (!isValid || isSubmitting) return;
+    if (!salesFlowChosen || !isValid || isSubmitting) return;
     if (!isLLMConfigured) {
       setError(t("errorNoLlm"));
       return;
@@ -63,6 +65,7 @@ export default function TopicProjectPage() {
           topic: topic.trim(),
           narrationStyle,
           targetDuration: Number(duration),
+          creativeProfile: { creationType: "short_video_sales" },
           llmConfig: {
             provider: llm.provider,
             baseUrl: llm.baseUrl,
@@ -87,6 +90,28 @@ export default function TopicProjectPage() {
       setIsSubmitting(false);
     }
   };
+
+  if (!salesFlowChosen) {
+    return (
+      <div className="min-h-screen grid-bg">
+        <main className="mx-auto max-w-2xl px-6 py-10">
+          <div className="mb-8">
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-violet-500/10 px-3 py-1 text-xs font-medium text-violet-500">
+              <LuSparkles className="w-3.5 h-3.5" />
+              {t("heroBadge")}
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight mb-2">{t("heroTitle")}</h1>
+            <p className="text-muted-foreground text-sm leading-relaxed">{t("heroSubtitle")}</p>
+          </div>
+          <Card className="glass-card">
+            <CardContent className="p-6">
+              <CreationTypeGate onSelectShortVideoSales={() => setSalesFlowChosen(true)} />
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen grid-bg">

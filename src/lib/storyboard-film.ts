@@ -15,6 +15,8 @@ import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { getVideoParamSpec } from "@/lib/providers/atlas-video-params";
 import { arkSeedanceVersion } from "@/lib/ark-video-models";
+import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
+import { sanitizeCreativeProfile } from "@/lib/creative-profiles";
 
 /** Seedance 2.5 duration bounds (schema: integer 4-30 seconds) */
 export const FILM_MIN_SECONDS = 4;
@@ -271,7 +273,7 @@ export function referenceQuotaCheck(referenceImageCount: number, modelId: string
 export function buildStoryboardFilmPrompt(
   shots: Shot[],
   characters?: ScriptCharacter[] | null,
-  refs?: { characterSheet?: boolean },
+  refs?: { characterSheet?: boolean; creativeProfile?: unknown; outputPolicy?: unknown },
   opts?: {
     /**
      * Raw phone-shot texture block (default on — the film chain is UGC by design).
@@ -279,8 +281,14 @@ export function buildStoryboardFilmPrompt(
      * "ungraded phone footage" wording doesn't fight the styled look.
      */
     realism?: boolean;
+    creativeProfile?: unknown;
+    outputPolicy?: unknown;
   }
 ): string {
+  const profileValue = opts?.creativeProfile ?? opts?.outputPolicy ?? refs?.creativeProfile ?? refs?.outputPolicy;
+  if (isPremiumCgPromptPolicy(profileValue)) {
+    return buildPremiumStoryboardFilmPrompt(shots, refs, profileValue);
+  }
   const zh = shots.some((s) => CJK_RE.test(`${s.description ?? ""}${s.voiceover ?? ""}`));
   const total = filmRequestSeconds(shots);
   const cast = (characters ?? []).filter((c) => (c.name ?? "").trim());
@@ -413,4 +421,62 @@ export function buildStoryboardFilmPrompt(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * Premium furniture CG film contract. Kept separate from the legacy UGC film prompt so a
+ * new policy cannot accidentally inherit presenter, handheld, dialogue, or CTA language.
+ */
+function buildPremiumStoryboardFilmPrompt(
+  shots: Shot[],
+  refs: { characterSheet?: boolean } | undefined,
+  profileValue: unknown,
+): string {
+  const profile = sanitizeCreativeProfile(profileValue);
+  const restrainedNarration = profile?.creationType === "premium_product_cg" && profile.narrationMode === "restrained";
+  const visualShots = shots.map((shot) => ({
+    ...shot,
+    visual: sanitizePremiumCgVisualText(shot.visualIntent || shot.description) || "quiet product observation with stable form and material detail",
+    camera: sanitizePremiumCgVisualText(shot.camera),
+    narration: restrainedNarration
+      ? sanitizePremiumCgVisualText(shot.narration || shot.voiceover)
+      : "",
+  }));
+  const zh = visualShots.some((shot) => CJK_RE.test(`${shot.visual}${shot.narration}`));
+  const total = filmRequestSeconds(shots);
+  const rawTotal = filmTotalSeconds(shots) || shots.length;
+  const scale = total / rawTotal;
+  let cursor = 0;
+  const aggressiveCamera = /\b(?:fast|rapid|quick|whip|crash|slam|jerk|handheld|shaky|spinning)\b|快|急|甩|手持|剧烈/i;
+  const segments = visualShots.map((shot, index) => {
+    const start = cursor;
+    const rawLength = Number.isFinite(shot.duration) && shot.duration > 0 ? shot.duration : rawTotal / shots.length;
+    cursor = index === visualShots.length - 1 ? total : Math.min(total, cursor + rawLength * scale);
+    const camera = shot.camera && !aggressiveCamera.test(shot.camera)
+      ? shot.camera
+      : "restrained slow push-in or short lateral move, limited to visible reference angles";
+    const narration = shot.narration;
+    if (zh) {
+      return `[${fmtSec(start)}-${fmtSec(cursor)}s] Shot ${index + 1} (product observation, framing follows @Image${index + 1}): ${shot.visual}. Camera: ${camera}.${narration ? ` Approved restrained factual narration, spoken verbatim: {${narration}}` : ""}`;
+    }
+    return `[${fmtSec(start)}-${fmtSec(cursor)}s] Shot ${index + 1} (product observation, framing follows @Image${index + 1}): ${shot.visual}. Camera: ${camera}.${narration ? ` Approved restrained factual narration, spoken verbatim: {${narration}}` : ""}`;
+  });
+
+  const mapping = refs?.characterSheet
+    ? "Reference mapping: product keyframes are @Image1 onward. Any presenter or identity sheet is ignored for scene content and must never introduce a person."
+    : `Reference mapping: @Image1 through @Image${shots.length} are the product keyframes for shots 1-${shots.length} in order.`;
+  const language = zh ? "Use the same language as the approved factual narration and visual brief." : "Use the same language as the approved factual narration and visual brief.";
+  return [
+    `Vertical 9:16 premium furniture product CG film, about ${total} seconds total, ${shots.length} controlled shots rendered as one continuous film with hard cuts at the timecodes below.`,
+    mapping,
+    "Keep one identical furniture product across every shot: locked silhouette, proportions, module count, seams, upholstery, wood or metal finish, colors, legs, hardware, and visible markings. Use quiet studio or modern-home architectural lighting, stable geometry, restrained reflections, and deliberate product-film pacing.",
+    "Use only construction, functions, materials, and camera angles supported by the supplied references. Do not invent unseen backs, interiors, mechanisms, dimensions, certifications, or features. No people, presenter behavior, lifestyle acting, handheld phone texture, UGC framing, or sales choreography.",
+    "Do not generate added on-screen text, captions, subtitles, numbers, prices, promotional graphics, CTA, logos, or watermarks; preserve only product markings already visible in the references.",
+    restrainedNarration
+      ? "Audio policy: only the approved restrained factual narration and natural product or room sound; no dialogue performance, hype, scarcity, comparison, or purchase direction. No subtitles."
+      : "Audio policy: no dialogue, narration, voiceover, music, or generated speech; use silent visual footage and add approved ambience in post if needed. No subtitles.",
+    language,
+    "Shot list (each @Image reference is a product keyframe anchor; keep product identity and composition faithful):",
+    ...segments,
+  ].filter(Boolean).join("\n");
 }

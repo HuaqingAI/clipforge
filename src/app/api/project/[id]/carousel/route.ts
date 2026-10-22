@@ -3,9 +3,10 @@ import { eq, desc } from "drizzle-orm";
 import { join } from "path";
 import { getDb } from "@/lib/db";
 import { getDataDir, fileNameOf } from "@/lib/paths";
-import { scripts as scriptsTable, type Shot } from "@/lib/db/schema";
+import { projects, scripts as scriptsTable, type Shot } from "@/lib/db/schema";
 import { generateCarousel } from "@/lib/video-composer/carousel";
 import { apiError, errText } from "@/lib/api-error";
+import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -28,6 +29,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const height = Number(body.height) > 0 ? Math.min(1920, Math.round(Number(body.height))) : 1440;
 
   const db = getDb();
+  const [project] = await db
+    .select({ creativeProfile: projects.creativeProfile })
+    .from(projects)
+    .where(eq(projects.id, id))
+    .limit(1);
+  if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+  if (isPremiumProductCgProfile(project.creativeProfile)) {
+    return NextResponse.json({
+      error: errText(req, "高端家具产品 CG 不支持图文轮播卡片，因为该输出会生成编辑性文案。", "High-end furniture product CG does not allow text-based carousel cards."),
+      code: "PREMIUM_CG_OUTPUT_POLICY",
+    }, { status: 400 });
+  }
   const rows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id)).orderBy(desc(scriptsTable.version));
   if (!rows.length) return apiError(req, "该项目还没有脚本", "This project has no script yet", 404);
   const script = rows.find((r) => r.selected) ?? rows[0];

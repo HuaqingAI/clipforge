@@ -23,6 +23,7 @@ import { emotionActingLine, shotEmotion } from "@/lib/emotion-acting";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { joinVideoPromptParts } from "@/lib/video-prompt";
 import { VIDEO_AUDIO_DIRECTIONS, type VideoAudioMode } from "@/lib/video-audio";
+import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 /** Camera-movement amplitude tier (Kling-style enumerated intensity instead of free text). */
 export type MotionIntensity = "subtle" | "normal" | "strong";
@@ -89,10 +90,30 @@ export interface MotionPromptInput {
    * Defaults to "auto" so every hands-off chain gets the quality layers without wiring.
    */
   realism?: MotionRealismTier;
+  /**
+   * Optional project creative profile. The motion compiler only needs the premium-CG
+   * identity here, so callers may pass the persisted profile or the compatibility
+   * shape used by older clients (`profileId`).
+   */
+  creativeProfile?: unknown;
+  /**
+   * Compatibility policy for callers that have not loaded the persisted profile yet.
+   * `generatedFrameText: "forbid-added"` opts into the same no-added-text motion path.
+   */
+  outputPolicy?: MotionPromptOutputPolicy;
 }
 
 /** Realism-layer tier for buildMotionPrompt (a user-facing single-select). */
 export type MotionRealismTier = "auto" | "constraints" | "off";
+
+/** The small policy surface consumed by the image-to-video prompt compiler. */
+export interface MotionPromptOutputPolicy {
+  id?: string;
+  profileId?: string;
+  creationType?: string;
+  generatedFrameText?: "forbid-added" | string;
+  textPolicy?: "forbid-added" | { generatedFrameText?: "forbid-added" | string };
+}
 
 /** True when the text contains CJK characters (used to pick the prompt language). */
 function hasCjk(s: string): boolean {
@@ -321,6 +342,80 @@ const STATIC_ACTION = {
   en: "the subject remains still, with sharp and stable on-screen text",
 };
 
+/**
+ * Premium furniture CG intentionally has a different static-shot contract. The
+ * legacy line above protects commerce labels in a product shot; using it for CG
+ * actively asks a video model to draw new pixels of copy. Keep product markings
+ * that are already present in the reference, but never ask for new copy.
+ */
+const PREMIUM_CG_STATIC_ACTION = {
+  zh: "主体保持稳定，材质纹理、自然光影与反射平稳真实",
+  en: "the subject remains stable with steady, realistic material texture, natural light, and reflections",
+};
+const PREMIUM_CG_ACTION = {
+  zh: "产品形体与材质细节保持克制稳定，只呈现分镜已描述的动作",
+  en: "the product form and material details stay calm and stable, showing only the action already described in the shot",
+};
+const PREMIUM_CG_CAMERA_DEFAULT = {
+  zh: "镜头克制缓慢推进或短距离横移，只展示参考图可支持的产品可见角度",
+  en: "a restrained slow push-in or short lateral move, limited to product angles supported by the reference",
+};
+const PREMIUM_CG_NO_ADDED_TEXT = {
+  zh: "不生成新增的画面文字、字幕、数字、价格、图形卡片或水印；只保留参考图中已有的产品标识",
+  en: "do not generate added on-screen text, subtitles, numbers, prices, graphic cards, or watermarks; preserve only product markings already present in the reference",
+};
+const PREMIUM_CG_REFERENCE_LIMIT = {
+  zh: "运镜缓慢克制，严格受参考图可见结构和角度限制，不编造未展示的结构或功能",
+  en: "keep camera movement slow and restrained, limited to visible reference structure and angles; do not invent unseen construction or functions",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Accept both the canonical nested policy and the temporary flat compatibility form. */
+function forbidsAddedFrameText(policy: unknown): boolean {
+  if (policy === "forbid-added") return true;
+  if (!isRecord(policy)) return false;
+  if (policy.generatedFrameText === "forbid-added" || policy.textPolicy === "forbid-added") return true;
+  return isRecord(policy.textPolicy) && policy.textPolicy.generatedFrameText === "forbid-added";
+}
+
+/**
+ * Returns true for the canonical premium-CG profile and the flat policy shapes used by
+ * older clients. Prompt adapters use this rather than making their own policy guesses.
+ */
+export function isPremiumCgPromptPolicy(value: unknown): boolean {
+  return isPremiumProductCgProfile(value) || forbidsAddedFrameText(value);
+}
+
+function usesPremiumCgPolicy(input: MotionPromptInput): boolean {
+  return isPremiumCgPromptPolicy(input.creativeProfile) || isPremiumCgPromptPolicy(input.outputPolicy);
+}
+
+const CG_TEXT_DIRECTIVE_RE = /文字|字幕|文案|价格|标价|数字标签|图形卡片|购买|下单|二维码|水印|\b(?:on[- ]screen text|subtitles?|copy|price|cta|buy now|qr code|watermark)\b/i;
+const NEGATED_CG_TEXT_DIRECTIVE_RE = /不要|禁止|避免|无(?:需|文字|字幕)|不(?:要|生成|添加|显示)|\b(?:no|not|without|avoid|never|do not)\b/i;
+
+/**
+ * Existing sales descriptions often contain a whole sentence telling the model
+ * where to draw a price, CTA or subtitle. Do not pass those positive directives
+ * into a premium-CG motion prompt. Product logos/markings are covered by the
+ * dedicated preservation constraint and are not matched here.
+ */
+function removePremiumCgTextDirectives(description: string): string {
+  const kept = description
+    .split(/(?<=[。！？.!?])|\n/)
+    .filter((clause) => !(CG_TEXT_DIRECTIVE_RE.test(clause) && !NEGATED_CG_TEXT_DIRECTIVE_RE.test(clause)))
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  return kept.join(" ");
+}
+
+/** Remove obvious sales/copy drawing directives before a premium-CG prompt reaches a provider. */
+export function sanitizePremiumCgVisualText(value: unknown): string {
+  return removePremiumCgTextDirectives(typeof value === "string" ? value.trim() : "");
+}
+
 // Each candidate needs both its object/material AND its action in the script. Category or seed
 // alone never establishes a screen, an earbud, a lamp, or a new demonstration.
 const PHYSICAL_EVIDENCE: Record<ProductCategory, RegExp[][]> = {
@@ -361,11 +456,17 @@ function categoryConstraint(category: ProductCategory | undefined, evidence: str
  * shots, and the stability tail. Language follows the script (camera/description text).
  */
 export function buildMotionPrompt(input: MotionPromptInput): string {
-  const probe = `${input.camera ?? ""}\n${input.description ?? ""}`.trim();
+  const rawDescription = (input.description ?? "").trim();
+  const premiumCg = usesPremiumCgPolicy(input);
+  // Compile the sanitized visual description into the language/evidence probe as
+  // well as the final Scene line. This prevents a legacy price/CTA sentence from
+  // influencing category or motion heuristics before it is removed from output.
+  const description = premiumCg ? removePremiumCgTextDirectives(rawDescription) : rawDescription;
+  const probe = `${input.camera ?? ""}\n${description}`.trim();
   // Empty inputs default to Chinese (domestic-first product)
   const lang: "zh" | "en" = probe && !hasCjk(probe) ? "en" : "zh";
   const type = String(input.shotType ?? "");
-  const anchor = (input.description ?? "").trim();
+  const anchor = description;
   const direction = unquoted(probe);
   const evidence = positiveEvidence(probe);
   const stateEvidence = direction.split(/[，,。;；!?！？\n]/).filter((clause) =>
@@ -376,7 +477,11 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   // jerky indecisive motion — fall back to the shot type's single known-good instruction instead
   const scripted = input.camera?.trim();
   const camera =
-    scripted && !hasCameraConflict(scripted) ? scripted : (CAMERA_DEFAULTS[type] ?? CAMERA_FALLBACK)[lang];
+    scripted && !hasCameraConflict(scripted)
+      ? scripted
+      : premiumCg
+        ? PREMIUM_CG_CAMERA_DEFAULT[lang]
+        : (CAMERA_DEFAULTS[type] ?? CAMERA_FALLBACK)[lang];
   const fixedCamera = STATIC_CAMERA_RE.test(camera) && !MOVING_CAMERA_RE.test(positiveEvidence(camera));
   const stillSubject = STILL_SUBJECT_RE.test(stateEvidence);
   const solidBackground = SOLID_BACKGROUND_RE.test(evidence);
@@ -384,10 +489,16 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   const realism: MotionRealismTier = input.realism ?? "auto";
   const category = realism === "off" ? undefined : normalizeCategory(input.category);
   // motion-phrase layers (interaction/background/inertia/emotion) only at the full tier
-  const fullRealism = realism === "auto";
+  // Premium CG is reference-limited: do not invent secondary action from a
+  // category label or a generic person/background rule.
+  const fullRealism = realism === "auto" && !premiumCg;
   // a speaking character overrides the per-type micro-action: the shot must read as
   // "mid-conversation", with two rotating behavior beats against batch-level repetition
-  let action = stillSubject ? STATIC_ACTION[lang] : input.talking
+  let action = (stillSubject || (premiumCg && fixedCamera))
+    ? (premiumCg ? PREMIUM_CG_STATIC_ACTION[lang] : STATIC_ACTION[lang])
+    : premiumCg
+      ? PREMIUM_CG_ACTION[lang]
+      : input.talking
     ? `${TALKING_ACTION[lang]}${lang === "zh" ? "；" : "; "}${pickBehaviorBeats(seed, lang).join(lang === "zh" ? "、" : ", ")}`
     : (ACTION_DEFAULTS[type] ?? ACTION_FALLBACK)[lang];
   if (!stillSubject && !input.talking && type === "demo" && HAND_EVIDENCE_RE.test(evidence)) {
@@ -405,7 +516,7 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   // restrained face); talking shots already carry their own behavior direction
   const emotion = fullRealism && !stillSubject && !input.talking && input.personShot ? shotEmotion(type) : undefined;
   const explicitSlowMove = /缓慢|慢速|轻微|克制|\bslow(?:ly)?\b|\bsubtle\b|\brestrained\b/i.test(camera);
-  const intensity = !fixedCamera && input.intensity && input.intensity !== "normal" && !(input.intensity === "strong" && explicitSlowMove)
+  const intensity = !premiumCg && !fixedCamera && input.intensity && input.intensity !== "normal" && !(input.intensity === "strong" && explicitSlowMove)
     ? INTENSITY_LINES[input.intensity][lang] : undefined;
   // Only animate a background element that is actually described, never invent one by seed.
   const backgroundEvidence = evidence.split("；").filter((clause) => !/静止|静置|静态|stationary|motionless|\bstill\b/i.test(clause)).join("；");
@@ -418,7 +529,7 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   const audioMode = input.audioMode ?? "ambient";
   const sound = audioMode === "none" ? undefined : VIDEO_AUDIO_DIRECTIONS[audioMode][lang];
   // A look must not override the explicit camera direction (e.g. phone_raw + locked-off CTA).
-  const opener = input.opener?.[lang];
+  const opener = premiumCg ? undefined : input.opener?.[lang];
   const compatibleOpener = opener && !(fixedCamera && /手持|handheld|holding arm/i.test(opener))
     && !(MOVING_CAMERA_RE.test(camera) && /固定|\bstatic\b|\bfixed\b|\bpropped\b/i.test(opener)) ? opener : undefined;
   const look = input.look?.[lang];
@@ -435,10 +546,16 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   if (fabricLag) actionParts.push(FABRIC_HAIR_LAG[lang]);
   const constraints: string[] = [];
   if (compatibleLook) constraints.push(`${labels.light}${compatibleLook}`);
+  if (premiumCg) {
+    constraints.push(PREMIUM_CG_REFERENCE_LIMIT[lang]);
+    constraints.push(PREMIUM_CG_NO_ADDED_TEXT[lang]);
+  }
   // Chained clips end in the next keyframe; other shots retain a continuous single take.
   constraints.push(input.chainToNext ? CHAIN_GUIDANCE[lang] : SINGLE_SHOT[lang]);
   if (input.personShot) constraints.push(REAL_FACE_CONSTRAINT[lang]);
-  if (input.productShot) constraints.push(PRODUCT_CONSTRAINT[lang]);
+  // The legacy product constraint tells models to preserve printed copy. Premium CG has a
+  // stricter rule: preserve only reference markings and never request generated frame text.
+  if (input.productShot && !premiumCg) constraints.push(PRODUCT_CONSTRAINT[lang]);
   if (input.productShot && materialConstraint) constraints.push(materialConstraint);
   constraints.push(QUALITY_TAIL[lang]);
   const sections = [

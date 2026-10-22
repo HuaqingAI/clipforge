@@ -10,6 +10,7 @@ import { generateEndCard } from "@/lib/video-composer/end-card";
 import { resolveChineseFontFile } from "@/lib/video-composer/composer";
 import { getOffSiteQrPolicy } from "@/lib/platform-specs";
 import { apiError, errText } from "@/lib/api-error";
+import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -35,6 +36,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const db = getDb();
   const [proj] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
   if (!proj) return apiError(req, "项目不存在", "Project not found", 404);
+  // This endpoint is exclusively a QR/purchase-CTA end card. An approved brand end card
+  // must use a separate deterministic implementation and cannot reuse this commerce path.
+  if (isPremiumProductCgProfile(proj.creativeProfile)) {
+    return NextResponse.json({
+      error: errText(req, "高端家具产品 CG 不支持扫码购买片尾或购买 CTA。", "High-end furniture product CG does not allow scan-to-buy end cards or purchase CTAs."),
+      code: "PREMIUM_CG_OUTPUT_POLICY",
+    }, { status: 400 });
+  }
 
   const shopUrl = (typeof body.url === "string" && body.url.trim()) || proj.shopUrl || "";
   if (!shopUrl) {

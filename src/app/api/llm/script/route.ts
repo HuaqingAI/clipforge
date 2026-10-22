@@ -2,24 +2,63 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDataDir } from "@/lib/paths";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { generateScript, analyzeProduct } from "@/lib/script-engine/generator";
+import { generateScript, analyzeProduct, type LLMConfig } from "@/lib/script-engine/generator";
 import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import { styleNameMap, type ScriptStyleType } from "@/lib/script-engine/prompts";
 import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-patterns";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects, publishMetrics } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
 import { topConvertingStyle, topConvertingHook, buildPerformanceHint, type MetricInput } from "@/lib/performance-insights";
+import {
+  createCreativeProfileSnapshot,
+  createShortVideoSalesProfile,
+  isPremiumProductCgProfile,
+  resolveCreativeProfile,
+  validateCreativeProfileInput,
+  type ProjectCreativeProfile,
+} from "@/lib/creative-profiles";
 
 /** Allowed enum values for the styleType column in the scripts table */
 const VALID_SCRIPT_STYLE = new Set([
   "pain_point", "scene", "comparison", "story",
   "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head",
-  "custom",
+  "premium_product_cg", "custom",
 ]);
+
+type RequestLlmConfig = LLMConfig & { provider?: string };
+
+interface ScriptRequestBody {
+  projectId?: string;
+  productImages?: string[];
+  productName?: string;
+  productDescription?: string;
+  productAnalysis?: string;
+  category?: string;
+  productCategory?: string;
+  styleType?: string;
+  videoMode?: string;
+  targetDuration?: number;
+  duration?: number;
+  insightMode?: boolean;
+  llmConfig?: RequestLlmConfig;
+  creativeProfile?: unknown;
+  profile?: unknown;
+  creationType?: unknown;
+  profileId?: unknown;
+  creativeProfileId?: unknown;
+  narrationMode?: unknown;
+  priceRange?: string;
+  platforms?: string;
+  usageAdvantage?: string;
+  targetAudience?: string;
+  referenceStructure?: string;
+  customRequirements?: string;
+  preferredHookId?: string;
+}
 
 /** Convert a local image path to a base64 data URI for use with LLM vision models */
 async function imagePathToBase64(imagePath: string): Promise<string> {
@@ -130,24 +169,81 @@ async function loadInsights(category: string): Promise<{ hint: string; topStyle:
 
 // Generate commerce script
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const rawBody: unknown = await req.json();
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return apiError(req, "璇锋眰鏍煎紡鏃犳晥", "Request body must be a JSON object");
+  }
+  const body = rawBody as ScriptRequestBody;
   const {
-    productImages,
-    productName,
-    productDescription,
+    productImages: requestedProductImages,
+    productName: requestedProductName,
+    productDescription: requestedProductDescription,
     llmConfig,
   } = body;
+  const projectId = typeof body.projectId === "string" && body.projectId.trim() ? body.projectId.trim() : undefined;
+
+  // A persisted project profile is authoritative. The request fields remain a compatibility path
+  // for callers that generate without a project, and for legacy projects whose profile is null.
+  let project: typeof projects.$inferSelect | undefined;
+  let projectProfile: ProjectCreativeProfile;
+  let projectRevision = 0;
+  if (projectId) {
+    const db = getDb();
+    const [row] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!row) return apiError(req, "项目不存在", "Project not found", 404);
+    project = row;
+    projectRevision = row.creativeConfigRevision ?? 0;
+    projectProfile = resolveCreativeProfile(row.creativeProfile, {
+      videoMode: row.videoMode,
+      styleType: body.styleType,
+      targetDuration: body.targetDuration ?? body.duration,
+    });
+  } else {
+    const requestedProfile = body.creativeProfile ?? body.profile ?? (
+      body.creationType || body.profileId || body.creativeProfileId
+        ? {
+            creationType: body.creationType,
+            profileId: body.profileId ?? body.creativeProfileId,
+            styleType: body.styleType,
+            videoMode: body.videoMode,
+            targetDuration: body.targetDuration ?? body.duration,
+            narrationMode: body.narrationMode,
+          }
+        : undefined
+    );
+    if (requestedProfile !== undefined) {
+      const checked = validateCreativeProfileInput(requestedProfile);
+      const validatedProfile = checked.profile;
+      if (!validatedProfile) {
+        const message = checked.error ?? "Invalid creative profile.";
+        return apiError(req, message, message, 400);
+      }
+      projectProfile = validatedProfile;
+    } else {
+      projectProfile = createShortVideoSalesProfile({
+        styleType: body.styleType,
+        videoMode: body.videoMode,
+        targetDuration: body.targetDuration ?? body.duration,
+      });
+    }
+  }
+
+  const premiumProfile = isPremiumProductCgProfile(projectProfile) ? projectProfile : undefined;
+  const productImages = (project?.productImages as string[] | undefined) ?? requestedProductImages;
+  const productName = project?.productName ?? requestedProductName;
+  const productDescription = project?.productDescription ?? requestedProductDescription;
+  const effectiveCategory = project?.productCategory ?? body.category ?? body.productCategory;
 
   // Support both frontend field naming conventions: category/productCategory, targetDuration/duration
-  const category = normalizeCategory(body.category ?? body.productCategory);
+  const category = normalizeCategory(effectiveCategory);
   // detect smart-recommend ("auto"/unset) BEFORE normalizing, so the flywheel can pick a data-driven
   // default instead of the hardcoded pain_point fallback; an explicit style is always respected
-  const rawStyle = String(body.styleType ?? "").toLowerCase();
+  const rawStyle = String(projectProfile.styleType ?? body.styleType ?? "").toLowerCase();
   const isAutoStyle = rawStyle === "" || rawStyle === "auto";
-  let styleType = normalizeStyle(body.styleType);
-  const duration = body.targetDuration ?? body.duration ?? 30;
+  let styleType = premiumProfile ? "premium_product_cg" : normalizeStyle(projectProfile.styleType);
+  const duration = projectProfile.targetDuration;
   // data flywheel: performance feedback is on by default; pass insightMode:false to opt out
-  const useInsights = body.insightMode !== false;
+  const useInsights = !premiumProfile && body.insightMode !== false;
 
   if (!productName) {
     return apiError(req, "请填写商品名称", "Please enter the product name");
@@ -160,10 +256,11 @@ export async function POST(req: NextRequest) {
   try {
     // Product image analysis: convert local paths to base64 before passing to the vision model
     let analysis = body.productAnalysis;
-    if (!analysis && productImages?.length > 0 && llmConfig) {
+    const imageReferences = productImages ?? [];
+    if (!analysis && imageReferences.length > 0 && llmConfig) {
       try {
         const imageUrls = await Promise.all(
-          (productImages as string[]).map(imagePathToBase64)
+          imageReferences.map(imagePathToBase64)
         );
         analysis = await analyzeProduct(imageUrls, llmConfig);
       } catch (e) {
@@ -188,7 +285,9 @@ export async function POST(req: NextRequest) {
       productAnalysis: analysis,
       styleType,
       targetDuration: duration,
-      videoMode: body.videoMode,
+      videoMode: projectProfile.videoMode,
+      creativeProfile: projectProfile,
+      ...(premiumProfile && { narrationMode: premiumProfile.narrationMode }),
       priceRange: body.priceRange,
       platforms: body.platforms,
       usageAdvantage: body.usageAdvantage,
@@ -197,7 +296,7 @@ export async function POST(req: NextRequest) {
       // ad-template creative direction (look + per-shot-type camera plan) and any other
       // caller-supplied requirements — buildUserPrompt already injects this field
       customRequirements: typeof body.customRequirements === "string" ? body.customRequirements.slice(0, 2000) : undefined,
-      performanceHint: insights.hint,
+      performanceHint: premiumProfile ? undefined : insights.hint,
       // anti-homogenization: batch rotation pins a different opening hook mechanism per video (validated against the pattern library)
       preferredHookId:
         typeof body.preferredHookId === "string" && HOOK_PATTERNS.some((p) => p.id === body.preferredHookId)
@@ -207,9 +306,11 @@ export async function POST(req: NextRequest) {
     });
 
     // Persist: write generated scripts to the scripts table so the script/assets pages can read them by projectId
-    const generationMetadata = scriptGenerationMetadata(llmConfig, "commerce-script");
+    const generationMetadata = scriptGenerationMetadata(
+      llmConfig,
+      premiumProfile ? "premium-product-cg-script" : "commerce-script",
+    );
     let savedScripts = scripts;
-    const projectId = body.projectId;
     if (projectId) {
       const db = getDb();
       // Refuse to overwrite a one-liner topic project with a commerce script (contentType mismatch — would delete its topic scripts)
@@ -224,28 +325,60 @@ export async function POST(req: NextRequest) {
         );
       }
       try {
-        // Delete existing scripts for this project first (overwrite on regenerate)
-        await db.delete(scriptsTable).where(eq(scriptsTable.projectId, projectId));
-        const rows = await db
+        // Regeneration appends a new revision and keeps prior scripts inspectable. Deselecting and
+        // inserting in one transaction prevents a failed write from leaving no active script.
+        let creativeConfigChanged = false;
+        const rows = db.transaction((tx) => {
+          const [currentProject] = tx
+            .select({ creativeConfigRevision: projects.creativeConfigRevision })
+            .from(projects)
+            .where(eq(projects.id, projectId))
+            .limit(1)
+            .all();
+          creativeConfigChanged = !currentProject || currentProject.creativeConfigRevision !== projectRevision;
+          const [latest] = tx
+            .select({ version: scriptsTable.version })
+            .from(scriptsTable)
+            .where(eq(scriptsTable.projectId, projectId))
+            .orderBy(desc(scriptsTable.version))
+            .limit(1)
+            .all();
+          const nextVersion = (latest?.version ?? 0) + 1;
+          if (!creativeConfigChanged) {
+            tx.update(scriptsTable)
+              .set({ selected: false })
+              .where(eq(scriptsTable.projectId, projectId))
+              .run();
+          }
+          return tx
           .insert(scriptsTable)
           .values(
             scripts.map((s, i) => ({
               projectId,
-              version: 1,
+              version: nextVersion,
               styleType: (VALID_SCRIPT_STYLE.has(s.styleType) ? s.styleType : "custom") as
                 | "pain_point" | "scene" | "comparison" | "story"
-                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head"
+                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head" | "premium_product_cg"
                 | "custom",
               title: s.title,
               totalDuration: s.totalDuration,
               shots: s.shots,
               generationMetadata,
+              creativeProfileSnapshot: createCreativeProfileSnapshot(
+                projectProfile,
+                projectRevision,
+                { styleType, videoMode: projectProfile.videoMode, targetDuration: duration },
+              ),
               // dialogue-script cast (drama style) — read back at compose time for multi-voice TTS
               ...(s.characters?.length && { characters: s.characters }),
-              selected: i === 0, // select the first script set by default
+                // A profile changed while the LLM was working: archive this output under its
+                // original snapshot, but never let it replace the current selected script.
+                selected: !creativeConfigChanged && i === 0,
             }))
           )
-          .returning();
+          .returning()
+          .all();
+        });
         savedScripts = rows.map((r) => ({
           id: r.id,
           title: r.title ?? "",
@@ -255,6 +388,14 @@ export async function POST(req: NextRequest) {
           generationMetadata: r.generationMetadata,
           selected: r.selected ?? false,
         })) as typeof scripts;
+        if (creativeConfigChanged) {
+          return NextResponse.json({
+            error: "The project creative configuration changed while the script was generating. The result was saved as history and was not selected.",
+            code: "CREATIVE_CONFIG_STALE",
+            scripts: savedScripts,
+            analysis,
+          }, { status: 409 });
+        }
         // Sync project status and analysis result
         await db
           .update(projects)

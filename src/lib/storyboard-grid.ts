@@ -14,6 +14,7 @@
  */
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { REAL_FACE_CONSTRAINT, UGC_FIRST_FRAME_RULES } from "@/lib/presenters";
+import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
 
 export const GRID_ROWS = 3;
 export const GRID_COLS = 3;
@@ -29,6 +30,20 @@ const SHOT_TYPE_LABELS: Record<string, string> = {
   cta: "转化镜",
 };
 
+const PREMIUM_SHOT_TYPE_LABELS: Record<string, string> = {
+  hook: "opening product portrait",
+  pain_point: "design context",
+  product_reveal: "product form",
+  demo: "material or function detail",
+  social_proof: "space relationship",
+  cta: "closing product portrait",
+};
+
+export interface StoryboardGridPolicyInput {
+  creativeProfile?: unknown;
+  outputPolicy?: unknown;
+}
+
 /**
  * Build the one-shot 3x3 storyboard-grid image prompt: global consistency block
  * (same person / outfit / room / light) + one numbered line per cell + realism
@@ -38,9 +53,18 @@ const SHOT_TYPE_LABELS: Record<string, string> = {
 export function buildStoryboardGridPrompt(
   shots: Shot[],
   characters?: ScriptCharacter[] | null,
-  refs?: { characterSheet?: boolean; productImage?: boolean; productImageCount?: number }
+  refs?: { characterSheet?: boolean; productImage?: boolean; productImageCount?: number; creativeProfile?: unknown; outputPolicy?: unknown },
+  policy?: StoryboardGridPolicyInput | unknown,
 ): string {
   const cells = shots.slice(0, GRID_MAX_SHOTS);
+  const profileValue = policy && typeof policy === "object" && !Array.isArray(policy)
+    ? ((policy as StoryboardGridPolicyInput).creativeProfile ?? (policy as StoryboardGridPolicyInput).outputPolicy ?? policy)
+    : policy;
+  const premiumCg = isPremiumCgPromptPolicy(profileValue)
+    || isPremiumCgPromptPolicy(refs?.creativeProfile)
+    || isPremiumCgPromptPolicy(refs?.outputPolicy);
+  if (premiumCg) return buildPremiumStoryboardGridPrompt(cells, refs);
+
   const cast = (characters ?? [])
     .map((c) => `${c.name}：${c.appearance}`)
     .filter(Boolean)
@@ -87,6 +111,41 @@ export function buildStoryboardGridPrompt(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Product-only storyboard contract. It intentionally does not share the UGC/persona block. */
+function buildPremiumStoryboardGridPrompt(
+  cells: Shot[],
+  refs?: { characterSheet?: boolean; productImage?: boolean; productImageCount?: number },
+): string {
+  const suppliedCount = refs?.productImageCount;
+  const productImageCount = typeof suppliedCount === "number" && Number.isFinite(suppliedCount)
+    ? Math.max(0, Math.floor(suppliedCount))
+    : refs?.productImage ? 1 : 0;
+  const refLines: string[] = [];
+  if (refs?.characterSheet) {
+    refLines.push("A presenter or identity reference, if supplied, is reference-only and must not introduce a presenter, talking head, or persona into any cell.");
+  }
+  for (let i = 0; i < productImageCount; i++) {
+    refLines.push(productImageCount === 1
+      ? "The product reference image locks the furniture silhouette, proportions, construction, materials, colors, seams, legs, and visible markings in every cell."
+      : `Product reference image ${i + 1}/${productImageCount} is another view of the same furniture piece; reconcile all supplied views as one product and never invent a new variant.`);
+  }
+  const cellLines = cells.map((shot, index) => {
+    const label = PREMIUM_SHOT_TYPE_LABELS[String(shot.type)] ?? "product observation";
+    const visual = sanitizePremiumCgVisualText(shot.visualIntent || shot.description) || "quiet product observation with stable form and material detail";
+    const camera = sanitizePremiumCgVisualText(shot.camera);
+    return `Cell ${index + 1} (${label}): ${visual}${camera ? ` Camera: ${camera}.` : ""}`;
+  });
+  return [
+    `A premium furniture product CG storyboard grid: a ${GRID_ROWS}x${GRID_COLS} equal-cell image in a 9:16 portrait canvas, with hairline neutral gutters only.`,
+    "All cells depict one identical furniture product with locked proportions, module count, seams, upholstery, wood or metal finish, color, hardware, and visible construction. Use controlled studio or quiet modern-home lighting with restrained, physically plausible reflections.",
+    ...refLines,
+    "No people, presenter behavior, lifestyle acting, handheld phone texture, UGC framing, or sales narrative. Do not infer unseen backs, interiors, mechanisms, materials, dimensions, or functions. Use only structure and angles supported by the supplied references.",
+    "Each cell is an independent keyframe before motion: one clear product observation, stable geometry, clean composition, and no added on-screen text, captions, subtitles, numbers, prices, promotional graphics, CTA, logo, or watermark. Preserve only markings already visible on the product reference.",
+    ...cellLines,
+    "Hard layout requirements: exactly nine equal cells, no borders inside cells, no labels or writing, and every cell must be crop-safe as a standalone product keyframe.",
+  ].filter(Boolean).join("\n");
 }
 
 export interface GridCell {

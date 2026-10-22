@@ -277,7 +277,10 @@ async function cmdProduct(flags) {
   if (!/^https?:\/\/.+/i.test(url)) throw new Error('--url 必须是合法的 http/https 商品链接，如 --url "https://item.example.com/123"');
 
   step(`抓取商品信息：${url}`);
-  const ingest = await api("/api/ingest/product", { method: "POST", body: { url, createProject: true } });
+  const ingest = await api("/api/ingest/product", {
+    method: "POST",
+    body: { url, createProject: true, creativeProfile: { creationType: "short_video_sales" } },
+  });
   const projectId = ingest.projectId;
   if (!projectId) throw new Error("未能从该链接建项目（可能被反爬或缺少标准商品标签），请换一个链接。");
   const productName = ingest.product?.title?.trim();

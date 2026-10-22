@@ -16,6 +16,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { CreationTypeGate } from "@/components/creation-type-gate";
 import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { getExampleProducts } from "@/lib/examples";
@@ -122,6 +123,7 @@ export default function BatchPage() {
   // Real product library + LLM config
   const { products, incrementVideoCount, addProduct } = useProductLibraryStore();
   const { llm } = useSettingsStore();
+  const [salesFlowChosen, setSalesFlowChosen] = useState(false);
 
   // One-click import of example products
   const importExamples = useCallback(() => {
@@ -323,6 +325,10 @@ export default function BatchPage() {
             productDescription: product.description ?? "",
             productImages: product.images ?? [],
             videoMode: ctx.videoMode,
+            creativeProfile: {
+              creationType: "short_video_sales",
+              videoMode: ctx.videoMode,
+            },
           }),
         });
         if (!projRes.ok) throw new Error(t("errorProjectCreate"));
@@ -451,7 +457,7 @@ export default function BatchPage() {
 
   // Start batch generation (real: create project + generate script per item, reusing the single-product flow)
   const handleStartBatch = useCallback(async () => {
-    if (selectedProducts.size === 0 || isGenerating) return;
+    if (!salesFlowChosen || selectedProducts.size === 0 || isGenerating) return;
     if (!llm.apiKey) {
       setConfigError(t("errorNoLlm"));
       return;
@@ -506,12 +512,12 @@ export default function BatchPage() {
 
     await executeBatch(selected.map((p, i) => ({ product: p, slot: plan[i] })), ctx);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- executeBatch/processOne are stable page-level handlers
-  }, [selectedProducts, isGenerating, products, llm, videoMode, duration, scriptStyle, autoCompose, productCard, antiHomogeneity, locale, incrementVideoCount]);
+  }, [salesFlowChosen, selectedProducts, isGenerating, products, llm, videoMode, duration, scriptStyle, autoCompose, productCard, antiHomogeneity, locale, incrementVideoCount]);
 
   // Resume the interrupted job: finished items are kept as-is, everything else re-runs with the
   // job's ORIGINAL config/slots; items whose composition already exists just poll/finish it.
   const handleResumeBatch = async () => {
-    if (!resumableJob || isGenerating) return;
+    if (!salesFlowChosen || !resumableJob || isGenerating) return;
     if (!llm.apiKey) {
       setConfigError(t("errorNoLlm"));
       return;
@@ -582,6 +588,26 @@ export default function BatchPage() {
 
   // Number of completed tasks
   const doneCount = batchTasks.filter((t) => t.status === "done").length;
+
+  if (!salesFlowChosen) {
+    return (
+      <div className="min-h-screen grid-bg">
+        <main className="mx-auto max-w-2xl px-6 py-10">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold tracking-tight">
+              <span className="brand-gradient-text">{t("heroTitle")}</span>
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1.5">{t("heroSubtitle")}</p>
+          </div>
+          <Card className="glass-card">
+            <CardContent className="p-5">
+              <CreationTypeGate onSelectShortVideoSales={() => setSalesFlowChosen(true)} />
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen grid-bg">

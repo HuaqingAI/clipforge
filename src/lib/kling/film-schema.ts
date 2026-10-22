@@ -4,6 +4,7 @@ import type { KlingInputSnapshot } from "./job-schema";
 import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingFilmOutputSettings, KlingFilmStatus, KlingFilmShotStatus } from "./film-types";
 import type { VideoPromptSettings } from "@/lib/shot-video-prompt";
+import type { ProjectCreativeProfile } from "@/lib/creative-profiles";
 
 export interface KlingFilmData {
   scriptRevision: string;
@@ -12,6 +13,9 @@ export interface KlingFilmData {
   output: KlingFilmOutputSettings;
   promptSettings?: VideoPromptSettings;
   projectPromptRevision?: string;
+  /** Immutable creative policy used to compile this plan. */
+  creativeProfile?: ProjectCreativeProfile;
+  creativeConfigRevision?: number;
   planHash: string;
   expiresAt: number;
   reuseExistingVideos: boolean;

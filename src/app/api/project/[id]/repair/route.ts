@@ -7,7 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { getDb } from "@/lib/db";
-import { assets, generationReviews, scripts } from "@/lib/db/schema";
+import { assets, generationReviews, projects, scripts } from "@/lib/db/schema";
 import { assetMatchesScript, filterAssetsForScript } from "@/lib/asset-context";
 import { probeMedia } from "@/lib/media-probe";
 import { createProvider } from "@/lib/providers";
@@ -24,6 +24,7 @@ import {
 import { finalizeVideoRepair } from "@/lib/video-repair-finalize";
 import { extractFrameAtTime } from "@/lib/video-composer/frame-extract";
 import { isKlingVideoSelection } from "@/lib/assets-view";
+import { isPremiumProductCgProject } from "@/lib/creative-profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -219,6 +220,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (body.provider === "kling-cli" || isKlingVideoSelection(body.model)) return NextResponse.json({ error: "Kling CLI 首版不支持自动修复，请使用单镜头入口", code: "KLING_SCOPE_UNSUPPORTED" }, { status: 400 });
   } catch {
     return apiError(req, "无效的修复参数", "Invalid repair payload", 400);
+  }
+  // Repair uses a generic video-to-video prompt and can introduce a different visual
+  // treatment. Keep premium product CG on its controlled generation path until it has
+  // a dedicated repair compiler and provenance contract.
+  const db = getDb();
+  const [project] = await db
+    .select({ creativeProfile: projects.creativeProfile, videoMode: projects.videoMode })
+    .from(projects)
+    .where(eq(projects.id, id))
+    .limit(1);
+  if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+  if (isPremiumProductCgProject(project)) {
+    return NextResponse.json(
+      {
+        error: "高端家具产品 CG 暂不支持通用视频修复，请从受控分镜重新生成。",
+        code: "PREMIUM_CG_OUTPUT_POLICY",
+      },
+      { status: 400 },
+    );
   }
   try {
     if (body.action === "finalize") {

@@ -15,6 +15,12 @@ import { assertKlingJobLease, getKlingJob, getKlingOutputs, patchKlingJob, patch
 import { downloadPublicFile } from "./download";
 import { KlingError } from "./errors";
 import { cleanupDeletedKlingJob } from "./delete-job";
+import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import {
+  filterTrustedPremiumCgAssets,
+  hasTrustedPremiumCgAssetProvenance,
+  PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
+} from "@/lib/premium-cg-assets";
 
 async function exists(file: string): Promise<boolean> {
   return stat(file).then((value) => value.isFile()).catch(() => false);
@@ -33,19 +39,28 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
       tx.update(klingJobOutputs).set({ importState: "imported", updatedAt: Date.now() }).where(eq(klingJobOutputs.id, output.id)).run();
       return;
     }
-    if (!tx.select().from(projects).where(eq(projects.id, job.projectId)).get()) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目已不存在，视频仍保留在任务输出中", 409);
+    const project = tx.select().from(projects).where(eq(projects.id, job.projectId)).get();
+    if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目已不存在，视频仍保留在任务输出中", 409);
     const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
     const selectedScript = scriptRows.find((script) => script.selected) ?? scriptRows[0];
     const sourceScript = scriptRows.find((script) => script.id === job.scriptId);
     const shot = sourceScript?.shots?.find((item) => item.shotId === job.shotId);
-    const scoped = selectedScript ? filterAssetsForScript(tx.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(), selectedScript) : [];
+    const creativeContext = selectedScript ? checkCreativeProfileContext(project, selectedScript) : undefined;
+    const premiumCg = isPremiumProductCgProfile(creativeContext?.projectProfile);
+    const scopedRaw = selectedScript ? filterAssetsForScript(
+      tx.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(),
+      selectedScript,
+    ) : [];
+    const scoped = premiumCg
+      ? filterTrustedPremiumCgAssets(scopedRaw, job.projectId, selectedScript)
+      : scopedRaw;
     const baselineMatches = (scoped[0]?.id ?? null) === job.data.expectedSelectedAssetId;
-    const contextMatches = Boolean(selectedScript && sourceScript && shot && selectedScript.id === job.scriptId &&
+    const contextMatches = Boolean(creativeContext?.ok && selectedScript && sourceScript && shot && selectedScript.id === job.scriptId &&
       scriptRevision(selectedScript) === job.data.scriptRevision && shotKey(sourceScript.id, shot) === job.data.shotKey);
     const alreadySelectedOutput = tx.select().from(klingJobOutputs).where(eq(klingJobOutputs.jobId, job.id)).all().some((item) => item.data.selectionOutcome === "selected");
     const selected = contextMatches && baselineMatches && !alreadySelectedOutput;
     const outcome = selected ? "selected" : contextMatches ? "kept_as_alternative" : "detached";
-    if (selected && scoped.length) tx.update(assets).set({ selected: false }).where(inArray(assets.id, scoped.map((asset) => asset.id))).run();
+    if (selected && scopedRaw.length) tx.update(assets).set({ selected: false }).where(inArray(assets.id, scopedRaw.map((asset) => asset.id))).run();
     const id = randomUUID();
     tx.insert(assets).values({
       id, projectId: job.projectId, shotId: job.shotId, type: "ai_generated",
@@ -149,10 +164,34 @@ export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentC
     const script = rows.find((item) => item.selected) ?? rows[0];
     const shot = script?.shots?.find((item) => item.shotId === job.shotId);
     if (!script || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本已没有对应镜头", 409);
+    const project = tx.select().from(projects).where(eq(projects.id, job.projectId)).get();
+    if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目已不存在", 404);
+    const creativeContext = checkCreativeProfileContext(project, script);
+    if (!creativeContext.ok) {
+      throw new KlingError(
+        creativeContext.code,
+        creativeContext.code === "CREATIVE_CONFIG_STALE"
+          ? "The script was created with an outdated creative configuration. Regenerate it before selecting a Kling output."
+          : "The script does not match the project's current creative type. Generate a matching script before selecting a Kling output.",
+        409,
+      );
+    }
     const matches = assetMatchesScript(original, script);
+    const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
+    const belongsToJob = original.projectId === job.projectId && original.shotId === job.shotId;
+    if (premiumCg && (!belongsToJob || !matches || !hasTrustedPremiumCgAssetProvenance(original, job.projectId, script))) {
+      throw new KlingError(
+        PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
+        "Premium product CG can only select a current-script Kling output with verifiable server-owned provenance.",
+        409,
+      );
+    }
     if (!matches && !adoptCurrentContext) throw new KlingError("KLING_CONTEXT_CHANGED", "此视频属于旧脚本，请明确确认用于当前镜头", 409);
-    const current = filterAssetsForScript(tx.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(), script);
-    if (current.length) tx.update(assets).set({ selected: false }).where(inArray(assets.id, current.map((item) => item.id))).run();
+    const currentRaw = filterAssetsForScript(
+      tx.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(),
+      script,
+    );
+    if (currentRaw.length) tx.update(assets).set({ selected: false }).where(inArray(assets.id, currentRaw.map((item) => item.id))).run();
     if (matches) tx.update(assets).set({ selected: true }).where(eq(assets.id, original.id)).run();
     else {
       const derived = tx.select().from(assets).where(and(eq(assets.derivedFromAssetId, original.id), eq(assets.sourceScriptId, script.id), eq(assets.sourceRevision, scriptRevision(script)), eq(assets.sourceShotKey, shotKey(script.id, shot)))).get();

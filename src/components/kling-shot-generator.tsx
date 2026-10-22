@@ -30,11 +30,11 @@ function hasVerifiedCatalog(status: KlingPublicStatus, profileId?: string, selec
     && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision && model.available));
 }
 
-export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, onSubmitted, onRefreshTasks }: {
+export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, forceSilent = false, onSubmitted, onRefreshTasks }: {
   open: boolean; onOpenChange(open: boolean): void; projectId: string; scriptId: string; profileId?: string; defaultModel?: string;
   preparedPrompt: string; firstFrameUrl?: string; lastFrameUrl?: string;
   defaultParameters?: Record<string, unknown>;
-  asset: AssetItem | null; referenceImages: string[]; onSubmitted(jobId: string): void; onRefreshTasks(): Promise<void>;
+  asset: AssetItem | null; referenceImages: string[]; forceSilent?: boolean; onSubmitted(jobId: string): void; onRefreshTasks(): Promise<void>;
 }) {
   const [status, setStatus] = useState<KlingPublicStatus | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -116,7 +116,7 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [open, asset, preparedPrompt, sourceFrame, profileId, defaultModel]);
+  }, [open, asset, preparedPrompt, sourceFrame, profileId, defaultModel, forceSilent]);
 
   useEffect(() => {
     if (!model) { setConfirmed(false); return; }
@@ -136,11 +136,12 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
 
   const audioParameters = model?.parameters.filter((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)) ?? [];
   const hasNativeAudioControl = audioParameters.length > 0;
+  const effectiveGenerateAudio = forceSilent ? false : generateAudio;
   const audioSettings = model
-    ? klingModelOptions({ ...model, parameters: audioParameters }, { audioEnabled: generateAudio })
+    ? klingModelOptions({ ...model, parameters: audioParameters }, { audioEnabled: effectiveGenerateAudio })
     : { options: {}, warnings: [], unsupportedSettings: [] };
   const submissionOptions = { ...options, ...audioSettings.options };
-  const submissionPrompt = klingAudioPrompt(prompt, generateAudio);
+  const submissionPrompt = klingAudioPrompt(prompt, effectiveGenerateAudio);
   const promptIssues = validateVideoPrompt(submissionPrompt);
   const warnings = [...parameterWarnings, ...audioSettings.warnings];
   const missingInput = model?.inputSlots.find((slot) => slot.required && !inputUrls[slot.name]?.trim());
@@ -203,8 +204,8 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
         <p className="break-all text-xs text-muted-foreground">实际模型：{model.remoteModelId} · {model.tool}</p>
         {warnings.length > 0 && <ul className="space-y-1 text-xs text-amber-600">{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
         {model.inputSlots.map((slot, index) => <div key={slot.name} className="space-y-2 rounded-md border p-3"><label className="space-y-1 text-sm"><span>{slot.role === "tailImage" ? "尾帧" : `输入图片 ${index + 1}`} · {slot.name}{slot.required ? "（必填）" : "（可选）"}</span><select aria-label={`Kling 图片 ${slot.name}`} value={inputUrls[slot.name] ?? ""} className="w-full rounded-md border bg-background p-2" disabled={submitting || uncertain} onChange={(event) => { setInputUrls((previous) => ({ ...previous, [slot.name]: event.target.value })); setConfirmed(false); }}><option value="">不使用图片</option>{imageChoices.map((url, imageIndex) => <option key={url} value={url}>{url === sourceFrame ? "当前镜头原始关键帧" : `已关联参考图片 ${imageIndex + 1}`}</option>)}</select></label>{inputUrls[slot.name] && <img src={inputUrls[slot.name]} alt={`${slot.name} 已关联输入`} className="max-h-32 max-w-full rounded object-contain" />}</div>)}
-        <div className="space-y-1 text-sm"><label><span>是否生成声音</span><select aria-label="Kling 生成声音" aria-describedby="kling-audio-hint" className="w-full rounded-md border bg-background p-2" value={generateAudio ? "on" : "off"} disabled={submitting || uncertain} onChange={(event) => { const enabled = event.target.value === "on"; setGenerateAudio(enabled); setPrompt((current) => klingAudioPrompt(current, enabled)); setConfirmed(false); }}><option value="off">不生成声音</option><option value="on">生成声音</option></select></label><p id="kling-audio-hint" className={`text-xs ${hasNativeAudioControl ? "text-muted-foreground" : "text-amber-600"}`}>{hasNativeAudioControl ? (generateAudio ? "已开启模型的声音生成。" : "已关闭模型的声音生成，同时在提示词末尾追加静音要求。") : (generateAudio ? "当前模型未提供声音开关，是否有声音以生成结果为准。" : "当前模型未提供声音开关；此选项仅追加静音提示词，仍可能生成声音。需要直接关闭声音时，请选择支持声音开关的模型。")}</p></div>
-        <label className="space-y-1 text-sm"><span>实际提交的提示词</span><textarea aria-label="Kling 视频提示词" rows={12} className="min-h-64 w-full rounded-md border bg-background p-2 leading-relaxed" value={prompt} maxLength={12000} disabled={submitting || uncertain} onChange={(event) => { setPrompt(event.target.value); setConfirmed(false); }} onBlur={() => setPrompt((current) => klingAudioPrompt(current, generateAudio))} /></label>
+        {!forceSilent && <div className="space-y-1 text-sm"><label><span>是否生成声音</span><select aria-label="Kling 生成声音" aria-describedby="kling-audio-hint" className="w-full rounded-md border bg-background p-2" value={generateAudio ? "on" : "off"} disabled={submitting || uncertain} onChange={(event) => { const enabled = event.target.value === "on"; setGenerateAudio(enabled); setPrompt((current) => klingAudioPrompt(current, enabled)); setConfirmed(false); }}><option value="off">不生成声音</option><option value="on">生成声音</option></select></label><p id="kling-audio-hint" className={`text-xs ${hasNativeAudioControl ? "text-muted-foreground" : "text-amber-600"}`}>{hasNativeAudioControl ? (generateAudio ? "已开启模型的声音生成。" : "已关闭模型的声音生成，同时在提示词末尾追加静音要求。") : (generateAudio ? "当前模型未提供声音开关，是否有声音以生成结果为准。" : "当前模型未提供声音开关；此选项仅追加静音提示词，仍可能生成声音。需要直接关闭声音时，请选择支持声音开关的模型。")}</p></div>}
+        <label className="space-y-1 text-sm"><span>实际提交的提示词</span><textarea aria-label="Kling 视频提示词" rows={12} className="min-h-64 w-full rounded-md border bg-background p-2 leading-relaxed" value={prompt} maxLength={12000} disabled={submitting || uncertain} onChange={(event) => { setPrompt(event.target.value); setConfirmed(false); }} onBlur={() => setPrompt((current) => klingAudioPrompt(current, effectiveGenerateAudio))} /></label>
         <div className="grid gap-3 sm:grid-cols-2">{model.parameters.filter((parameter) => !KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)).map((parameter) => <label key={parameter.name} className="space-y-1 text-sm"><span>{videoParameterLabel(parameter.name)}{parameter.required ? " *" : ""}</span>{parameter.allowedValues ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, parameter.allowedValues!.find((value) => String(value) === event.target.value))}><option value="">使用平台默认值</option>{parameter.allowedValues.map((value) => <option key={String(value)} value={String(value)}>{videoParameterValueLabel(parameter.name, value)}</option>)}</select> : parameter.type === "boolean" ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={options[parameter.name] === undefined ? "" : String(options[parameter.name])} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : event.target.value === "true")}><option value="">使用平台默认值</option><option value="true">开启</option><option value="false">关闭</option></select> : <input aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" type={parameter.type === "number" ? "number" : "text"} value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.type === "number" ? Number(event.target.value) : event.target.value)} />}{videoParameterDescription(parameter) && <p className="text-xs text-muted-foreground">{videoParameterDescription(parameter)}</p>}</label>)}</div>
         <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm">此操作调用 Kling 官方账号生成视频，可能消耗积分。实际扣费以 Kling 为准；本应用未获得精确积分报价时不会把费用显示为免费。</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={confirmed} disabled={submitting || uncertain} onChange={(event) => setConfirmed(event.target.checked)} />我已核对当前镜头、模型、图片和参数，确认本次生成可能扣除 Kling 积分。</label></div>
         {(missingInput || missingParameter) && <p className="text-xs text-amber-600">请填写必填项：{missingInput?.name ?? (missingParameter && videoParameterLabel(missingParameter.name))}</p>}

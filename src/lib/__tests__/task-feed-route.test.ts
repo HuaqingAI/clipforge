@@ -2,10 +2,12 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { eq } from "drizzle-orm";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
+import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 import { klingFilmRuns, klingFilmShots, type KlingFilmRun } from "@/lib/kling/film-schema";
 import * as klingRepository from "@/lib/kling/repository";
 import type { KlingJob } from "@/lib/kling/job-schema";
@@ -128,6 +130,41 @@ describe("任务发现和恢复状态", () => {
     expect(await (await getPipeline(new NextRequest(url), context)).json()).toMatchObject({ run: { id: "a-later" } });
     expect((await postPipeline(new NextRequest(url, { method: "POST", body: JSON.stringify({ resume: true }) }), context)).status).toBe(202);
     expect(state.start).toHaveBeenCalledWith(expect.objectContaining({ fromStage: "compose", scriptId: "new-script" }));
+  });
+
+  it("blocks premium product CG before touching or resuming a sales pipeline", async () => {
+    const projectId = "project-a";
+    const context = { params: Promise.resolve({ id: projectId }) };
+    const url = `http://localhost/api/project/${projectId}/pipeline`;
+    db.update(schema.projects)
+      .set({ creativeProfile: createPremiumProductCgProfile() })
+      .where(eq(schema.projects.id, projectId))
+      .run();
+    run({ id: "premium-existing-run", status: "running", stage: "compose" });
+
+    const response = await postPipeline(
+      new NextRequest(url, { method: "POST", body: JSON.stringify({ resume: true }) }),
+      context,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_OUTPUT_POLICY" });
+    expect(state.start).not.toHaveBeenCalled();
+    expect(getLatestPipelineRun(projectId)).toMatchObject({ id: "premium-existing-run", status: "running" });
+  });
+
+  it("keeps sales projects eligible for a pipeline start", async () => {
+    const projectId = "project-b";
+    const response = await postPipeline(
+      new NextRequest(`http://localhost/api/project/${projectId}/pipeline`, { method: "POST", body: "{}" }),
+      { params: Promise.resolve({ id: projectId }) },
+    );
+
+    expect(response.status).toBe(202);
+    expect(state.start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId,
+      origin: "http://localhost",
+    }));
   });
 
   it("shows a Kling film parent with ready progress and hides its child and duplicate composition", async () => {

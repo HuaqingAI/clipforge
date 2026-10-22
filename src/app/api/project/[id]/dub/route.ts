@@ -2,9 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects, type Shot } from "@/lib/db/schema";
-import { translateShots, defaultVoiceForLang, langName } from "@/lib/script-engine/translate";
+import { translateShots, translateVoiceovers, defaultVoiceForLang, langName } from "@/lib/script-engine/translate";
 import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import { apiError, errText } from "@/lib/api-error";
+import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
+import {
+  checkCreativeProfileContext,
+  createCreativeProfileSnapshot,
+  isPremiumProductCgProfile,
+} from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -33,6 +39,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return apiError(req, "请配置 LLM 参数（baseUrl、model；本地/免费端点 apiKey 可留空）", "Please configure LLM parameters (baseUrl, model; apiKey may be left empty for local/free endpoints)");
   }
 
+  const translationModel = llmConfig.model;
   const db = getDb();
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
@@ -41,47 +48,104 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!rows.length) return apiError(req, "该项目还没有脚本", "This project has no script yet", 404);
   const source = rows.find((r) => r.selected) ?? rows[rows.length - 1];
   const shots = (source.shots ?? []) as Shot[];
+  const context = checkCreativeProfileContext(project, source);
+  if (!context.ok) {
+    return NextResponse.json({
+      error: context.code === "CREATIVE_CONFIG_STALE"
+        ? "The selected script uses an outdated creative configuration. Regenerate it before dubbing."
+        : "The selected script does not match the current creative type. Generate a current script before dubbing.",
+      code: context.code,
+      currentCreationType: context.projectProfile.creationType,
+      scriptCreationType: context.scriptProfile.creationType,
+      projectRevision: context.projectRevision,
+      scriptRevision: context.scriptRevision,
+    }, { status: 409 });
+  }
+  const premiumProfile = isPremiumProductCgProfile(context.scriptProfile) ? context.scriptProfile : undefined;
+  if (premiumProfile?.narrationMode === "none") {
+    return NextResponse.json({
+      error: "This premium product CG script is visual-only and cannot be dubbed.",
+      code: "CG_NARRATION_DISABLED",
+    }, { status: 409 });
+  }
   if (!shots.length) return apiError(req, "脚本没有分镜", "The script has no shots");
 
   let translated: Shot[];
   try {
-    translated = await translateShots(shots, targetLang, {
+    const translationConfig = {
       baseUrl: llmConfig.baseUrl,
       apiKey: llmConfig.apiKey ?? "",
-      model: llmConfig.model,
-    });
+      model: translationModel,
+    };
+    if (premiumProfile) {
+      // CG narration is sparse and must not retime visual product beats during localization.
+      const sourceNarration = shots.map((shot) => shot.narration ?? shot.voiceover ?? "");
+      const localizedNarration = await translateVoiceovers(sourceNarration, targetLang, translationConfig);
+      translated = shots.map((shot, index) => {
+        const voiceover = localizedNarration[index] ?? "";
+        return {
+          ...shot,
+          voiceover,
+          ...(typeof shot.narration === "string" ? { narration: voiceover } : {}),
+        };
+      });
+      const issues = lintCreativeProfileShots(premiumProfile, translated);
+      if (issues.length > 0) {
+        return NextResponse.json({
+          error: "Translated narration violates the premium product CG policy.",
+          code: "CREATIVE_POLICY_VIOLATION",
+          issues,
+        }, { status: 400 });
+      }
+    } else {
+      translated = await translateShots(shots, targetLang, translationConfig);
+    }
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : errText(req, "翻译失败", "Translation failed") }, { status: 502 });
   }
   const totalDuration = translated.reduce((sum, sh) => sum + sh.duration, 0);
-
-  // Get the next version number; deselect old scripts and mark the dubbed version as current
-  const [latest] = await db
-    .select({ version: scriptsTable.version })
-    .from(scriptsTable)
-    .where(eq(scriptsTable.projectId, id))
-    .orderBy(desc(scriptsTable.version))
-    .limit(1);
-  const nextVersion = (latest?.version ?? 0) + 1;
-  await db.update(scriptsTable).set({ selected: false }).where(eq(scriptsTable.projectId, id));
 
   const title =
     typeof body.title === "string" && body.title.trim()
       ? body.title.trim().slice(0, 80)
       : `[${langName(targetLang)}] ${source.title ?? "dub"}`.slice(0, 80);
 
-  const [row] = await db
-    .insert(scriptsTable)
-    .values({
-      projectId: id, version: nextVersion, styleType: "custom", title, totalDuration,
-      shots: translated, selected: true,
-      generationMetadata: scriptGenerationMetadata({ provider: llmConfig.provider, model: llmConfig.model }, "translation"),
-    })
-    .returning();
+  const [row] = db.transaction((tx) => {
+    const [latest] = tx
+      .select({ version: scriptsTable.version })
+      .from(scriptsTable)
+      .where(eq(scriptsTable.projectId, id))
+      .orderBy(desc(scriptsTable.version))
+      .limit(1)
+      .all();
+    const nextVersion = (latest?.version ?? 0) + 1;
+    tx.update(scriptsTable).set({ selected: false }).where(eq(scriptsTable.projectId, id)).run();
+    return tx
+      .insert(scriptsTable)
+      .values({
+        projectId: id,
+        version: nextVersion,
+        styleType: source.styleType,
+        title,
+        totalDuration,
+        shots: translated,
+        selected: true,
+        generationMetadata: scriptGenerationMetadata({ provider: llmConfig.provider, model: translationModel }, "translation"),
+        // Translation derives from the source script; canonicalize its frozen policy instead of
+        // carrying a malformed legacy JSON fragment into a newly created version.
+        creativeProfileSnapshot: createCreativeProfileSnapshot(
+          context.scriptProfile,
+          context.scriptRevision ?? context.projectRevision,
+          { styleType: source.styleType, videoMode: project.videoMode },
+        ),
+      })
+      .returning()
+      .all();
+  });
 
   return NextResponse.json({
     scriptId: row.id,
-    version: nextVersion,
+    version: row.version,
     targetLang,
     shots: translated.length,
     recommendedVoice: defaultVoiceForLang(targetLang),

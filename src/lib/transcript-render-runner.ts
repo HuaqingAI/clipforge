@@ -6,6 +6,7 @@ import { compositions, mediaEdits, mediaSources, projects } from "@/lib/db/schem
 import { getOutputDir } from "@/lib/paths";
 import { renderTranscriptEdit } from "@/lib/transcript-render";
 import { extractFirstFrame } from "@/lib/video-composer/frame-extract";
+import { isPremiumCgMediaEditBlocked, PREMIUM_CG_MEDIA_EDIT_FORBIDDEN } from "@/lib/premium-cg-media";
 
 type Edit = typeof mediaEdits.$inferSelect;
 const registry = globalThis as typeof globalThis & { clipforgeTranscriptRenders?: Map<string, { attemptId: string; controller: AbortController }> };
@@ -31,6 +32,12 @@ export function reconcileTranscriptRenders(projectId?: string, now = new Date())
       or(lt(mediaEdits.heartbeatAt, cutoff), and(isNull(mediaEdits.heartbeatAt), or(lt(mediaEdits.updatedAt, cutoff), isNull(mediaEdits.updatedAt)))),
     )).all();
     for (const edit of stale) {
+      const project = tx.select().from(projects).where(eq(projects.id, edit.projectId)).get();
+      if (project && isPremiumCgMediaEditBlocked(project)) {
+        tx.update(mediaEdits).set({ status: "failed", error: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN, updatedAt: now }).where(eq(mediaEdits.id, edit.id)).run();
+        if (edit.compositionId) tx.update(compositions).set({ status: "failed" }).where(eq(compositions.id, edit.compositionId)).run();
+        continue;
+      }
       tx.update(mediaEdits).set({ status: "failed", error: "RENDER_INTERRUPTED", updatedAt: now }).where(eq(mediaEdits.id, edit.id)).run();
       if (edit.compositionId) tx.update(compositions).set({ status: "failed" }).where(eq(compositions.id, edit.compositionId)).run();
     }
@@ -55,6 +62,8 @@ export function retryTranscriptRender(editId: string): Edit {
   const edit = db.transaction((tx) => {
     const row = tx.select().from(mediaEdits).where(eq(mediaEdits.id, editId)).get();
     if (!row || (row.status !== "failed" && row.status !== "cancelled")) throw new Error("EDIT_NOT_RETRYABLE");
+    const project = tx.select().from(projects).where(eq(projects.id, row.projectId)).get();
+    if (project && isPremiumCgMediaEditBlocked(project)) throw new Error(PREMIUM_CG_MEDIA_EDIT_FORBIDDEN);
     if (!row.transcriptSnapshot || !row.compositionId) throw new Error("EDIT_SNAPSHOT_MISSING");
     const now = new Date();
     const updated = tx.update(mediaEdits).set({ status: "queued", progress: 0, error: null, attemptId: crypto.randomUUID(), heartbeatAt: now, updatedAt: now }).where(eq(mediaEdits.id, editId)).returning().get();
@@ -71,6 +80,14 @@ export function startTranscriptRender(editId: string): void {
   if (!edit?.attemptId || !edit.compositionId || !edit.transcriptSnapshot || edit.status !== "queued") return;
   const source = db.select().from(mediaSources).where(eq(mediaSources.id, edit.sourceId)).get();
   if (!source) return;
+  const project = db.select().from(projects).where(eq(projects.id, source.projectId)).get();
+  if (project && isPremiumCgMediaEditBlocked(project)) {
+    db.transaction((tx) => {
+      tx.update(mediaEdits).set({ status: "failed", error: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN, updatedAt: new Date() }).where(eq(mediaEdits.id, editId)).run();
+      tx.update(compositions).set({ status: "failed" }).where(eq(compositions.id, edit.compositionId!)).run();
+    });
+    return;
+  }
   const previous = activeRenders.get(editId);
   if (previous?.attemptId === edit.attemptId) return;
   previous?.controller.abort(new Error("RENDER_SUPERSEDED"));
@@ -106,6 +123,12 @@ export function startTranscriptRender(editId: string): void {
       thumbnailPath = await extractFirstFrame(outputPath);
       controller.signal.throwIfAborted();
       committed = db.transaction((tx) => {
+        const currentProject = tx.select().from(projects).where(eq(projects.id, source.projectId)).get();
+        if (currentProject && isPremiumCgMediaEditBlocked(currentProject)) {
+          tx.update(mediaEdits).set({ status: "failed", error: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN, updatedAt: new Date() }).where(ownAttempt).run();
+          tx.update(compositions).set({ status: "failed" }).where(eq(compositions.id, compositionId)).run();
+          return false;
+        }
         const updated = tx.update(mediaEdits).set({ status: "done", progress: 100, error: null, updatedAt: new Date() }).where(ownAttempt).run();
         if (!updated.changes) return false;
         tx.update(compositions).set({ outputPath, status: "done", ...(thumbnailPath && { thumbnailPath }) }).where(eq(compositions.id, compositionId)).run();

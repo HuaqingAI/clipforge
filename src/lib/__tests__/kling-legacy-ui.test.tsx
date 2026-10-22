@@ -67,6 +67,7 @@ describe("Kling defaults never become another paid provider", () => {
 
   it("hides the model-tier replication entry while keeping reference analysis", async () => {
     await mount(createElement(ClonePage));
+    await act(async () => button("creationTypeSalesLabel").click());
     const fileInput = container.querySelector('input[accept^="video/mp4"]') as HTMLInputElement;
     Object.defineProperty(fileInput, "files", { configurable: true, value: [new File(["reference"], "ref.mp4", { type: "video/mp4" })] });
     await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));

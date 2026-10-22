@@ -9,6 +9,8 @@ export interface KlingFilmOutputSettings {
   audioStrategy: "edge-tts" | "edge-tts-mix" | "native";
   voice: string;
   subtitles: boolean;
+  /** Server-set for premium CG plans. It prevents later compose stages from re-enabling speech. */
+  narrationMode?: "none" | "restrained";
 }
 export interface KlingFilmPreviewRequest {
   projectId: string; scriptId: string; profileId: string; selectionKey: string;

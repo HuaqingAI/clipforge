@@ -1,18 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { scripts } from "@/lib/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { projects, scripts } from "@/lib/db/schema";
 import { apiError, errText } from "@/lib/api-error";
+import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
+import {
+  checkCreativeProfileContext,
+  isPremiumProductCgProfile,
+} from "@/lib/creative-profiles";
 
-// Fetch all script variants for a project (the script page / assets page reads real data by projectId)
+// Historical variants remain readable after regeneration or a profile switch. Selection and edits
+// are limited to scripts whose frozen creative context matches the current project configuration.
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
-    const db = getDb();
-    const rows = await db
+    const rows = await getDb()
       .select()
       .from(scripts)
       .where(eq(scripts.projectId, id))
@@ -21,17 +26,12 @@ export async function GET(
   } catch (error) {
     console.error("Failed to fetch scripts:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : errText(req, "获取脚本失败", "Failed to fetch scripts") },
-      { status: 500 }
+      { error: error instanceof Error ? error.message : errText(req, "Failed to fetch scripts", "Failed to fetch scripts") },
+      { status: 500 },
     );
   }
 }
 
-/**
- * Per-shot text patch: voiceover/description/camera may be edited (structure/timing stay intact).
- * `camera` joined the whitelist for the per-shot named camera-preset picker
- * moves) — the edited sentence feeds the i2v motion prompt on the next (re)generation.
- */
 interface ShotTextPatch {
   shotId: number;
   voiceover?: string;
@@ -39,71 +39,107 @@ interface ShotTextPatch {
   camera?: string;
 }
 
-/** Hard cap for an edited camera sentence (motion prompts must stay camera-led and short). */
 const CAMERA_MAX_LEN = 200;
 
-/**
- * PATCH — two operations for the script page:
- * 1. { selectedScriptId } — switch the active variant (downstream steps read `selected` from the DB).
- * 2. { scriptId, shotTexts: [{shotId, voiceover?, description?, camera?}] } — edit shot copy in place.
- *    Only text fields are merged; shot structure, order, durations and visual fields are untouched
- *    (durations are planning estimates and the final cut snaps to real TTS length anyway).
- */
+function contextConflict(context: Exclude<ReturnType<typeof checkCreativeProfileContext>, { ok: true }>) {
+  return {
+    error: context.code === "CREATIVE_CONFIG_STALE"
+      ? "The script was created with an outdated creative configuration. Regenerate a current script before using it."
+      : "The script does not match the project's current creative type. Generate a current script before using it.",
+    code: context.code,
+    currentCreationType: context.projectProfile.creationType,
+    scriptCreationType: context.scriptProfile.creationType,
+    projectRevision: context.projectRevision,
+    scriptRevision: context.scriptRevision,
+  };
+}
+
+/** PATCH accepts either a script selection or narrowly scoped shot-text edits. */
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
     const body = await req.json();
-
-    // Operation 2: per-shot text edits
     const scriptId = body.scriptId as string | undefined;
     const shotTexts = body.shotTexts as ShotTextPatch[] | undefined;
+
     if (scriptId && Array.isArray(shotTexts)) {
       const db = getDb();
-      const [row] = await db.select().from(scripts).where(eq(scripts.id, scriptId));
-      if (!row || row.projectId !== id) {
-        return apiError(req, "脚本不存在", "Script not found", 404);
+      const [script] = await db.select().from(scripts).where(eq(scripts.id, scriptId)).limit(1);
+      if (!script || script.projectId !== id) {
+        return apiError(req, "Script not found", "Script not found", 404);
       }
+      const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+      if (!project) return apiError(req, "Project not found", "Project not found", 404);
+
+      const context = checkCreativeProfileContext(project, script);
+      if (!context.ok) return NextResponse.json(contextConflict(context), { status: 409 });
+
       const patchByShot = new Map<number, ShotTextPatch>();
-      for (const p of shotTexts) {
-        if (p && typeof p.shotId === "number") patchByShot.set(p.shotId, p);
+      for (const patch of shotTexts) {
+        if (patch && typeof patch.shotId === "number") patchByShot.set(patch.shotId, patch);
       }
-      const shots = (row.shots ?? []).map((shot) => {
-        const p = patchByShot.get(shot.shotId);
-        if (!p) return shot;
+      const shots = (script.shots ?? []).map((shot) => {
+        const patch = patchByShot.get(shot.shotId);
+        if (!patch) return shot;
         return {
           ...shot,
-          ...(typeof p.voiceover === "string" && { voiceover: p.voiceover.trim() }),
-          ...(typeof p.description === "string" && { description: p.description.trim() }),
-          ...(typeof p.camera === "string" && { camera: p.camera.trim().slice(0, CAMERA_MAX_LEN) }),
+          ...(typeof patch.voiceover === "string" && { voiceover: patch.voiceover.trim() }),
+          ...(typeof patch.description === "string" && { description: patch.description.trim() }),
+          ...(typeof patch.camera === "string" && { camera: patch.camera.trim().slice(0, CAMERA_MAX_LEN) }),
         };
       });
+
+      const profile = context.scriptProfile;
+      if (isPremiumProductCgProfile(profile)) {
+        if (profile.narrationMode === "none" && shots.some((shot) => shot.voiceover.trim() || shot.narration?.trim())) {
+          return NextResponse.json({
+            error: "Visual-only premium product CG scripts cannot contain narration.",
+            code: "CG_NARRATION_DISABLED",
+          }, { status: 400 });
+        }
+        const issues = lintCreativeProfileShots(profile, shots);
+        if (issues.length > 0) {
+          return NextResponse.json({
+            error: "Premium product CG script edits violate the no-added-text or restrained-narration policy.",
+            code: "CREATIVE_POLICY_VIOLATION",
+            issues,
+          }, { status: 400 });
+        }
+      }
+
       const [updated] = await db.update(scripts).set({ shots }).where(eq(scripts.id, scriptId)).returning();
       return NextResponse.json({ success: true, script: updated });
     }
 
-    // Operation 1: switch the selected variant
     const selectedId = body.selectedScriptId as string | undefined;
     if (!selectedId) {
-      return apiError(req, "缺少 selectedScriptId 或 scriptId+shotTexts", "Missing selectedScriptId or scriptId+shotTexts", 400);
+      return apiError(req, "Missing selectedScriptId or scriptId+shotTexts", "Missing selectedScriptId or scriptId+shotTexts", 400);
     }
+
     const db = getDb();
-    // Deselect all scripts under this project, then select the target
-    const rows = await db.select().from(scripts).where(eq(scripts.projectId, id));
-    for (const r of rows) {
-      await db
-        .update(scripts)
-        .set({ selected: r.id === selectedId })
-        .where(eq(scripts.id, r.id));
+    const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    if (!project) return apiError(req, "Project not found", "Project not found", 404);
+    const [target] = await db.select().from(scripts).where(eq(scripts.id, selectedId)).limit(1);
+    if (!target || target.projectId !== id) {
+      return apiError(req, "Script not found", "Script not found", 404);
     }
-    return NextResponse.json({ success: true });
+
+    const context = checkCreativeProfileContext(project, target);
+    if (!context.ok) return NextResponse.json(contextConflict(context), { status: 409 });
+
+    const [updated] = db.transaction((tx) => {
+      tx.update(scripts).set({ selected: false }).where(eq(scripts.projectId, id)).run();
+      return tx.update(scripts).set({ selected: true }).where(eq(scripts.id, selectedId)).returning().all();
+    });
+    return NextResponse.json({ success: true, script: updated });
   } catch (error) {
     console.error("Failed to update script:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : errText(req, "更新失败", "Update failed") },
-      { status: 500 }
+      { error: error instanceof Error ? error.message : errText(req, "Update failed", "Update failed") },
+      { status: 500 },
     );
   }
 }

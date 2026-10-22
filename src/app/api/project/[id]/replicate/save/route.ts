@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import { getDataDir } from "@/lib/paths";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
+import { isPremiumProductCgProject } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 /** Generated clips are short (≤15s); 200MB leaves headroom for 1080p high-bitrate output */
@@ -30,8 +31,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     const db = getDb();
-    const proj = await db.select({ id: projects.id }).from(projects).where(eq(projects.id, id));
+    const proj = await db.select().from(projects).where(eq(projects.id, id));
     if (proj.length === 0) return apiError(req, "项目不存在", "Project not found", 404);
+
+    if (isPremiumProductCgProject(proj[0])) {
+      return NextResponse.json(
+        {
+          error: "Premium product CG does not accept externally replicated video output.",
+          code: "PREMIUM_CG_OUTPUT_POLICY",
+        },
+        { status: 409 },
+      );
+    }
 
     const res = await fetch(videoUrl);
     if (!res.ok) {

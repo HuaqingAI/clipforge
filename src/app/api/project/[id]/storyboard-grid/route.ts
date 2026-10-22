@@ -5,7 +5,7 @@ import { writeFile, mkdir, stat } from "fs/promises";
 import { join } from "path";
 import { getDataDir } from "@/lib/paths";
 import { getDb } from "@/lib/db";
-import { scripts, assets } from "@/lib/db/schema";
+import { scripts, assets, projects } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
 import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
@@ -17,8 +17,32 @@ import { normalizeOpenAIBaseUrl } from "@/lib/openai-config";
 import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature } from "@/lib/storyboard-grid-cache";
 import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
 import { saveAssetCandidate } from "@/lib/asset-persistence";
+import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
+import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
+import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Premium CG owns the prompt and all visual reference inputs. Providers merge their
+ * opaque `extra` object after those fields, so it cannot cross the CG boundary.
+ */
+function gridGenerationOptions(value: unknown, premiumCg: boolean): Record<string, unknown> {
+  const options = value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+  if (!premiumCg) return options;
+  for (const key of ["modelId", "mode", "prompt", "referenceImageUrl", "referenceImageUrls", "negativePrompt", "negative_prompt", "extra"]) {
+    delete options[key];
+  }
+  options.negativePrompt = PREMIUM_CG_IMAGE_NEGATIVE_PROMPT;
+  return options;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
 
 async function usableSelectedMedia(asset: typeof assets.$inferSelect): Promise<boolean> {
   if (asset.status !== "done" || !asset.filePath || !/\.(png|jpe?g|webp|gif|avif|bmp|mp4|webm|mov|m4v)$/i.test(asset.filePath)) return false;
@@ -109,8 +133,88 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
     if (!script) return apiError(req, "脚本不存在", "Script not found", 404);
     const shots = Array.isArray(script.shots) ? script.shots : [];
+    const [project] = await db.select({
+      creativeProfile: projects.creativeProfile,
+      videoMode: projects.videoMode,
+      creativeConfigRevision: projects.creativeConfigRevision,
+      productImages: projects.productImages,
+    }).from(projects).where(eq(projects.id, id));
+    if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+    const profileContext = checkCreativeProfileContext(project, script);
+    if (!profileContext.ok) {
+      return NextResponse.json({
+        error: profileContext.code === "CREATIVE_CONFIG_STALE"
+          ? "脚本基于旧的创作设置生成，请重新生成脚本后再生成分镜。"
+          : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+        code: profileContext.code,
+        projectCreationType: profileContext.projectProfile.creationType,
+        scriptCreationType: profileContext.scriptProfile.creationType,
+        projectRevision: profileContext.projectRevision,
+        scriptRevision: profileContext.scriptRevision,
+      }, { status: 409 });
+    }
+    const creativeProfile = profileContext.projectProfile;
+    const premiumCg = isPremiumProductCgProfile(creativeProfile);
+    const generationOptions = gridGenerationOptions(options, premiumCg);
+    const requestedProductImageUrl = nonEmptyString(productImageUrl);
+    const requestedProductImageUrls = Array.isArray(productImageUrls)
+      ? productImageUrls.map(nonEmptyString).filter((u): u is string => Boolean(u))
+      : [];
+    // Keep the pre-existing array-over-single selection behavior for actual generation,
+    // while validating every supplied field for the stricter premium-CG boundary.
+    const requestedProductRefs = Array.isArray(productImageUrls)
+      ? requestedProductImageUrls
+      : requestedProductImageUrl ? [requestedProductImageUrl] : [];
+    const allRequestedProductRefs = [
+      ...(requestedProductImageUrl ? [requestedProductImageUrl] : []),
+      ...requestedProductImageUrls,
+    ];
+    const projectProductRefs = Array.isArray(project.productImages)
+      ? project.productImages.map(nonEmptyString).filter((u): u is string => Boolean(u))
+      : [];
+    if (premiumCg) {
+      // The profile came from a matching, canonical project/script context above.
+      // Do not accept a request-level fallback here: an untrusted output policy
+      // could otherwise change how premium CG shots are classified.
+      const issues = lintCreativeProfileShots(creativeProfile, shots);
+      const narrationMode = creativeProfile && typeof creativeProfile === "object" && !Array.isArray(creativeProfile)
+        ? (creativeProfile as { narrationMode?: unknown }).narrationMode
+        : undefined;
+      if (narrationMode === "none") {
+        for (const shot of shots) {
+          if (typeof shot.voiceover === "string" && shot.voiceover.trim()) {
+            issues.push({ code: "promotional_voiceover", field: "voiceover", shotId: shot.shotId, message: "Premium product CG with narrationMode=none must not contain narration." });
+          }
+          if (typeof shot.narration === "string" && shot.narration.trim()) {
+            issues.push({ code: "promotional_voiceover", field: "narration", shotId: shot.shotId, message: "Premium product CG with narrationMode=none must not contain narration." });
+          }
+        }
+      }
+      if (issues.length) {
+        return NextResponse.json({ error: "Premium product CG shot policy violation.", code: "CREATIVE_POLICY_VIOLATION", issues }, { status: 400 });
+      }
+      if (projectProductRefs.length === 0) {
+        return NextResponse.json({
+          error: "高端家具 CG 九宫格至少需要一张已保存的产品参考图。",
+          code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED",
+        }, { status: 400 });
+      }
+      const projectProductRefSet = new Set(projectProductRefs);
+      if (allRequestedProductRefs.some((reference) => !projectProductRefSet.has(reference))) {
+        return NextResponse.json({
+          error: "高端家具 CG 九宫格只能使用本项目已保存的产品参考图。",
+          code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID",
+        }, { status: 400 });
+      }
+    }
     const revision = scriptRevision(script);
-    const baselineAssets = filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), script);
+    const scopedBaselineAssets = filterAssetsForScript(
+      await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
+      script,
+    );
+    const baselineAssets = premiumCg
+      ? filterTrustedPremiumCgAssets(scopedBaselineAssets, id, script)
+      : scopedBaselineAssets;
     const baselineByShot = new Map(shots.map((shot) => [shot.shotId, baselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null]));
     const preserved = new Map<number, { shotId: number; filePath: string }>();
     if (preserveExisting === true) {
@@ -136,20 +240,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     // reference images (order matters — the prompt cites them by position):
     // [character sheet?, ...product photos]; local /api/files paths travel as Base64
-    const productRefs = (Array.isArray(productImageUrls) ? productImageUrls : [productImageUrl])
-      .filter((u): u is string => typeof u === "string" && u.trim().length > 0);
-    const sheetRef = typeof characterSheetUrl === "string" ? characterSheetUrl.trim() : "";
-    const refInputs = [...(sheetRef ? [sheetRef] : []), ...productRefs];
-    const referenceImageUrls = (await Promise.all(refInputs.map(toRemoteUsableImage))).filter(
+    // A CG grid always remains tied to the product identity. Explicit valid refs can
+    // narrow the view set; a missing/empty request uses the project's persisted images.
+    const productRefs = premiumCg
+      ? (requestedProductRefs.length > 0 ? requestedProductRefs : projectProductRefs)
+      : requestedProductRefs;
+    const sheetRef = nonEmptyString(characterSheetUrl) ?? "";
+    const useCharacterSheet = !premiumCg && Boolean(sheetRef);
+    const refInputs = [...(useCharacterSheet ? [sheetRef] : []), ...productRefs];
+    const convertedReferenceInputs = await Promise.all(refInputs.map(toRemoteUsableImage));
+    const referenceImageUrls = convertedReferenceInputs.filter(
       (u): u is string => !!u
     );
+    // Providers with one-reference-only image APIs need the product rather than a
+    // presenter sheet. Multi-reference providers continue to receive the full ordered set.
+    const primaryProductReference = convertedReferenceInputs
+      .slice(useCharacterSheet ? 1 : 0)
+      .find((u): u is string => Boolean(u));
+    const primaryReferenceImageUrl = primaryProductReference ?? referenceImageUrls[0];
+    if (premiumCg && !primaryProductReference) {
+      return NextResponse.json({
+        error: "高端家具 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
+        code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
+      }, { status: 400 });
+    }
 
     // 1) one generation renders every shot — consistency is physical, not prompted;
     // with references attached the sheet pins the person and the photo pins the product
     const prompt = buildStoryboardGridPrompt(shots, script.characters, {
-      characterSheet: !!sheetRef,
+      characterSheet: useCharacterSheet,
       productImageCount: productRefs.length,
-    });
+    }, { creativeProfile });
     const signature = storyboardGridSignature({
       scriptId,
       shots,
@@ -160,10 +281,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       provider: providerName,
       model,
       baseUrl: providerName === "openai" ? normalizeOpenAIBaseUrl(baseUrl) : (baseUrl ?? "").trim().replace(/\/+$/, ""),
-      options: options ?? {},
+      options: generationOptions,
     });
     if (reuseExisting === true) {
-      const selectedAssets = filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), script);
+      const scopedSelectedAssets = filterAssetsForScript(
+        await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
+        script,
+      );
+      const selectedAssets = premiumCg
+        ? filterTrustedPremiumCgAssets(scopedSelectedAssets, id, script)
+        : scopedSelectedAssets;
       const cached = await reusableStoryboardGrid(id, signature, shots.map((shot) => shot.shotId), selectedAssets);
       if (cached) {
         return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true });
@@ -171,9 +298,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
     const result = await provider.generateImage({
-      ...(options ?? {}),
+      ...generationOptions,
       modelId: model,
       mode: referenceImageUrls.length > 0 ? "image-to-image" : "text-to-image",
+      ...(primaryReferenceImageUrl && { referenceImageUrl: primaryReferenceImageUrl }),
       ...(referenceImageUrls.length > 0 && { referenceImageUrls }),
       prompt,
     });
@@ -212,7 +340,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         model,
         prompt: `[storyboard-grid 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
         scope: assetScopeForShot(script, shots[i]),
-        selectedPolicy: { mode: "select-if-unchanged", baseline: { scriptId, scriptRevision: revision, selectedAssetId: baselineByShot.get(shots[i].shotId) ?? null } },
+        selectedPolicy: premiumCg
+          ? { mode: "select" }
+          : { mode: "select-if-unchanged", baseline: { scriptId, scriptRevision: revision, selectedAssetId: baselineByShot.get(shots[i].shotId) ?? null } },
       });
       if (!asset.selected) alternatives++;
       saved.push({ shotId: shots[i].shotId, filePath });
@@ -222,7 +352,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // A cache-write failure must not hide already-generated and saved paid assets.
     const currentScripts = await db.select().from(scripts).where(eq(scripts.projectId, id));
     const currentScript = currentScripts.find((item) => item.selected) ?? currentScripts[0];
-    const currentSelected = currentScript ? filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), currentScript) : [];
+    const scopedCurrentSelected = currentScript
+      ? filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), currentScript)
+      : [];
+    const currentSelected = premiumCg && currentScript
+      ? filterTrustedPremiumCgAssets(scopedCurrentSelected, id, currentScript)
+      : scopedCurrentSelected;
     const fullMatchingGrid = saved.length === shots.length && !alternatives && currentScript?.id === scriptId && scriptRevision(currentScript) === revision &&
       saved.every((cell) => currentSelected.filter((asset) => asset.shotId === cell.shotId).length === 1 && currentSelected.some((asset) => asset.shotId === cell.shotId && asset.filePath === cell.filePath && asset.status === "done"));
     if (fullMatchingGrid) await saveStoryboardGridManifest(id, { version: 1, signature, gridPath: publicPath, cells: saved })

@@ -4,7 +4,7 @@ import { join } from "path";
 import { access } from "fs/promises";
 import { getDb } from "@/lib/db";
 import { getDataDir } from "@/lib/paths";
-import { scripts as scriptsTable, assets as assetsTable, type Shot } from "@/lib/db/schema";
+import { projects, scripts as scriptsTable, assets as assetsTable, type Shot } from "@/lib/db/schema";
 import { fillShotStock, searchShotCandidates, persistCandidate, type ScoredStockCandidate } from "@/lib/stock-fill";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import {
@@ -20,6 +20,7 @@ import { rerankShotCandidates, type RerankShot, type SemanticLLMConfig } from "@
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { StockSourceId, StockMediaType, StockOrientation } from "@/lib/providers/stock-types";
 import { apiError } from "@/lib/api-error";
+import { isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -69,6 +70,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       : null;
 
   const db = getDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+  if (!project) {
+    return apiError(req, "项目不存在", "Project not found", 404);
+  }
+  if (isPremiumCgStockFillBlocked(id)) {
+    return NextResponse.json({
+      error: "高端家具产品 CG 不能使用免费素材库自动配画面，请通过受控的产品参考与分镜生成流程创建素材。",
+      code: "PREMIUM_CG_STOCK_FILL_FORBIDDEN",
+    }, { status: 409 });
+  }
 
   // Get the selected script (fall back to the most recent one if none is selected)
   const rows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id));

@@ -1,8 +1,15 @@
 import type { Shot } from "@/lib/db/schema";
 import { getLookPreset, LOOK_NONE } from "@/lib/look-presets";
-import { buildMotionPrompt, type MotionIntensity, type MotionRealismTier } from "@/lib/motion-prompt";
+import {
+  buildMotionPrompt,
+  isPremiumCgPromptPolicy,
+  type MotionIntensity,
+  type MotionPromptOutputPolicy,
+  type MotionRealismTier,
+} from "@/lib/motion-prompt";
 import { compileCreativePrompt, sanitizeCreativeIntent, sanitizeVisualBible } from "@/lib/production-system";
 import { joinVideoPromptParts } from "@/lib/video-prompt";
+import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 /** Browser settings frozen into a video preview; never read browser state on the server. */
 export interface VideoPromptSettings {
@@ -36,12 +43,16 @@ export function normalizeVideoPromptSettings(raw?: unknown): VideoPromptSettings
 }
 
 export interface ShotVideoPromptInput {
-  shot?: Partial<Pick<Shot, "type" | "camera" | "description" | "visualSource" | "characterId" | "voiceover">>;
+  shot?: Partial<Pick<Shot, "type" | "camera" | "description" | "visualIntent" | "visualSource" | "characterId" | "voiceover" | "narration">>;
   ordinal: number;
   settings?: Partial<VideoPromptSettings>;
   category?: string | null;
   creativeIntent?: unknown;
   visualBible?: unknown;
+  /** Project-level creative profile, frozen by the caller when available. */
+  creativeProfile?: unknown;
+  /** Compatibility policy for callers that have not loaded the project profile yet. */
+  outputPolicy?: MotionPromptOutputPolicy;
   chainToNext?: boolean;
   locale?: "zh" | "en";
 }
@@ -53,22 +64,34 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
   const shot = input.shot;
   const settings = normalizeVideoPromptSettings(input.settings);
   const look = getLookPreset(settings.visualLook);
+  const premiumProfile = isPremiumProductCgProfile(input.creativeProfile)
+    ? input.creativeProfile
+    : undefined;
+  const premiumCg = Boolean(premiumProfile) || isPremiumCgPromptPolicy(input.outputPolicy);
+  const premiumLook = premiumProfile?.visualDirection.look.trim();
+  const visualDescription = shot?.visualIntent?.trim() || shot?.description;
   const motion = buildMotionPrompt({
     shotType: shot?.type,
     camera: shot?.camera,
-    description: shot?.description,
+    description: visualDescription,
     productShot: shot?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(shot?.type ?? ""),
     personShot: !!shot?.characterId,
     // Silent footage may still need speaking actions for narration added in the editor.
-    talking: !!shot?.characterId && !!shot?.voiceover?.trim(),
+    talking: !!shot?.characterId && !!(shot?.voiceover?.trim() || shot?.narration?.trim()),
     beatSeed: input.ordinal,
     chainToNext: input.chainToNext,
     intensity: settings.motionIntensity,
     realism: settings.motionRealism,
-    look: look?.motion,
-    opener: look?.opener,
+    // Global Look presets are tuned for the short-video sales workflow. Premium CG is
+    // defined by the persisted project profile, including its lighting direction.
+    look: premiumCg
+      ? premiumLook ? { zh: premiumLook, en: premiumLook } : undefined
+      : look?.motion,
+    opener: premiumCg ? undefined : look?.opener,
     category: input.category ?? undefined,
     audioMode: "none",
+    creativeProfile: input.creativeProfile,
+    outputPolicy: input.outputPolicy,
   });
   const intent = sanitizeCreativeIntent(input.creativeIntent);
   const bible = sanitizeVisualBible(input.visualBible);
@@ -77,10 +100,14 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
     continuity: [...(intent.continuity ?? []), ...bible.characterAnchors, ...bible.wardrobeAnchors, ...bible.environmentAnchors, ...bible.lightingAnchors],
     productConstraints: [...(intent.productConstraints ?? []), ...bible.productAnchors],
   });
-  const probe = `${shot?.camera ?? ""}\n${shot?.description ?? ""}`.trim();
+  const probe = `${shot?.camera ?? ""}\n${visualDescription ?? ""}`.trim();
   const locale = input.locale ?? (!probe || /[一-鿿぀-ヿ가-힯]/.test(probe) ? "zh" : "en");
   return {
-    prompt: joinVideoPromptParts([motion, ...(direction.prompt ? [`Project direction: ${direction.prompt}`] : [])], locale, "\n"),
-    negativePrompt: direction.negativePrompt,
+    // Sales-oriented free-form project direction can contain legacy hooks, offers, or CTA
+    // wording. Premium CG prompts only use the script, locked profile, and product references.
+    prompt: joinVideoPromptParts([motion, ...(!premiumCg && direction.prompt ? [`Project direction: ${direction.prompt}`] : [])], locale, "\n"),
+    negativePrompt: premiumCg
+      ? "added on-screen text, subtitles, prices, numbers, promotional graphics, CTA, watermark"
+      : direction.negativePrompt,
   };
 }

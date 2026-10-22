@@ -162,6 +162,13 @@
       "when": 1792552933964,
       "tag": "0022_add_script_generation_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1792554000000,
+      "tag": "0023_add_creative_profiles",
+      "breakpoints": true
     }
   ]
 }

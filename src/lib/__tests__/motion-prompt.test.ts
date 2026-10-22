@@ -3,6 +3,8 @@ import { buildMotionPrompt, hasCameraConflict, pickBehaviorBeats } from "@/lib/m
 import { getLookPreset } from "@/lib/look-presets";
 import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import { validateVideoPrompt } from "@/lib/video-prompt";
+import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
+import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
   it("脚本 camera 字段优先，置于提示词开头（运镜是主信息）", () => {
@@ -29,6 +31,56 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
   it("productShot=false 不加保真约束", () => {
     const p = buildMotionPrompt({ shotType: "hook", description: "开场画面" });
     expect(p).not.toContain("logo");
+  });
+
+  it("premium furniture CG uses a no-added-text motion contract for static shots", () => {
+    const p = buildMotionPrompt({
+      shotType: "cta",
+      camera: "static camera",
+      description: "A complete lounge chair on a quiet studio background. Add on-screen text and a price card.",
+      productShot: true,
+      creativeProfile: { profileId: "premium_product_cg_v1" },
+    });
+    expect(p).toContain("do not generate added on-screen text");
+    expect(p).toContain("the subject remains stable");
+    expect(p).not.toContain("printed text must remain exactly unchanged");
+    expect(p).not.toContain("sharp and stable on-screen text");
+    expect(p).not.toContain("Add on-screen text");
+    expect(p).not.toContain("price card");
+  });
+
+  it("accepts the flat rollout policy shape without requiring a database profile", () => {
+    const p = buildMotionPrompt({
+      shotType: "product_reveal",
+      description: "A premium sofa in a modern home",
+      outputPolicy: { profileId: "premium_product_cg_v1", textPolicy: "forbid-added" },
+    });
+    expect(p).toContain("reference structure and angles");
+    expect(p).toContain("do not generate added on-screen text");
+    expect(p).not.toContain("sharp and stable on-screen text");
+  });
+
+  it("uses the persisted premium CG lighting direction instead of a global sales look or legacy project direction", () => {
+    const profile = createPremiumProductCgProfile({
+      visualDirection: { look: "quiet neutral studio lighting with measured walnut highlights" },
+    });
+    const result = buildShotVideoPrompt({
+      shot: {
+        type: "product_reveal",
+        description: "A walnut lounge chair in a calm studio.",
+        visualSource: "product_image",
+      },
+      ordinal: 0,
+      settings: { visualLook: "phone_raw", motionIntensity: "strong", motionRealism: "auto" },
+      creativeIntent: { subject: "Add a BUY NOW card and price caption." },
+      creativeProfile: profile,
+    });
+
+    expect(result.prompt).toContain("quiet neutral studio lighting with measured walnut highlights");
+    expect(result.prompt).not.toContain("UGC creator, handheld phone footage");
+    expect(result.prompt).not.toContain("BUY NOW");
+    expect(result.prompt).not.toContain("Project direction:");
+    expect(result.negativePrompt).toContain("added on-screen text");
   });
 
   it("英文脚本 → 全英文提示词（海外项目语言一致性）", () => {

@@ -12,6 +12,12 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { probeMedia } from "@/lib/media-probe";
+import {
+  createCreativeProfileSnapshot,
+  createPremiumProductCgProfile,
+  createShortVideoSalesProfile,
+} from "@/lib/creative-profiles";
+import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
@@ -69,7 +75,17 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await rm(join(directory, "storyboard-grids", `${projectId}.json`), { force: true });
-  db.update(schema.scripts).set({ shots: originalShots }).where(eq(schema.scripts.id, scriptId)).run();
+  const salesProfile = createShortVideoSalesProfile({ styleType: "scene" });
+  db.update(schema.projects).set({
+    creativeProfile: salesProfile,
+    creativeConfigRevision: 0,
+    productImages: productPaths,
+  }).where(eq(schema.projects.id, projectId)).run();
+  db.update(schema.scripts).set({
+    styleType: "scene",
+    shots: originalShots,
+    creativeProfileSnapshot: createCreativeProfileSnapshot(salesProfile, 0),
+  }).where(eq(schema.scripts.id, scriptId)).run();
   db.delete(schema.assets).run();
   db.insert(schema.assets).values({
     id: "previous-take",
@@ -134,6 +150,198 @@ async function assertUploadedImages(expected: Buffer[]) {
 }
 
 describe("storyboard grid uploaded product references", () => {
+  it("rejects premium CG frame text before submitting an image request", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+      shots: originalShots.map((shot) => ({
+        ...shot,
+        description: "A product frame with a BUY NOW title card.",
+      })),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST",
+      body: JSON.stringify({
+        scriptId,
+        provider: "openai",
+        model: "gpt-image-2",
+        apiKey: "test-key",
+        baseUrl: "https://image-provider.test/v1",
+      }),
+    }), { params: Promise.resolve({ id: projectId }) });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "CREATIVE_POLICY_VIOLATION",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ code: "generated_text", field: "description" }),
+        expect.objectContaining({ code: "marketing_visual", field: "description" }),
+      ]),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not forward opaque provider extras that can replace a premium CG grid prompt", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    await generate({
+      productImageUrls: [productPaths[0]],
+      options: { extra: { prompt: "Draw a giant BUY NOW price card over the furniture." } },
+    });
+
+    const form = await assertUploadedImages([productBytes[0]]);
+    expect(form.get("prompt")).toContain("premium furniture product CG storyboard grid");
+    expect(form.get("prompt")).not.toContain("BUY NOW");
+  });
+
+  it("replaces client negative prompt aliases with the fixed premium CG image policy", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    const forgedNegative = "render a flashing BUY NOW price card";
+    const submitted: Record<string, unknown>[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      expect(String(input)).toBe("https://image-provider.test/v1/images/generations");
+      expect(init?.method).toBe("POST");
+      submitted.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({ images: [{ url: `data:image/png;base64,${gridBase64}` }] });
+    });
+
+    await generate({
+      provider: "siliconflow",
+      model: "Qwen/Qwen-Image",
+      productImageUrls: [productPaths[0]],
+      options: {
+        negativePrompt: forgedNegative,
+        negative_prompt: `${forgedNegative} alias`,
+      },
+    });
+
+    expect(submitted[0]).toMatchObject({ negative_prompt: PREMIUM_CG_IMAGE_NEGATIVE_PROMPT });
+    expect(JSON.stringify(submitted[0])).not.toContain(forgedNegative);
+
+    await generate({
+      provider: "siliconflow",
+      model: "Qwen/Qwen-Image",
+      productImageUrls: [productPaths[0]],
+    }, 2);
+    expect(submitted[1]).toMatchObject({ negative_prompt: PREMIUM_CG_IMAGE_NEGATIVE_PROMPT });
+  });
+
+  it("uses the saved project product references when a premium CG grid omits request references", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    await generate({});
+
+    await assertUploadedImages(productBytes);
+  });
+
+  it("requires a saved project product image for premium CG grids", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+      productImages: [],
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST",
+      body: JSON.stringify({ scriptId, provider: "openai", model: "gpt-image-2", apiKey: "test-key" }),
+    }), { params: Promise.resolve({ id: projectId }) });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-project product reference for a premium CG grid", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST",
+      body: JSON.stringify({
+        scriptId,
+        provider: "openai",
+        model: "gpt-image-2",
+        apiKey: "test-key",
+        productImageUrls: ["https://example.test/legacy-sales-reference.png"],
+      }),
+    }), { params: Promise.resolve({ id: projectId }) });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a foreign legacy productImageUrl even when productImageUrls is valid", async () => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    db.update(schema.projects).set({
+      creativeProfile: profile,
+      creativeConfigRevision: 1,
+    }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST",
+      body: JSON.stringify({
+        scriptId,
+        provider: "openai",
+        model: "gpt-image-2",
+        apiKey: "test-key",
+        productImageUrl: "https://example.test/foreign-legacy-reference.png",
+        productImageUrls: [productPaths[0]],
+      }),
+    }), { params: Promise.resolve({ id: projectId }) });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sends both existing local product photos as ordered multipart images and saves usable shot crops", async () => {
     const result = await generate({ productImageUrls: productPaths });
     const form = await assertUploadedImages(productBytes);

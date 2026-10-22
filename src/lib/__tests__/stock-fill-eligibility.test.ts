@@ -6,7 +6,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
 import { POST } from "@/app/api/project/[id]/stock-fill/route";
-import { fillShotStock } from "@/lib/stock-fill";
+import { fillShotStock, isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
 import { rerankShotCandidates } from "@/lib/semantic-match";
 
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
@@ -14,12 +14,14 @@ vi.mock("@/lib/stock-fill", () => ({
   fillShotStock: vi.fn(async () => ({ provider: "local", mediaType: "image" })),
   searchShotCandidates: vi.fn(),
   persistCandidate: vi.fn(),
+  isPremiumCgStockFillBlocked: vi.fn(() => false),
 }));
 vi.mock("@/lib/semantic-match", () => ({ rerankShotCandidates: vi.fn() }));
 
 let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 beforeEach(() => {
+  vi.mocked(isPremiumCgStockFillBlocked).mockReturnValue(false);
   sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: "drizzle" });
@@ -99,5 +101,23 @@ it("fills failed and empty shots while protecting ready, pending, generating and
       .mocked(fillShotStock)
       .mock.calls.every(([input]) => input.source === "local"),
   ).toBe(true);
+  expect(rerankShotCandidates).not.toHaveBeenCalled();
+});
+
+it("blocks stock adoption for a premium product CG project before any candidate search", async () => {
+  vi.mocked(isPremiumCgStockFillBlocked).mockReturnValue(true);
+
+  const response = await POST(
+    new NextRequest("http://localhost/api/project/fill-test/stock-fill", {
+      method: "POST",
+      body: JSON.stringify({ source: "local", mediaType: "auto" }),
+      headers: { "Content-Type": "application/json" },
+    }),
+    { params: Promise.resolve({ id: "fill-test" }) },
+  );
+
+  expect(response.status).toBe(409);
+  await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_STOCK_FILL_FORBIDDEN" });
+  expect(fillShotStock).not.toHaveBeenCalled();
   expect(rerankShotCandidates).not.toHaveBeenCalled();
 });

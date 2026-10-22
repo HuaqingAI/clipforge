@@ -2,11 +2,12 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { getDb } from "@/lib/db";
-import { mediaEdits, mediaSources } from "@/lib/db/schema";
+import { mediaEdits, mediaSources, projects } from "@/lib/db/schema";
 import { DEFAULT_TRANSCRIPT_EDIT_PLAN, sanitizeTranscriptDocument } from "@/lib/transcript-editor";
 import { createTranscriptEditProposal } from "@/lib/transcript-edit-protocol";
 import { enqueueTranscriptEdits } from "@/lib/transcript-edit-jobs";
 import { publicTranscriptEdit, reconcileTranscriptRenders } from "@/lib/transcript-render-runner";
+import { isPremiumCgMediaEditBlocked, PREMIUM_CG_MEDIA_EDIT_FORBIDDEN } from "@/lib/premium-cg-media";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     reconcileTranscriptRenders(id);
     const db = getDb();
+    const project = db.select().from(projects).where(and(eq(projects.id, id))).get();
+    if (!project) return apiError(req, "Project not found", "Project not found", 404);
+    if (isPremiumCgMediaEditBlocked(project)) {
+      return NextResponse.json(
+        {
+          error: "Premium product CG does not allow transcript-based batch edits.",
+          code: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN,
+        },
+        { status: 409 },
+      );
+    }
     const source = db.select().from(mediaSources).where(and(eq(mediaSources.id, mediaId), eq(mediaSources.projectId, id))).get();
     if (!source) return apiError(req, "素材不存在", "Source not found", 404);
     const existing = db.select().from(mediaEdits).where(and(eq(mediaEdits.batchId, body.batchId), eq(mediaEdits.sourceId, mediaId))).orderBy(asc(mediaEdits.revision)).all();
@@ -39,6 +51,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const created = enqueueTranscriptEdits(source, transcript, items, body.batchId);
     return NextResponse.json({ batchId: body.batchId, edits: created.map(({ edit }) => publicTranscriptEdit(edit)) }, { status: 202 });
   } catch (error) {
+    if (error instanceof Error && error.message === PREMIUM_CG_MEDIA_EDIT_FORBIDDEN) {
+      return NextResponse.json(
+        { error: "Premium product CG does not allow transcript-based batch edits.", code: PREMIUM_CG_MEDIA_EDIT_FORBIDDEN },
+        { status: 409 },
+      );
+    }
     if (error instanceof RangeError || (error instanceof Error && error.message === "EDIT_TOO_SHORT")) return apiError(req, "片段计划无效或不足 0.5 秒", "Invalid clip plan or less than 0.5 seconds remains", 422);
     if (error instanceof Error && /EDIT_BUSY|EDIT_REVISION_CONFLICT|UNIQUE constraint/.test(error.message)) return apiError(req, "版本已变化或已有输出任务，请稍后重新预演", "Revision changed or renders are active; preview again later", 409);
     return apiError(req, "批量输出请求失败", "Batch request failed", 500);
