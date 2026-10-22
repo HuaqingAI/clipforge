@@ -14,6 +14,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查 Windows 双击入口（无需预装 Node）
+        shell: powershell
+        run: |
+          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          .\start.cmd --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath .clipforge) { throw 'Help must not install a runtime.' }
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20

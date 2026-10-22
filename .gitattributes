@@ -1,0 +1,2 @@
+# Keep the Windows double-click entry point usable with any Git line-ending setting.
+*.cmd text eol=crlf

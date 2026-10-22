@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -165,21 +165,40 @@ describe("local launcher service readiness", () => {
 
 const npmCli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 const canRunWindowsBootstrap = process.platform === "win32" && process.arch === "x64" && compatibleNode(process.version) && existsSync(npmCli);
+const windowsDirectory = process.env.SystemRoot || "C:\\Windows";
+const powershell = join(windowsDirectory, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+
+function windowsBootstrapFixture(exitCode = 0) {
+  const directory = join(temporaryDirectory(), "源码 project & test!");
+  const scripts = join(directory, "scripts");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(join(ROOT, "scripts", "start-local.ps1"), join(scripts, "start-local.ps1"));
+  writeFileSync(join(directory, "package.json"), "{}");
+  writeFileSync(join(scripts, "launch-local.mjs"), `console.log(JSON.stringify({node:process.execPath,version:process.version,args:process.argv.slice(2),npmCli:process.env.CLIPFORGE_NPM_CLI,cwd:process.cwd()}));process.exitCode=${exitCode};`);
+  return directory;
+}
+
+function windowsEnvironment(path = `${dirname(process.execPath)};${process.env.PATH ?? ""}`) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
+  env.Path = path;
+  return env;
+}
+
+function runWindowsEntry(directory: string, args: string[], env = windowsEnvironment()) {
+  copyFileSync(join(ROOT, "start.cmd"), join(directory, "start.cmd"));
+  const command = `""${join(directory, "start.cmd")}" ${args.map((argument) => `"${argument}"`).join(" ")}"`;
+  return spawnSync(join(windowsDirectory, "System32", "cmd.exe"), ["/d", "/c", command], {
+    cwd: temporaryDirectory(), env, windowsHide: true, windowsVerbatimArguments: true,
+    encoding: "utf8", timeout: 15_000, input: "",
+  });
+}
 
 describe("Windows PowerShell 5.1 bootstrap", () => {
   it.skipIf(!canRunWindowsBootstrap)("finds a supported PATH Node without downloading and forwards launcher arguments", () => {
-    const directory = join(temporaryDirectory(), "源码 project");
-    const scripts = join(directory, "scripts");
-    mkdirSync(scripts, { recursive: true });
-    copyFileSync(join(ROOT, "scripts", "start-local.ps1"), join(scripts, "start-local.ps1"));
-    writeFileSync(join(directory, "package.json"), "{}");
-    writeFileSync(join(scripts, "launch-local.mjs"), "console.log(JSON.stringify({node:process.execPath,version:process.version,args:process.argv.slice(2),npmCli:process.env.CLIPFORGE_NPM_CLI}));");
-    const env = { ...process.env };
-    for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
-    env.Path = `${dirname(process.execPath)};${process.env.PATH ?? ""}`;
-    const powershell = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(scripts, "start-local.ps1"), "--check", "--port", "43123", "--no-browser"], {
-      cwd: directory, env, windowsHide: true, encoding: "utf8", timeout: 15_000,
+    const directory = windowsBootstrapFixture();
+    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(directory, "scripts", "start-local.ps1"), "--check", "--port", "43123", "--no-browser"], {
+      cwd: directory, env: windowsEnvironment(), windowsHide: true, encoding: "utf8", timeout: 15_000,
     });
     expect(result.error, result.stderr).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(0);
@@ -188,6 +207,46 @@ describe("Windows PowerShell 5.1 bootstrap", () => {
     expect(report.version).toBe(process.version);
     expect(report.npmCli.toLowerCase()).toBe(npmCli.toLowerCase());
     expect(report.args).toEqual(["--check", "--port", "43123", "--no-browser"]);
+    expect(existsSync(join(directory, ".clipforge"))).toBe(false);
+  });
+});
+
+describe("Windows start.cmd entry point", () => {
+  it("ships the double-click entry point in the repository root", () => {
+    expect(statSync(join(ROOT, "start.cmd")).isFile()).toBe(true);
+  });
+
+  it.skipIf(!canRunWindowsBootstrap)("runs from another directory and forwards arguments through the actual wrapper", () => {
+    const directory = windowsBootstrapFixture();
+    const args = ["--check", "--port", "43123", "--no-browser"];
+    const result = runWindowsEntry(directory, args);
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const report = JSON.parse(result.stdout.trim());
+    expect(resolve(report.node).toLowerCase()).toBe(resolve(process.execPath).toLowerCase());
+    expect(report.version).toBe(process.version);
+    expect(report.npmCli.toLowerCase()).toBe(npmCli.toLowerCase());
+    expect(report.args).toEqual(args);
+    expect(resolve(report.cwd).toLowerCase()).toBe(resolve(directory).toLowerCase());
+    expect(existsSync(join(directory, ".clipforge"))).toBe(false);
+  });
+
+  it.skipIf(!canRunWindowsBootstrap)("preserves the launcher's failing exit code for command-line callers", () => {
+    const directory = windowsBootstrapFixture(37);
+    const result = runWindowsEntry(directory, ["--check"]);
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(37);
+    expect(JSON.parse(result.stdout.trim().split(/\r?\n/)[0]).args).toEqual(["--check"]);
+  });
+
+  it.skipIf(process.platform !== "win32")("shows help without Node or installed project dependencies", () => {
+    const directory = windowsBootstrapFixture();
+    const result = runWindowsEntry(directory, ["--help"], windowsEnvironment(`${join(windowsDirectory, "System32")};${dirname(powershell)}`));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain("Usage: start.cmd");
+    expect(result.stdout).not.toContain('"node":');
+    expect(existsSync(join(directory, "node_modules"))).toBe(false);
     expect(existsSync(join(directory, ".clipforge"))).toBe(false);
   });
 });
