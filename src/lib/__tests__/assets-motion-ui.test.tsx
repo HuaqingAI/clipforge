@@ -7,9 +7,7 @@ import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 import type { KlingConcurrencyStatus } from "@/lib/kling/concurrency";
 import type { Model } from "@/lib/providers/types";
 import type { KlingJobView } from "@/lib/kling/job-types";
-import { validateVideoPrompt } from "@/lib/video-prompt";
-import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
-import { withVideoAudioMode } from "@/lib/video-audio";
+import type { VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import type { BatchMotionPanel } from "@/components/batch-motion-panel";
 import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 
@@ -68,6 +66,29 @@ async function mount(defaultModel: string) { useSettingsStore.getState().setDefa
 function changeUrl(url: string) { window.history.replaceState(null, "", url); navigation.listeners.forEach((listener) => listener()); }
 async function navigate(url: string) { await act(async () => changeUrl(url)); }
 function submissions() { return [...fetchMock.mock.calls, ...api.kling.mock.calls].filter(([url]) => url === "/api/ai/video"); }
+const videoPromptUrl = "/api/project/project/video-prompt";
+const serverAudioPrompt = "Exact audio instruction from the backend.";
+function serverPrompt(shotId = 1) { return `Backend approved direction for shot ${shotId}.\nPreserve this exact wording and layout.`; }
+function previewRequests(): VideoPromptRequest[] {
+  return fetchMock.mock.calls.filter(([url]) => url === videoPromptUrl).map(([, init]) => JSON.parse(init.body));
+}
+function promptPreview(request: VideoPromptRequest, overrides: Partial<VideoPromptPreview> = {}): VideoPromptPreview {
+  const native = Boolean(request.generateAudio && request.controlInputs?.supportsAudio && !request.batch);
+  return {
+    prompt: serverPrompt(request.shotId), negativePrompt: "backend negative direction",
+    scriptId: request.scriptId, shotId: request.shotId, contextKey: `backend-context-${request.shotId}`,
+    settings: request.settings,
+    controlPlan: {
+      version: 1, strategy: "keyframe", mode: "image-to-video", referenceRoles: ["keyframe"],
+      referenceCount: 1, audioMode: native ? "native" : "none", voiceoverBound: native,
+      warnings: [], referenceInputs: [], promptSuffix: "",
+      firstFrameUrl: request.controlInputs?.firstFrameUrl,
+      ...(request.controlInputs?.lastFrameUrl && { lastFrameUrl: request.controlInputs.lastFrameUrl }),
+      ...(native && { audioPrompt: serverAudioPrompt }),
+    },
+    ...overrides,
+  };
+}
 function savedKlingJob(overrides: Partial<KlingJobView> = {}): KlingJobView {
   return { jobId: "saved-job", profileId: "profile", projectId: "project", scriptId: "script", shotId: 1, modelId: "chosen", tool: "image_to_video", prompt: "Product rotates", submissionState: "acknowledged", remoteState: "completed", importState: "completed", outputs: [{ outputId: "output", assetId: "asset", videoUrl: "/api/files/clip.mp4", imported: true, selected: true }], allowedActions: ["delete"], autoQueryPaused: false, needsConfirmation: false, inputSummary: [], options: {}, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z", ...overrides };
 }
@@ -81,6 +102,7 @@ beforeEach(() => {
   api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; isVideo = false; pending = [];
   api.kling.mockReset().mockImplementation(async (url: string) => url.includes("/status") ? Response.json({ loggedIn: true, models: [kling], concurrency: api.concurrency }) : url.includes("/jobs?") ? Response.json({ jobs: api.jobs }) : Response.json({ jobId: "new-job" }, { status: 202 }));
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === videoPromptUrl) return Response.json(promptPreview(JSON.parse(init!.body as string)));
     if (url === "/api/project/project") return Response.json({ name: "Product", productImages: ["/api/files/product.jpg"] });
     if (url.endsWith("/scripts")) return Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, description: "Product rotates. 底部小字：仅供展示", camera: "Slow dolly in", prompt: "STATIC IMAGE PROMPT", visualSource: "ai_generate", transition: "direct_concat" }] }]);
     if (url.endsWith("/assets")) return Response.json(init?.method === "POST" ? { filePath: "/api/files/saved.mp4" } : [{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", provider: "volcengine", filePath: isVideo ? "/api/files/clip.mp4" : "/api/files/frame.jpg", thumbnailPath: isVideo ? "/api/files/frame.jpg" : null }]);
@@ -496,15 +518,14 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(container.querySelector("h2")?.textContent).toContain("确认镜头 1 视频生成");
     expect(container.querySelector('[aria-label="默认视频模型"]')?.textContent).toContain(defaultModel === ark ? ark : "chosen");
     const prompt = container.querySelector("textarea") as HTMLTextAreaElement;
-    expect(prompt.value).not.toContain("STATIC IMAGE PROMPT");
-    expect(prompt.value).toContain("仅供展示");
-    expect(prompt.value).toContain("Slow dolly in");
-    expect(prompt.value).not.toContain("。.");
-    expect(validateVideoPrompt(prompt.value)).toEqual([]);
+    expect(prompt.value).toBe(serverPrompt());
+    expect(prompt.readOnly).toBe(true);
+    expect(previewRequests()).toHaveLength(1);
+    expect(previewRequests()[0]).toMatchObject({ scriptId: "script", shotId: 1, provider: defaultModel === ark ? "volcengine" : "kling-cli", model: defaultModel });
     expect(submissions()).toHaveLength(0);
   });
 
-  it("shows the shared film prompt with the same visual settings and project anchors", async () => {
+  it("requests the chosen visual settings and displays the backend response verbatim", async () => {
     const settings = { visualLook: "phone_raw", motionIntensity: "strong", motionRealism: "constraints" } as const;
     const shot = { shotId: 1, type: "cta", duration: 5, camera: "镜头平稳向左横移", description: "透明杯身和圆形按键近景，底部显示“价格以商品页为准”", visualSource: "ai_generate", transition: "direct_concat" } as const;
     const creativeIntent = { subject: "透明杯身与圆形按键", continuity: ["浅蓝背景"] };
@@ -517,11 +538,128 @@ describe("assets uses the configured provider through one motion entry", () => {
     useSettingsStore.setState(settings);
     await mount(kling.selectionKey);
     await click("btnConvertMotion");
-    const expected = withVideoAudioMode(buildShotVideoPrompt({ shot, ordinal: 0, settings, category: "tech", creativeIntent, visualBible }).prompt, "silent");
-    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(expected);
-    expect(expected).toContain("运镜幅度大胆明显");
-    expect(expected).toContain("原有圆形按键");
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(serverPrompt());
+    expect(previewRequests()[0]).toMatchObject({ scriptId: "script", shotId: 1, settings });
+    expect(previewRequests()[0]).not.toHaveProperty("prompt");
+    expect(previewRequests()[0]).not.toHaveProperty("creativeIntent");
     expect(submissions()).toHaveLength(0);
+  });
+
+  it.each([ark, kling.selectionKey])("sends the saved negative prompt to the server and forwards its final negative unchanged with %s", async (defaultModel) => {
+    const savedNegative = "Avoid distorted controls and duplicated product parts.";
+    const finalNegative = "Backend exclusions in approved order.\nPreserve the exact final text.";
+    useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, negativePrompt: savedNegative } });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === videoPromptUrl
+      ? Promise.resolve(Response.json(promptPreview(JSON.parse(init!.body as string), { negativePrompt: finalNegative })))
+      : normalFetch(url, init));
+    const normalKling = api.kling.getMockImplementation()!;
+    api.kling.mockImplementation((url: string, init?: RequestInit) => url.includes("/status")
+      ? Promise.resolve(Response.json({ loggedIn: true, models: [{ ...kling, parameters: [...kling.parameters, { name: "negative_prompt", type: "string", required: false }] }] }))
+      : normalKling(url, init));
+
+    await mount(defaultModel);
+    await click("btnConvertMotion");
+    expect(previewRequests()[0]).toMatchObject({ negativePrompt: savedNegative });
+    await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await click("确认生成此镜头");
+
+    expect(submissions()).toHaveLength(1);
+    const request = JSON.parse(submissions()[0][1].body);
+    expect(request.promptContext).toMatchObject({ negativePrompt: savedNegative, contextKey: "backend-context-1" });
+    expect(request.options[defaultModel === ark ? "negativePrompt" : "negative_prompt"]).toBe(finalNegative);
+  });
+
+  it.each([
+    { creationType: "sales", defaultModel: ark },
+    { creationType: "CG", defaultModel: ark },
+    { creationType: "sales", defaultModel: kling.selectionKey },
+    { creationType: "CG", defaultModel: kling.selectionKey },
+  ])("uses the same backend text for initial and redo $creationType generation with $defaultModel", async ({ creationType, defaultModel }) => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => creationType === "CG" && url === "/api/project/project"
+      ? Promise.resolve(Response.json({ name: "Product", productImages: ["/api/files/product.jpg"], creativeProfile: createPremiumProductCgProfile() }))
+      : normalFetch(url, init));
+    await mount(defaultModel);
+    await click("btnConvertMotion");
+    const firstPrompt = (container.querySelector("textarea") as HTMLTextAreaElement).value;
+    expect(firstPrompt).toBe(serverPrompt());
+    await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await click("确认生成此镜头");
+    expect(JSON.parse(submissions()[0][1].body).prompt).toBe(firstPrompt);
+
+    if (defaultModel === kling.selectionKey) {
+      // Import completion refreshes the asset rows; the original script remains unchanged.
+      isVideo = true;
+      await act(async () => (container.querySelector('[aria-label="refresh-job-detail"]') as HTMLButtonElement).click());
+      await act(async () => (container.querySelector('[aria-label="close-job-detail"]') as HTMLButtonElement).click());
+    }
+    await click("btnRedoMotion");
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(firstPrompt);
+    expect(previewRequests()).toHaveLength(2);
+    expect(previewRequests()[1].controlInputs?.firstFrameUrl).toBe("/api/files/frame.jpg");
+    await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await click("确认生成此镜头");
+    expect(submissions()).toHaveLength(2);
+    for (const [, init] of submissions()) {
+      expect(JSON.parse(init.body)).toMatchObject({ prompt: firstPrompt, promptContext: { contextKey: "backend-context-1" } });
+    }
+  });
+
+  it("allows retry after a backend preview failure without submitting video generation", async () => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let attempts = 0;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === videoPromptUrl && ++attempts === 1
+      ? Promise.resolve(Response.json({ error: "Backend preview unavailable" }, { status: 503 }))
+      : normalFetch(url, init));
+    await mount(ark);
+    await click("btnConvertMotion");
+    expect(container.textContent).toContain("Backend preview unavailable");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(button("btnConvertMotion")?.disabled).toBe(false);
+    expect(submissions()).toHaveLength(0);
+    await click("btnConvertMotion");
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(serverPrompt());
+    expect(previewRequests()).toHaveLength(2);
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("ignores a late backend preview after video settings change and allows a fresh preview", async () => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let resolvePreview!: (response: Response) => void;
+    let delayed = true;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === videoPromptUrl && delayed) {
+        delayed = false;
+        return new Promise<Response>((resolve) => { resolvePreview = resolve; });
+      }
+      return normalFetch(url, init);
+    });
+    await mount(ark);
+    await click("btnConvertMotion");
+    const previousRequest = previewRequests()[0];
+    await act(async () => useSettingsStore.setState({ motionIntensity: "strong" }));
+    await act(async () => resolvePreview(Response.json(promptPreview(previousRequest, { prompt: "Stale backend result." }))));
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(submissions()).toHaveLength(0);
+    await click("btnConvertMotion");
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(serverPrompt());
+    expect(previewRequests()[1].settings.motionIntensity).toBe("strong");
+  });
+
+  it("prepares only one backend preview when the motion button is clicked twice", async () => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let resolvePreview!: (response: Response) => void;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === videoPromptUrl
+      ? new Promise<Response>((resolve) => { resolvePreview = resolve; })
+      : normalFetch(url, init));
+    await mount(ark);
+    const convert = button("btnConvertMotion")!;
+    await act(async () => { convert.click(); convert.click(); });
+    expect(previewRequests()).toHaveLength(1);
+    expect(submissions()).toHaveLength(0);
+    await act(async () => resolvePreview(Response.json(promptPreview(previewRequests()[0]))));
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(serverPrompt());
   });
 
   it.each([
@@ -537,8 +675,9 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it("uses one native audio direction, preserves exact dialogue, and submits the reviewed prompt unchanged", async () => {
+  it("submits the server prompt and native audio plan without adding local instructions", async () => {
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: true } });
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
     const originalFetch = fetchMock.getMockImplementation()!;
     const voiceover = "只自然说一遍这句台词";
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
@@ -547,16 +686,12 @@ describe("assets uses the configured provider through one motion entry", () => {
     await mount(ark);
     await click("btnConvertMotion");
     const reviewedPrompt = (container.querySelector('[aria-label="视频提示词"]') as HTMLTextAreaElement).value;
-    expect(reviewedPrompt).toContain(`「${voiceover}」`);
-    expect(reviewedPrompt).toContain("有台词时保持人声清晰");
-    expect(reviewedPrompt).not.toContain("无人声说话");
-    expect(reviewedPrompt).not.toContain("全程静音");
-    expect(reviewedPrompt).not.toContain("。.");
-    expect(validateVideoPrompt(reviewedPrompt)).toEqual([]);
+    expect(reviewedPrompt).toBe(serverPrompt());
+    expect(previewRequests()[0]).toMatchObject({ generateAudio: true, controlInputs: { supportsAudio: true } });
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
     expect(submissions()).toHaveLength(1);
-    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ prompt: reviewedPrompt, options: { audioEnabled: true, voiceover, audioPrompt: expect.stringContaining(voiceover) } });
+    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ prompt: reviewedPrompt, promptContext: { contextKey: "backend-context-1", generateAudio: true }, options: { audioEnabled: true, voiceover, audioPrompt: serverAudioPrompt } });
   });
 
   it("keeps an explicit silent API setting ahead of native audio capability and scripted dialogue", async () => {
@@ -568,10 +703,8 @@ describe("assets uses the configured provider through one motion entry", () => {
     await mount(ark);
     await click("btnConvertMotion");
     const prompt = (container.querySelector('[aria-label="视频提示词"]') as HTMLTextAreaElement).value;
-    expect(prompt).toContain("全程静音");
-    expect(prompt).not.toContain("音频方向");
-    expect(prompt).not.toContain("这段台词不能进入静音生成");
-    expect(validateVideoPrompt(prompt)).toEqual([]);
+    expect(prompt).toBe(serverPrompt());
+    expect(previewRequests()[0]).toMatchObject({ generateAudio: false, controlInputs: { supportsAudio: false } });
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
     const request = JSON.parse(submissions()[0][1].body);
@@ -589,23 +722,20 @@ describe("assets uses the configured provider through one motion entry", () => {
     await mount(kling.selectionKey);
     await click("btnConvertMotion");
     const prompt = (container.querySelector('[aria-label="Kling 视频提示词"]') as HTMLTextAreaElement).value;
-    expect(prompt).toContain("全程静音");
-    expect(prompt).not.toContain("音频方向");
-    expect(prompt).not.toContain("不应自动注入的Kling台词");
-    expect(validateVideoPrompt(prompt)).toEqual([]);
+    expect(prompt).toBe(serverPrompt());
+    expect(previewRequests()[0]).toMatchObject({ provider: "kling-cli", generateAudio: false, controlInputs: { supportsAudio: false } });
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each([false, true])("chooses a consistent %s ambient audio setting before the API confirmation", async (audioEnabled) => {
+  it.each([false, true])("requests audioEnabled=%s from the backend before the API confirmation", async (audioEnabled) => {
     const modelId = "fixture/image-to-video";
     api.models.push({ id: modelId, name: "Fixture", provider: "volcengine", mediaType: "video", modes: ["image-to-video"], supportsAudio: false });
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled } });
     await mount(modelId);
     await click("btnConvertMotion");
     const prompt = (container.querySelector('[aria-label="视频提示词"]') as HTMLTextAreaElement).value;
-    expect(prompt.includes("全程静音")).toBe(!audioEnabled);
-    expect(prompt.includes("音效：自然环境音与动作音效贴合画面")).toBe(audioEnabled);
-    expect(validateVideoPrompt(prompt)).toEqual([]);
+    expect(prompt).toBe(serverPrompt());
+    expect(previewRequests()[0]).toMatchObject({ generateAudio: audioEnabled, controlInputs: { supportsAudio: false } });
     expect(submissions()).toHaveLength(0);
   });
 
@@ -682,8 +812,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     for (const { asset, draft } of chosen) {
       expect(draft?.firstFrameUrl).toBe(`/api/files/frame-${asset.shotId}.jpg`);
       expect(draft?.lastFrameUrl).toBeUndefined();
-      expect(draft?.prompt).toContain("全程静音");
-      expect(draft?.prompt).not.toContain(voiceover);
+      expect(draft?.prompt).toBe(serverPrompt(asset.shotId));
     }
 
     await act(async () => (container.querySelector('[aria-label="batch-submit-2"]') as HTMLButtonElement).click());
@@ -694,6 +823,8 @@ describe("assets uses the configured provider through one motion entry", () => {
       expect(request.imageUrl ?? request.referenceImageUrls?.[0]).toBe(`/api/files/frame-${request.shotId}.jpg`);
       expect(request.lastImageUrl).toBeUndefined();
       expect(request.options.audioEnabled).toBe(false);
+      expect(request.prompt).toBe(serverPrompt(request.shotId));
+      expect(request.promptContext).toMatchObject({ contextKey: `backend-context-${request.shotId}`, batch: true, generateAudio: false });
       for (const field of ["voiceover", "audioPrompt", "audioUrl", "audioReferenceUrl", "tts", "ttsEnabled", "subtitles"]) expect(request.options[field]).toBeUndefined();
       expect(request.referenceAudioUrls).toBeUndefined();
       expect(JSON.stringify(request)).not.toContain("previous-tail.jpg");

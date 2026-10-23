@@ -1,13 +1,15 @@
 import type { AssetItem } from "@/lib/assets-view";
-import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import { KLING_AUDIO_PARAMETER_NAMES, klingModelOptions } from "@/lib/kling/model-options";
 import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 import { validateVideoPrompt } from "@/lib/video-prompt";
+import type { VideoPromptContext } from "@/lib/video-prompt-request";
 
 /** A snapshot of one shot's own source frame and prepared video request. */
 export interface BatchMotionDraft {
   asset: AssetItem;
   prompt: string;
+  negativePrompt?: string;
+  promptContext?: VideoPromptContext;
   firstFrameUrl: string;
   lastFrameUrl?: string;
   referenceImages: string[];
@@ -32,8 +34,8 @@ export function silentBatchMotionOptions(options: Record<string, unknown>): Reco
 
 export function prepareBatchMotionKling(draft: BatchMotionDraft, model: KlingVideoModelDescriptor) {
   const parameters = model.parameters.filter((parameter) => !compositionOrAudioOption.test(parameter.name) || KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
-  const mapped = klingModelOptions({ ...model, parameters }, silentBatchMotionOptions(draft.klingParameters));
-  const prompt = klingAudioPrompt(draft.prompt, false);
+  const mapped = klingModelOptions({ ...model, parameters }, { ...silentBatchMotionOptions(draft.klingParameters), ...(draft.negativePrompt !== undefined && { negativePrompt: draft.negativePrompt }) });
+  const prompt = draft.prompt;
   const imageSlots = model.inputSlots.filter((slot) => slot.role === "image");
   const imageChoices = [...new Set([draft.firstFrameUrl, ...draft.referenceImages.filter((url) => url !== draft.lastFrameUrl)].filter(Boolean))];
   const images: string[] = [];

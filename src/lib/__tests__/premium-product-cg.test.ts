@@ -255,6 +255,45 @@ describe("premium product CG response policy", () => {
     expect(scripts[0].shots[0]).not.toHaveProperty("narration");
   });
 
+  it("accepts empty voiceovers in restrained CG mode, as permitted by its prompt", () => {
+    const restrainedProfile = createPremiumProductCgProfile({ narrationMode: "restrained" });
+    const response = {
+      title: "Quiet material study",
+      shots: [safeShot, { ...safeShot, shotId: 2, voiceover: "   " }],
+    };
+
+    const scripts = parseScriptResponse(JSON.stringify(response), "pain_point", restrainedProfile);
+
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0].styleType).toBe(PREMIUM_PRODUCT_CG_STYLE);
+    expect(scripts[0].shots.map((shot) => shot.voiceover)).toEqual(["", ""]);
+  });
+
+  it("keeps both silent and narrated options in a restrained CG batch", () => {
+    const restrainedProfile = createPremiumProductCgProfile({ narrationMode: "restrained" });
+    const response = {
+      scripts: [
+        { title: "Quiet material study", shots: [safeShot] },
+        { title: "Narrated material study", shots: [{ ...safeShot, voiceover: "The frame is walnut." }] },
+      ],
+    };
+
+    const scripts = parseScriptResponse(JSON.stringify(response), PREMIUM_PRODUCT_CG_STYLE, restrainedProfile);
+
+    expect(scripts.map((script) => script.title)).toEqual(["Quiet material study", "Narrated material study"]);
+    expect(scripts[1].shots[0].voiceover).toBe("The frame is walnut.");
+  });
+
+  it("still rejects echoed placeholder voiceover in restrained CG mode", () => {
+    const restrainedProfile = createPremiumProductCgProfile({ narrationMode: "restrained" });
+    const response = {
+      title: "Invalid material study",
+      shots: [{ ...safeShot, voiceover: "english keyword" }],
+    };
+
+    expect(() => parseScriptResponse(JSON.stringify(response), PREMIUM_PRODUCT_CG_STYLE, restrainedProfile)).toThrow(/口播/);
+  });
+
   it("rejects a CG response that asks the renderer to add a promotional visual", () => {
     const response = {
       title: "Unsafe film",

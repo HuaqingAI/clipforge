@@ -147,7 +147,7 @@ export const LOOK_PRESETS: LookPreset[] = [
     name: { zh: "手机直出", en: "Phone Raw" },
     group: "real",
     opener: {
-      zh: "UGC 创作者手机手持实拍",
+      zh: "内容创作者手机手持实拍",
       en: "UGC creator, handheld phone footage",
     },
     image: {
@@ -215,7 +215,7 @@ export const LOOK_PRESETS: LookPreset[] = [
     name: { zh: "老 DV 录像", en: "Old DV Tape" },
     group: "real",
     opener: {
-      zh: "老式家用 DV 拍摄的录像画面",
+      zh: "老式家用摄像机拍摄的录像画面",
       en: "Home video footage shot on an old consumer DV camcorder",
     },
     image: {
@@ -223,7 +223,7 @@ export const LOOK_PRESETS: LookPreset[] = [
       en: "old DV tape look: warm yellow color cast, faint scanlines and grain, focus occasionally hunting, highlights slightly blooming, corner overlay texture without any readable text",
     },
     motion: {
-      zh: "全程保持老 DV 的暖黄偏色、颗粒噪点与对焦呼吸感",
+      zh: "全程保持老式家用摄像机的暖黄偏色、颗粒噪点与对焦呼吸感",
       en: "keep the DV warm cast, grain and focus breathing throughout",
     },
   },

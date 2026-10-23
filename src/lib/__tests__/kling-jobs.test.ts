@@ -46,6 +46,9 @@ import { importKlingOutputs, selectKlingOutput } from "@/lib/kling/output-import
 import { KlingError } from "@/lib/kling/errors";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { previewProjectVideoPrompt } from "@/lib/server/video-prompt";
+import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
+import type { VideoPromptRequest } from "@/lib/video-prompt-request";
 
 const shot: Shot = { shotId: 1, type: "demo", duration: 5, description: "Product on table", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "Product demo" };
 const model: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","text_to_video","model-1"]', provider: "kling-cli", profileId: "profile-1", region: "global", tool: "text_to_video", remoteModelId: "model-1", displayName: "Model 1", catalogRevision: "catalog-1", available: true, parameters: [], inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } };
@@ -144,6 +147,26 @@ afterEach(async () => { stopKlingJobRunner(); await new Promise<void>((resolve) 
 afterAll(async () => { stopKlingJobRunner(); state.sqlite?.close(); await fs.rm(state.directory, { recursive: true, force: true }); if (oldPhase === undefined) delete process.env.NEXT_PHASE; else process.env.NEXT_PHASE = oldPhase; });
 
 describe("Kling durable submission and recovery", () => {
+  it("uses the reviewed server sales prompt and rechecks project direction before paid dispatch", async () => {
+    const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false };
+    const reviewed = previewProjectVideoPrompt("project-1", context);
+    const job = await createKlingJob(request({ prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey } }));
+    expect(job.data.prompt).toBe(reviewed.prompt);
+    expect(job.data.args.at(-1)).toBe(reviewed.prompt);
+    getDb().update(projects).set({ creativeIntent: { subject: "new project direction" } }).where(eq(projects.id, "project-1")).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED" } } });
+  });
+
+  it("rejects changed server sales preview text before preparing input or creating a paid job", async () => {
+    const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false };
+    const reviewed = previewProjectVideoPrompt("project-1", context);
+    await expect(createKlingJob(request({ prompt: `${reviewed.prompt}\nExtra unreviewed instruction.`, promptContext: { ...context, contextKey: reviewed.contextKey } }))).rejects.toMatchObject({ code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED", status: 409 });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+
   it("dispatches an authorized web job with an explicit migration directory", async () => {
     vi.stubEnv("APP_MIGRATIONS_DIR", "standalone-migrations");
     const job = await createKlingJob(request()); await tick();
@@ -469,7 +492,7 @@ describe("Kling durable submission and recovery", () => {
       referenceImageUrls: ["https://example.test/foreign-reference.png"],
     }));
 
-    expect(job.data.prompt).toContain("Premium product CG motion");
+    expect(job.data.prompt).toContain("高端产品三维动态影像");
     expect(job.data.prompt).not.toContain("BUY NOW");
     expect(job.data.inputs).toEqual([expect.objectContaining({ role: "image", sourceUrl: "/api/files/project-1/product.png" })]);
     expect(JSON.stringify(job.data)).not.toContain("foreign-sale-card.png");

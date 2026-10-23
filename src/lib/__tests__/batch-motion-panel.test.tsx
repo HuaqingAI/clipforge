@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BatchMotionPanel } from "@/components/batch-motion-panel";
 import { VideoGenerationFailure } from "@/components/video-generation-dialog";
 import { prepareBatchMotionKling, silentBatchMotionOptions, type BatchMotionShot } from "@/lib/batch-motion";
+import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 
 const api = vi.hoisted(() => ({ request: vi.fn() }));
@@ -25,7 +26,7 @@ const status = (overrides: Record<string, unknown> = {}) => ({ configured: true,
 const json = (value: unknown, code = 200) => new Response(JSON.stringify(value), { status: code });
 function shot(shotId: number): BatchMotionShot {
   const asset = { assetId: `asset-${shotId}`, shotId, type: "hook" as const, duration: 6, description: `Product ${shotId}`, prompt: "Static image", visualSource: "ai_generate" as const, status: "done" as const, thumbnailUrl: `/frame-${shotId}.png` };
-  return { asset, draft: { asset, prompt: "Camera slowly moves forward. Preserve the product.", firstFrameUrl: `/frame-${shotId}.png`, referenceImages: ["/product.png"], options: { duration: 6, resolution: "720p", audioEnabled: false }, klingParameters: { duration: 6, audioEnabled: true, voiceover: "must never submit", tts: true }, generate: vi.fn().mockResolvedValue(undefined) } };
+  return { asset, draft: { asset, prompt: "Camera slowly moves forward. Preserve the product.", promptContext: { scriptId: "script", shotId, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, batch: true, generateAudio: false, contextKey: `server-context-${shotId}` }, firstFrameUrl: `/frame-${shotId}.png`, referenceImages: ["/product.png"], options: { duration: 6, resolution: "720p", audioEnabled: false }, klingParameters: { duration: 6, audioEnabled: true, voiceover: "must never submit", tts: true }, generate: vi.fn().mockResolvedValue(undefined) } };
 }
 let root: Root;
 let container: HTMLDivElement;
@@ -65,9 +66,22 @@ describe("batch shot animation", () => {
     expect(videoRequests()[0]).toMatchObject({ shotId: 2, imageUrl: "/frame-2.png", expectedSelectedAssetId: "asset-2", executionScope: "single-shot", selectionKey: model.selectionKey, options: { duration: 10, enable_audio: "false" } });
     expect(videoRequests()[0].referenceImageUrls).toBeUndefined();
     expect(videoRequests()[0].options).not.toHaveProperty("voiceover");
-    expect(videoRequests()[0].prompt).toContain("entire video silent");
+    expect(videoRequests()[0].prompt).toBe(shots[1].draft!.prompt);
+    expect(videoRequests()[0].promptContext).toEqual(shots[1].draft!.promptContext);
     expect(onSubmitted).toHaveBeenCalledWith(2, "job-2");
     expect(refreshTasks).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "Approved shot direction: 完整产品。\nApproved camera direction: restrained move.\n\nBackend CG instructions.  ",
+    "  运镜：平稳前移。\n场景：短视频带货商品展示。\nBackend sales instructions.\n",
+  ])("shows and submits the backend prompt unchanged: %s", async (prompt) => {
+    shots = [shot(1)]; shots[0].draft!.prompt = prompt;
+    await mount();
+    expect(container.querySelector("details p")?.textContent).toBe(prompt);
+    await confirmAndSubmit();
+    expect(videoRequests()[0].prompt).toBe(prompt);
+    expect(videoRequests()[0].promptContext).toEqual(shots[0].draft!.promptContext);
   });
 
   it("supports select/deselect all and ignores a rapid duplicate submit", async () => {

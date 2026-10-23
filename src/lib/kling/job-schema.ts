@@ -4,6 +4,7 @@ import { klingProfiles } from "./profile-schema";
 import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingSubmissionState, KlingRemoteState, KlingImportState, KlingCliDiagnostics } from "./job-types";
 import type { Shot } from "@/lib/db/schema";
+import type { VideoPromptContext } from "@/lib/video-prompt-request";
 
 export interface KlingInputSnapshot {
   role: "image" | "tailImage";
@@ -24,6 +25,7 @@ export interface KlingJobData {
   prompt: string;
   /** Server-owned validation version and source shot; optional for older persisted jobs. */
   videoPromptAudit?: { version: number; sourceShot: Shot };
+  promptContext?: VideoPromptContext;
   options: Record<string, string | number | boolean>;
   inputs: KlingInputSnapshot[];
   args: string[];

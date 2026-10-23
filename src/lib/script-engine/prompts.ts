@@ -41,7 +41,7 @@ export const SYSTEM_PROMPT = `你是一位顶级电商短视频编导，拥有�
 - 画面可执行：每个分镜的描述要足够具体，能直接指导拍摄或AI生成
 - 商品展示镜头（product_reveal/cta）优先使用 product_image，确保商品不被AI篡改
 - AI 生成的场景描述要具体、有画面感
-- prompt 字段用英文写，要具体描述画面构图、光线、色调
+- description、visualIntent、camera、prompt 等视觉字段统一用中文写，要具体描述画面构图、光线、色调，不随商品或口播语言切换
 
 【输出要求】
 你必须严格按照指定的 JSON 格式输出脚本，不要输出任何额外的解释文字。`;
@@ -62,6 +62,7 @@ Rules:
 - Preserve the supplied product's geometry, color, finish, proportions, and existing markings. If a material, process, function, or use is not documented, show only observable appearance.
 - Choose product-appropriate settings and details; do not assume a specific product type, material, component, or use environment.
 - Every shot has one visual observation and one simple, physically plausible camera movement.
+- Write description, visualIntent, camera, and prompt in Chinese for every product. The product-brief language determines only the title and any narration.
 - Favor quiet natural light or controlled studio light, restrained movement, stable geometry, believable contact shadows, and material detail.
 - A cropped hand or unfaced person may appear only for a simple, documented use or scale cue when the brief supports it; never as a presenter. Omit interactions when unsupported.
 - Generated frames contain no added text, subtitles, price, labels, promotional graphics, watermark, or call to action. Existing markings visible in supplied product reference may be preserved.
@@ -610,7 +611,7 @@ export const OUTPUT_FORMAT_PROMPT = `
       "visualSource": "ai_generate",
       "transition": "direct_concat",
       "voiceover": "配音文案：口语化的播音文案，控制字数与duration匹配（约3字/秒）",
-      "prompt": "英文AI生图/生视频prompt：用于生成该分镜的视觉素材",
+      "prompt": "中文AI生图/生视频提示词：用于生成该分镜的视觉素材",
       "searchTerms": ["english keyword", "alt keyword"],
       "characterId": "出镜人物ID（可选，有人物出镜时填写）"
     }
@@ -629,11 +630,13 @@ export const OUTPUT_FORMAT_PROMPT = `
 - type: 只能是 "hook" | "pain_point" | "product_reveal" | "demo" | "social_proof" | "cta" 之一
 - duration: 该分镜时长（秒），所有分镜 duration 之和应等于 totalDuration
 - description: 中文画面描述，要具体到可以直接拍摄或让AI生成；只写"这一秒画面里谁在做什么"的可见事实（详见下方可生成性判据）
-- camera: ${cameraPresetGuide()}
+- visualIntent: 如输出此字段，用中文写明该镜头要呈现的单一视觉事实
+- camera: 用中文描述镜头运动。${cameraPresetGuide()}
 - visualSource: "ai_generate"（AI生成）| "product_image"（使用商品图）| "user_upload"（用户上传）
 - transition: "ai_start_end" | "ai_reference" | "direct_concat" | "ffmpeg_fade"
 - voiceover: 中文配音文案，字数约等于 duration x 3；可在一处自然换气点写 [pause]（每镜至多 1 处，可不用）——它只做配音气口，不会出现在字幕里，不占字数
-- prompt: 英文 prompt，用于 AI 图像/视频生成，描述画面主体、风格、光线、构图等
+- prompt: 中文提示词，用于 AI 图像/视频生成，描述画面主体、风格、光线、构图等
+- description、visualIntent、camera、prompt 始终使用中文，与商品资料、标题和口播文案的语言无关；JSON 字段名和枚举值保持原样
 - searchTerms: 1-3 个英文检索词，描述该分镜画面主体（用于从免费素材库自动搜画面，无商品主题成片时尤其关键），如 ["coffee morning", "cozy cafe"]
 - characterId: 如果该分镜有人物出镜，填入人物ID；无人物的分镜省略此字段
 - characters: 仅剧情类脚本（情景短剧等有角色对话的风格）需要输出；gender 只能是 "female" | "male"；非剧情脚本省略此字段或输出空数组
@@ -660,7 +663,7 @@ export const OUTPUT_FORMAT_PROMPT = `
 1. 第一个分镜的 type 必须是 "hook"，最后一个必须是 "cta"
 2. totalDuration 控制在15-30秒之间
 3. 分镜数量控制在5-8个
-4. prompt 字段要用英文，风格描述要专业（如 cinematic, soft lighting, macro shot 等）
+4. prompt 字段要用中文，风格描述要专业（如电影感、柔光、微距特写等）
 5. visualSource 为 "product_image" 时，prompt 字段可省略
 `;
 
@@ -787,7 +790,7 @@ function premiumProductCgOutputFormat(profile: PremiumProductCgProfile): string 
 【Premium product CG JSON format】
 Return one JSON object only:
 {
-  "title": "short product-film title",
+  "title": "简短的产品短片标题，沿用商品资料的语言",
   "totalDuration": ${profile.targetDuration},
   "shots": [
     {
@@ -795,13 +798,13 @@ Return one JSON object only:
       "type": "product_reveal",
       "beatRole": "establish | form | material | craft | function | lifestyle | hero",
       "duration": 4,
-      "description": "a concrete, visible composition of the supplied product",
-      "visualIntent": "the single visual fact this shot proves",
-      "camera": "one restrained, physically plausible camera move",
+      "description": "用中文描述所提供产品具体可见的画面构图",
+      "visualIntent": "用中文写明该镜头要呈现的单一视觉事实",
+      "camera": "用中文描述一次克制、符合物理规律的镜头运动",
       "visualSource": "product_image | ai_generate | user_upload",
       "transition": "direct_concat | ai_reference | ai_start_end | ffmpeg_fade",
       "voiceover": "",
-      "prompt": "English visual-generation prompt with material, light, composition, and no added text"
+      "prompt": "中文视觉生成提示词，包含材质、光线和构图，不新增画面文字"
     }
   ]
 }
@@ -809,6 +812,7 @@ Return one JSON object only:
 Field rules:
 - Use 5-8 shots whose durations add up to totalDuration. Do not use cta as a shot type.
 - description, visualIntent, camera, and prompt describe only visible product and environment facts. Never tell a generator to show words, labels, subtitles, numbers, price, a logo, or a graphic overlay.
+- description、visualIntent、camera、prompt 始终使用中文，与商品资料、标题和口播文案的语言无关；JSON 字段名和枚举值保持原样。
 - Do not output textOverlay, characters, SEO cover copy, or purchase instructions.
 - Preserve only markings already visible in the supplied product reference; do not invent branding.
 ${narrationRule}`;
@@ -886,7 +890,7 @@ export function buildPremiumProductCgUserPrompt(
   parts.push(`\n${premiumProductCgOutputFormat(profile)}`);
   const productText = `${input.productName || ""} ${input.productDescription || ""} ${input.usageAdvantage || ""}`;
   if (productText.trim() && !/[一-鿿]/.test(productText)) {
-    parts.push("\n【Language】Use the same language as the product brief for title, descriptions, and any restrained narration. Keep the generation prompt in English.");
+    parts.push("\n【语言】title 和任何克制旁白沿用商品资料的语言；description、visualIntent、camera、prompt 等视觉字段始终使用中文，不随商品或旁白语言切换。");
   }
   return parts.join("\n");
 }
@@ -1049,12 +1053,13 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
   // Language follows the product info language: English products (overseas TikTok Shop/Amazon)
   // should produce English scripts/voiceovers; otherwise the OUTPUT_FORMAT's "Chinese voiceover"
   // instruction would cause English products to output Chinese narration (wrong video body).
-  // Placed last for maximum prominence, overrides any "中文" wording in the spec above.
+  // Placed last for maximum prominence; only title/voiceover follow the product locale.
+  // Visual generation fields stay Chinese regardless of the spoken language.
   // Same technique used in the topic path (buildTopicPrompt).
   const productText = `${productName || ""} ${productDescription || ""} ${usageAdvantage || ""}`;
   if (productText.trim() && !/[一-鿿]/.test(productText)) {
     parts.push(
-      `\n【LANGUAGE — IMPORTANT, overrides any "中文" wording above】The product info is NOT in Chinese. Write every "title" and "voiceover" field in the SAME language as the product (e.g. natural English for an overseas TikTok Shop audience), never Chinese. Keep "searchTerms" in English as usual; "description"/"camera" may be concise English.`
+      `\n【LANGUAGE — IMPORTANT, title and voiceover only】The product info is NOT in Chinese. Write every "title" and "voiceover" field in the SAME language as the product (e.g. natural English for an overseas TikTok Shop audience), never Chinese. Keep "searchTerms" in English as usual. Always write "description", "visualIntent", "camera", and "prompt" in Chinese, regardless of the product or narration language.`
     );
   }
 

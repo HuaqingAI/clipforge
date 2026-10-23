@@ -166,10 +166,11 @@ function repairPrompt(contract: ShotQualityContract, report: GenerationQualityRe
     .filter((issue) => issue.time == null || (issue.time >= window.start - 0.25 && issue.time <= window.end + 0.25))
     .slice(0, 6)
     .map((issue) => `${issue.summary}${issue.suggestedFix ? `；修正：${issue.suggestedFix}` : ""}`);
-  const timed = keyframes.map((item, index) => `@Image${index + 3} 在 ${item.time.toFixed(2)} 秒约束${item.role}`).join("；");
+  const roleLabels = { identity: "人物身份", product: "商品外观", composition: "构图", continuity: "镜头连续性" };
+  const timed = keyframes.map((item, index) => `第${index + 3}张图片在 ${item.time.toFixed(2)} 秒约束${roleLabels[item.role]}`).join("；");
   return [
     `只重做原镜头 ${window.start.toFixed(2)}–${window.end.toFixed(2)} 秒对应的动作段，保持镜头前后构图、人物、商品、服装、光线和空间连续。`,
-    `@Video1 是原镜头，仅用于保持主体、表演节奏和场景；@Image1 是修复窗起点，@Image2 是修复窗终点。`,
+    `第1段视频是原镜头，仅用于保持主体、表演节奏和场景；第1张图片是修复窗起点，第2张图片是修复窗终点。`,
     contract.description ? `分镜目标：${contract.description}` : "",
     contract.camera ? `运镜：${contract.camera}` : "",
     issues.length ? `必须修正：${issues.join("；")}` : `必须更准确地满足原分镜目标，并避免新增文字、标识或主体。`,

@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { VideoGenerationFailure } from "@/components/video-generation-dialog";
 import { prepareBatchMotionKling, type BatchMotionShot } from "@/lib/batch-motion";
-import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import { klingErrorMessage, klingFetch } from "@/lib/kling/client";
 import { KLING_MAX_CONCURRENT_SHOTS } from "@/lib/kling/concurrency";
 import type { KlingSubmitRequest } from "@/lib/kling/job-types";
@@ -123,7 +122,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
     if (row.disabledReason) return row.disabledReason;
     if (!row.draft?.firstFrameUrl) return "请先生成此分镜的关键帧";
     if (isKling && model) return prepareBatchMotionKling(row.draft, model).error;
-    return validateVideoPrompt(klingAudioPrompt(row.draft.prompt, false)).map((issue) => issue.message).join(" ");
+    return validateVideoPrompt(row.draft.prompt).map((issue) => issue.message).join(" ");
   }
   const eligible = rows.filter((row) => ["pending", "failed"].includes(row.state) && !rowIssue(row));
   const selected = eligible.filter((row) => row.selected);
@@ -157,6 +156,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
             const request: KlingSubmitRequest = {
               provider: "kling-cli", profileId: model.profileId, clientRequestId, executionScope: "single-shot", projectId, scriptId,
               shotId: row.asset.shotId, selectionKey: model.selectionKey, mode: "image-to-video", prompt: prepared.prompt, options: prepared.options,
+              ...(draft.promptContext && { promptContext: draft.promptContext }),
               imageUrl: prepared.images[0], ...(prepared.images.length > 1 && { referenceImageUrls: prepared.images.slice(1) }),
               ...(prepared.lastImageUrl && { lastImageUrl: prepared.lastImageUrl }), expectedSelectedAssetId: row.asset.assetId ?? null,
               billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: clientRequestId },
@@ -220,7 +220,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
               {(issue || row.message) && <p role="alert" className="text-xs text-destructive">{row.message || issue}</p>}{row.taskId && <p className="break-all text-xs text-muted-foreground">任务 ID：{row.taskId}</p>}
               {prepared?.warnings.map((warning) => <p key={warning} className="text-xs text-amber-600">{warning}</p>)}
             </div></div>
-          {row.draft && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">查看本分镜提示词与参考图</summary><p className="mt-2 whitespace-pre-wrap break-words">{prepared?.prompt ?? klingAudioPrompt(row.draft.prompt, false)}</p><div className="mt-2 flex flex-wrap gap-2">{[...new Set([row.draft.lastFrameUrl, ...row.draft.referenceImages].filter((url): url is string => Boolean(url) && url !== row.draft!.firstFrameUrl))].map((url, index) => <img key={url} src={url} alt={`分镜 ${row.asset.shotId} 参考图片 ${index + 1}`} className="h-16 max-w-24 rounded object-contain" />)}</div></details>}
+          {row.draft && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">查看本分镜提示词与参考图</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.draft.prompt}</p><div className="mt-2 flex flex-wrap gap-2">{[...new Set([row.draft.lastFrameUrl, ...row.draft.referenceImages].filter((url): url is string => Boolean(url) && url !== row.draft!.firstFrameUrl))].map((url, index) => <img key={url} src={url} alt={`分镜 ${row.asset.shotId} 参考图片 ${index + 1}`} className="h-16 max-w-24 rounded object-contain" />)}</div></details>}
         </div>;
       })}</div>
       {!rows.length && <p className="text-sm text-muted-foreground">暂无可转动态的分镜，请先生成关键帧。</p>}

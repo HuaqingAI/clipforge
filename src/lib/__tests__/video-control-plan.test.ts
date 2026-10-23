@@ -26,6 +26,8 @@ describe("video control plan", () => {
     expect(plan.firstFrameUrl).toBeUndefined();
     expect(plan.referenceInputs.map((item) => item.role)).toEqual(["keyframe", "character", "product"]);
     expect(plan.promptSuffix).toContain("只自然说一遍");
+    expect(plan.promptSuffix).toContain("第1张图片=构图关键帧；第2张图片=人物身份；第3张图片=商品外观");
+    expect(plan.promptSuffix).not.toMatch(/[A-Za-z]/);
   });
 
   it("keeps identity references and carries the end frame as a target anchor", () => {

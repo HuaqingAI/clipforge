@@ -1,3 +1,5 @@
+import type { VideoPromptContext } from "@/lib/video-prompt-request";
+
 /** Browser-safe public contracts. Credentials and signed provider URLs never belong here. */
 export type KlingSubmissionState = "prepared" | "submitting" | "acknowledged" | "not_submitted" | "submission_unknown";
 export type KlingRemoteState = "not_started" | "pending" | "processing" | "completed" | "failed" | "cancelled" | "unknown";
@@ -78,6 +80,7 @@ export interface KlingSubmitRequest {
   mode: "text-to-video" | "image-to-video";
   prompt: string;
   imageUrl?: string;
+  promptContext?: VideoPromptContext;
   lastImageUrl?: string;
   referenceImageUrls?: string[];
   options?: Record<string, unknown>;

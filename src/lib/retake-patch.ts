@@ -76,7 +76,7 @@ const PATCHES: Record<RetakeSymptom, { clause: { zh: string; en: string }; chang
   },
   product_warped: {
     clause: {
-      zh: "商品外观、包装、logo 与文字保持完全不变，轮廓清晰不扭曲，商品本体不发生形变",
+      zh: "商品外观、包装、标志与文字保持完全不变，轮廓清晰不扭曲，商品本体不发生形变",
       en: "the product's appearance, packaging, logo and printed text stay exactly unchanged, contours sharp and undistorted, the product itself never deforms",
     },
     change: { zh: "只加强了商品保真约束", en: "only strengthened the product-fidelity constraint" },

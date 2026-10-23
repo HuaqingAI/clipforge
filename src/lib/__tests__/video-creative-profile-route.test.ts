@@ -236,7 +236,7 @@ describe("premium CG video generation profile context", () => {
       mode: "image-to-video",
       firstFrameUrl: "/api/files/frame.png",
     });
-    expect(options.prompt).toContain("Premium product CG motion");
+    expect(options.prompt).toContain("高端产品三维动态影像");
     expect(options.prompt).not.toContain(forgedPrompt);
     expect(options.lastFrameUrl).toBeUndefined();
     expect(options.referenceImageUrls).toBeUndefined();

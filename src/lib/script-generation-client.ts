@@ -85,7 +85,18 @@ export async function generateProjectScripts(options: GenerationOptions): Promis
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-    const data = await response.json().catch(() => null);
+    // Once HTTP has confirmed failure, a stalled error body must not leave the UI polling
+    // for successful scripts until the full generation deadline. Keep the server's diagnostic
+    // when it arrives, and fall back to the failure message if the body never completes.
+    const errorBodyDeadline = !response.ok
+      ? setTimeout(() => controller.abort(new Error(messages.failed)), 15_000)
+      : undefined;
+    let data;
+    try {
+      data = await abortable(response.json().catch(() => null), controller.signal);
+    } finally {
+      clearTimeout(errorBodyDeadline);
+    }
     if (!response.ok) throw new Error(data?.error || messages.failed);
     // Both generation routes return persisted scripts, so no second request is needed.
     if (isSavedScripts(data?.scripts) && data.scripts.length > 0) return data.scripts;

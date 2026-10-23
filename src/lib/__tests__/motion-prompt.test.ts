@@ -25,7 +25,7 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
 
   it("productShot=true 加商品保真约束（logo/文字不变形）", () => {
     const p = buildMotionPrompt({ shotType: "demo", description: "使用演示", productShot: true });
-    expect(p).toContain("logo 与文字必须保持完全不变");
+    expect(p).toContain("标志与文字必须保持完全不变");
   });
 
   it("productShot=false 不加保真约束", () => {
@@ -90,6 +90,42 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
     expect(p).not.toMatch(/[一-鿿]/);
   });
 
+  it("显式中文模板覆盖英文分镜的语言推断，并保留原始内容", () => {
+    const camera = "camera pans left";
+    const description = "A Model X device rotates on a blue background";
+    const p = buildMotionPrompt({ locale: "zh", shotType: "demo", camera, description, productShot: true, intensity: "strong", look: getLookPreset("warm_life")!.motion });
+    expect(p).toContain(`运镜：${camera}`);
+    expect(p).toContain(`场景：${description}`);
+    expect(p).toContain("画面动态：");
+    expect(p).toContain("光线：全程保持温暖的橙黄午后光调");
+    expect(p).toContain("标志与文字必须保持完全不变");
+    expect(p.replace(camera, "").replace(description, "")).not.toMatch(/[A-Za-z]/);
+  });
+
+  it("显式英文模板仍可用于旧版多语言调用，不改写中文事实", () => {
+    const p = buildMotionPrompt({ locale: "en", camera: "固定镜头", description: "商品型号甲保持完整" });
+    expect(p).toContain("Camera: 固定镜头");
+    expect(p).toContain("Scene: 商品型号甲保持完整");
+    expect(p).toContain("stable smooth footage");
+    expect(p).not.toContain("运镜：");
+  });
+
+  it("销售动态编译器使用中文模板及项目标签，原样保留英文商品信息", () => {
+    const camera = "camera pans left";
+    const description = "A Model X device on a blue background";
+    const result = buildShotVideoPrompt({
+      locale: "zh", ordinal: 0,
+      shot: { type: "demo", camera, description, visualSource: "product_image" },
+      settings: { visualLook: "warm_life", motionIntensity: "strong", motionRealism: "constraints" },
+      creativeIntent: { subject: "完整商品", environment: "蓝色背景", lighting: "自然光", palette: "冷色", composition: "居中", camera: "平稳横移", motion: "自然连贯", continuity: ["同一空间"], productConstraints: ["按键位置不变"], negative: ["不要多余按钮"] },
+    });
+    expect(result.prompt).toContain(`运镜：${camera}`);
+    expect(result.prompt).toContain(`场景：${description}`);
+    expect(result.prompt).toContain("项目方向：");
+    expect(result.prompt.replace(camera, "").replace(description, "")).not.toMatch(/[A-Za-z]/);
+    expect(result.negativePrompt).toBe("不要多余按钮");
+  });
+
   it("空输入默认中文（国内为主）且含稳定性约束尾", () => {
     const p = buildMotionPrompt({});
     expect(p).toContain("运镜：");
@@ -114,12 +150,12 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
     const [body, audio, extra] = prompt.split("\n\n");
     const lines = body.split("\n");
     expect(lines.map((line) => line.split("：")[0])).toEqual([
-      ...(fixed ? [] : ["UGC 创作者手机手持实拍。"]), "运镜", "画面动态", "场景", "光线",
+      ...(fixed ? [] : ["内容创作者手机手持实拍。"]), "运镜", "画面动态", "场景", "光线",
     ]);
     expect(lines.find((line) => line.startsWith("场景："))).toBe(`场景：${description}`);
     const lighting = lines.at(-1)!;
     expect(lighting).toContain("全程保持未调色的自然色彩与混合色温。整段为连续单镜头拍摄");
-    expect(lighting).toContain("logo 与文字必须保持完全不变");
+    expect(lighting).toContain("标志与文字必须保持完全不变");
     expect(lighting).toContain("无闪烁、无变形、不出现新物体。");
     expect(audio).toBe("声音要求：视频全程静音，不生成人声、旁白、对白、背景音乐、环境音或音效。");
     expect(extra).toBeUndefined();
@@ -220,7 +256,7 @@ describe("提示词工程包（强度三档 / 单镜头声明 / 音效 / 冲突�
 describe("物理真实感层（品类约束/物理交互/活背景/情绪过程，档位单选）", () => {
   it("分镜明确描述材质时才追加品类材质约束", () => {
     const p = buildMotionPrompt({ shotType: "product_reveal", description: "面霜膏体特写", productShot: true, category: "beauty" });
-    expect(p).toContain("logo 与文字必须保持完全不变"); // 通用约束仍在
+    expect(p).toContain("标志与文字必须保持完全不变"); // 通用约束仍在
     expect(p).toContain("已有膏体与液体质地保持均匀顺滑");
   });
 

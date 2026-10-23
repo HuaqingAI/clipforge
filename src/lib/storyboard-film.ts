@@ -22,14 +22,14 @@ import { sanitizeCreativeProfile } from "@/lib/creative-profiles";
 export const FILM_MIN_SECONDS = 4;
 export const FILM_MAX_SECONDS = 30;
 
-/** Shot-type labels for segment lines, zh/en */
-const SHOT_TYPE_LABELS: Record<string, { zh: string; en: string }> = {
-  hook: { zh: "钩子镜", en: "hook shot" },
-  pain_point: { zh: "痛点镜", en: "pain-point shot" },
-  product_reveal: { zh: "商品镜", en: "product shot" },
-  demo: { zh: "演示镜", en: "demo shot" },
-  social_proof: { zh: "背书镜", en: "social-proof shot" },
-  cta: { zh: "转化镜", en: "CTA shot" },
+/** Chinese shot-type labels for rendered segment instructions. */
+const SHOT_TYPE_LABELS: Record<string, string> = {
+  hook: "钩子镜",
+  pain_point: "痛点镜",
+  product_reveal: "商品镜",
+  demo: "演示镜",
+  social_proof: "背书镜",
+  cta: "转化镜",
 };
 
 const CJK_RE = /[一-鿿]/;
@@ -262,9 +262,8 @@ export function referenceQuotaCheck(referenceImageCount: number, modelId: string
 }
 
 /**
- * Build the single-call multi-shot film prompt. Language follows the script:
- * any CJK in descriptions/voiceovers → Chinese, otherwise English (the model
- * speaks the dialogue verbatim, so the prompt must match the dialogue language).
+ * Build Chinese single-call multi-shot film instructions. Approved dialogue and
+ * product facts retain their original language and are never translated here.
  *
  * With refs.characterSheet the reference_images array leads with the presenter's
  * multi-view sheet, so @Image1 becomes the identity anchor and the shot keyframes
@@ -289,12 +288,11 @@ export function buildStoryboardFilmPrompt(
   if (isPremiumCgPromptPolicy(profileValue)) {
     return buildPremiumStoryboardFilmPrompt(shots, refs, profileValue);
   }
-  const zh = shots.some((s) => CJK_RE.test(`${s.description ?? ""}${s.voiceover ?? ""}`));
   const total = filmRequestSeconds(shots);
   const cast = (characters ?? []).filter((c) => (c.name ?? "").trim());
   // single named character → attribute dialogue to them; otherwise a generic on-camera creator
   const soloName = cast.length === 1 ? (cast[0].name ?? "").trim() : "";
-  const speaker = soloName || (zh ? "出镜人物" : "the on-camera creator");
+  const speaker = soloName || "出镜人物";
   const multiCast = cast.length > 1;
   // per-line speaker attribution (multi-character dialogue MUST name its speaker, or the
   // model hands lines to whoever is centered); the anchor stays ONE short clause — full
@@ -314,7 +312,7 @@ export function buildStoryboardFilmPrompt(
     const start = cursor;
     const rawLen = Number.isFinite(s.duration) && s.duration > 0 ? s.duration : rawTotal / shots.length;
     cursor = i === shots.length - 1 ? total : Math.min(total, cursor + rawLen * scale);
-    const label = SHOT_TYPE_LABELS[String(s.type)]?.[zh ? "zh" : "en"] ?? (zh ? "分镜" : "shot");
+    const label = SHOT_TYPE_LABELS[String(s.type)] ?? "分镜";
     // the model speaks lines verbatim — the [pause] breath marker must never reach it
     const line = stripPauseMarks((s.voiceover ?? "").trim());
     const imgN = i + 1 + offset;
@@ -331,17 +329,9 @@ export function buildStoryboardFilmPrompt(
     const whoZh = speakerOfLine
       ? `，由${speakerOfLine.name}${shortAnchor(speakerOfLine) ? `（${shortAnchor(speakerOfLine)}）` : ""}说出`
       : "";
-    const whoEn = speakerOfLine
-      ? ` by ${speakerOfLine.name}${shortAnchor(speakerOfLine) ? ` (${shortAnchor(speakerOfLine)})` : ""}`
-      : "";
-    if (zh) {
-      const dialogue = line ? `台词（逐字说出${whoZh}）：{${line}}` : "（无台词，只保留环境音与动作声）";
-      const camPart = cam ? `运镜：${cam}。` : "";
-      return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${i + 1}（${label}，画面以 @图片${imgN} 为基准）：${s.description ?? ""}。${camPart}${dialogue}`;
-    }
-    const dialogue = line ? `Dialogue (spoken verbatim${whoEn}): {${line}}` : "(no dialogue — ambient and action sounds only)";
-    const camPart = cam ? `Camera: ${cam}. ` : "";
-    return `[${fmtSec(start)}-${fmtSec(cursor)}s] Shot ${i + 1} (${label}, framing follows @Image${imgN}): ${s.description ?? ""}. ${camPart}${dialogue}`;
+    const dialogue = line ? `台词（逐字说出${whoZh}）：{${line}}` : "（无台词，只保留环境音与动作声）";
+    const camPart = cam ? `运镜：${cam}。` : "";
+    return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${i + 1}（${label}，画面以第${imgN}张图片为基准）：${s.description ?? ""}。${camPart}${dialogue}`;
   });
 
   // material-binding statement (official rule: state the upload-order → role mapping up front —
@@ -349,11 +339,8 @@ export function buildStoryboardFilmPrompt(
   // official keyframe-order declaration for strict shot alignment
   const lastImg = shots.length + offset;
   const bindingZh = refs?.characterSheet
-    ? `素材对应：@图片1 是出镜人物定妆照（仅作身份参考）；@图片2 至 @图片${lastImg} 依次为镜头1至镜头${shots.length}的关键帧，以此顺序作为各镜头的画面基准。`
-    : `素材对应：@图片1 至 @图片${lastImg} 依次为镜头1至镜头${shots.length}的关键帧，以此顺序作为各镜头的画面基准。`;
-  const bindingEn = refs?.characterSheet
-    ? `Reference mapping: @Image1 is the presenter's reference sheet (identity only); @Image2 through @Image${lastImg} are the keyframes for shots 1-${shots.length} in order — use them as each shot's framing anchor in that order.`
-    : `Reference mapping: @Image1 through @Image${lastImg} are the keyframes for shots 1-${shots.length} in order — use them as each shot's framing anchor in that order.`;
+    ? `素材对应：第1张图片是出镜人物定妆照（仅作身份参考）；第2张图片至第${lastImg}张图片依次为镜头1至镜头${shots.length}的关键帧，以此顺序作为各镜头的画面基准。`
+    : `素材对应：第1张图片至第${lastImg}张图片依次为镜头1至镜头${shots.length}的关键帧，以此顺序作为各镜头的画面基准。`;
 
   // raw phone-shot texture block, all positive wording (the official guide: Seedance's negative
   // channel only covers captions/audio — visual negatives are placebos, so "ungraded" is stated
@@ -361,66 +348,38 @@ export function buildStoryboardFilmPrompt(
   // stacking (the two-round A/B lesson: listed blemishes produce off-putting faces).
   const realism = opts?.realism !== false;
   const realismZh = `画质与质感：真实手机直出质感，色彩自然未调色、带混合色温；人物肤质自然真实、保留毛孔细节不磨皮；构图带轻微手持感。`;
-  const realismEn = `Texture: raw ungraded phone-footage look with mixed color temperature; natural realistic skin with visible pores, no beauty smoothing; framing carries a slight handheld feel.`;
 
   // cast identity block: every character's name + appearance as the cross-shot anchor;
   // the direction convention kills the #1 two-hander confusion ("left" = whose left?)
   const castZh = cast.length
     ? `人物设定（下文提到角色一律用角色名指代，外观以此为准；台词与画面中的左/右一律指画面方向）：${cast.map((c) => `${c.name}（${c.appearance ?? ""}）`).join("；")}。`
     : "";
-  const castEn = cast.length
-    ? `Cast (refer to characters strictly by these names, appearance as written; "left/right" always means screen direction): ${cast.map((c) => `${c.name} (${c.appearance ?? ""})`).join("; ")}.`
-    : "";
   // studio-backdrop strip: reference sheets are shot on a plain gray 2x2 board — without this
   // line the model happily drags the gray backdrop or the grid split into real scenes
   const sheetStripZh = `人物需自然融入各分镜自身的场景与光线，不得把定妆照的浅灰影棚背景、四格分格或边框带进任何镜头画面。`;
-  const sheetStripEn = `Blend the person naturally into each shot's own scene and lighting — never carry the sheet's plain gray studio backdrop, its 2x2 split or borders into any shot.`;
-
-  if (zh) {
-    return [
-      `竖屏 9:16 UGC 手机实拍感带货短视频，总时长约 ${total} 秒，共 ${shots.length} 个镜头，严格按下面的时间段硬切，一次生成整片。`,
+  return [
+      `竖屏 9:16 内容创作者手机实拍感带货短视频，总时长约 ${total} 秒，共 ${shots.length} 个镜头，严格按下面的时间段硬切，一次生成整片。`,
       bindingZh,
       castZh,
       `全局一致性：所有镜头是同一支视频——同一人物、同一发型与同一身衣服、同一场景与光线方向；商品外观在所有镜头中保持完全一致。`,
       refs?.characterSheet
-        ? `@图片1 是${soloName || "出镜人物"}的四视图定妆照——全片人物的脸型、发型、体型与服装必须与其完全一致（定妆照只作人物参考，不作为任何分镜画面）。${sheetStripZh}`
+        ? `第1张图片是${soloName || "出镜人物"}的四视图定妆照——全片人物的脸型、发型、体型与服装必须与其完全一致（定妆照只作人物参考，不作为任何分镜画面）。${sheetStripZh}`
         : "",
       multiCast
         ? `有台词的镜头：由该镜标注的角色自然说出台词，原声逐字说出，口型与语速对齐，语气像日常聊天而不是播音腔；无台词的镜头不要出现说话声。`
         : `有台词的镜头：${speaker}对着镜头自然说话，原声逐字说出该镜台词，口型与语速对齐，语气像日常聊天而不是播音腔；无台词的镜头不要出现说话声。`,
       realism ? realismZh : "",
+      "台词须保持原文及原有语言，逐字说出，不翻译、不改写。",
       // caption ban (positive frame line) + the official negative channel, which covers exactly
       // captions and audio: on-screen text is AI video's #1 tell, and bgm belongs to the
       // composer's own mixing stage, not the generation
       `画面中不出现任何字幕、文字、编号或水印。不要字幕。`,
-      `无bgm，只生成台词人声、环境音与动作音。`,
-      `分镜（@图片N 是对应镜头的画面基准，人物、场景与构图以其为准）：`,
+      `无背景音乐，只生成台词人声、环境音与动作音。`,
+      `分镜（每张参考图片是对应镜头的画面基准，人物、场景与构图以其为准）：`,
       ...segments,
     ]
       .filter(Boolean)
       .join("\n");
-  }
-  return [
-    `Vertical 9:16 UGC phone-shot style short video, about ${total} seconds total, ${shots.length} shots with hard cuts exactly at the timecodes below, generated as one continuous film.`,
-    bindingEn,
-    castEn,
-    `Global consistency: every shot belongs to the same video — same person, same hair and outfit, same location and light direction; the product looks identical in every shot.`,
-    refs?.characterSheet
-      ? `@Image1 is the four-view reference sheet of ${soloName || "the presenter"} — the person's face, hair, build and outfit must match it exactly throughout (identity reference only, never a shot frame). ${sheetStripEn}`
-      : "",
-    // non-Chinese dialogue needs an explicit language declaration (official 2.5 guidance)
-    shots.some((s) => (s.voiceover ?? "").trim()) ? `Dialogue language: English.` : "",
-    multiCast
-      ? `Shots with dialogue: the character named on that shot speaks the line verbatim with matching lip sync, casual everyday tone rather than announcer voice; shots without dialogue must contain no speech.`
-      : `Shots with dialogue: ${speaker} talks to the camera naturally and speaks the lines verbatim with matching lip sync, casual everyday tone rather than announcer voice; shots without dialogue must contain no speech.`,
-    realism ? realismEn : "",
-    `No captions, on-screen text, numbers or watermarks anywhere in the frame. No subtitles.`,
-    `No bgm — only the spoken dialogue, ambient and action sounds.`,
-    `Shot list (@ImageN anchors the corresponding shot's framing — person, scene and composition follow it):`,
-    ...segments,
-  ]
-    .filter(Boolean)
-    .join("\n");
 }
 
 /**
@@ -436,13 +395,12 @@ function buildPremiumStoryboardFilmPrompt(
   const restrainedNarration = profile?.creationType === "premium_product_cg" && profile.narrationMode === "restrained";
   const visualShots = shots.map((shot) => ({
     ...shot,
-    visual: sanitizePremiumCgVisualText(shot.visualIntent || shot.description) || "quiet product observation with stable form and material detail",
+    visual: sanitizePremiumCgVisualText(shot.visualIntent || shot.description) || "安静观察产品，保持形体与材质细节稳定",
     camera: sanitizePremiumCgVisualText(shot.camera),
     narration: restrainedNarration
       ? sanitizePremiumCgVisualText(shot.narration || shot.voiceover)
       : "",
   }));
-  const zh = visualShots.some((shot) => CJK_RE.test(`${shot.visual}${shot.narration}`));
   const total = filmRequestSeconds(shots);
   const rawTotal = filmTotalSeconds(shots) || shots.length;
   const scale = total / rawTotal;
@@ -454,29 +412,25 @@ function buildPremiumStoryboardFilmPrompt(
     cursor = index === visualShots.length - 1 ? total : Math.min(total, cursor + rawLength * scale);
     const camera = shot.camera && !aggressiveCamera.test(shot.camera)
       ? shot.camera
-      : "restrained slow push-in or short lateral move, limited to visible reference angles";
+      : "克制缓慢地前移或短距离横移，角度限于参考图已展示的范围";
     const narration = shot.narration;
-    if (zh) {
-      return `[${fmtSec(start)}-${fmtSec(cursor)}s] Shot ${index + 1} (product observation, framing follows @Image${index + 1}): ${shot.visual}. Camera: ${camera}.${narration ? ` Approved restrained factual narration, spoken verbatim: {${narration}}` : ""}`;
-    }
-    return `[${fmtSec(start)}-${fmtSec(cursor)}s] Shot ${index + 1} (product observation, framing follows @Image${index + 1}): ${shot.visual}. Camera: ${camera}.${narration ? ` Approved restrained factual narration, spoken verbatim: {${narration}}` : ""}`;
+    return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${index + 1}（产品观察，构图以第${index + 1}张图片为基准）：${shot.visual}。运镜：${camera}。${narration ? `已批准的克制事实旁白，保持原文语言并逐字说出：{${narration}}` : ""}`;
   });
 
   const mapping = refs?.characterSheet
-    ? "Reference mapping: product keyframes are @Image1 onward. Any presenter or identity sheet is ignored for scene content and must never introduce a presenter or persona."
-    : `Reference mapping: @Image1 through @Image${shots.length} are the product keyframes for shots 1-${shots.length} in order.`;
-  const language = zh ? "Use the same language as the approved factual narration and visual brief." : "Use the same language as the approved factual narration and visual brief.";
+    ? "素材对应：从第1张图片起依次为产品关键帧。人物定妆照或身份参考不用于场景内容，不得据此引入主持人或人物角色。"
+    : `素材对应：第1张图片至第${shots.length}张图片，依次为镜头1至镜头${shots.length}的产品关键帧。`;
   return [
-    `Vertical 9:16 premium product CG film, about ${total} seconds total, ${shots.length} controlled shots rendered as one continuous film with hard cuts at the timecodes below.`,
+    `竖屏 9:16 高端产品三维影像，总时长约 ${total} 秒，共 ${shots.length} 个克制镜头，一次生成整片，在以下时间点硬切。`,
     mapping,
-    "Keep one identical product across every shot: locked category, silhouette, proportions, component count, visible construction, surface finishes, materials, colors, and existing markings as supported by the supplied references. Match scale, framing, lighting, and setting to the actual product and its documented use context in the approved shots; use a neutral studio when the context is unspecified. Use consistent controlled lighting, stable geometry, restrained reflections, and deliberate product-film pacing.",
-    "Use only construction, functions, materials, and camera angles supported by the supplied references. Do not invent unseen backs, interiors, mechanisms, dimensions, certifications, or features. The product remains the subject. A cropped hand or unfaced person may establish scale or demonstrate one simple use only when explicitly required by an approved shot and supported by supplied product facts; otherwise show the product alone. No presenter behavior, talking heads, lifestyle acting, handheld phone texture, UGC framing, or sales choreography.",
-    "Do not generate added on-screen text, captions, subtitles, numbers, prices, promotional graphics, CTA, logos, or watermarks; preserve only product markings already visible in the references.",
+    "全片保持同一件产品：类别、轮廓、比例、部件数量、可见结构、表面处理、材质、颜色和已有标识均以参考资料为准。尺度、构图、照明和场景须与已批准镜头中的真实产品及资料已确认的使用环境相符；未指定使用环境时采用中性摄影棚。保持灯光受控且一致、几何形体稳定、反射克制，节奏符合产品影像。",
+    "仅使用参考资料支持的结构、功能、材质和拍摄角度。不虚构未展示的背面、内部、机构、尺寸、认证或功能。产品始终是主体。只有已批准镜头明确要求且产品事实支持时，才允许局部手部或不露脸的人物用于说明尺度或演示一种简单用法；其余镜头只展示产品。不出现主持人口播、人物生活表演、手机手持质感、内容创作者自拍视频构图或带货表演。",
+    "不生成新增的画面文字、标题、字幕、数字、价格、促销图形、购买引导、标志或水印；仅保留参考资料中已可见的产品标识。",
     restrainedNarration
-      ? "Audio policy: only the approved restrained factual narration and natural product or room sound; no dialogue performance, hype, scarcity, comparison, or purchase direction. No subtitles."
-      : "Audio policy: no dialogue, narration, voiceover, music, or generated speech; use silent visual footage and add approved ambience in post if needed. No subtitles.",
-    language,
-    "Shot list (each @Image reference is a product keyframe anchor; keep product identity and composition faithful):",
+      ? "声音要求：仅允许已批准的克制事实旁白与自然的产品声或室内环境声；不出现对白表演、夸张宣传、稀缺性话术、对比宣传或购买引导。不生成字幕。"
+      : "声音要求：不生成对白、旁白、配音、音乐或人声；视频保持静音，需要时在后期加入已批准的环境声。不生成字幕。",
+    "旁白须保持已批准原文及原有语言，不翻译、不改写。",
+    "分镜（每张参考图片是对应的产品关键帧，须忠实保留产品身份与构图）：",
     ...segments,
   ].filter(Boolean).join("\n");
 }

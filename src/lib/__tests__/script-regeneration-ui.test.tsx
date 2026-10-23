@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ScriptPage from "@/app/project/[id]/script/page";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 const navigation = vi.hoisted(() => ({ projectId: "project-1" }));
 const historyDialog = vi.hoisted(() => ({
@@ -148,6 +149,74 @@ afterEach(async () => {
   useSettingsStore.setState(settingsInitial);
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe("first script generation failure recovery", () => {
+  it.each(["server diagnostic", "invalid error body", "stalled error body"] as const)(
+    "restores the empty CG page and allows retry after a %s",
+    async (failure) => {
+      const normalFetch = fetchMock.getMockImplementation()!;
+      const generation = deferredResponse();
+      const diagnostic = "脚本生成失败：模型返回了无效的旁白，请检查模型设置";
+      let generationSignal: AbortSignal | null | undefined;
+      let resolveBody!: (value: { error: string }) => void;
+      const stalledBody = new Promise<{ error: string }>((resolve) => { resolveBody = resolve; });
+      let attempts = 0;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === scriptsUrl) return Promise.resolve(Response.json([]));
+        if (url === projectUrl) return Promise.resolve(Response.json({
+          name: "AeroStretch",
+          productName: "AeroStretch",
+          productImages: [],
+          creativeProfile: createPremiumProductCgProfile({ narrationMode: "restrained" }),
+        }));
+        if (url === generationUrl) {
+          attempts += 1;
+          if (attempts > 1) return Promise.resolve(Response.json({ scripts: [newScript] }));
+          generationSignal = init?.signal;
+          return generation.promise;
+        }
+        return normalFetch(url, init);
+      });
+      await act(async () => root!.render(createElement(ScriptPage)));
+      expect(container.textContent).toContain("emptyTitle");
+      vi.useFakeTimers();
+      await act(async () => button("generateScript").click());
+      expect(button("generating").disabled).toBe(true);
+      expect(button("generating").getAttribute("aria-busy")).toBe("true");
+
+      await act(async () => generation.resolve(
+        failure === "server diagnostic"
+          ? Response.json({ error: diagnostic }, { status: 500 })
+          : failure === "invalid error body"
+            ? new Response("Internal server error", { status: 500 })
+            : { ok: false, status: 500, json: () => stalledBody } as Response,
+      ));
+      if (failure === "stalled error body") await advance(15_000);
+
+      expect(button("generateScript").disabled).toBe(false);
+      expect(button("generateScript").getAttribute("aria-busy")).toBe("false");
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        failure === "server diagnostic" ? diagnostic : "errorGenFailedCheckLlm",
+      );
+      expect(container.textContent).not.toContain("generating");
+      expect(generationSignal?.aborted).toBe(true);
+      const requestsAfterFailure = fetchMock.mock.calls.length;
+      await advance(30_000);
+      expect(fetchMock).toHaveBeenCalledTimes(requestsAfterFailure);
+
+      await act(async () => button("generateScript").click());
+      expect(container.textContent).toContain("Regenerated result");
+      expect(container.textContent).not.toContain(diagnostic);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expectReady();
+      expect(attempts).toBe(2);
+      // A late body from the failed request must not overwrite the successful retry.
+      await act(async () => resolveBody({ error: diagnostic }));
+      expect(container.textContent).toContain("Regenerated result");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    },
+  );
 });
 
 describe("script regeneration recovers without a page refresh", () => {

@@ -19,6 +19,19 @@ describe("production system contracts", () => {
     expect(out.negativePrompt).toBe("warped logo");
   });
 
+  it("uses Chinese direction labels without changing approved product facts", () => {
+    const out = compileCreativePrompt({
+      subject: "焦糖棕双人沙发", environment: "浅灰摄影棚", lighting: "柔和侧光", palette: "低饱和暖色",
+      composition: "产品完整入画", camera: "缓慢推近", motion: "产品保持稳定",
+      continuity: ["黑色支脚", "双人座比例"], productConstraints: ["保留原有缝线"], negative: ["形变", "闪烁"],
+    }, "zh");
+    expect(out.prompt).toContain("焦糖棕双人沙发");
+    expect(out.prompt).toContain("连续性锚点：黑色支脚；双人座比例");
+    expect(out.prompt).toContain("商品不变项：保留原有缝线");
+    expect(out.prompt).not.toMatch(/[A-Za-z]/);
+    expect(out.negativePrompt).toBe("形变，闪烁");
+  });
+
   it("builds a skippable workflow and honest cost range", () => {
     const workflow = buildWorkflowPlan({ hasSourceMedia: true, aiKeyframes: true, aiMotion: true, nativeAudio: false });
     const cost = estimateProduction({ shotCount: 4, workflow, imageUnitUsd: 0.03 });

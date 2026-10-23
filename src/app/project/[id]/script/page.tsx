@@ -861,7 +861,7 @@ export default function ScriptPage() {
           </p>
           {genError && (
             <div className="mb-4 flex flex-col items-center gap-2">
-              <p className="text-sm text-destructive">{genError}</p>
+              <p role="alert" className="text-sm text-destructive">{genError}</p>
               {/* most generation errors are LLM-config related — offer a direct jump to Settings */}
               <Link href="/settings?tab=llm" className="text-xs text-primary underline underline-offset-2 hover:text-primary/80">
                 {t("goToSettings")}
@@ -869,7 +869,7 @@ export default function ScriptPage() {
             </div>
           )}
           <div className="flex flex-wrap items-center justify-center gap-3">
-            <Button onClick={handleGenerate} disabled={scriptActionsBusy || creativeConfigSaving} className="brand-gradient text-white">
+            <Button onClick={handleGenerate} disabled={scriptActionsBusy || creativeConfigSaving} aria-busy={isGenerating} className="brand-gradient text-white">
               {isGenerating ? (
                 <>
                   <LuLoaderCircle className="w-4 h-4 mr-2 animate-spin" />

@@ -21,6 +21,7 @@ import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import type { VideoOptions } from "@/lib/providers/types";
+import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
 
 export const runtime = "nodejs";
 
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest) {
   }
   const providerName = requiredString(body.provider);
   const model = requiredString(body.model);
-  const clientPrompt = requiredString(body.prompt) ?? "";
+  const clientPrompt = body.promptContext !== undefined && typeof body.prompt === "string" ? body.prompt : requiredString(body.prompt) ?? "";
   const apiKey = requiredString(body.apiKey);
   let imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : undefined;
   let lastImageUrl = typeof body.lastImageUrl === "string" ? body.lastImageUrl : undefined;
@@ -125,6 +126,7 @@ export async function POST(req: NextRequest) {
   let referenceAudioUrls = body.referenceAudioUrls;
   const controlPlan = sanitizeGenerationControlSummary(body.controlPlan);
   let premiumCg = false;
+  let reviewedPrompt: ReturnType<typeof assertReviewedVideoPrompt> | undefined;
 
   if (!providerName || !model) {
     return apiError(req, "缺少必要参数", "Missing required parameters");
@@ -151,6 +153,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    if (body.promptContext !== undefined) {
+      if (!projectId) return apiError(req, "提示词预览缺少项目", "Reviewed video prompts require a project id", 400);
+      reviewedPrompt = assertReviewedVideoPrompt(projectId, body.promptContext, prompt, { scriptId, shotId, provider: providerName, model });
+      options.negativePrompt = reviewedPrompt.negativePrompt;
+    }
     if (projectId) {
       const db = getDb();
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -222,7 +229,7 @@ export async function POST(req: NextRequest) {
           }, { status: 400 });
         }
         const compiled = compilePremiumCgVideoPrompt(shot, profile);
-        prompt = compiled.prompt;
+        prompt = reviewedPrompt?.prompt ?? compiled.prompt;
         mode = "image-to-video";
         imageUrl = references.imageUrl;
         lastImageUrl = references.lastImageUrl;
@@ -253,6 +260,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (body.promptContext !== undefined) {
+      // The reviewed prompt already contains the complete server-owned audio direction.
+      // Providers must not append a second audio/voiceover template after confirmation.
+      delete options.audioPrompt;
+      delete options.voiceover;
+    }
     const provider = createProvider({ name: providerName, apiKey, baseUrl });
 
     const firstFrameUrl = await toRemoteUsableImage(imageUrl);
@@ -389,6 +402,7 @@ export async function POST(req: NextRequest) {
       );
     }
   } catch (error) {
+    if (error instanceof VideoPromptError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     console.error("生视频失败:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : errText(req, "生视频失败", "Video generation failed") },

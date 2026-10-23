@@ -12,8 +12,8 @@
  *  - Subject micro-action per shot type: bring the frame alive WITHOUT re-imagining the scene.
  *  - Product shots get hard fidelity constraints (i2v models notoriously warp printed text/logos).
  *  - Always close with stability/artifact constraints — cheap wins against flicker & morphing.
- *  - Bilingual: follows the script language (CJK → Chinese prompt, otherwise English), because
- *    overseas projects generate English scripts and mixing languages degrades model adherence.
+ *  - Bilingual: callers can select the template language explicitly; legacy callers follow
+ *    the script language (CJK → Chinese prompt, otherwise English).
  *
  * Pure functions, unit-testable, no I/O.
  */
@@ -29,6 +29,8 @@ import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 export type MotionIntensity = "subtle" | "normal" | "strong";
 
 export interface MotionPromptInput {
+  /** Explicit template language; when absent, follow the camera/description language. */
+  locale?: "zh" | "en";
   /** Shot type drives the default camera move + subject micro-action */
   shotType?: Shot["type"] | string;
   /** The script engine's camera movement description (e.g. "特写 + 缓慢推近"); preferred over defaults */
@@ -178,7 +180,7 @@ export function pickBehaviorBeats(seed: number, lang: "zh" | "en"): string[] {
 
 /** Product-fidelity constraint (printed text & logos are the first thing i2v models destroy). */
 const PRODUCT_CONSTRAINT = {
-  zh: "商品的外观、包装、颜色、logo 与文字必须保持完全不变，文字清晰不扭曲变形",
+  zh: "商品的外观、包装、颜色、标志与文字必须保持完全不变，文字清晰不扭曲变形",
   en: "the product's appearance, packaging, colors, logo and printed text must remain exactly unchanged, text stays sharp and undistorted",
 };
 
@@ -453,7 +455,8 @@ function categoryConstraint(category: ProductCategory | undefined, evidence: str
 /**
  * Build the i2v motion prompt for a shot. The camera line leads (motion is the message),
  * followed by subject action, the complete scene direction, fidelity constraints for product
- * shots, and the stability tail. Language follows the script (camera/description text).
+ * shots, and the stability tail. Explicit locale controls template language; otherwise
+ * language follows the script (camera/description text).
  */
 export function buildMotionPrompt(input: MotionPromptInput): string {
   const rawDescription = (input.description ?? "").trim();
@@ -464,7 +467,7 @@ export function buildMotionPrompt(input: MotionPromptInput): string {
   const description = premiumCg ? removePremiumCgTextDirectives(rawDescription) : rawDescription;
   const probe = `${input.camera ?? ""}\n${description}`.trim();
   // Empty inputs default to Chinese (domestic-first product)
-  const lang: "zh" | "en" = probe && !hasCjk(probe) ? "en" : "zh";
+  const lang = input.locale ?? (probe && !hasCjk(probe) ? "en" : "zh");
   const type = String(input.shotType ?? "");
   const anchor = description;
   const direction = unquoted(probe);

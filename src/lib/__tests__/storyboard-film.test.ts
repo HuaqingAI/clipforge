@@ -54,19 +54,19 @@ describe("高端产品 CG 整片", () => {
 
     expect(prompt).toContain(product);
     expect(prompt).toContain(context);
-    expect(prompt).toContain("premium product CG film");
-    expect(prompt).toContain("documented use context in the approved shots");
-    expect(prompt).toContain("use a neutral studio when the context is unspecified");
-    expect(prompt).toContain("[0-4s] Shot 1");
-    expect(prompt).toContain("[4-7s] Shot 2");
-    expect(prompt).toContain("framing follows @Image2");
-    expect(prompt).toContain("component count");
-    expect(prompt).toContain("surface finishes");
-    expect(prompt).toContain("Do not invent unseen backs, interiors, mechanisms");
-    expect(prompt).toContain("Do not generate added on-screen text");
-    expect(prompt).toContain("preserve only product markings already visible");
-    expect(prompt).toContain("only when explicitly required by an approved shot and supported by supplied product facts");
-    expect(prompt).toContain("no dialogue, narration, voiceover");
+    expect(prompt).toContain("高端产品三维影像");
+    expect(prompt).toContain("资料已确认的使用环境");
+    expect(prompt).toContain("未指定使用环境时采用中性摄影棚");
+    expect(prompt).toContain("[0-4秒] 镜头1");
+    expect(prompt).toContain("[4-7秒] 镜头2");
+    expect(prompt).toContain("构图以第2张图片为基准");
+    expect(prompt).toContain("部件数量");
+    expect(prompt).toContain("表面处理");
+    expect(prompt).toContain("不虚构未展示的背面、内部、机构");
+    expect(prompt).toContain("不生成新增的画面文字");
+    expect(prompt).toContain("仅保留参考资料中已可见的产品标识");
+    expect(prompt).toContain("只有已批准镜头明确要求且产品事实支持时");
+    expect(prompt).toContain("不生成对白、旁白、配音");
     expect(prompt).not.toMatch(/furniture|upholstery|\blegs\b|modern.home/i);
   });
 });
@@ -86,9 +86,9 @@ describe("中文整片 prompt", () => {
   const prompt = buildStoryboardFilmPrompt(zhShots);
 
   it("逐镜 @图片N 引用 + 类型标签 + 时间段按脚本时长铺满全片", () => {
-    expect(prompt).toContain("[0-3秒] 镜头1（钩子镜，画面以 @图片1 为基准）");
-    expect(prompt).toContain("[3-8秒] 镜头2（演示镜，画面以 @图片2 为基准）");
-    expect(prompt).toContain("[8-12秒] 镜头3（转化镜，画面以 @图片3 为基准）");
+    expect(prompt).toContain("[0-3秒] 镜头1（钩子镜，画面以第1张图片为基准）");
+    expect(prompt).toContain("[3-8秒] 镜头2（演示镜，画面以第2张图片为基准）");
+    expect(prompt).toContain("[8-12秒] 镜头3（转化镜，画面以第3张图片为基准）");
     expect(prompt).toContain("总时长约 12 秒，共 3 个镜头");
   });
 
@@ -103,11 +103,11 @@ describe("中文整片 prompt", () => {
     expect(prompt).toContain("逐字说出");
     expect(prompt).toContain("不出现任何字幕");
     // 官方负向通道只覆盖字幕与音频：bgm 交给合成器权威层
-    expect(prompt).toContain("无bgm");
+    expect(prompt).toContain("无背景音乐");
   });
 
   it("素材绑定段：无 sheet 时 @图片1..N 顺序声明为关键帧", () => {
-    expect(prompt).toContain("素材对应：@图片1 至 @图片3 依次为镜头1至镜头3的关键帧");
+    expect(prompt).toContain("素材对应：第1张图片至第3张图片依次为镜头1至镜头3的关键帧");
   });
 
   it("质感行默认带真实手机直出（全正向措辞）；realism:false 时不出现", () => {
@@ -133,7 +133,7 @@ describe("中文整片 prompt", () => {
   });
 });
 
-describe("英文整片 prompt（台词无中文时整体切英文）", () => {
+describe("英文事实与台词保留原文，整片模板使用中文", () => {
   const enShots: Shot[] = [
     mkShot({ shotId: 1, type: "hook", duration: 6, description: "kitchen talking head", voiceover: "This thing saved my wallet" }),
     mkShot({ shotId: 2, type: "demo", duration: 6, description: "pouring coffee", voiceover: "" }),
@@ -141,37 +141,36 @@ describe("英文整片 prompt（台词无中文时整体切英文）", () => {
   const prompt = buildStoryboardFilmPrompt(enShots);
 
   it("@ImageN 引用 + 逐字口播说明 + 时间段 + 台词语言声明", () => {
-    expect(prompt).toContain("[0-6s] Shot 1 (hook shot, framing follows @Image1)");
-    expect(prompt).toContain("Dialogue (spoken verbatim): {This thing saved my wallet}");
-    expect(prompt).toContain("(no dialogue — ambient and action sounds only)");
-    // 官方要求非中文台词显式声明语言
-    expect(prompt).toContain("Dialogue language: English.");
-    expect(prompt).toContain("Reference mapping: @Image1 through @Image2");
-    expect(prompt).not.toContain("镜头");
+    expect(prompt).toContain("[0-6秒] 镜头1（钩子镜，画面以第1张图片为基准）");
+    expect(prompt).toContain("台词（逐字说出）：{This thing saved my wallet}");
+    expect(prompt).toContain("（无台词，只保留环境音与动作声）");
+    expect(prompt).toContain("台词须保持原文及原有语言");
+    expect(prompt).toContain("素材对应：第1张图片至第2张图片");
+    expect(prompt).not.toMatch(/Reference mapping|Dialogue language|Shot list/);
   });
 
   it("英文段落同样带运镜", () => {
     const withCam = buildStoryboardFilmPrompt([
       mkShot({ shotId: 1, description: "kitchen", camera: "slow push-in", voiceover: "Hi" }),
     ]);
-    expect(withCam).toContain("Camera: slow push-in. ");
+    expect(withCam).toContain("运镜：slow push-in。");
   });
 });
 
 describe("定妆参考位（characterSheet 序号偏移）", () => {
   it("sheet 领跑参考数组：@图片1=定妆照声明，分镜引用整体 +1，绑定段同步偏移", () => {
     const prompt = buildStoryboardFilmPrompt(zhShots, undefined, { characterSheet: true });
-    expect(prompt).toContain("@图片1 是出镜人物的四视图定妆照");
-    expect(prompt).toContain("镜头1（钩子镜，画面以 @图片2 为基准）");
-    expect(prompt).toContain("镜头3（转化镜，画面以 @图片4 为基准）");
-    expect(prompt).not.toContain("画面以 @图片1 为基准");
-    expect(prompt).toContain("素材对应：@图片1 是出镜人物定妆照（仅作身份参考）；@图片2 至 @图片4");
+    expect(prompt).toContain("第1张图片是出镜人物的四视图定妆照");
+    expect(prompt).toContain("镜头1（钩子镜，画面以第2张图片为基准）");
+    expect(prompt).toContain("镜头3（转化镜，画面以第4张图片为基准）");
+    expect(prompt).not.toContain("画面以第1张图片为基准");
+    expect(prompt).toContain("素材对应：第1张图片是出镜人物定妆照（仅作身份参考）；第2张图片至第4张图片");
   });
 
   it("无 sheet 时不出现定妆声明，分镜仍从 @图片1 起", () => {
     const prompt = buildStoryboardFilmPrompt(zhShots);
     expect(prompt).not.toContain("定妆照");
-    expect(prompt).toContain("画面以 @图片1 为基准");
+    expect(prompt).toContain("画面以第1张图片为基准");
   });
 });
 
@@ -255,10 +254,10 @@ describe("多角色说话人归属与参考绑定纪律", () => {
   it("单角色 + 定妆照：声明句点名该角色", () => {
     const solo: ScriptCharacter[] = [{ id: "char_a", name: "小美", gender: "female", persona: "", appearance: "32岁低马尾" }];
     const p = buildStoryboardFilmPrompt(shots.slice(0, 1), solo, { characterSheet: true });
-    expect(p).toContain("@图片1 是小美的四视图定妆照");
+    expect(p).toContain("第1张图片是小美的四视图定妆照");
   });
 
-  it("英文脚本：cast 块与逐行归属走英文", () => {
+  it("英文脚本：中文模板保留角色名字、外观与台词原文", () => {
     const enShots = [
       mkShot({ shotId: 1, description: "girl reacts", camera: "push in", voiceover: "This tissue tears instantly?", characterId: "char_a" }),
       mkShot({ shotId: 2, description: "guy demos", camera: "follow", voiceover: "Try this one.", characterId: "char_b" }),
@@ -268,9 +267,9 @@ describe("多角色说话人归属与参考绑定纪律", () => {
       { id: "char_b", name: "Ben", gender: "male", persona: "", appearance: "30s, short hair, plaid shirt" },
     ];
     const p = buildStoryboardFilmPrompt(enShots, enCast);
-    expect(p).toContain("Cast (refer to characters strictly by these names");
-    expect(p).toContain("spoken verbatim by Mia (early 30s");
-    expect(p).toContain("the character named on that shot speaks the line verbatim");
+    expect(p).toContain("人物设定（下文提到角色一律用角色名指代");
+    expect(p).toContain("逐字说出，由Mia（early 30s）说出");
+    expect(p).toContain("由该镜标注的角色自然说出台词");
   });
 });
 

@@ -38,20 +38,25 @@ export function sanitizeCreativeIntent(value: unknown): CreativeIntent {
 }
 
 /** Compile provider-neutral creative intent into a deterministic prompt suffix. */
-export function compileCreativePrompt(intent: CreativeIntent): { prompt: string; negativePrompt: string } {
+export function compileCreativePrompt(intent: CreativeIntent, locale: "zh" | "en" = "en"): { prompt: string; negativePrompt: string } {
+  const labels = locale === "zh"
+    ? { environment: "环境", lighting: "光线", palette: "色调", composition: "构图", camera: "运镜", motion: "动态", continuity: "连续性锚点", product: "商品不变项" }
+    : { environment: "Environment", lighting: "Lighting", palette: "Palette", composition: "Composition", camera: "Camera", motion: "Motion", continuity: "Continuity anchors", product: "Product invariants" };
+  const section = (label: string, value: string | undefined) => value ? `${label}${locale === "zh" ? "：" : ": "}${value}` : "";
+  const listSeparator = locale === "zh" ? "；" : "; ";
   const parts = [
     intent.subject,
     intent.action,
-    intent.environment && `Environment: ${intent.environment}`,
-    intent.lighting && `Lighting: ${intent.lighting}`,
-    intent.palette && `Palette: ${intent.palette}`,
-    intent.composition && `Composition: ${intent.composition}`,
-    intent.camera && `Camera: ${intent.camera}`,
-    intent.motion && `Motion: ${intent.motion}`,
-    intent.continuity?.length ? `Continuity anchors: ${intent.continuity.join("; ")}` : "",
-    intent.productConstraints?.length ? `Product invariants: ${intent.productConstraints.join("; ")}` : "",
+    section(labels.environment, intent.environment),
+    section(labels.lighting, intent.lighting),
+    section(labels.palette, intent.palette),
+    section(labels.composition, intent.composition),
+    section(labels.camera, intent.camera),
+    section(labels.motion, intent.motion),
+    section(labels.continuity, intent.continuity?.join(listSeparator)),
+    section(labels.product, intent.productConstraints?.join(listSeparator)),
   ].filter(Boolean);
-  return { prompt: parts.join(". "), negativePrompt: (intent.negative ?? []).join(", ") };
+  return { prompt: parts.join(locale === "zh" ? "。" : ". "), negativePrompt: (intent.negative ?? []).join(locale === "zh" ? "，" : ", ") };
 }
 
 export interface VisualBible {

@@ -32,14 +32,17 @@ import { klingJobs } from "@/lib/kling/job-schema";
 import { getKlingFilm, getKlingFilmShots, patchKlingFilmShot } from "@/lib/kling/film-repository";
 import { previewKlingFilm, assertKlingFilmContext, verifyKlingFilmFiles, buildFilmShotJobRequest } from "@/lib/kling/film-plan";
 import { LEGACY_SILENT_PROMPT_SUFFIX, VIDEO_AUDIO_DIRECTIONS, withVideoAudioMode } from "@/lib/video-audio";
-import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
+import { buildShotVideoPrompt as compileShotVideoPrompt } from "@/lib/shot-video-prompt";
 import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import type { CreativeIntent, VisualBible } from "@/lib/production-system";
+import { createCreativeProfileSnapshot, createPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 
 const shot: Shot = { shotId: 8, type: "demo", duration: 5, description: "Product on table", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "商品清洁更轻松。" };
 const model: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","text_to_video","model-1"]', provider: "kling-cli", profileId: "profile-1", region: "global", tool: "text_to_video", remoteModelId: "model-1", displayName: "Model 1", catalogRevision: "catalog-1", available: true,
   parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5, 10], default: 5 }], inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } };
 const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from("fixture-image")]);
+const buildShotVideoPrompt = (input: Parameters<typeof compileShotVideoPrompt>[0]) => compileShotVideoPrompt({ ...input, locale: "zh" });
 function request(extra: Record<string, unknown> = {}) { return { projectId: "project-1", scriptId: "script-1", profileId: "profile-1", selectionKey: state.profile!.catalogSnapshot[0].selectionKey, ...extra }; }
 function currentScript() { return getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!; }
 function setShots(shots: Shot[]) { getDb().update(scripts).set({ shots }).where(eq(scripts.id, "script-1")).run(); }
@@ -70,6 +73,20 @@ afterEach(() => { vi.unstubAllEnvs(); });
 afterAll(async () => { state.sqlite?.close(); await fs.rm(state.directory, { recursive: true, force: true }); });
 
 describe("Kling frozen film planning", () => {
+  it("shows the exact paid backend CG template in the full-film plan", async () => {
+    useImageModel();
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    const cgShot: Shot = { ...shot, type: "product_reveal", visualSource: "product_image", voiceover: "", visualIntent: "Observe the approved product silhouette.", camera: "One restrained forward camera move." };
+    getDb().update(projects).set({ productImages: ["/api/files/frame.png"], creativeProfile: profile, creativeConfigRevision: 1 }).run();
+    getDb().update(scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const plan = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(plan.runId)[0];
+    expect(planned.data.prompt).toBe(compilePremiumCgVideoPrompt(cgShot, profile).prompt);
+    expect(buildFilmShotJobRequest(getKlingFilm(plan.runId), planned).prompt).toBe(planned.data.prompt);
+    expect(planned.data.prompt).not.toContain("声音要求");
+  });
+
   it("uses the same configured image-to-video prompt as the single-shot path, including project direction", async () => {
     useImageModel();
     const configuredShot: Shot = { ...shot, description: "手指转动金属机身，透明杯身和圆形按键清晰可见。", camera: "镜头平稳向左横移。" };
@@ -85,7 +102,7 @@ describe("Kling frozen film planning", () => {
 
     expect(prompt).toBe(klingAudioPrompt(expected.prompt, false));
     expect(prompt).toBe(withVideoAudioMode(expected.prompt, "silent"));
-    expect(prompt).toContain("UGC 创作者手机手持实拍");
+    expect(prompt).toContain("内容创作者手机手持实拍");
     expect(prompt).toContain("运镜幅度大胆明显");
     expect(prompt).toContain("全程保持未调色的自然色彩与混合色温");
     expect(prompt).toContain("same product label");
@@ -104,7 +121,7 @@ describe("Kling frozen film planning", () => {
     expect(getKlingFilmShots(legacy.runId)[0].data.prompt).toBe(klingAudioPrompt(buildShotVideoPrompt({ shot, ordinal: 0 }).prompt, false));
     expect(explicit.planHash).toBe(legacy.planHash);
     expect(partial.promptSettings).toEqual({ visualLook: "daylight_clean", motionIntensity: "normal", motionRealism: "auto" });
-    expect(getKlingFilmShots(partial.runId)[0].data.prompt).toContain("keep bright clean natural daylight throughout");
+    expect(getKlingFilmShots(partial.runId)[0].data.prompt).toContain("全程保持明亮清透的自然日光");
   });
   it("includes each prompt setting in the frozen plan hash and retains its original value", async () => {
     useImageModel();
@@ -116,10 +133,10 @@ describe("Kling frozen film planning", () => {
     const intensity = await previewKlingFilm(request({ promptSettings: { motionIntensity: "subtle" } }));
     const realism = await previewKlingFilm(request({ promptSettings: { motionRealism: "off" } }));
     expect(new Set([baseline.planHash, look.planHash, intensity.planHash, realism.planHash]).size).toBe(4);
-    expect(getKlingFilmShots(look.runId)[0].data.prompt).toContain("keep the warm golden afternoon light throughout");
-    expect(getKlingFilmShots(intensity.runId)[0].data.prompt).toContain("camera movement stays subtle and restrained");
-    expect(getKlingFilmShots(baseline.runId)[0].data.prompt).toContain("the device rotates as a single highlight sweeps along the metal edge");
-    expect(getKlingFilmShots(realism.runId)[0].data.prompt).not.toContain("the device rotates as a single highlight sweeps along the metal edge");
+    expect(getKlingFilmShots(look.runId)[0].data.prompt).toContain("全程保持温暖的橙黄午后光调");
+    expect(getKlingFilmShots(intensity.runId)[0].data.prompt).toContain("运镜幅度轻微克制");
+    expect(getKlingFilmShots(baseline.runId)[0].data.prompt).toContain("转动机身，金属边框上一道高光缓缓扫过");
+    expect(getKlingFilmShots(realism.runId)[0].data.prompt).not.toContain("转动机身，金属边框上一道高光缓缓扫过");
 
     const promptSettings = { visualLook: "phone_raw", motionIntensity: "strong", motionRealism: "constraints" };
     const frozen = await previewKlingFilm(request({ promptSettings }));
@@ -152,9 +169,9 @@ describe("Kling frozen film planning", () => {
     const view = await previewKlingFilm(request({ promptSettings }));
     const prompt = getKlingFilmShots(view.runId)[0].data.prompt;
     expect(prompt).toBe(withVideoAudioMode(buildShotVideoPrompt({ shot: cta, ordinal: 0, settings: promptSettings }).prompt, "silent"));
-    expect(prompt).toContain("商品的外观、包装、颜色、logo 与文字必须保持完全不变");
+    expect(prompt).toContain("商品的外观、包装、颜色、标志与文字必须保持完全不变");
     expect(prompt).toContain("主体保持静止");
-    expect(prompt).not.toContain("UGC 创作者手机手持实拍");
+    expect(prompt).not.toContain("内容创作者手机手持实拍");
     expect(prompt).not.toContain("运镜幅度大胆明显");
   });
   it("keeps talking-character behavior when the selected sound strategy is post-production narration", async () => {
@@ -200,8 +217,8 @@ describe("Kling frozen film planning", () => {
     const view = await previewKlingFilm(request());
     const run = getKlingFilm(view.runId);
     const planned = getKlingFilmShots(view.runId)[0];
-    expect(planned.data.options).toEqual({ duration: 5, [name]: "warped logo, extra buttons" });
-    expect(buildFilmShotJobRequest(run, planned).options?.[name]).toBe("warped logo, extra buttons");
+    expect(planned.data.options).toEqual({ duration: 5, [name]: "warped logo，extra buttons" });
+    expect(buildFilmShotJobRequest(run, planned).options?.[name]).toBe("warped logo，extra buttons");
     expect(planned.data.prompt).toBe(klingAudioPrompt(buildShotVideoPrompt({ shot, ordinal: 0, creativeIntent: { subject: "Product on table", negative: ["warped logo", "extra buttons"] } }).prompt, false));
   });
   it.each(["negative_prompt", "negativePrompt"])("merges raw negative direction into the declared %s alias", async (name) => {
@@ -241,8 +258,8 @@ describe("Kling frozen film planning", () => {
     expect(view).toMatchObject({ status: "draft", totalShots: 2, readyShots: 0, billableShotCount: 2, missingKeyframes: [] });
     expect(planned.map((item) => [item.ordinal, item.shotId, item.data.generationDuration])).toEqual([[0, 8, 5], [1, 21, 10]]);
     expect(run.data.scriptSnapshot.shots).toEqual([shot, { ...shot, shotId: 21, duration: 7 }]);
-    expect(planned[0].data.prompt).toContain(VIDEO_AUDIO_DIRECTIONS.silent.en);
-    expect(planned[0].data.prompt).not.toContain(VIDEO_AUDIO_DIRECTIONS.ambient.en);
+    expect(planned[0].data.prompt).toContain(VIDEO_AUDIO_DIRECTIONS.silent.zh);
+    expect(planned[0].data.prompt).not.toContain(VIDEO_AUDIO_DIRECTIONS.ambient.zh);
     expect(getDb().select().from(klingJobs).all()).toHaveLength(0); expect(state.download).not.toHaveBeenCalled();
     assertKlingFilmContext(run.id);
   });
@@ -288,8 +305,8 @@ describe("Kling frozen film planning", () => {
     expect(getKlingFilmShots(replacement.runId)[0].data.options[name]).toBe(off);
     expect(planned.data.options[name]).toBe(on);
     expect(getKlingFilmShots(native.runId)[0].data.options[name]).toBe(on);
-    expect(planned.data.prompt).toContain(VIDEO_AUDIO_DIRECTIONS.ambient.en);
-    expect(planned.data.prompt).not.toContain(VIDEO_AUDIO_DIRECTIONS.silent.en);
+    expect(planned.data.prompt).toContain(VIDEO_AUDIO_DIRECTIONS.ambient.zh);
+    expect(planned.data.prompt).not.toContain(VIDEO_AUDIO_DIRECTIONS.silent.zh);
     expect(planned.data.prompt).not.toContain("原生音频必须逐字说出");
     expect(buildFilmShotJobRequest(getKlingFilm(mixed.runId), planned).options?.[name]).toBe(on);
     expect(new Set([replacement.planHash, mixed.planHash, native.planHash]).size).toBe(3);
@@ -299,13 +316,14 @@ describe("Kling frozen film planning", () => {
     expect(view.output.audioStrategy).toBe("edge-tts-mix");
     expect(getKlingFilmShots(view.runId)[0].data.options).toEqual({ duration: 5 });
   });
-  it("cleans old generated ambience and duplicate silence from saved text prompts before freezing", async () => {
-    setShots([{ ...shot, prompt: `商品与购买引导保持静止。底部显示“价格、使用及清洗要求以商品页和说明书为准”。${VIDEO_AUDIO_DIRECTIONS.ambient.zh}。\n${LEGACY_SILENT_PROMPT_SUFFIX}` }]);
+  it("keeps approved visual facts and omits saved English image templates before freezing", async () => {
+    setShots([{ ...shot, description: "商品与购买引导保持静止。底部显示“价格、使用及清洗要求以商品页和说明书为准”。", prompt: `English image template. ${VIDEO_AUDIO_DIRECTIONS.ambient.zh}。\n${LEGACY_SILENT_PROMPT_SUFFIX}` }]);
     const view = await previewKlingFilm(request());
     const prompt = getKlingFilmShots(view.runId)[0].data.prompt;
     expect(prompt).toContain("底部显示“价格、使用及清洗要求以商品页和说明书为准”。");
     expect(prompt).not.toContain(VIDEO_AUDIO_DIRECTIONS.ambient.zh);
     expect(prompt).not.toContain("覆盖前文");
+    expect(prompt).not.toContain("English image template");
     expect(prompt.split(VIDEO_AUDIO_DIRECTIONS.silent.zh)).toHaveLength(2);
     expect(prompt).not.toContain(VIDEO_AUDIO_DIRECTIONS.silent.en);
   });

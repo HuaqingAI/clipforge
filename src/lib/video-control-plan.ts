@@ -54,7 +54,9 @@ function referenceInstruction(items: VideoReferenceInput[], locale: "zh" | "en",
   let audio = 0;
   const labels = items.map((item) => {
     const n = item.mediaType === "image" ? ++image : item.mediaType === "video" ? ++video : ++audio;
-    const token = item.mediaType === "image" ? `@Image${n}` : item.mediaType === "video" ? `@Video${n}` : `@Audio${n}`;
+    const token = locale === "zh"
+      ? item.mediaType === "image" ? `第${n}张图片` : item.mediaType === "video" ? `第${n}段视频` : `第${n}段音频`
+      : item.mediaType === "image" ? `@Image${n}` : item.mediaType === "video" ? `@Video${n}` : `@Audio${n}`;
     const role = locale === "zh"
       ? ({ keyframe: "构图关键帧", "end-frame": "目标尾帧", character: "人物身份", product: "商品外观", continuity: "上一镜连续性", motion: "动作与表演", audio: "声音与音色" } as const)[item.role]
       : ({ keyframe: "shot composition", "end-frame": "target ending", character: "character identity", product: "product appearance", continuity: "previous-shot continuity", motion: "motion and performance", audio: "voice and sound" } as const)[item.role];

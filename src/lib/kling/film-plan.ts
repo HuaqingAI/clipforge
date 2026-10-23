@@ -37,6 +37,7 @@ import { isKlingRuntimeEnabled } from "./runtime";
 import type { KlingFilmOutputSettings, KlingFilmView } from "./film-types";
 import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 import type { KlingSubmitRequest } from "./job-types";
+import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const VIDEO = /\.(?:mp4|webm|mov|m4v|mkv)(?:$|[?#])/i;
@@ -149,14 +150,15 @@ function projectPromptRevision(project: typeof projects.$inferSelect): string {
 function promptFor(shot: Shot, model: KlingVideoModelDescriptor, output: KlingFilmOutputSettings, ordinal: number, project: typeof projects.$inferSelect, settings: VideoPromptSettings, creativeProfile: ProjectCreativeProfile): { prompt: string; negativePrompt: string } {
   const audioMode: VideoAudioMode = output.audioStrategy === "edge-tts" ? "silent" : output.audioStrategy === "edge-tts-mix" ? "ambient" : "native";
   const premiumCg = isPremiumProductCgProfile(creativeProfile);
-  const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible, creativeProfile });
+  if (premiumCg) return compilePremiumCgVideoPrompt(shot, creativeProfile);
+  const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible, creativeProfile, locale: "zh" });
   // A legacy free-form prompt can contain sales language. CG always compiles from the controlled
   // visual direction and profile policy instead of inheriting that older prompt field.
-  const parts = model.tool === "text_to_video" && !premiumCg ? [shot.prompt?.trim() || shot.description, direction.prompt] : [direction.prompt];
+  const parts = model.tool === "text_to_video" && !premiumCg ? [shot.visualIntent?.trim() || shot.description, direction.prompt] : [direction.prompt];
   const approvedNarration = shot.narration?.trim() || shot.voiceover?.trim();
   if (output.audioStrategy === "native" && output.narrationMode !== "none" && approvedNarration) parts.push(`原生音频必须逐字说出以下台词，不改写、不增添：${JSON.stringify(approvedNarration)}`);
   // Normalize legacy audio templates in both saved text-to-video prompts and motion text.
-  const prompt = withVideoAudioMode(parts.join("\n"), audioMode);
+  const prompt = withVideoAudioMode(parts.join("\n"), audioMode, "zh");
   const issues = validateVideoPrompt(prompt);
   if (issues.length) throw fail("KLING_FILM_PROMPT_INVALID", `镜头 ${shot.shotId}：${issues.map((issue) => issue.message).join(" ")}`);
   const conflict = checkPromptConsistency(prompt, sanitizeVisualBible(project.visualBible)).find((issue) => issue.severity === "fail");

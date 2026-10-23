@@ -86,6 +86,9 @@ describe("video repair planning", () => {
       "ordered-keyframes-fallback",
     ]));
     expect(preview.prompt).toContain("2.45–4.85");
+    expect(preview.prompt).toContain("第1段视频是原镜头");
+    expect(preview.prompt).toContain("第3张图片在 3.50 秒约束商品外观");
+    expect(preview.prompt).not.toMatch(/@Image|@Video|约束product/);
     expect(sanitizeVideoRepairSummary(preview.summary)).toEqual(preview.summary);
   });
 

@@ -70,7 +70,10 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
   const premiumCg = Boolean(premiumProfile) || isPremiumCgPromptPolicy(input.outputPolicy);
   const premiumLook = premiumProfile?.visualDirection.look.trim();
   const visualDescription = shot?.visualIntent?.trim() || shot?.description;
+  const probe = `${shot?.camera ?? ""}\n${visualDescription ?? ""}`.trim();
+  const locale = input.locale ?? (!probe || /[一-鿿぀-ヿ가-힯]/.test(probe) ? "zh" : "en");
   const motion = buildMotionPrompt({
+    locale,
     shotType: shot?.type,
     camera: shot?.camera,
     description: visualDescription,
@@ -99,15 +102,13 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
     ...intent,
     continuity: [...(intent.continuity ?? []), ...bible.characterAnchors, ...bible.wardrobeAnchors, ...bible.environmentAnchors, ...bible.lightingAnchors],
     productConstraints: [...(intent.productConstraints ?? []), ...bible.productAnchors],
-  });
-  const probe = `${shot?.camera ?? ""}\n${visualDescription ?? ""}`.trim();
-  const locale = input.locale ?? (!probe || /[一-鿿぀-ヿ가-힯]/.test(probe) ? "zh" : "en");
+  }, locale);
   return {
     // Sales-oriented free-form project direction can contain legacy hooks, offers, or CTA
     // wording. Premium CG prompts only use the script, locked profile, and product references.
-    prompt: joinVideoPromptParts([motion, ...(!premiumCg && direction.prompt ? [`Project direction: ${direction.prompt}`] : [])], locale, "\n"),
+    prompt: joinVideoPromptParts([motion, ...(!premiumCg && direction.prompt ? [`${locale === "zh" ? "项目方向：" : "Project direction: "}${direction.prompt}`] : [])], locale, "\n"),
     negativePrompt: premiumCg
-      ? "added on-screen text, subtitles, prices, numbers, promotional graphics, CTA, watermark"
+      ? locale === "zh" ? "新增画面文字、字幕、价格、数字、营销图形、行动引导、水印" : "added on-screen text, subtitles, prices, numbers, promotional graphics, CTA, watermark"
       : direction.negativePrompt,
   };
 }

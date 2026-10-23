@@ -30,11 +30,11 @@ import { useCharacterStore } from "@/lib/stores/project-store";
 import type { Shot } from "@/lib/db/schema";
 import { buildAssetRows, shouldOfferStockFill, needsImageModelWarning, nextChainKeyframe, type AssetItem, chainByDefault, isKlingVideoSelection } from "@/lib/assets-view";
 import { realMixFromRows, shotReality } from "@/lib/real-mix";
-import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
-import { joinVideoPromptParts, validateVideoPrompt } from "@/lib/video-prompt";
-import { withVideoAudioMode } from "@/lib/video-audio";
+import { fetchVideoPrompt } from "@/lib/video-prompt-client";
+import type { VideoPromptRequest } from "@/lib/video-prompt-request";
+import { validateVideoPrompt } from "@/lib/video-prompt";
 import { keyframeInstantLine } from "@/lib/prompt-lint";
-import { applyRetakePatch, RETAKE_SYMPTOMS, type RetakeSymptom } from "@/lib/retake-patch";
+import { RETAKE_SYMPTOMS, type RetakeSymptom } from "@/lib/retake-patch";
 import {
   CAMERA_PRESETS,
   CAMERA_PRESET_CATEGORIES,
@@ -50,7 +50,6 @@ import { LOOK_PRESETS, lookImageSuffix } from "@/lib/look-presets";
 import { realFaceLine } from "@/lib/presenters";
 import { modelSupportsLastFrame } from "@/lib/video-composer/transitions";
 import {
-  buildVideoControlPlan,
   sanitizeVideoControlSummary,
 } from "@/lib/video-control-plan";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
@@ -99,6 +98,7 @@ interface PendingAiTask {
   provider: string;
   model: string;
   taskId: string;
+  prompt?: string;
   mode?: string;
   status: "submitted" | "processing" | "completed" | "failed" | "unknown";
   controlPlan?: GenerationControlSummary | null;
@@ -198,6 +198,8 @@ function AssetsPageContent() {
   const motionContext = useRef<{ scriptId: string; configurationKey: string; assets: AssetItem[] }>({ scriptId: "", configurationKey: "", assets: [] });
   // Batch generation must await confirmation instead of replacing one pending dialog with another.
   const motionDraftDone = useRef<(() => void) | null>(null);
+  const motionPreparation = useRef<AbortController | null>(null);
+  const batchPreparation = useRef<AbortController | null>(null);
   const finishMotionDraft = useCallback(() => {
     setMotionDraft(null);
     const resolve = motionDraftDone.current;
@@ -261,7 +263,11 @@ function AssetsPageContent() {
     && videoModelTarget?.profileId === motionDraft.profileId
     && (!motionDraft.validateAssetSelection || assets.find((asset) => asset.shotId === motionDraft.asset.shotId)?.assetId === motionDraft.asset.assetId));
   useEffect(() => { if (motionDraft && !motionDraftValid) finishMotionDraft(); }, [motionDraft, motionDraftValid, finishMotionDraft]);
-  useEffect(() => () => { motionDraftDone.current?.(); }, []);
+  useEffect(() => () => {
+    motionPreparation.current?.abort();
+    batchPreparation.current?.abort();
+    motionDraftDone.current?.();
+  }, [id, scriptId, videoConfigurationKey]);
 
   // when no image model is configured (modelTarget is null), offer key-free users a free stock fill entry point
   const offerStockFill = !loading && shouldOfferStockFill(assets, contentType, modelTarget !== null);
@@ -696,7 +702,7 @@ function AssetsPageContent() {
             const asset = assets.find((a) => a.shotId === task.shotId);
             // best-effort keyframe provenance: the task was submitted from the shot's static frame
             const keyframe = asset && !asset.isVideo ? asset.thumbnailUrl : asset?.keyframeUrl;
-            await saveVideoAsset(task.shotId, data.videoUrls[0], asset?.prompt, task.provider, task.model, keyframe, task.controlPlan);
+            await saveVideoAsset(task.shotId, data.videoUrls[0], task.prompt, task.provider, task.model, keyframe, task.controlPlan);
           }
           setTaskMsg(t("taskResumeDone"));
         } else if (data.status === "failed" || data.status === "cancelled") {
@@ -726,7 +732,7 @@ function AssetsPageContent() {
   // supports a pinned last frame, the clip ends by flowing into the next scene — the transition is
   // generated inside the clip, and the composer's hard concat becomes seamless.
   const prepareMotion = useCallback(
-    (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom, batch = false): PreparedMotion | undefined => {
+    async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom, batch = false, signal?: AbortSignal): Promise<PreparedMotion | undefined> => {
       const asset = assets.find((a) => a.shotId === shotId);
       if (!asset) return;
       const existing = klingJobs.find((job) => job.shotId === shotId && job.scriptId === scriptId && klingJobBlocksSubmission(job));
@@ -762,27 +768,6 @@ function AssetsPageContent() {
         if (prev) tailFirstFrame = prev.lastFrameUrl ?? lastFrameByShot.current.get(prev.shotId);
       }
       const effectiveFirstFrame = tailFirstFrame ?? firstFrame;
-      // Motion prompt, not the static image prompt: the first frame already fixes the
-      // composition — the text's job is camera path + subject action + fidelity constraints
-      const shotDirection = buildShotVideoPrompt({
-        shot: batch ? { ...asset, voiceover: "" } : asset,
-        ordinal: assets.findIndex((a) => a.shotId === shotId),
-        settings: { visualLook, motionIntensity, motionRealism },
-        chainToNext: !!chainFrame,
-        category: projectCategory,
-        creativeIntent: projectCreativeIntent,
-        visualBible: projectVisualBible,
-        creativeProfile: projectCreativeProfile,
-      });
-      // diagnosis retake (user-initiated, billed): patch exactly ONE dimension onto the prompt.
-      // Base = the freshly rebuilt prompt — deterministic, so with unchanged settings it equals
-      // what the previous submit sent, and the patch is the only difference.
-      let finalPrompt = shotDirection.prompt;
-      if (retake) {
-        const patched = applyRetakePatch(finalPrompt, retake);
-        finalPrompt = patched.prompt;
-        setTaskMsg(t("retakeApplied", { change: locale === "zh" ? patched.change.zh : patched.change.en }));
-      }
       const assetIndex = assets.findIndex((item) => item.shotId === shotId);
       const previousAsset = assetIndex > 0 ? assets[assetIndex - 1] : undefined;
       const previousTail = previousAsset?.lastFrameUrl ?? (previousAsset ? lastFrameByShot.current.get(previousAsset.shotId) : undefined);
@@ -792,26 +777,32 @@ function AssetsPageContent() {
       const productReference = productReferenceLocked && (premiumCg || asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
         ? productImages[0]
         : undefined;
-      const controlPlan = buildVideoControlPlan({
-        provider: videoModelTarget.provider,
-        modelId: videoModelTarget.model,
-        // Pure-visual CG and Kling's own confirmation must not inherit native dialogue directions.
-        supportsAudio: batch || premiumCgVisualOnly || videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
-        firstFrameUrl: effectiveFirstFrame,
-        lastFrameUrl: chainFrame,
-        characterReferenceUrl: premiumCg ? undefined : characterReference,
-        productReferenceUrl: productReference,
-        continuityReferenceUrl: batch ? undefined : previousTail,
-        voiceover: batch || premiumCgVisualOnly ? "" : asset?.voiceover,
-        speakerVisible: batch || premiumCg ? false : Boolean(asset?.characterId),
-        description: asset?.description,
-        locale,
-      });
-      if (controlPlan.promptSuffix) finalPrompt = joinVideoPromptParts([finalPrompt, controlPlan.promptSuffix], locale, "\n");
-      if (videoModelTarget.provider !== "kling-cli") {
-        finalPrompt = withVideoAudioMode(finalPrompt,
-          batch || premiumCgVisualOnly || videoParams.audioEnabled === false ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
-      }
+      const expectedAssetKey = motionAssetKey(asset);
+      const validate = () => {
+        const current = motionContext.current;
+        const selected = current.assets.find((item) => item.shotId === shotId);
+        return current.scriptId === scriptId && current.configurationKey === videoConfigurationKey
+          && Boolean(selected && motionAssetKey(selected) === expectedAssetKey);
+      };
+      const promptRequest: VideoPromptRequest = {
+        scriptId, shotId, provider: videoModelTarget.provider, model: videoModelTarget.model,
+        settings: { visualLook, motionIntensity, motionRealism },
+        ...(videoParams.negativePrompt && { negativePrompt: videoParams.negativePrompt }),
+        chainToNext: !!chainFrame, locale, batch, retake,
+        generateAudio: videoModelTarget.provider === "kling-cli" ? false : !batch && !premiumCgVisualOnly && videoParams.audioEnabled !== false,
+        controlInputs: {
+          supportsAudio: batch || premiumCgVisualOnly || videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
+          firstFrameUrl: effectiveFirstFrame, lastFrameUrl: chainFrame,
+          characterReferenceUrl: premiumCg ? undefined : characterReference,
+          productReferenceUrl: productReference,
+          continuityReferenceUrl: batch ? undefined : previousTail,
+        },
+      };
+      const preview = await fetchVideoPrompt(id, promptRequest, signal);
+      if (signal?.aborted) return;
+      if (!validate()) throw new Error("脚本、素材或生成设置已更改，请重新打开视频生成确认。");
+      const finalPrompt = preview.prompt;
+      const controlPlan = preview.controlPlan;
       const consistencyFailure = checkPromptConsistency(finalPrompt, projectVisualBible).find((issue) => issue.severity === "fail");
       if (consistencyFailure) {
         setAssets((prev) => prev.map((item) => item.shotId === shotId ? { ...item, error: t("visualBibleBlocked", { anchor: consistencyFailure.anchor }) } : item));
@@ -821,8 +812,8 @@ function AssetsPageContent() {
       // composer trims overshoot from the TAIL — which would cut a chained ending. Round to the
       // model's supported range instead of always sending the global 5s default.
       const videoOptions = buildVideoOptions(videoParams);
-      if (shotDirection.negativePrompt) {
-        videoOptions.negativePrompt = [videoOptions.negativePrompt, shotDirection.negativePrompt].filter(Boolean).join(", ");
+      if (preview.negativePrompt) {
+        videoOptions.negativePrompt = preview.negativePrompt;
       }
       if (asset?.duration) {
         videoOptions.duration = Math.min(15, Math.max(4, Math.round(asset.duration)));
@@ -846,13 +837,6 @@ function AssetsPageContent() {
       const referenceVideoUrls = controlPlan.referenceInputs.filter((item) => item.mediaType === "video").map((item) => item.url);
       const referenceAudioUrls = batch || premiumCgVisualOnly ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
       const controlSummary = sanitizeVideoControlSummary(controlPlan);
-      const expectedAssetKey = motionAssetKey(asset);
-      const validate = () => {
-        const current = motionContext.current;
-        const selected = current.assets.find((item) => item.shotId === shotId);
-        return current.scriptId === scriptId && current.configurationKey === videoConfigurationKey
-          && Boolean(selected && motionAssetKey(selected) === expectedAssetKey);
-      };
       const generate = async () => {
         const promptIssues = validateVideoPrompt(finalPrompt);
         if (promptIssues.length) throw new VideoGenerationFailure(promptIssues.map((issue) => issue.message).join(" "));
@@ -862,7 +846,7 @@ function AssetsPageContent() {
           || currentSettings.motionIntensity !== motionIntensity || currentSettings.motionRealism !== motionRealism) {
           throw new VideoGenerationFailure("视频模型或提示词设置已更改，请重新打开当前镜头的生成确认。");
         }
-        if (batch && !validate()) throw new VideoGenerationFailure("脚本、分镜图片或视频生成设置已更改，请重新打开批量转动态。");
+        if (!validate()) throw new VideoGenerationFailure("脚本、分镜图片或视频生成设置已更改，请重新打开视频生成确认。");
         const res = await fetch("/api/ai/video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -873,6 +857,7 @@ function AssetsPageContent() {
             baseUrl: videoModelTarget.baseUrl,
             mode: controlPlan.mode,
             prompt: finalPrompt,
+            promptContext: preview.promptContext,
             ...(controlPlan.firstFrameUrl && { imageUrl: controlPlan.firstFrameUrl }),
             ...(controlPlan.lastFrameUrl && { lastImageUrl: controlPlan.lastFrameUrl }),
             ...(referenceImageUrls.length && { referenceImageUrls }),
@@ -913,6 +898,7 @@ function AssetsPageContent() {
       return {
             asset, selectionKey: videoModelTarget.model, provider: videoModelTarget.provider, scriptId, configurationKey: videoConfigurationKey,
             profileId: videoModelTarget.profileId, prompt: finalPrompt,
+            promptContext: preview.promptContext, negativePrompt: preview.negativePrompt,
             firstFrameUrl: effectiveFirstFrame, lastFrameUrl: controlPlan.lastFrameUrl,
             referenceImages: [...new Set([...referenceImageUrls, ...productImages, ...(!premiumCg && characterReference ? [characterReference] : [])])],
             apiImages: [
@@ -923,7 +909,7 @@ function AssetsPageContent() {
             validateAssetSelection: !firstFrameOverride || firstFrameOverride === asset.thumbnailUrl || firstFrameOverride === asset.keyframeUrl,
             options: videoOptions,
             klingParameters: { ...videoParams, duration: videoOptions.duration, negativePrompt: videoOptions.negativePrompt, audioEnabled: videoOptions.audioEnabled },
-            ...(batch && { validate }),
+            validate,
             generate: async () => {
               try { await generate(); }
               catch (error) {
@@ -936,30 +922,40 @@ function AssetsPageContent() {
             },
       };
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, klingCapacityBlocked, klingCapacityMessage, pendingTasks, unresolvedMotionShots, scriptId, id, videoParams, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, premiumCg, premiumCgVisualOnly, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, klingCapacityBlocked, klingCapacityMessage, pendingTasks, unresolvedMotionShots, scriptId, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, premiumCg, premiumCgVisualOnly, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
   );
 
   const generateMotion = useCallback(async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom) => {
-    if (motionDraftDone.current || batchMotionBusy || preparingBatchMotion) return;
-    const draft = prepareMotion(shotId, firstFrameOverride, lastFrameOverride, retake);
-    if (!draft) return;
+    if (motionPreparation.current || batchPreparation.current || motionDraftDone.current || batchMotionBusy || preparingBatchMotion) return;
+    const controller = new AbortController();
+    motionPreparation.current = controller;
     setMotionShots((previous) => new Set(previous).add(shotId));
     try {
+      const draft = await prepareMotion(shotId, firstFrameOverride, lastFrameOverride, retake, false, controller.signal);
+      if (!draft || controller.signal.aborted) return;
       await new Promise<void>((resolve) => {
         motionDraftDone.current = resolve;
         setMotionDraft(draft);
       });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setAssets((previous) => previous.map((item) => item.shotId === shotId
+          ? { ...item, error: error instanceof Error ? error.message : "读取视频提示词失败，请重试。" } : item));
+      }
     } finally {
+      if (motionPreparation.current === controller) motionPreparation.current = null;
       setMotionShots((previous) => { const next = new Set(previous); next.delete(shotId); return next; });
     }
   }, [prepareMotion, batchMotionBusy, preparingBatchMotion]);
 
-  const openBatchMotion = useCallback(() => {
-    if (batchMotionLock.current || batchMotionBusy || motionDraftDone.current || isBatchGenerating || isGridGenerating || !scriptId || !videoModelTarget) return;
+  const openBatchMotion = useCallback(async () => {
+    if (batchMotionLock.current || motionPreparation.current || batchMotionBusy || motionDraftDone.current || isBatchGenerating || isGridGenerating || !scriptId || !videoModelTarget) return;
+    const controller = new AbortController();
+    batchPreparation.current = controller;
     batchMotionLock.current = true;
     setPreparingBatchMotion(true);
     try {
-      const shots = assets.map((asset) => {
+      const shots = await Promise.all(assets.map(async (asset) => {
         const existingTask = klingJobs.some((job) => job.scriptId === scriptId && job.shotId === asset.shotId && klingJobBlocksSubmission(job));
         const disabledReason = asset.isVideo ? t("batchMotionAlreadyVideo")
           : asset.status !== "done" || !asset.thumbnailUrl || /\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(asset.thumbnailUrl) ? t("batchMotionNeedImage")
@@ -970,11 +966,17 @@ function AssetsPageContent() {
         if (disabledReason) return { asset, disabledReason };
         // Each selected shot starts from its OWN still. Batch submission does not
         // wait for another shot's generated tail or bridge to an unselected shot.
-        const draft = prepareMotion(asset.shotId, asset.thumbnailUrl, null, undefined, true);
-        return draft ? { asset, draft } : { asset, disabledReason: t("batchMotionUnavailable") };
-      });
+        try {
+          const draft = await prepareMotion(asset.shotId, asset.thumbnailUrl, null, undefined, true, controller.signal);
+          return draft ? { asset, draft } : { asset, disabledReason: t("batchMotionUnavailable") };
+        } catch (error) {
+          return { asset, disabledReason: error instanceof Error ? error.message : "读取视频提示词失败，请重试。" };
+        }
+      }));
+      if (controller.signal.aborted) return;
       setBatchMotion({ scriptId, configurationKey: videoConfigurationKey, shots });
     } finally {
+      if (batchPreparation.current === controller) batchPreparation.current = null;
       batchMotionLock.current = false;
       setPreparingBatchMotion(false);
     }
@@ -1223,11 +1225,12 @@ function AssetsPageContent() {
         defaultModel={defaultVideoModel}
         asset={motionDraft?.asset ?? null}
         preparedPrompt={motionDraft?.prompt ?? ""}
+        promptContext={motionDraft?.promptContext}
+        negativePrompt={motionDraft?.negativePrompt}
         firstFrameUrl={motionDraft?.firstFrameUrl}
         lastFrameUrl={motionDraft?.lastFrameUrl}
         defaultParameters={motionDraft?.klingParameters}
         referenceImages={motionDraft?.referenceImages ?? []}
-        forceSilent={premiumCgVisualOnly}
         onRefreshTasks={reloadKlingJobs}
         onSubmitted={(jobId) => { finishMotionDraft(); setKlingJobId(jobId); void reloadKlingJobs(); }}
       />

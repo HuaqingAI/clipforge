@@ -34,6 +34,8 @@ import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import { KLING_AUDIO_PARAMETER_NAMES } from "./model-options";
 import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
+import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
+import type { VideoPromptContext } from "@/lib/video-prompt-request";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
@@ -206,6 +208,7 @@ function requestPayload(raw: unknown): KlingSubmitRequest {
     provider: "kling-cli", executionScope: "single-shot", profileId: body.profileId as string, clientRequestId: body.clientRequestId as string,
     projectId: body.projectId as string, scriptId: body.scriptId as string, shotId: body.shotId as number, selectionKey: body.selectionKey,
     mode: body.mode as KlingSubmitRequest["mode"], prompt: body.prompt,
+    ...(body.promptContext !== undefined ? { promptContext: body.promptContext as VideoPromptContext } : {}),
     imageUrl: body.imageUrl as string | undefined, lastImageUrl: body.lastImageUrl as string | undefined,
     referenceImageUrls: body.referenceImageUrls as string[] | undefined, options: body.options as Record<string, unknown> | undefined,
     expectedSelectedAssetId: typeof body.expectedSelectedAssetId === "string" ? body.expectedSelectedAssetId : null,
@@ -260,6 +263,11 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   if (!script || script.id !== request.scriptId || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
   const creativeContext = assertCreativeProfileContext(project, script);
   const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
+  let reviewed: ReturnType<typeof assertReviewedVideoPrompt> | undefined;
+  if (request.promptContext) {
+    try { reviewed = assertReviewedVideoPrompt(request.projectId, request.promptContext, request.prompt, { scriptId: request.scriptId, shotId: request.shotId, provider: "kling-cli", model: request.selectionKey }); }
+    catch (error) { if (error instanceof VideoPromptError) throw new KlingError("KLING_" + error.code, error.message, error.status); throw error; }
+  }
   let mode = request.mode;
   let prompt = request.prompt;
   let refs: KlingReferenceInput[] = [
@@ -279,7 +287,12 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     options = premiumCgVideoOptions(model, request.options ?? {}, compiled.negativePrompt);
   } else {
     if ((model.tool === "image_to_video") !== (mode === "image-to-video")) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "生成模式与选择的模型工具不一致", 422);
-    options = normalizeVideoParameters(model, request.options ?? {});
+    const source = { ...request.options };
+    if (reviewed?.negativePrompt) {
+      const parameter = model.parameters.find((item) => ["negative_prompt", "negativePrompt"].includes(item.name));
+      if (parameter) { delete source.negative_prompt; delete source.negativePrompt; source[parameter.name] = reviewed.negativePrompt; }
+    }
+    options = normalizeVideoParameters(model, source);
   }
   const scopedEligible = filterAssetsForScript(
     db.select().from(assets).where(and(eq(assets.projectId, request.projectId), eq(assets.shotId, request.shotId), eq(assets.selected, true))).all(),
@@ -317,6 +330,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script), ...(linkage ? { linkage } : {}) }),
     model, prompt, options, inputs, args, accountLabel: profile.accountSummary?.displayName ?? profile.accountSummary?.id,
     videoPromptAudit: { version: VIDEO_PROMPT_VERSION, sourceShot: structuredClone(shot) },
+    ...(request.promptContext ? { promptContext: structuredClone(request.promptContext) } : {}),
     cliVersion: profile.cliVersion, adapterVersion: KLING_ADAPTER_VERSION,
     authorizedBootId: runtime.bootId, authorizedUntil: now + 120_000, authorizationEpoch: 1, billingAcknowledgedAt: now, queryAttempts: 0,
     ...(film ? { filmRunId: film.filmRunId, filmShotId: film.filmShotId, filmAuthorizationEpoch: film.authorizationEpoch } : {}),
@@ -410,6 +424,10 @@ function assertCurrentContext(job: KlingJob): void {
   const selected = resolveCurrentScript(rows);
   if (!selected || selected.id !== job.scriptId || scriptRevision(selected) !== job.data.scriptRevision) throw new KlingError("KLING_CONTEXT_CHANGED", "原脚本或所选脚本已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
   const creativeContext = assertCreativeProfileContext(project, selected);
+  if (job.data.promptContext) {
+    try { assertReviewedVideoPrompt(job.projectId, job.data.promptContext, job.data.prompt, { scriptId: job.scriptId, shotId: job.shotId, provider: "kling-cli", model: job.data.model.selectionKey }); }
+    catch (error) { if (error instanceof VideoPromptError) throw new KlingError("KLING_" + error.code, error.message, error.status); throw error; }
+  }
   if (isPremiumProductCgProfile(creativeContext.projectProfile)) {
     const shot = selected.shots?.find((item) => item.shotId === job.shotId);
     if (!shot) throw new KlingError("KLING_CONTEXT_CHANGED", "原镜头已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
