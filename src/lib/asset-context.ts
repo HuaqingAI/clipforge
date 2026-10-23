@@ -43,8 +43,10 @@ export function assetScopeForShot(script: ScriptContext, shot: Shot, derivedFrom
 
 export function assetMatchesScript(row: { shotId: number } & Partial<AssetScope>, script: ScriptContext | undefined | null): boolean {
   // All-null rows are legacy assets and retain their original compatibility behavior.
-  if (!row.sourceScriptId && !row.sourceShotKey && !row.sourceRevision) return true;
-  if (!script || row.sourceScriptId !== script.id || row.sourceRevision !== scriptRevision(script)) return false;
+  if (row.sourceScriptId == null && row.sourceShotKey == null && row.sourceRevision == null) return true;
+  // The revision records generation provenance. An edit to a sibling shot must not
+  // invalidate this shot's unchanged media, while partially scoped rows stay invalid.
+  if (!script || !row.sourceScriptId || !row.sourceShotKey || !row.sourceRevision || row.sourceScriptId !== script.id) return false;
   const shot = script.shots?.find((item) => item.shotId === row.shotId);
   return Boolean(shot && row.sourceShotKey === shotKey(script.id, shot));
 }

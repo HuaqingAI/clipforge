@@ -9,6 +9,10 @@ vi.mock("next/navigation", () => ({ useParams: () => ({ id: "project" }) }));
 vi.mock("next/link", () => ({ default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a> }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
 vi.mock("@/components/free-voice-preview", () => ({ FreeVoicePreview: () => null }));
+vi.mock("@/lib/kling/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/kling/client")>(),
+  klingFetch: (url: string, init?: RequestInit) => fetch(url, init),
+}));
 vi.mock("@/components/ui/select", () => ({
   Select: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   SelectTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -37,7 +41,7 @@ beforeEach(() => {
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     if (url === "/api/project/project") return Response.json({ name: "Product", productCategory: "home" });
     if (url.endsWith("/scripts")) return Response.json([{ id: "script", selected: true, shots }]);
-    if (url.endsWith("/assets")) {
+    if (url.split("?")[0].endsWith("/assets")) {
       if (init?.method === "PATCH") {
         const { assetId } = JSON.parse(init.body as string);
         const target = rows.find((row) => row.id === assetId)!;
@@ -84,6 +88,56 @@ function useInitialTransition(transition: "direct_concat" | "ffmpeg_fade") {
 }
 
 describe("compose-page shot video versions", () => {
+  it("retains edited-shot video history and explicitly adopts the server's new binding for composition", async () => {
+    vi.useFakeTimers();
+    rows = [asset("current-one", 1, true, 1000), {
+      ...asset("historical-two", 2, true, 1000),
+      matchesCurrentScript: false, previouslySelected: true,
+      klingJobId: "original-job", klingOutputId: "original-output",
+    }];
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/integrations/kling/jobs/original-job/outputs/original-output/select") {
+        expect(JSON.parse(init!.body as string)).toEqual({ adoptCurrentContext: true });
+        rows = [rows[0], { ...asset("derived-two", 2, true, 2000), filePath: rows[1].filePath, matchesCurrentScript: true }];
+        return Response.json({ job: { jobId: "original-job" } });
+      }
+      return normalFetch(url, init);
+    });
+    await mount();
+    expect(currentThumbnail("/api/files/project/current-one.mp4")).not.toBeNull();
+    expect(currentThumbnail("/api/files/project/historical-two.mp4")).toBeNull();
+    expect(buildShotAssetSelections(shots, rows)[1].assetId).toBeNull();
+    expect(container.textContent).toContain("原视频仍可预览并重新选用");
+    expect(container.textContent).not.toContain("此镜头暂无可切换的视频版本");
+    await expand(2);
+    expect(container.querySelector('video[controls][src*="historical-two"]')).not.toBeNull();
+    expect(container.textContent).toContain("修改前生成的版本");
+    expect(useVersion(2, 1).textContent).toContain("采用到当前镜头");
+    await click(useVersion(2, 1));
+    expect(currentThumbnail("/api/files/project/historical-two.mp4")).not.toBeNull();
+    await click(button("开始合成"));
+    expect(JSON.parse(composeRequests()[0][1].body as string).shotAssetSelections).toEqual([
+      { shotId: 1, assetId: "current-one" }, { shotId: 2, assetId: "derived-two" },
+    ]);
+    expect(fetchMock.mock.calls.some(([url]) => url.includes("/generate"))).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+  });
+
+  it("keeps the saved current selection and displays recovery failures for edited-shot history", async () => {
+    rows.push({ ...asset("historical-one", 1, false, 3000), matchesCurrentScript: false, klingJobId: "job", klingOutputId: "output" });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.includes("/outputs/output/select")
+      ? Promise.resolve(Response.json({ error: { message: "原任务来源不匹配" } }, { status: 409 }))
+      : normalFetch(url, init));
+    await mount(); await expand(1);
+    await click(useVersion(1, 3));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("原任务来源不匹配");
+    expect(currentThumbnail("/api/files/project/old-one.mp4")).not.toBeNull();
+    expect(useVersion(1, 3).disabled).toBe(false);
+    expect(composeRequests()).toHaveLength(0);
+  });
+
   it("shows selected takes instead of newer alternatives and exposes playable candidates per shot", async () => {
     rows.push({ ...asset("unfinished", 1, false, 3000), status: "generating" });
     await mount();

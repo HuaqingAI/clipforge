@@ -14,21 +14,35 @@ describe("asset script context", () => {
     expect(shotKey(script.id, shot)).not.toBe(shotKey("script-b", shot));
   });
 
-  it("excludes same-number assets belonging to another script, revision or shot", () => {
+  it("excludes same-number assets belonging to another script or changed shot", () => {
     const scope = assetScopeForShot(script, shot);
     const rows = [
       { id: "current", shotId: 1, ...scope },
       { id: "other-script", shotId: 1, ...assetScopeForShot({ ...script, id: "script-b" }, shot) },
-      { id: "old-revision", shotId: 1, ...assetScopeForShot({ ...script, shots: [{ ...shot, camera: "pan" }] }, shot) },
+      { id: "old-shot", shotId: 1, ...assetScopeForShot(script, { ...shot, camera: "pan" }) },
       { id: "other-shot", shotId: 2, ...scope },
       { id: "legacy", shotId: 1, sourceScriptId: null, sourceRevision: null, sourceShotKey: null },
     ];
     expect(filterAssetsForScript(rows, script).map((row) => row.id)).toEqual(["current", "legacy"]);
   });
 
+  it("retains unchanged shots after a sibling camera edit while excluding the edited shot", () => {
+    const sibling = { ...shot, shotId: 2 };
+    const original = { ...script, shots: [shot, sibling] };
+    const current = { ...original, shots: [shot, { ...sibling, camera: "Slow push in" }] };
+    const rows = original.shots.map((item) => ({ shotId: item.shotId, ...assetScopeForShot(original, item) }));
+    expect(scriptRevision(current)).not.toBe(scriptRevision(original));
+    expect(filterAssetsForScript(rows, current).map((row) => row.shotId)).toEqual([1]);
+  });
+
   it("keeps all-null legacy records compatible, rejects incomplete scoped records and missing target scripts", () => {
     expect(assetMatchesScript({ shotId: 1 }, undefined)).toBe(true);
     expect(assetMatchesScript({ shotId: 1, sourceScriptId: script.id }, script)).toBe(false);
+    const scope = assetScopeForShot(script, shot);
+    expect(assetMatchesScript({ shotId: 1, ...scope, sourceRevision: null }, script)).toBe(false);
+    expect(assetMatchesScript({ shotId: 1, ...scope, sourceShotKey: null }, script)).toBe(false);
+    expect(assetMatchesScript({ shotId: 1, ...scope, sourceScriptId: null }, script)).toBe(false);
+    expect(assetMatchesScript({ shotId: 1, sourceScriptId: "", sourceRevision: "", sourceShotKey: "" }, script)).toBe(false);
     expect(assetMatchesScript({ shotId: 1, ...assetScopeForShot(script, shot) }, null)).toBe(false);
   });
 });

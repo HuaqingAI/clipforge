@@ -22,6 +22,7 @@ import { sanitizeCreativeProfile, type PremiumProductCgProfile } from "@/lib/cre
 import { ProjectHeader } from "@/components/project-header";
 import { FreeVoicePreview } from "@/components/free-voice-preview";
 import { ShotVideoPicker, buildShotAssetSelections, selectedShotAsset, type ShotVideoAsset } from "@/components/shot-video-picker";
+import { klingErrorMessage, klingFetch } from "@/lib/kling/client";
 import {
   Select,
   SelectContent,
@@ -201,7 +202,7 @@ export default function VideoPage() {
         const [projectRes, scriptsRes, assetsRes] = await Promise.all([
           fetch(`/api/project/${id}`),
           fetch(`/api/project/${id}/scripts`),
-          fetch(`/api/project/${id}/assets`),
+          fetch(`/api/project/${id}/assets?includeHistory=1`, { cache: "no-store" }),
         ]);
         const project = projectRes.ok ? await projectRes.json() : null;
         const scripts = scriptsRes.ok ? await scriptsRes.json() : [];
@@ -374,14 +375,31 @@ export default function VideoPage() {
     setSavingAssetId(asset.id);
     setAssetSelectionError(null);
     try {
-      const response = await fetch(`/api/project/${id}/assets`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assetId: asset.id }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || (locale === "zh" ? "切换视频版本失败，请重试" : "Failed to select this version. Please retry."));
-      setSavedAssets((current) => current.map((row) => row.shotId === asset.shotId ? { ...row, selected: row.id === asset.id } : row));
+      if (asset.matchesCurrentScript === false) {
+        if (!asset.klingJobId || !asset.klingOutputId) throw new Error(locale === "zh" ? "请返回素材页恢复此版本的原任务" : "Return to assets to recover the original task for this version");
+        const response = await klingFetch(`/api/integrations/kling/jobs/${encodeURIComponent(asset.klingJobId)}/outputs/${encodeURIComponent(asset.klingOutputId)}/select`, {
+          method: "POST",
+          body: JSON.stringify({ adoptCurrentContext: true }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(klingErrorMessage(data));
+        // Adoption creates a persisted binding with a new ID. Use the server's
+        // actual selection so the preview and composition pin the same take.
+        const assetsRes = await fetch(`/api/project/${id}/assets?includeHistory=1`, { cache: "no-store" });
+        if (!assetsRes.ok) throw new Error(t("errorLoadFailed"));
+        const assets = await assetsRes.json();
+        if (!Array.isArray(assets)) throw new Error(t("errorLoadFailed"));
+        setSavedAssets(assets);
+      } else {
+        const response = await fetch(`/api/project/${id}/assets`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assetId: asset.id }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || (locale === "zh" ? "切换视频版本失败，请重试" : "Failed to select this version. Please retry."));
+        setSavedAssets((current) => current.map((row) => row.shotId === asset.shotId ? { ...row, selected: row.id === asset.id } : row));
+      }
       setComposeDone(false);
       setOutputUrl(null);
     } catch (failure) {

@@ -39,7 +39,7 @@ import { assets, compositions, projects } from "@/lib/db/schema";
 import { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
 import { composeKlingFilm } from "@/lib/kling/film-compose";
 import { contentHash } from "@/lib/kling/inputs";
-import { shotKey } from "@/lib/asset-context";
+import { assetScopeForShot, scriptRevision, shotKey } from "@/lib/asset-context";
 import { readCompositionError } from "@/lib/composition-error";
 import { KlingError } from "@/lib/kling/errors";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
@@ -133,11 +133,39 @@ describe("Kling frozen local film composition", () => {
     expect(getDb().select().from(compositions).get()?.status).toBe("failed");
   });
 
-  it.each(["project", "shot", "script", "revision", "shot-key", "file-path"])("refuses a frozen asset whose %s binding changed", async (field) => {
+  it("reuses an unchanged shot generated before a sibling camera edit", async () => {
+    const originalSibling = { ...baseShot, shotId: 2 };
+    const originalScript = { id: "script-1", shots: [baseShot, originalSibling] };
+    await addShot(1, { camera: "Slow push in" });
+    const currentScript = { id: "script-1", shots: getRun().data.scriptSnapshot.shots };
+    getDb().update(assets).set(assetScopeForShot(originalScript, baseShot)).where(eq(assets.id, "asset-1")).run();
+    getDb().update(assets).set(assetScopeForShot(currentScript, currentScript.shots[1])).where(eq(assets.id, "asset-2")).run();
+    updateRun({ scriptRevision: scriptRevision(currentScript) });
+
+    await composeKlingFilm("run-1");
+    const config = state.compose.mock.calls[0][0] as ComposeConfig;
+    expect(await fs.readFile(config.clips[0].filePath, "utf8")).toBe("local-video-1");
+    expect(config.clips).toHaveLength(2);
+    expect(getDb().select().from(compositions).get()?.status).toBe("done");
+  });
+
+  it("retains compatibility for frozen legacy assets with no scope", async () => {
+    getDb().update(assets).set({ sourceScriptId: null, sourceRevision: null, sourceShotKey: null }).run();
+    await composeKlingFilm("run-1");
+    expect(state.compose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["project", "shot", "script", "shot-key", "file-path"])("refuses a frozen asset whose %s binding changed", async (field) => {
     const patch = field === "project" ? { projectId: "other-project" } : field === "shot" ? { shotId: 99 } : field === "script" ? { sourceScriptId: "other-script" } :
-      field === "revision" ? { sourceRevision: "other-revision" } : field === "shot-key" ? { sourceShotKey: "other-key" } : { filePath: "/api/files/project-1/other.mp4" };
+      field === "shot-key" ? { sourceShotKey: "other-key" } : { filePath: "/api/files/project-1/other.mp4" };
     if (field === "project") getDb().insert(projects).values({ id: "other-project", name: "Other" }).run();
     getDb().update(assets).set(patch).where(eq(assets.id, "asset-1")).run();
+    await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_ASSET_CHANGED" });
+    expect(state.compose).not.toHaveBeenCalled();
+  });
+
+  it.each(["sourceScriptId", "sourceRevision", "sourceShotKey"] as const)("refuses a partially scoped frozen asset missing %s", async (field) => {
+    getDb().update(assets).set({ [field]: null }).where(eq(assets.id, "asset-1")).run();
     await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_ASSET_CHANGED" });
     expect(state.compose).not.toHaveBeenCalled();
   });

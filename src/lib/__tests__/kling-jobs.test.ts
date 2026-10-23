@@ -36,7 +36,7 @@ vi.mock("@/lib/video-composer/frame-extract", () => ({ extractFirstFrame: (...ar
 import { getDb } from "@/lib/db";
 import { projects, scripts, assets, aiTasks, type Shot } from "@/lib/db/schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
-import { klingJobs, type KlingJob } from "@/lib/kling/job-schema";
+import { klingJobs, klingJobOutputs, type KlingJob } from "@/lib/kling/job-schema";
 import { deleteKlingJob } from "@/lib/kling/delete-job";
 import { klingFilmRuns } from "@/lib/kling/film-schema";
 import { createKlingJob, dispatchKlingJob, queryKlingJob, retryKlingImport, runKlingJobTick, stopKlingJobRunner, klingJobAction, bindKlingJob, continueKlingJob,
@@ -448,6 +448,14 @@ describe("Kling durable submission and recovery", () => {
     await dispatchKlingJob(job.id); expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_CONTEXT_CHANGED" } } });
   });
+  it("still blocks a prepared paid submission when only a sibling shot changes", async () => {
+    useMultipleShots(2);
+    const job = await createKlingJob(request());
+    getDb().update(scripts).set({ shots: [shot, { ...shot, shotId: 2, camera: "Slow push in" }] }).where(eq(scripts.id, "script-1")).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_CONTEXT_CHANGED" } } });
+  });
   it("blocks an already prepared premium CG job after the project changes creative type", async () => {
     configurePremiumCgContext();
     const imageModel = premiumCgImageModel();
@@ -794,6 +802,11 @@ describe("Kling output persistence and selection", () => {
     await queryKlingJob(target.id);
     return getKlingJob(target.id);
   }
+  function editCurrentCamera() {
+    const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
+    return getDb().update(scripts).set({ shots: script.shots!.map((item) => ({ ...item, camera: "Slow push in" })) })
+      .where(eq(scripts.id, script.id)).returning().get()!;
+  }
   it.each(["download", "probe", "poster", "lastFrame"] as const)("does not restore an output deleted during asynchronous %s", async (stage) => {
     const job = await acknowledge(await createKlingJob(request()));
     state.cli.mockResolvedValueOnce({ ...cliResult(), json: { ok: true, body: { status: "completed", works: [{ id: "work-1", url: "https://public.example.test/video.mp4" }] } } });
@@ -828,6 +841,18 @@ describe("Kling output persistence and selection", () => {
     expect(rows[0]).toMatchObject({ selected: true, provider: "kling-cli", status: "done" });
     const view = klingJobView(getKlingJob(job.id)); expect(view.outputs[0].videoUrl).toMatch(/^\/api\/files\//); expect(JSON.stringify(view)).not.toContain("secret=one");
     expect(job.importState).toBe("completed");
+  });
+  it("selects a completed unchanged shot when a sibling camera edit happened during generation", async () => {
+    useMultipleShots(2);
+    const job = await acknowledge(await createKlingJob(request()));
+    getDb().update(scripts).set({ shots: [shot, { ...shot, shotId: 2, camera: "Slow push in" }] }).where(eq(scripts.id, "script-1")).run();
+    state.cli.mockResolvedValueOnce({ ...cliResult(), json: { ok: true, body: { status: "completed", works: [{ id: "work-1", url: "https://public.example.test/video.mp4" }] } } });
+    await queryKlingJob(job.id);
+    const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
+    const current = filterAssetsForScript(getDb().select().from(assets).all(), script);
+    expect(current).toHaveLength(1);
+    expect(current[0]).toMatchObject({ selected: true, sourceRevision: job.data.scriptRevision });
+    expect(klingJobView(getKlingJob(job.id)).outputs[0].selected).toBe(true);
   });
   it("replaces an untrusted selected take when a premium CG Kling output is imported", async () => {
     const job = await preparePremiumCgJob();
@@ -865,6 +890,59 @@ describe("Kling output persistence and selection", () => {
     let failure: unknown;
     try { selectKlingOutput(job.id, output.id, true); } catch (error) { failure = error; }
     expect(failure).toMatchObject({ code: "PREMIUM_CG_ASSET_PROVENANCE_REQUIRED", status: 409 });
+  });
+  it("requires explicit adoption of a verified premium CG output after editing its shot", async () => {
+    const job = await completePremiumCgJob();
+    const output = getKlingOutputs(job.id)[0];
+    const currentScript = editCurrentCamera();
+    const cliCalls = state.cli.mock.calls.length;
+    expect(filterAssetsForScript(getDb().select().from(assets).all(), currentScript)).toEqual([]);
+    expect(() => selectKlingOutput(job.id, output.id, false)).toThrow(/明确确认/);
+    selectKlingOutput(job.id, output.id, true);
+    selectKlingOutput(job.id, output.id, true);
+    const current = filterAssetsForScript(getDb().select().from(assets).all(), currentScript);
+    expect(current).toHaveLength(1);
+    expect(current[0]).toMatchObject({ selected: true, derivedFromAssetId: output.assetId, filePath: output.data.filePath });
+    expect(getDb().select().from(assets).all()).toHaveLength(2);
+    expect(klingJobView(getKlingJob(job.id)).outputs[0]).toMatchObject({ selected: true, assetId: current[0].id });
+    expect(state.cli).toHaveBeenCalledTimes(cliCalls);
+  });
+  it.each(["missing audit", "mismatched audit", "script scope", "revision scope", "shot scope", "provider", "output path"])(
+    "rejects historical premium CG adoption with unverified %s", async (invalid) => {
+      const job = await completePremiumCgJob();
+      const output = getKlingOutputs(job.id)[0];
+      editCurrentCamera();
+      if (invalid === "missing audit") patchKlingJob(job.id, {}, { videoPromptAudit: undefined });
+      if (invalid === "mismatched audit") patchKlingJob(job.id, {}, { videoPromptAudit: { ...job.data.videoPromptAudit!, sourceShot: { ...shot, camera: "forged" } } });
+      if (invalid === "script scope") getDb().update(assets).set({ sourceScriptId: "another-script" }).where(eq(assets.id, output.assetId!)).run();
+      if (invalid === "revision scope") getDb().update(assets).set({ sourceRevision: "another-revision" }).where(eq(assets.id, output.assetId!)).run();
+      if (invalid === "shot scope") getDb().update(assets).set({ sourceShotKey: "another-shot" }).where(eq(assets.id, output.assetId!)).run();
+      if (invalid === "provider") getDb().update(assets).set({ provider: "local" }).where(eq(assets.id, output.assetId!)).run();
+      if (invalid === "output path") {
+        const filePath = "/api/files/project-1/kling/another-job/unverified.mp4";
+        getDb().update(assets).set({ filePath }).where(eq(assets.id, output.assetId!)).run();
+        getDb().update(klingJobOutputs).set({ data: { ...output.data, filePath } }).where(eq(klingJobOutputs.id, output.id)).run();
+      }
+      expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/verified Kling output/);
+      expect(getDb().select().from(assets).all()).toHaveLength(1);
+    },
+  );
+  it("does not adopt premium CG outputs into another selected script", async () => {
+    const job = await completePremiumCgJob();
+    const output = getKlingOutputs(job.id)[0];
+    const previous = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
+    getDb().update(scripts).set({ selected: false }).where(eq(scripts.id, previous.id)).run();
+    getDb().insert(scripts).values({ ...previous, id: "script-2", selected: true }).run();
+    expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/verified Kling output/);
+    expect(getDb().select().from(assets).all()).toHaveLength(1);
+  });
+  it("rechecks the current creative configuration before adopting a historical CG output", async () => {
+    const job = await completePremiumCgJob();
+    const output = getKlingOutputs(job.id)[0];
+    editCurrentCamera();
+    getDb().update(projects).set({ creativeConfigRevision: 2 }).where(eq(projects.id, "project-1")).run();
+    expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/outdated creative configuration/);
+    expect(getDb().select().from(assets).all()).toHaveLength(1);
   });
   it("keeps persisted outputs and mirrored URLs when a late query has no works", async () => {
     const job = await completeJob(); await queryKlingJob(job.id);

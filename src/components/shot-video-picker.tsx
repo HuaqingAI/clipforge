@@ -13,6 +13,10 @@ export interface ShotVideoAsset {
   model?: string | null;
   provider?: string | null;
   createdAt?: Date | string | number | null;
+  matchesCurrentScript?: boolean;
+  previouslySelected?: boolean;
+  klingJobId?: string;
+  klingOutputId?: string;
 }
 
 const isVideo = (path: string) => /\.(mp4|webm|mov|m4v)(\?|$)/i.test(path);
@@ -20,7 +24,7 @@ const assetTime = (asset: ShotVideoAsset) => new Date(asset.createdAt ?? 0).getT
 
 /** Display and composition must agree on the persisted, explicitly selected take. */
 export function selectedShotAsset(assets: ShotVideoAsset[], shotId: number): ShotVideoAsset | undefined {
-  return assets.filter((asset) => asset.shotId === shotId && asset.selected === true && asset.status === "done" && asset.filePath)
+  return assets.filter((asset) => asset.shotId === shotId && asset.matchesCurrentScript !== false && asset.selected === true && asset.status === "done" && asset.filePath)
     .sort((a, b) => assetTime(b) - assetTime(a) || a.id.localeCompare(b.id))[0];
 }
 
@@ -49,6 +53,7 @@ export function ShotVideoPicker({ shotId, assets, disabled, savingAssetId, error
   const images = assets.filter((asset) => asset.shotId === shotId && asset.status === "done" && asset.filePath && !isVideo(asset.filePath))
     .sort((a, b) => assetTime(a) - assetTime(b) || a.id.localeCompare(b.id));
   const candidates = [...images, ...videos];
+  const hasHistory = videos.some((asset) => asset.matchesCurrentScript === false);
   const panelId = `shot-video-versions-${shotId}`;
 
   if (!videos.length) return <p className="mt-3 text-[11px] text-muted-foreground">{zh ? "此镜头暂无可切换的视频版本" : "No video versions available for this shot"}</p>;
@@ -59,12 +64,15 @@ export function ShotVideoPicker({ shotId, assets, disabled, savingAssetId, error
         <LuChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
         {zh ? `选择视频版本（${videos.length}）` : `Choose video version (${videos.length})`}
       </button>
+      {hasHistory && <p className="mt-2 text-[11px] text-amber-400">{zh ? "镜头描述或运镜已修改，原视频仍可预览并重新选用。" : "This shot was edited. Previously generated videos are still available to preview and select."}</p>}
       {expanded && (
         <div id={panelId} className="mt-3 space-y-3">
           <p className="text-[11px] text-muted-foreground">{zh ? "每个镜头可独立选择，选用后会保存并用于合成。" : "Choose each shot independently. Your selection is saved and used for composition."}</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {candidates.map((asset) => {
               const chosen = asset.id === selected?.id;
+              const historical = asset.matchesCurrentScript === false;
+              const canSelect = !historical || Boolean(asset.klingJobId && asset.klingOutputId);
               const video = isVideo(asset.filePath!);
               const version = videos.findIndex((item) => item.id === asset.id) + 1;
               const imageVersion = images.findIndex((item) => item.id === asset.id) + 1;
@@ -82,11 +90,13 @@ export function ShotVideoPicker({ shotId, assets, disabled, savingAssetId, error
                     <span className="text-xs font-medium">{title}</span>
                     {chosen && <span className="flex items-center gap-1 text-[11px] text-primary"><LuCheck className="h-3 w-3" />{zh ? "当前选用" : "Selected"}</span>}
                   </div>
+                  {historical && <p className="text-[11px] text-amber-400">{zh ? "修改前生成的版本" : "Generated before this shot was edited"}{asset.previouslySelected && (zh ? " · 原选用版本" : " · Previously selected")}</p>}
                   {(asset.model || date) && <p className="text-[10px] text-muted-foreground truncate" title={asset.model ?? undefined}>{[asset.model, date].filter(Boolean).join(" · ")}</p>}
-                  <button type="button" disabled={disabled || chosen} onClick={() => onSelect(asset)} aria-label={zh ? `选用镜头 ${shotId} 的${title}` : `Use ${title} for shot ${shotId}`} className="flex w-full items-center justify-center gap-1 rounded border border-border px-2 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed hover:bg-muted/30">
+                  <button type="button" disabled={disabled || chosen || !canSelect} onClick={() => onSelect(asset)} aria-label={zh ? `选用镜头 ${shotId} 的${title}` : `Use ${title} for shot ${shotId}`} className="flex w-full items-center justify-center gap-1 rounded border border-border px-2 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed hover:bg-muted/30">
                     {savingAssetId === asset.id && <LuLoaderCircle className="h-3 w-3 animate-spin" />}
-                    {savingAssetId === asset.id ? zh ? "正在保存…" : "Saving…" : chosen ? zh ? "已选用" : "Selected" : zh ? "选用此版本" : "Use this version"}
+                    {savingAssetId === asset.id ? zh ? "正在保存…" : "Saving…" : chosen ? zh ? "已选用" : "Selected" : historical ? zh ? "采用到当前镜头" : "Use for the current shot" : zh ? "选用此版本" : "Use this version"}
                   </button>
+                  {!canSelect && <p className="text-[10px] text-muted-foreground">{zh ? "请返回素材页恢复此版本的原任务。" : "Return to assets to recover the original task for this version."}</p>}
                 </div>
               );
             })}

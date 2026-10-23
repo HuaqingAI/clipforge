@@ -1,7 +1,7 @@
 import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { assets, projects, scripts } from "@/lib/db/schema";
+import { assets, projects, scripts, klingJobs, klingJobOutputs } from "@/lib/db/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { LAST_FRAME_SUFFIX } from "@/lib/video-composer/frame-extract";
 import { resolveUploadFilePath } from "@/lib/remote-image";
@@ -38,13 +38,48 @@ export async function GET(
       db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)),
     ]);
     const script = resolveCurrentScript(scriptRows);
-    const rows = req.nextUrl.searchParams.get("all") === "1" ? allRows : script ? filterAssetsForScript(allRows, script) : [];
+    const all = req.nextUrl.searchParams.get("all") === "1";
+    const includeHistory = !all && req.nextUrl.searchParams.get("includeHistory") === "1";
+    const currentRows = script ? filterAssetsForScript(allRows, script) : [];
+    const currentIds = new Set(currentRows.map((row) => row.id));
+    const adoptedIds = new Set(currentRows.map((row) => row.derivedFromAssetId).filter(Boolean));
+    const shotIds = new Set(script?.shots?.map((shot) => shot.shotId));
+    const rows = all ? allRows : includeHistory && script
+      ? allRows.filter((row) => currentIds.has(row.id) || (
+        row.sourceScriptId === script.id && shotIds.has(row.shotId) && !adoptedIds.has(row.id)
+      ))
+      : currentRows;
+    const recovery = new Map<string, { klingJobId: string; klingOutputId: string; shotId: number }>();
+    if (includeHistory && script && rows.some((row) => !currentIds.has(row.id))) {
+      const outputs = await db.select({ output: klingJobOutputs, job: klingJobs })
+        .from(klingJobOutputs).innerJoin(klingJobs, eq(klingJobOutputs.jobId, klingJobs.id))
+        .where(and(eq(klingJobs.projectId, id), eq(klingJobs.scriptId, script.id), eq(klingJobOutputs.importState, "imported")))
+        .orderBy(desc(klingJobOutputs.createdAt));
+      for (const { output, job } of outputs) {
+        if (!output.assetId || output.data.deletedAt || job.data.deletedAt || recovery.has(output.assetId)) continue;
+        recovery.set(output.assetId, { klingJobId: job.id, klingOutputId: output.id, shotId: job.shotId });
+      }
+    }
     return NextResponse.json(rows.map((row) => {
       const tailPath = row.filePath && /\.(mp4|webm|mov|m4v)$/i.test(row.filePath)
         ? resolveUploadFilePath(`${row.filePath}${LAST_FRAME_SUFFIX}`)
         : null;
-      return { ...row, ...(tailPath && existsSync(tailPath) && { lastFrameUrl: `${row.filePath}${LAST_FRAME_SUFFIX}` }) };
-    }));
+      const matchesCurrentScript = currentIds.has(row.id);
+      const linkedOutput = recovery.get(row.id) ?? (row.derivedFromAssetId ? recovery.get(row.derivedFromAssetId) : undefined);
+      return {
+        ...row,
+        ...(includeHistory && { matchesCurrentScript }),
+        ...(includeHistory && !matchesCurrentScript && {
+          previouslySelected: row.selected,
+          selected: false,
+          ...(linkedOutput?.shotId === row.shotId && {
+            klingJobId: linkedOutput.klingJobId,
+            klingOutputId: linkedOutput.klingOutputId,
+          }),
+        }),
+        ...(tailPath && existsSync(tailPath) && { lastFrameUrl: `${row.filePath}${LAST_FRAME_SUFFIX}` }),
+      };
+    }), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("获取素材失败:", error);
     return NextResponse.json(

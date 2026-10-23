@@ -42,7 +42,7 @@ beforeEach(() => {
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     if (url === "/api/project/project-1") return Response.json({ name: "Test project" });
     if (url.endsWith("/scripts")) return Response.json([{ id: "script-1", selected: true, shots: [{ shotId: 1, type: "hook", duration: 5, voiceover: "Test narration", transition: "direct_concat" }] }]);
-    if (url.endsWith("/assets")) return Response.json([]);
+    if (url.split("?")[0].endsWith("/assets")) return Response.json([]);
     // End compose immediately so tests can inspect another request without polling timers.
     if (url.endsWith("/compose") && init?.method === "POST") return Response.json({ error: "Test response" }, { status: 400 });
     throw new Error(`Unexpected request: ${url}`);

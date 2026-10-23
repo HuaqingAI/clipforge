@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, compositions } from "@/lib/db/schema";
-import { shotKey } from "@/lib/asset-context";
+import { assetMatchesScript } from "@/lib/asset-context";
 import { getDataDir, getOutputDir, getUploadsDir } from "@/lib/paths";
 import { probeMedia, type MediaProbe } from "@/lib/media-probe";
 import { generateSpeechFreeDetailed, type TTSWord } from "@/lib/edge-tts";
@@ -96,9 +96,7 @@ async function immutableSource(run: KlingFilmRun, shot: KlingFilmShot, workDir: 
   const asset = getDb().select().from(assets).where(eq(assets.id, shot.assetId!)).get();
   if (!asset || asset.projectId !== run.projectId || asset.shotId !== shot.shotId || asset.status !== "done" ||
     asset.filePath !== shot.data.videoUrl ||
-    (asset.sourceScriptId && asset.sourceScriptId !== run.scriptId) ||
-    (asset.sourceRevision && asset.sourceRevision !== run.data.scriptRevision) ||
-    (asset.sourceShotKey && asset.sourceShotKey !== shotKey(run.scriptId, shot.data.shot))) {
+    !assetMatchesScript(asset, { id: run.scriptId, shots: run.data.scriptSnapshot.shots })) {
     throw failure("KLING_FILM_ASSET_CHANGED", `镜头 ${shot.shotId} 锁定的素材归属或文件地址已改变，请恢复原素材后重试合成。`);
   }
   const source = await localVideoPath(shot.data.videoUrl!, shot.data.sourceFilePath!);

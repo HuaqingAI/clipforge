@@ -44,8 +44,6 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
     if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目已不存在，视频仍保留在任务输出中", 409);
     const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
     const selectedScript = resolveCurrentScript(scriptRows);
-    const sourceScript = scriptRows.find((script) => script.id === job.scriptId);
-    const shot = sourceScript?.shots?.find((item) => item.shotId === job.shotId);
     const creativeContext = selectedScript ? checkCreativeProfileContext(project, selectedScript) : undefined;
     const premiumCg = isPremiumProductCgProfile(creativeContext?.projectProfile);
     const scopedRaw = selectedScript ? filterAssetsForScript(
@@ -56,8 +54,10 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
       ? filterTrustedPremiumCgAssets(scopedRaw, job.projectId, selectedScript)
       : scopedRaw;
     const baselineMatches = (scoped[0]?.id ?? null) === job.data.expectedSelectedAssetId;
-    const contextMatches = Boolean(creativeContext?.ok && selectedScript && sourceScript && shot && selectedScript.id === job.scriptId &&
-      scriptRevision(selectedScript) === job.data.scriptRevision && shotKey(sourceScript.id, shot) === job.data.shotKey);
+    const contextMatches = Boolean(creativeContext?.ok && assetMatchesScript({
+      shotId: job.shotId, sourceScriptId: job.scriptId,
+      sourceRevision: job.data.scriptRevision, sourceShotKey: job.data.shotKey,
+    }, selectedScript));
     const alreadySelectedOutput = tx.select().from(klingJobOutputs).where(eq(klingJobOutputs.jobId, job.id)).all().some((item) => item.data.selectionOutcome === "selected");
     const selected = contextMatches && baselineMatches && !alreadySelectedOutput;
     const outcome = selected ? "selected" : contextMatches ? "kept_as_alternative" : "detached";
@@ -154,6 +154,25 @@ export async function importKlingOutputs(jobId: string): Promise<void> {
   } finally { cleanupDeletedKlingJob(jobId); }
 }
 
+/** Validate the original server-owned output before explicitly adopting an edited shot. */
+function hasTrustedHistoricalKlingOutput(
+  original: typeof assets.$inferSelect,
+  job: KlingJob,
+  output: KlingJobOutput,
+  currentScriptId: string,
+): boolean {
+  const sourceShot = job.data.videoPromptAudit?.sourceShot;
+  const outputStem = `/api/files/${job.projectId}/kling/${job.id}/${output.id}`;
+  if (!sourceShot || sourceShot.shotId !== job.shotId || job.scriptId !== currentScriptId
+    || output.jobId !== job.id || output.assetId !== original.id
+    || original.projectId !== job.projectId || original.shotId !== job.shotId
+    || original.provider !== "kling-cli" || original.filePath !== output.data.filePath
+    || ![`${outputStem}.mp4`, `${outputStem}.webm`].includes(original.filePath ?? "")
+    || original.sourceScriptId !== job.scriptId || original.sourceRevision !== job.data.scriptRevision
+    || original.sourceShotKey !== job.data.shotKey) return false;
+  return hasTrustedPremiumCgAssetProvenance(original, job.projectId, { id: job.scriptId, shots: [sourceShot] });
+}
+
 /** Explicitly selecting a recovered take may create a derived local binding, never a generation. */
 export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentContext: boolean): void {
   const job = getKlingJob(jobId);
@@ -181,10 +200,12 @@ export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentC
     const matches = assetMatchesScript(original, script);
     const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
     const belongsToJob = original.projectId === job.projectId && original.shotId === job.shotId;
-    if (premiumCg && (!belongsToJob || !matches || !hasTrustedPremiumCgAssetProvenance(original, job.projectId, script))) {
+    const trustedCurrent = belongsToJob && matches && hasTrustedPremiumCgAssetProvenance(original, job.projectId, script);
+    const trustedHistorical = !matches && hasTrustedHistoricalKlingOutput(original, job, output, script.id);
+    if (premiumCg && !trustedCurrent && !trustedHistorical) {
       throw new KlingError(
         PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-        "Premium product CG can only select a current-script Kling output with verifiable server-owned provenance.",
+        "Premium product CG can only select a verified Kling output from this script; changed shots require explicit adoption.",
         409,
       );
     }

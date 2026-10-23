@@ -18,6 +18,33 @@ const projectId = "asset-context-project";
 const shot: schema.Shot = { shotId: 1, type: "hook", duration: 5, description: "Product A", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "" };
 const context = { params: Promise.resolve({ id: projectId }) };
 
+function linkKlingOutput(options: {
+  assetId: string;
+  projectId?: string;
+  scriptId?: string;
+  shotId?: number;
+  jobDeleted?: boolean;
+  outputDeleted?: boolean;
+  importState?: typeof schema.klingJobOutputs.$inferInsert["importState"];
+}) {
+  db.insert(schema.klingProfiles).values({ id: "history-profile", data: {} as typeof schema.klingProfiles.$inferInsert["data"] }).onConflictDoNothing().run();
+  db.insert(schema.klingJobs).values({
+    id: "history-job", profileId: "history-profile", principalKey: "account", region: "global", clientRequestId: "history-request",
+    projectId: options.projectId ?? projectId, scriptId: options.scriptId ?? "script-a", shotId: options.shotId ?? 1,
+    submissionState: "acknowledged", remoteState: "completed", importState: "completed",
+    data: { ...(options.jobDeleted && { deletedAt: 1 }) } as typeof schema.klingJobs.$inferInsert["data"], createdAt: 1, updatedAt: 1,
+  }).run();
+  db.insert(schema.klingJobOutputs).values({
+    id: "history-output", jobId: "history-job", workKey: "history-work", assetId: options.assetId,
+    importState: options.importState ?? "imported", createdAt: 1, updatedAt: 1,
+    data: { url: "https://example.test/history.mp4", urlObtainedAt: 1, providerWorkId: "history-work", ...(options.outputDeleted && { deletedAt: 1 }) },
+  }).run();
+}
+
+function changeCurrentShot() {
+  db.update(schema.scripts).set({ shots: [{ ...shot, description: "Updated product scene" }] }).where(eq(schema.scripts.id, "script-a")).run();
+}
+
 beforeEach(() => {
   sqlite = new Database(":memory:"); db = drizzle(sqlite, { schema }); migrate(db, { migrationsFolder: "drizzle" });
   db.insert(schema.projects).values({ id: projectId, name: "Asset context" }).run();
@@ -48,6 +75,76 @@ describe("context-aware asset persistence and reading", () => {
     const mismatch = await PATCH(new NextRequest(`http://localhost/api/project/${projectId}/assets`, { method: "PATCH", body: JSON.stringify({ assetId: "asset-script-b" }) }), context);
     expect(mismatch.status).toBe(409);
     expect(db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-a")).get()?.selected).toBe(true);
+  });
+
+  it("exposes same-script history for composition without treating it as a current selection", async () => {
+    changeCurrentShot();
+    const script = db.select().from(schema.scripts).where(eq(schema.scripts.id, "script-a")).get()!;
+    db.insert(schema.assets).values({ id: "current-take", projectId, shotId: 1, type: "ai_generated", status: "done", selected: true, ...assetScopeForShot(script, script.shots![0]) }).run();
+    db.insert(schema.assets).values({ id: "removed-shot", projectId, shotId: 99, type: "ai_generated", status: "done", sourceScriptId: script.id, sourceShotKey: "old", sourceRevision: "old" }).run();
+    linkKlingOutput({ assetId: "asset-script-a" });
+
+    const response = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context);
+    const rows = await response.json();
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(rows.map((row: { id: string }) => row.id).sort()).toEqual(["asset-script-a", "current-take"]);
+    expect(rows.find((row: { id: string }) => row.id === "asset-script-a")).toMatchObject({
+      matchesCurrentScript: false, selected: false, previouslySelected: true, klingJobId: "history-job", klingOutputId: "history-output",
+    });
+    expect(rows.find((row: { id: string }) => row.id === "current-take")).toMatchObject({ matchesCurrentScript: true, selected: true });
+    expect(db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-a")).get()?.selected).toBe(true);
+    const current = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets`), context);
+    expect((await current.json()).map((row: { id: string }) => row.id)).toEqual(["current-take"]);
+  });
+
+  it("keeps composition history empty when there is no explicitly selected script", async () => {
+    db.update(schema.scripts).set({ selected: false }).run();
+    const response = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context);
+    expect(await response.json()).toEqual([]);
+  });
+
+  it.each([
+    { label: "another project", projectId: "other-project" },
+    { label: "another script", scriptId: "script-b" },
+    { label: "another shot", shotId: 2 },
+    { label: "another asset", assetId: "asset-script-b" },
+    { label: "a deleted job", jobDeleted: true },
+    { label: "a deleted output", outputDeleted: true },
+    { label: "an unfinished import", importState: "pending" as const },
+  ])("does not expose recovery metadata for $label", async (options) => {
+    changeCurrentShot();
+    linkKlingOutput({ assetId: "asset-script-a", ...options });
+    const response = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context);
+    const rows = await response.json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "asset-script-a", matchesCurrentScript: false, selected: false });
+    expect(rows[0]).not.toHaveProperty("klingJobId");
+    expect(rows[0]).not.toHaveProperty("klingOutputId");
+  });
+
+  it("links a historical derived take back to the imported original output", async () => {
+    const original = db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-a")).get()!;
+    db.insert(schema.assets).values({ ...original, id: "old-derived-take", derivedFromAssetId: original.id }).run();
+    changeCurrentShot();
+    linkKlingOutput({ assetId: original.id });
+    const rows = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context)).json();
+    expect(rows.find((row: { id: string }) => row.id === "old-derived-take")).toMatchObject({
+      matchesCurrentScript: false, klingJobId: "history-job", klingOutputId: "history-output",
+    });
+  });
+
+  it("hides an adopted historical original when a current derived binding exists", async () => {
+    changeCurrentShot();
+    const script = db.select().from(schema.scripts).where(eq(schema.scripts.id, "script-a")).get()!;
+    db.insert(schema.assets).values({ id: "adopted-take", projectId, shotId: 1, type: "ai_generated", status: "done", selected: true, ...assetScopeForShot(script, script.shots![0], "asset-script-a") }).run();
+    linkKlingOutput({ assetId: "asset-script-a" });
+    const rows = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context)).json();
+    expect(rows.map((row: { id: string }) => row.id)).toEqual(["adopted-take"]);
+    expect(rows[0]).toMatchObject({ matchesCurrentScript: true, selected: true });
+    expect(rows[0]).not.toHaveProperty("klingJobId");
+    const all = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?all=1&includeHistory=1`), context)).json();
+    expect(all.map((row: { id: string }) => row.id).sort()).toEqual(["adopted-take", "asset-script-a", "asset-script-b"]);
+    expect(all.every((row: { selected: boolean }) => row.selected)).toBe(true);
   });
 
   it("keeps a recovered result as an alternative after the user changes the active take", async () => {
