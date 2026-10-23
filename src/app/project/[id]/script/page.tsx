@@ -6,6 +6,7 @@ import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle,
 import { checkScriptCompliance } from "@/lib/ad-compliance";
 import { checkPublishReadiness } from "@/lib/publish-readiness";
 import Link from "next/link";
+import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -813,6 +814,29 @@ export default function ScriptPage() {
             <span>{t("creativeProfileNoText")}</span>
           </div>
         )}
+        {isPremiumCgProject && projectMeta.productImages.length > 0 && (
+          <section aria-label={t("productReferencesTitle")} className="mt-4 border-t border-border/50 pt-4">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-medium">{t("productReferencesTitle")}</span>
+              <span className="text-muted-foreground">{t("productReferencesCount", { n: projectMeta.productImages.length })}</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {projectMeta.productImages.map((url, index) => (
+                <a
+                  key={`${url}-${index}`}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={t("viewProductReference", { n: index + 1 })}
+                  className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md border border-border/50 bg-muted/30 hover:border-primary/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                >
+                  <Image src={url} alt={t("productReferenceAlt", { n: index + 1 })} fill unoptimized sizes="80px" className="object-contain" />
+                </a>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">{t("productReferencesHint")}</p>
+          </section>
+        )}
         {creativeConfigError && <p role="alert" className="mt-2 text-xs text-destructive">{creativeConfigError}</p>}
       </CardContent>
     </Card>
@@ -1357,9 +1381,14 @@ export default function ScriptPage() {
                                     )}
                                   </div>
                                 </div>
-                                {/* visual preview: product image shots show the uploaded product photo immediately so users see a visual right away; AI shots have no image yet at this stage */}
+                                {/* CG shots show the product reference, labeled separately from the future generated frame. */}
                                 <div className="w-20 h-14 bg-muted/30 rounded-md shrink-0 overflow-hidden flex items-center justify-center border border-border/30 relative">
-                                  {shot.visualSource === "product_image" && projectMeta?.productImages?.[0] ? (
+                                  {isPremiumCgProject && projectMeta?.productImages[0] ? (
+                                    <>
+                                      <Image src={projectMeta.productImages[0]} alt={t("productReferenceAlt", { n: 1 })} fill unoptimized sizes="80px" className="object-contain" />
+                                      <span className="absolute inset-x-0 bottom-0 bg-background/85 py-0.5 text-center text-[9px] text-muted-foreground">{t("productReferenceShort")}</span>
+                                    </>
+                                  ) : shot.visualSource === "product_image" && projectMeta?.productImages?.[0] ? (
                                     // eslint-disable-next-line @next/next/no-img-element
                                     <img
                                       src={projectMeta.productImages[0]}
