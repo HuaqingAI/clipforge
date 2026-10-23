@@ -173,6 +173,17 @@ afterEach(async () => {
 });
 
 describe("storyboard film creative-profile audio policy", () => {
+  it("uses saved product originals without requiring generated keyframes", async () => {
+    const original = `/api/files/${projectId}/original.png`;
+    db.delete(schema.assets).run();
+    db.update(schema.projects).set({ productImages: [original] }).where(eq(schema.projects.id, projectId)).run();
+    const preview = await request({ dryRun: true });
+    expect(await preview.json()).toMatchObject({ usesProductOriginals: true });
+    const response = await request();
+    expect(response.status).toBe(200);
+    expect(state.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ referenceImageUrls: [original, original] }));
+  });
+
   it("drops forged audio controls for silent premium CG before provider submission", async () => {
     const forgedCopy = "Buy today for an unbelievable limited-time price.";
     const response = await request({

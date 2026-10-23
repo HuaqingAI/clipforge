@@ -73,6 +73,7 @@ describe("premium product CG recipes", () => {
   it("uses the selected recipe as visual direction without restoring commerce instructions", () => {
     const profile = createPremiumProductCgProfile({
       recipeSnapshot: createPremiumCgRecipeSnapshot("material_craft"),
+      visualSource: "ai_generate",
       narrationMode: "none",
     });
     const prompt = buildPremiumProductCgUserPrompt({

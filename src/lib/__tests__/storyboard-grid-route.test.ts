@@ -176,6 +176,26 @@ async function assertUploadedImages(expected: Buffer[]) {
 }
 
 describe("storyboard grid uploaded product references", () => {
+  it("binds saved originals without an image model or paid image request", async () => {
+    const profile = createPremiumProductCgProfile({ visualSource: "product_image" });
+    db.update(schema.projects).set({ creativeProfile: profile, creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.scripts).set({
+      styleType: "premium_product_cg", shots: originalShots.map((shot) => ({ ...shot, visualSource: "product_image" as const })),
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST", body: JSON.stringify({ scriptId }),
+    }), { params: Promise.resolve({ id: projectId }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ gridPath: null, originalImages: true, generatedCount: 0, count: 2,
+      cells: originalShots.map((shot) => ({ shotId: shot.shotId, filePath: productPaths[0] })),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const originals = db.select().from(schema.assets).where(eq(schema.assets.selected, true)).all();
+    expect(originals).toHaveLength(2);
+    expect(originals.every((asset) => asset.type === "product_image" && asset.provider === "product-original" && asset.sourceScriptId === scriptId)).toBe(true);
+  });
+
   it.each([
     { name: "default 4K portrait", options: undefined, gridResolution: undefined, ratio: "9:16", orientation: "竖版", size: "2160x3840" },
     { name: "4K landscape", options: { width: 1920, height: 1080 }, gridResolution: "4k", ratio: "16:9", orientation: "横版", size: "3840x2160" },

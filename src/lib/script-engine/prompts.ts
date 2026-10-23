@@ -10,9 +10,12 @@ import { cameraPresetGuide } from "@/lib/camera-presets";
 import {
   createPremiumProductCgProfile,
   isPremiumProductCgProfile,
+  resolveCreativeProfile,
   sanitizeCreativeProfile,
   type NarrationMode,
   type PremiumProductCgProfile,
+  type ProductVisualSource,
+  type ProjectCreativeProfile,
 } from "@/lib/creative-profiles";
 import { getPremiumCgRecipeFromSnapshot } from "@/lib/premium-cg-recipes";
 
@@ -782,6 +785,30 @@ export function premiumProductCgProfileForInput(input: ScriptGenerationInput): P
   });
 }
 
+/** Product scripts always have an explicit source; topic scripts use their separate compiler. */
+export function productCreativeProfileForInput(input: ScriptGenerationInput): ProjectCreativeProfile {
+  return premiumProductCgProfileForInput(input) ?? resolveCreativeProfile(input.creativeProfile, {
+    styleType: input.styleType,
+    videoMode: input.videoMode,
+    targetDuration: input.targetDuration,
+  });
+}
+
+function productVisualSourceDirective(source: ProductVisualSource): string {
+  const rules = source === "product_image"
+    ? `用户选择：商品原图。直接使用上传的商品照片，每个分镜 visualSource 必须为 "product_image"。
+- description、visualIntent、camera、prompt 只描述原图中已经可见的商品、人物、背景、光线和细节；不新增拍摄角度、背面、场景、背景、人物、动作、机构变化或光线变化。
+- 镜头变化仅限原图范围内的二维裁切、平移、推近、拉远或静止。不能写成真实相机绕拍、旋转、改变视角或产生视差。
+- 原图缺少某个细节或使用场景时，改为展示照片中确实可见的内容。不得为了符合风格、模板或配方而虚构画面。
+- prompt 可省略；如提供，只写原图的裁切和构图要求。`
+    : `用户选择：AI 生成。每个分镜 visualSource 必须为 "ai_generate"，包括商品展示、结尾和特写镜头。
+- 以用户上传的商品图作为生成参考，保持商品外形、比例、材质、颜色和已有标识一致；只使用已验证的商品事实，不虚构未展示的结构或功能。
+- description、visualIntent、camera、prompt 描述需要生成的具体画面与镜头；不得自行改为直接复用商品原图。`;
+  return `【画面来源：用户选择，所有分镜必须遵守】
+${rules}
+所有方案、所有分镜统一使用所选来源，不混用，不使用 "user_upload"。此选择优先于风格、视频模式、参考案例、配方及自定义要求中的画面来源或运镜建议。`;
+}
+
 function premiumProductCgOutputFormat(profile: PremiumProductCgProfile): string {
   const narrationRule = profile.narrationMode === "none"
     ? `- voiceover: every shot must use an empty string. This is a silent visual film; do not write placeholder narration.`
@@ -801,7 +828,7 @@ Return one JSON object only:
       "description": "用中文描述所提供产品具体可见的画面构图",
       "visualIntent": "用中文写明该镜头要呈现的单一视觉事实",
       "camera": "用中文描述一次克制、符合物理规律的镜头运动",
-      "visualSource": "product_image | ai_generate | user_upload",
+      "visualSource": "${profile.visualSource}",
       "transition": "direct_concat | ai_reference | ai_start_end | ffmpeg_fade",
       "voiceover": "",
       "prompt": "中文视觉生成提示词，包含材质、光线和构图，不新增画面文字"
@@ -811,6 +838,7 @@ Return one JSON object only:
 
 Field rules:
 - Use 5-8 shots whose durations add up to totalDuration. Do not use cta as a shot type.
+- Every shot must use visualSource "${profile.visualSource}". Do not choose a different source.
 - description, visualIntent, camera, and prompt describe only visible product and environment facts. Never tell a generator to show words, labels, subtitles, numbers, price, a logo, or a graphic overlay.
 - description、visualIntent、camera、prompt 始终使用中文，与商品资料、标题和口播文案的语言无关；JSON 字段名和枚举值保持原样。
 - Do not output textOverlay, characters, SEO cover copy, or purchase instructions.
@@ -852,10 +880,13 @@ export function buildPremiumProductCgUserPrompt(
     `- Target duration: ${profile.targetDuration} seconds`,
     `- Creation profile: ${profile.id}`,
     `- Narration mode: ${profile.narrationMode}`,
-    `- Visual setting: ${profile.visualDirection.setting === "modern_home" ? "category-appropriate use context matched to the product brief" : "neutral studio matched to product scale"}`,
-    `- Visual look: ${profile.visualDirection.look}`,
+    `- Visual source: ${profile.visualSource}`,
+    `- Visual setting: ${profile.visualSource === "product_image" ? "preserve the existing backgrounds in the supplied product photos" : profile.visualDirection.setting === "modern_home" ? "category-appropriate use context matched to the product brief" : "neutral studio matched to product scale"}`,
+    `- Visual look: ${profile.visualSource === "product_image" ? "preserve the existing light, finish, and colors in the supplied product photos" : profile.visualDirection.look}`,
     `- Camera safety: ${profile.visualDirection.cameraSafety}`,
-    `\n${PREMIUM_PRODUCT_CG_MODE_DIRECTIVES[profile.videoMode]}`,
+    profile.visualSource === "product_image"
+      ? "\n【CG visual mode: existing product photos】\nBuild the sequence from the supplied photos and their visible details. Preserve each original viewpoint and background. Use only two-dimensional crop, pan, zoom, or static framing within the original image."
+      : `\n${PREMIUM_PRODUCT_CG_MODE_DIRECTIVES[profile.videoMode]}`,
     `\n【Non-negotiable frame policy】
 - Generate no added text in any frame: no caption, subtitle, title, price, label, number, watermark, product card, purchase prompt, or promotional graphic.
 - Do not add textOverlay. Do not describe words appearing, fading, animating, or being placed in the image.
@@ -867,7 +898,7 @@ export function buildPremiumProductCgUserPrompt(
 - Treat recipe beats as visual priorities, not permission to invent missing details or force a use interaction.`,
   ];
 
-  if (recipe) {
+  if (recipe && profile.visualSource === "ai_generate") {
     parts.push(`\n【CG visual recipe: ${recipe.name.en}】\n${recipe.promptDirective}\nPreferred visual beats: ${recipe.shotBeats.join(" -> ")}.`);
   }
 
@@ -888,6 +919,7 @@ export function buildPremiumProductCgUserPrompt(
   }
 
   parts.push(`\n${premiumProductCgOutputFormat(profile)}`);
+  parts.push(`\n${productVisualSourceDirective(profile.visualSource)}`);
   const productText = `${input.productName || ""} ${input.productDescription || ""} ${input.usageAdvantage || ""}`;
   if (productText.trim() && !/[一-鿿]/.test(productText)) {
     parts.push("\n【语言】title 和任何克制旁白沿用商品资料的语言；description、visualIntent、camera、prompt 等视觉字段始终使用中文，不随商品或旁白语言切换。");
@@ -922,6 +954,7 @@ Return:
 export function buildUserPrompt(input: ScriptGenerationInput): string {
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgUserPrompt(input, premiumProfile);
+  const visualSource = productCreativeProfileForInput(input).visualSource;
 
   const {
     productName,
@@ -1048,7 +1081,11 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
   }
 
   // append output format constraints
-  parts.push(`\n${OUTPUT_FORMAT_PROMPT}`);
+  parts.push(`\n${OUTPUT_FORMAT_PROMPT
+    .replace('"visualSource": "ai_generate"', `"visualSource": "${visualSource}"`)
+    .replace('- visualSource: "ai_generate"（AI生成）| "product_image"（使用商品图）| "user_upload"（用户上传）', `- visualSource: 每个分镜固定为 "${visualSource}"，不得切换来源`)
+  }`);
+  parts.push(`\n${productVisualSourceDirective(visualSource)}`);
 
   // Language follows the product info language: English products (overseas TikTok Shop/Amazon)
   // should produce English scripts/voiceovers; otherwise the OUTPUT_FORMAT's "Chinese voiceover"

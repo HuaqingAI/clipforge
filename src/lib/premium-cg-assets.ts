@@ -2,6 +2,8 @@ import { assetMatchesScript, type ScriptContext } from "@/lib/asset-context";
 
 /** Returned when a CG output path receives an asset without server-verifiable provenance. */
 export const PREMIUM_CG_ASSET_PROVENANCE_REQUIRED = "PREMIUM_CG_ASSET_PROVENANCE_REQUIRED";
+/** Written only after the server matches a source to the project's saved product photos. */
+export const PRODUCT_ORIGINAL_ASSET_PROVIDER = "product-original";
 
 export interface PremiumCgAssetCandidate {
   shotId: number;
@@ -30,8 +32,7 @@ export function hasTrustedPremiumCgAssetProvenance(
   script: ScriptContext | null | undefined,
 ): boolean {
   if (
-    asset.type !== "ai_generated"
-    || asset.status !== "done"
+    asset.status !== "done"
     || typeof asset.filePath !== "string"
     || !asset.filePath
     || typeof asset.sourceScriptId !== "string"
@@ -46,6 +47,11 @@ export function hasTrustedPremiumCgAssetProvenance(
   ) {
     return false;
   }
+
+  if (asset.type === "product_image" && asset.provider === PRODUCT_ORIGINAL_ASSET_PROVIDER) {
+    return script?.shots?.some((shot) => shot.shotId === asset.shotId && shot.visualSource === "product_image") ?? false;
+  }
+  if (asset.type !== "ai_generated") return false;
 
   const projectFiles = `/api/files/${projectId}/`;
   if (asset.provider === "kling-cli" && asset.filePath.startsWith(`${projectFiles}kling/`)) {

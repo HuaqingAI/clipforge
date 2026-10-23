@@ -11,6 +11,7 @@ import { apiError, errText } from "@/lib/api-error";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
+  creativeProfileDraftsInputError,
   resolveCreativeProfile,
   sanitizeCreativeProfileDrafts,
   validateCreativeProfileInput,
@@ -91,7 +92,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
-    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot", "visualSource",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
   }
@@ -105,7 +106,7 @@ function hasProfileSettings(value: unknown): boolean {
   return [
     "styleType", "videoMode", "targetDuration", "duration", "narrationMode", "soundMode",
     "textPolicy", "visualDirection", "brandEndCard", "composeSnapshot", "compose",
-    "creativeSettings", "recipeSnapshot",
+    "creativeSettings", "recipeSnapshot", "visualSource",
   ].some((key) => hasOwn(value, key));
 }
 
@@ -196,9 +197,8 @@ export async function PATCH(
           { status: 400 },
         );
       }
-      if (hasDraftUpdate && !isRecord(body.creativeProfileDrafts)) {
-        return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
-      }
+      const draftError = creativeProfileDraftsInputError(body.creativeProfileDrafts);
+      if (draftError) return NextResponse.json({ error: draftError }, { status: 400 });
 
       const [current] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
       if (!current) {

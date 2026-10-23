@@ -5,6 +5,7 @@ import {
   PREMIUM_PRODUCT_CG_STYLE,
   SHORT_VIDEO_SALES_PROFILE_ID,
   createCreativeProfileSnapshot,
+  creativeProfileDraftsInputError,
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
   isPremiumProductCgProfile,
@@ -14,6 +15,50 @@ import {
 import { createPremiumCgRecipeSnapshot } from "@/lib/premium-cg-recipes";
 
 describe("creative profile canonicalization", () => {
+  it("validates nested draft sources and creation types before applying legacy defaults", () => {
+    expect(creativeProfileDraftsInputError(undefined)).toBeUndefined();
+    expect(creativeProfileDraftsInputError({})).toBeUndefined();
+    expect(creativeProfileDraftsInputError({
+      short_video_sales: createShortVideoSalesProfile(),
+      premium_product_cg: createPremiumProductCgProfile({ visualSource: "ai_generate" }),
+    })).toBeUndefined();
+    expect(creativeProfileDraftsInputError({
+      sales: { creationType: "short_video_sales" },
+      cg: { creationType: "premium_product_cg", visualSource: "ai_generate" },
+    })).toBeUndefined();
+    for (const value of [null, [], "drafts"]) {
+      expect(creativeProfileDraftsInputError(value)).toContain("JSON object");
+    }
+    for (const key of ["short_video_sales", "sales", "premium_product_cg", "cg"]) {
+      const creationType = key === "sales" || key === "short_video_sales" ? "short_video_sales" : "premium_product_cg";
+      expect(creativeProfileDraftsInputError({ [key]: { creationType, visualSource: "user_upload" } })).toContain("visualSource");
+      expect(creativeProfileDraftsInputError({ [key]: undefined })).toContain(key);
+    }
+    expect(creativeProfileDraftsInputError({ sales: createPremiumProductCgProfile() })).toContain("short_video_sales");
+    expect(creativeProfileDraftsInputError({ cg: createShortVideoSalesProfile() })).toContain("premium_product_cg");
+  });
+
+  it.each([createShortVideoSalesProfile, createPremiumProductCgProfile])("defaults new and legacy profiles to product photos while preserving a selected AI source", (create) => {
+    expect(create().visualSource).toBe("product_image");
+    expect(sanitizeCreativeProfile(create())?.visualSource).toBe("product_image");
+    const ai = create({ visualSource: "ai_generate" });
+    expect(ai.visualSource).toBe("ai_generate");
+    expect(sanitizeCreativeProfile(JSON.parse(JSON.stringify(ai)))).toEqual(ai);
+    const legacy = { ...ai } as Record<string, unknown>;
+    delete legacy.visualSource;
+    expect(sanitizeCreativeProfile(legacy)?.visualSource).toBe("product_image");
+  });
+
+  it.each(["short_video_sales", "premium_product_cg"] as const)("rejects invalid explicitly supplied sources for %s", (creationType) => {
+    for (const visualSource of ["user_upload", "auto", "", null, 1]) {
+      expect(validateCreativeProfileInput({ creationType, visualSource })).toMatchObject({
+        error: expect.stringContaining("visualSource"),
+      });
+    }
+    expect(validateCreativeProfileInput({ creationType })).toMatchObject({ profile: { visualSource: "product_image" } });
+    expect(validateCreativeProfileInput({ creationType, visualSource: "ai_generate" })).toMatchObject({ profile: { visualSource: "ai_generate" } });
+  });
+
   it("keeps the premium CG policy canonical even when options try to enable sales layers", () => {
     const profile = createPremiumProductCgProfile({
       targetDuration: 60,

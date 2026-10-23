@@ -26,6 +26,12 @@ export const script: NamespaceMessages = {
     creativeProfileRestrainedVoice: "克制旁白",
     creativeProfileNoText: "无新增画面文案",
     creativeProfileSaveFailed: "创作类型保存失败，请刷新后重试",
+    visualSourceLabel: "画面来源",
+    visualSourceProduct: "商品原图",
+    visualSourceAi: "AI 生成",
+    visualSourceProductHint: "直接使用上传的商品图片，搭配裁切、推拉等运镜。",
+    visualSourceAiHint: "参考商品图片，生成新的构图、背景和光线。",
+    visualSourceNextGenerationHint: "此设置用于下次生成脚本；已有脚本请点击「重新生成」应用。",
     // 通用
     defaultProjectName: "带货项目",
     untitledScript: "未命名脚本",
@@ -132,6 +138,7 @@ export const script: NamespaceMessages = {
     productReferenceShort: "商品参考",
     viewProductReference: "查看商品参考图 {n} 原图",
     productReferencesHint: "参考图用于保持产品外形、材质和配色一致，分镜画面将在「素材」步骤生成。",
+    productOriginalsHint: "商品原图直接用于分镜画面，可在「素材」步骤继续添加运镜。",
     // 文案编辑
     fullVoiceover: "完整口播文案",
     statsChars: "总字数：{n} 字",
@@ -230,6 +237,12 @@ export const script: NamespaceMessages = {
     creativeProfileRestrainedVoice: "Restrained narration",
     creativeProfileNoText: "No added on-screen copy",
     creativeProfileSaveFailed: "Could not save the creation type. Refresh and try again.",
+    visualSourceLabel: "Visual source",
+    visualSourceProduct: "Original product photos",
+    visualSourceAi: "AI generation",
+    visualSourceProductHint: "Use uploaded product photos with cropping, pans, and zooms.",
+    visualSourceAiHint: "Use product references to generate new compositions, backgrounds, and lighting.",
+    visualSourceNextGenerationHint: "This setting applies to the next script generation. Regenerate an existing script to apply it.",
     // 通用
     defaultProjectName: "Commerce project",
     untitledScript: "Untitled script",
@@ -336,6 +349,7 @@ export const script: NamespaceMessages = {
     productReferenceShort: "Reference",
     viewProductReference: "View original product reference {n}",
     productReferencesHint: "References guide the product's shape, materials, and colors. Shot images are generated in the Assets step.",
+    productOriginalsHint: "Original product photos are used directly as shot images. Add motion in the Assets step.",
     // 文案编辑
     fullVoiceover: "Full voiceover script",
     statsChars: "Characters: {n}",

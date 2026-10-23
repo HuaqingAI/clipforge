@@ -991,25 +991,32 @@ function AssetsPageContent() {
 
       // product image shot: use the product photo directly, no AI call needed (persisted for the composer to read)
       if (asset.visualSource === "product_image") {
-        setAssets((prev) =>
-          prev.map((a) =>
-            a.shotId === shotId ? {
-              ...a, status: "done", thumbnailUrl: productImages[0],
-              isVideo: undefined, videoUrl: undefined, keyframeUrl: undefined, sourceImageUrl: undefined,
-              lastFrameUrl: undefined, generationPlan: undefined,
-            } : a
-          )
-        );
-        if (productImages[0]) {
-          fetch(`/api/project/${id}/assets`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ shotId, type: "product_image", sourceUrl: productImages[0] }),
-          }).catch(() => {});
+        try {
+          if (!productImages[0]) throw new Error(locale === "zh" ? "请先上传商品图片。" : "Upload a product photo first.");
+          const response = await fetch(`/api/project/${id}/assets`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scriptId, shotId, type: "product_image", sourceUrl: productImages[0] }),
+          });
+          const saved = await response.json();
+          if (!response.ok) throw new Error(saved.error || t("errorGenerateFailed"));
+          setAssets((prev) =>
+            prev.map((a) =>
+              a.shotId === shotId ? {
+                ...a, assetId: saved.id, assetType: "product_image", assetProvider: saved.provider,
+                status: "done", thumbnailUrl: saved.filePath, error: undefined,
+                isVideo: undefined, videoUrl: undefined, keyframeUrl: undefined, sourceImageUrl: undefined,
+                lastFrameUrl: undefined, generationPlan: undefined,
+              } : a
+            )
+          );
           // auto motion: use the product image as the first frame and run image-to-video (bring the real product to life); falls back to a static image on failure
           if (!opts?.skipMotion && autoMotion && videoModelTarget && !isKlingDefault) await generateMotion(shotId, productImages[0]);
+          return productImages[0];
+        } catch (error) {
+          setAssets((previous) => previous.map((item) => item.shotId === shotId
+            ? { ...item, status: "failed", error: error instanceof Error ? error.message : t("errorGenerateFailed") } : item));
+          return undefined;
         }
-        return productImages[0];
       }
 
       // AI-generated shot: requires a default image model to be configured
@@ -1125,14 +1132,15 @@ function AssetsPageContent() {
         return undefined;
       }
     },
-    [assets, id, scriptId, modelTarget, productImages, productSafe, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, visualLook, generateMotion, t]
+    [assets, id, scriptId, modelTarget, productImages, productReferenceLocked, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, visualLook, generateMotion, t, locale]
   );
 
   // storyboard grid: ONE image generation renders every shot as a 3x3 grid cell (person /
   // outfit / room / light physically identical), the server crops cells into per-shot
   // keyframes — then the normal per-shot "animate" i2v pass takes over
   const runStoryboardGrid = useCallback(async () => {
-    if (!modelTarget || !scriptId || isGridGenerating) return;
+    const originals = assets.length > 0 && assets.every((asset) => asset.visualSource === "product_image");
+    if ((!modelTarget && !originals) || !scriptId || isGridGenerating) return;
     setIsGridGenerating(true);
     setGridNotice(null);
     try {
@@ -1145,10 +1153,12 @@ function AssetsPageContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scriptId,
-          provider: modelTarget.provider,
-          model: hasRefs ? toEditVariant(modelTarget.model) : modelTarget.model,
-          apiKey: modelTarget.apiKey,
-          baseUrl: modelTarget.baseUrl,
+          ...(!originals && modelTarget && {
+            provider: modelTarget.provider,
+            model: hasRefs ? toEditVariant(modelTarget.model) : modelTarget.model,
+            apiKey: modelTarget.apiKey,
+            baseUrl: modelTarget.baseUrl,
+          }),
           gridResolution,
           ...(!premiumCg && presenterSheet && { characterSheetUrl: presenterSheet }),
           productImageUrls: productRefs,
@@ -1159,7 +1169,7 @@ function AssetsPageContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t("gridFailed"));
       await reloadAssets();
-      let notice = t("gridDone").replace("{n}", String(data.count ?? ""));
+      let notice = t(data.originalImages ? "originalsReady" : "gridDone").replace("{n}", String(data.count ?? ""));
       if (data.resolution) {
         notice += ` ${t("gridResolutionActual", {
           width: data.resolution.gridWidth,
@@ -1175,7 +1185,7 @@ function AssetsPageContent() {
     } finally {
       setIsGridGenerating(false);
     }
-  }, [id, scriptId, modelTarget, imageParams, gridResolution, isGridGenerating, presenterSheet, premiumCg, productReferenceLocked, productImages, reloadAssets, t]);
+  }, [assets, id, scriptId, modelTarget, imageParams, gridResolution, isGridGenerating, presenterSheet, premiumCg, productReferenceLocked, productImages, reloadAssets, t]);
 
   // generate all in one click (sequential, to avoid hitting platform rate limits with concurrent requests).
   // With auto-motion on, this runs TWO passes: (1) every static keyframe, (2) keyframe-chained i2v per shot —
@@ -1333,15 +1343,16 @@ function AssetsPageContent() {
                 reason in the tooltip) — hiding them made the features undiscoverable. */}
             {(() => {
               const shotsOk = assets.length >= 2 && assets.length <= 9;
-              const gridReady = Boolean(modelTarget) && shotsOk;
-              const gridReason = !modelTarget ? t("gridNeedModel") : !shotsOk ? t("gridNeedShots") : t("gridTip");
+              const originals = assets.length > 0 && assets.every((asset) => asset.visualSource === "product_image");
+              const gridReady = originals ? productImages.length > 0 : Boolean(modelTarget) && shotsOk;
+              const gridReason = originals ? t("originalsTip") : !modelTarget ? t("gridNeedModel") : !shotsOk ? t("gridNeedShots") : t("gridTip");
               const batchReady = Boolean(scriptId && videoModelTarget && assets.some((asset) => asset.status === "done" && asset.thumbnailUrl && !asset.isVideo));
               const batchReason = !videoModelTarget ? t("batchMotionNeedModel") : t("batchMotionHint");
               return (
                 <>
                   {uiMode === "pro" && (
                     <div className="inline-flex items-center gap-1.5">
-                      <label htmlFor="storyboard-grid-resolution" className="sr-only">{t("gridResolutionLabel")}</label>
+                      {!originals && <><label htmlFor="storyboard-grid-resolution" className="sr-only">{t("gridResolutionLabel")}</label>
                       <select
                         id="storyboard-grid-resolution"
                         value={gridResolution}
@@ -1354,6 +1365,7 @@ function AssetsPageContent() {
                         <option value="2k">{t("gridResolution2k")}</option>
                         <option value="4k">{t("gridResolution4k")}</option>
                       </select>
+                      </>}
                       <Button
                         onClick={runStoryboardGrid}
                         disabled={!gridReady || isGridGenerating || isBatchGenerating || batchMotionBusy}
@@ -1364,10 +1376,10 @@ function AssetsPageContent() {
                         {isGridGenerating ? (
                           <>
                             <LuLoaderCircle className="animate-spin mr-1.5 h-3.5 w-3.5" />
-                            {t("gridRunning")}
+                            {t(originals ? "originalsPreparing" : "gridRunning")}
                           </>
                         ) : (
-                          <>{t("gridButton")}</>
+                          <>{t(originals ? "originalsButton" : "gridButton")}</>
                         )}
                       </Button>
                     </div>
@@ -1406,7 +1418,7 @@ function AssetsPageContent() {
             )}
           </div>
         </div>
-        {uiMode === "pro" && (
+        {uiMode === "pro" && assets.some((asset) => asset.visualSource !== "product_image") && (
           <p id="storyboard-grid-resolution-hint" className="-mt-2 mb-4 text-xs leading-relaxed text-muted-foreground">
             {t("gridResolutionHint")}
           </p>

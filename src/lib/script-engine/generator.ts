@@ -14,6 +14,7 @@ import {
   buildBatchPrompt,
   buildTopicBatchPrompt,
   premiumProductCgProfileForInput,
+  productCreativeProfileForInput,
   type ScriptGenerationInput,
   type TopicScriptInput,
 } from "./prompts";
@@ -329,9 +330,12 @@ function validateScript(
   creativeProfile?: unknown,
 ): GeneratedScript {
   const premiumProfile = premiumProfileForValidation(fallbackStyleType, creativeProfile);
+  const visualSource = sanitizeCreativeProfile(creativeProfile)?.visualSource;
   const shots = Array.isArray(raw.shots)
     ? (raw.shots as Partial<Shot>[]).map((s, i) => {
       const validated = validateShot(s, i);
+      // The user's source selection is authoritative even if the model ignores the prompt.
+      if (visualSource) validated.visualSource = visualSource;
       if (!premiumProfile) return validated;
       const sanitized = sanitizePremiumProductCgShot(validated, premiumProfile);
       throwOnPremiumCgPolicyIssues(sanitized.issues);
@@ -411,6 +415,7 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
   const client = createClient(input.llmConfig);
   const userPrompt = buildBatchPrompt(input, batchCountFor(input.llmConfig.baseUrl));
   const premiumProfile = premiumProductCgProfileForInput(input);
+  const creativeProfile = productCreativeProfileForInput(input);
   const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
   // Transient free-endpoint failures retry inside the client; unparseable replies retry once with
@@ -430,7 +435,7 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
       ...jsonModeParams(input.llmConfig.baseUrl),
     },
     input.llmConfig,
-    (content) => parseScriptResponse(content, fallbackStyleType, premiumProfile),
+    (content) => parseScriptResponse(content, fallbackStyleType, creativeProfile),
   );
 }
 
@@ -478,6 +483,7 @@ export async function generateSingleScript(input: ScriptInput): Promise<Generate
   const client = createClient(input.llmConfig);
   const userPrompt = buildUserPrompt(input);
   const premiumProfile = premiumProductCgProfileForInput(input);
+  const creativeProfile = productCreativeProfileForInput(input);
   const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
   return completeWithJsonRetry(
@@ -501,7 +507,7 @@ export async function generateSingleScript(input: ScriptInput): Promise<Generate
       } catch {
         throw new Error(`LLM 返回的内容不是合法 JSON${truncationHint(jsonStr)}: ${jsonStr.substring(0, 200)}`);
       }
-      return validateScript(parsed, fallbackStyleType, premiumProfile);
+      return validateScript(parsed, fallbackStyleType, creativeProfile);
     },
   );
 }
@@ -523,6 +529,7 @@ export function generateScriptStream(
     const client = createClient(input.llmConfig);
     const userPrompt = buildUserPrompt(input);
     const premiumProfile = premiumProductCgProfileForInput(input);
+    const creativeProfile = productCreativeProfileForInput(input);
     const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
     let fullContent = "";
@@ -554,7 +561,7 @@ export function generateScriptStream(
       }
 
       // Parse the complete result after streaming finishes
-      const scripts = parseScriptResponse(fullContent, fallbackStyleType, premiumProfile);
+      const scripts = parseScriptResponse(fullContent, fallbackStyleType, creativeProfile);
       callbacks.onComplete?.(scripts);
     } catch (error) {
       // User-initiated cancellation is not an error
@@ -761,7 +768,7 @@ export function parseScriptResponse(
   const authoritativeStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : fallbackStyleType;
   const scripts = rawScripts
     .filter((raw): raw is Record<string, unknown> => typeof raw === "object" && raw !== null)
-    .map((raw) => validateScript(raw, authoritativeStyleType, premiumProfile))
+    .map((raw) => validateScript(raw, authoritativeStyleType, creativeProfile))
     .filter((s) => s.shots.length > 0);
   if (scripts.length === 0) {
     throw new Error("LLM 未生成有效分镜（脚本为空），请重试或调整输入");

@@ -21,7 +21,8 @@ import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/
 import { saveAssetCandidate } from "@/lib/asset-persistence";
 import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
 import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
-import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
+import { filterTrustedPremiumCgAssets, PRODUCT_ORIGINAL_ASSET_PROVIDER } from "@/lib/premium-cg-assets";
+import { saveProductOriginalAsset } from "@/lib/product-original-assets";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 import {
   normalizeStoryboardGridResolution,
@@ -246,6 +247,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ? filterTrustedPremiumCgAssets(scopedBaselineAssets, id, script)
       : scopedBaselineAssets;
     const baselineByShot = new Map(shots.map((shot) => [shot.shotId, baselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null]));
+    // Original-photo scripts already have their keyframes. Preparing a film must
+    // never redraw them or require an image provider merely to bind saved photos.
+    if (creativeProfile.visualSource === "product_image" && shots.length
+      && shots.every((shot) => shot.visualSource === "product_image")) {
+      const sourceUrl = projectProductRefs[0];
+      if (!sourceUrl) return apiError(req, "请先保存商品图片，再使用商品原图。", "Save a product photo before using original images.", 400);
+      const cells: { shotId: number; filePath: string }[] = [];
+      for (const shot of shots) {
+        const existing = baselineAssets.find((asset) => asset.shotId === shot.shotId);
+        if (existing?.filePath && (preserveExisting === true || (
+          existing.provider === PRODUCT_ORIGINAL_ASSET_PROVIDER && projectProductRefs.includes(existing.filePath)
+        )) && await usableSelectedMedia(existing)) {
+          cells.push({ shotId: shot.shotId, filePath: existing.filePath });
+          continue;
+        }
+        const saved = await saveProductOriginalAsset({
+          projectId: id, productImages: projectProductRefs, sourceUrl, script, shot,
+          selectedPolicy: { mode: "select-if-unchanged", baseline: {
+            scriptId: script.id, scriptRevision: revision,
+            selectedAssetId: scopedBaselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null,
+          } },
+        });
+        if (!saved.selected) return apiError(req, "脚本或素材已变化，请刷新后重新准备。", "The script or selected media changed. Refresh before preparing keyframes.", 409);
+        cells.push({ shotId: shot.shotId, filePath: saved.filePath! });
+      }
+      return NextResponse.json({ gridPath: null, cells, count: cells.length, reused: true, originalImages: true, generatedCount: 0 });
+    }
     const preserved = new Map<number, { shotId: number; filePath: string }>();
     if (preserveExisting === true) {
       const usable = await Promise.all(baselineAssets.map(async (asset) => await usableSelectedMedia(asset) ? asset : undefined));

@@ -81,6 +81,31 @@ function expectMetadata(operation: "commerce-script" | "topic-script" | "transla
 }
 
 describe("script generation provenance", () => {
+  it.each(["user_upload", "auto", null])("rejects an unsupported explicit visual source %s before generating", async (visualSource) => {
+    const response = await commerceScript(request("/api/llm/script", {
+      projectId, visualSource, productName: "Reference chair", llmConfig,
+    }));
+    expect(response.status).toBe(400);
+    expect(generation.commerce).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).all()).toHaveLength(0);
+  });
+
+  it.each(["product_image", "ai_generate"])("uses the saved %s source over a conflicting generation request", async (visualSource) => {
+    db.update(schema.projects)
+      .set({ creativeProfile: createPremiumProductCgProfile({ visualSource }) })
+      .where(eq(schema.projects.id, projectId)).run();
+    const response = await commerceScript(request("/api/llm/script", {
+      projectId, productName: "Reference chair", productAnalysis: "Verified details", insightMode: false,
+      creativeProfile: createPremiumProductCgProfile({ visualSource: visualSource === "product_image" ? "ai_generate" : "product_image" }),
+      llmConfig,
+    }));
+    expect(response.status).toBe(200);
+    expect(generation.commerce).toHaveBeenCalledWith(expect.objectContaining({
+      creativeProfile: expect.objectContaining({ visualSource }),
+    }));
+    expect(db.select().from(schema.scripts).get()?.creativeProfileSnapshot?.profile.visualSource).toBe(visualSource);
+  });
+
   it("whitelists non-secret identifiers and labels endpoints without a provider", () => {
     expect(scriptGenerationMetadata({ ...llmConfig, provider: undefined }, "commerce-script", new Date("2026-10-21T00:00:00.000Z")))
       .toEqual({

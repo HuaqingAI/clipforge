@@ -284,6 +284,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         referenceQuota: referenceQuotaCheck(plannedRefs, choice.model),
         dialogueWarnings: dialogueDensityWarnings(shots),
         creativeProfile,
+        usesProductOriginals: creativeProfile.visualSource === "product_image"
+          && shots.length > 0 && shots.every((shot) => shot.visualSource === "product_image"),
         // undefined when the platform publishes no price — the UI must say "unknown", not "free"
         ...(estimate && { estimate }),
       });
@@ -322,7 +324,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const keyframes: string[] = [];
     const missing: number[] = [];
     for (const shot of shots) {
-      const kf = shotKeyframe(byShot.get(shot.shotId));
+      const kf = shotKeyframe(byShot.get(shot.shotId))
+        ?? (creativeProfile.visualSource === "product_image" && shot.visualSource === "product_image"
+          ? project.productImages?.[0] : undefined);
       if (kf) keyframes.push(kf);
       else missing.push(shot.shotId);
     }
