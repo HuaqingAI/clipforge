@@ -121,6 +121,17 @@ afterEach(() => {
 });
 
 describe("premium CG video generation profile context", () => {
+  it("rejects generation when only unselected script history remains before provider setup", async () => {
+    db.update(schema.scripts).set({ selected: false }).run();
+
+    const response = await POST(request({ scriptId: undefined }));
+
+    expect(response.status).toBe(409);
+    expect(state.createProvider).not.toHaveBeenCalled();
+    expect(state.generateVideo).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).all().every((row) => !row.selected)).toBe(true);
+  });
+
   it("rejects a selected script whose frozen creative configuration is stale before provider setup", async () => {
     const profile = createPremiumProductCgProfile({ narrationMode: "none" });
     db.update(schema.scripts)

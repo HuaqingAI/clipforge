@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { and, eq, inArray } from "drizzle-orm";
 import { join } from "path";
@@ -81,12 +82,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }, { status: 409 });
   }
 
-  // Get the selected script (fall back to the most recent one if none is selected)
+  // Historical scripts are not a current script after the last option is deleted.
   const rows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id));
-  if (rows.length === 0) {
+  const script = resolveCurrentScript(rows);
+  if (!script) {
     return apiError(req, "该项目还没有脚本，请先生成脚本", "This project has no script yet; please generate a script first", 404);
   }
-  const script = rows.find((r) => r.selected) ?? rows[rows.length - 1];
   const shots = (script.shots ?? []) as Shot[];
   if (shots.length === 0) {
     return apiError(req, "脚本没有分镜", "The script has no shots");

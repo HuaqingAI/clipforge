@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { getDb } from "@/lib/db";
@@ -45,8 +46,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
 
   const rows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id));
-  if (!rows.length) return apiError(req, "该项目还没有脚本", "This project has no script yet", 404);
-  const source = rows.find((r) => r.selected) ?? rows[rows.length - 1];
+  const source = resolveCurrentScript(rows);
+  if (!source) return apiError(req, "该项目还没有脚本", "This project has no script yet", 404);
   const shots = (source.shots ?? []) as Shot[];
   const context = checkCreativeProfileContext(project, source);
   if (!context.ok) {

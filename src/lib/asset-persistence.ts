@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { existsSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
@@ -102,7 +103,7 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
   const generationPlan = input.generationPlan ? sanitizeGenerationControlSummary(input.generationPlan) : null;
   const rows = db.transaction((transaction) => {
     const scriptRows = transaction.select().from(scripts).where(eq(scripts.projectId, input.projectId)).all();
-    const currentScript = scriptRows.find((row) => row.selected) ?? scriptRows[0];
+    const currentScript = resolveCurrentScript(scriptRows);
     const targetScript = input.scope ? scriptRows.find((row) => row.id === input.scope!.sourceScriptId) : currentScript;
     const candidates = transaction.select().from(assets).where(and(eq(assets.projectId, input.projectId), eq(assets.shotId, input.shotId))).all();
     const scopedCandidates = input.scope ? candidates.filter((row) => assetMatchesScript(row, targetScript)

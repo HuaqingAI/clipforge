@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { desc, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { projects, scripts as scriptsTable } from "@/lib/db/schema";
 import { fingerprintOf, homogeneityReport } from "@/lib/structure-fingerprint";
@@ -27,9 +27,9 @@ export async function GET(req: NextRequest) {
   const rows = await db
     .select()
     .from(scriptsTable)
-    .where(inArray(scriptsTable.projectId, recent.map((p) => p.id)));
+    .where(and(inArray(scriptsTable.projectId, recent.map((p) => p.id)), eq(scriptsTable.selected, true)));
 
-  // latest script per project (selected wins, then highest version)
+  // Only selected scripts describe each project's current video.
   const nameOf = new Map(recent.map((p) => [p.id, p.name] as const));
   const byProject = new Map<string, (typeof rows)[number]>();
   for (const r of rows) {

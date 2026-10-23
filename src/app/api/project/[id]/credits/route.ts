@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { eq, desc, and } from "drizzle-orm";
 import { join } from "path";
@@ -38,7 +39,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     .where(and(eq(assetsTable.projectId, id), eq(assetsTable.status, "done"), eq(assetsTable.selected, true)))
     .orderBy(desc(assetsTable.createdAt));
   const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
-  const current = filterAssetsForScript(rows, scriptRows.find((row) => row.selected) ?? scriptRows[0]);
+  const script = resolveCurrentScript(scriptRows);
+  const current = script ? filterAssetsForScript(rows, script) : [];
   if (current.length === 0) {
     return apiError(req, "该项目还没有素材，先自动配画面或上传素材", "This project has no assets yet; auto-fill or upload materials first", 404);
   }

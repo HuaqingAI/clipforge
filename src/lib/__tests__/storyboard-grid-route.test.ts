@@ -65,6 +65,7 @@ beforeAll(async () => {
   db.insert(schema.scripts).values({
     id: scriptId,
     projectId,
+    selected: true,
     styleType: "scene",
     shots: originalShots,
   }).run();

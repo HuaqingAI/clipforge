@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { randomUUID, createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, realpath, stat, unlink } from "node:fs/promises";
@@ -193,7 +194,7 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
   const project = db.select().from(projects).where(eq(projects.id, body.projectId as string)).get();
   if (!project) throw fail("KLING_PROJECT_NOT_FOUND", "项目不存在。");
   const scriptRows = db.select().from(scripts).where(eq(scripts.projectId, project.id)).all();
-  const script = scriptRows.find((item) => item.selected) ?? scriptRows[0];
+  const script = resolveCurrentScript(scriptRows);
   if (!script || script.id !== body.scriptId) throw fail("KLING_CONTEXT_CHANGED", "所选脚本已变化，请刷新后重新预览。");
   const context = checkCreativeProfileContext(project, script);
   if (!context.ok) {
@@ -292,7 +293,7 @@ function assertContext(run: KlingFilmRun, shots: KlingFilmShot[]): void {
   if (!project) throw fail("KLING_PROJECT_NOT_FOUND", "整片所属项目已不存在，已停止后续生成。");
   if (run.data.projectPromptRevision && run.data.projectPromptRevision !== projectPromptRevision(project)) throw fail("KLING_CONTEXT_CHANGED", "项目的视觉方向或一致性要求已变化，请重新预览整片计划。");
   const rows = db.select().from(scripts).where(eq(scripts.projectId, run.projectId)).all();
-  const script = rows.find((item) => item.selected) ?? rows[0];
+  const script = resolveCurrentScript(rows);
   if (!script || script.id !== run.scriptId || scriptRevision(script) !== run.data.scriptRevision || shots.length !== (script.shots?.length ?? 0)) throw fail("KLING_CONTEXT_CHANGED", "整片脚本已变化，请停止原计划并重新预览。");
   const context = checkCreativeProfileContext(project, script);
   if (!context.ok) {

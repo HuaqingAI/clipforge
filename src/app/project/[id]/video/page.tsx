@@ -223,10 +223,11 @@ export default function VideoPage() {
         }
         setSavedAssets(Array.isArray(assets) ? assets : []);
         const selected = Array.isArray(scripts)
-          ? scripts.find((s: { selected?: boolean }) => s.selected) ?? scripts[0]
+          ? scripts.find((s: { selected?: boolean }) => s.selected)
           : null;
         if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
           setScriptId("");
+          setScriptShots([]);
           setLoadError(t("errorNoScript"));
           setClips([]);
         } else {

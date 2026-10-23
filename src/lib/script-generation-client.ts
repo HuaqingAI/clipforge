@@ -2,11 +2,23 @@ import type { Shot } from "@/lib/db/schema";
 
 export interface SavedScript {
   id: string;
+  version?: number;
   title: string | null;
   styleType: string;
   totalDuration: number | null;
   shots: Shot[];
   selected: boolean | null;
+}
+
+/** A generation produces several alternatives sharing one version; older versions are history. */
+export function currentScriptOptions<T extends { version?: number; selected?: boolean | null }>(rows: T[]): T[] {
+  if (rows.length === 0) return rows;
+  const versionOf = (row: T) => row.version ?? 1;
+  const selected = rows.find((row) => row.selected);
+  // No selection also represents an intentionally emptied batch after deleting its last option.
+  if (!selected) return [];
+  const currentVersion = versionOf(selected);
+  return rows.filter((row) => versionOf(row) === currentVersion);
 }
 
 interface GenerationOptions {
@@ -24,7 +36,7 @@ function isSavedScripts(value: unknown): value is SavedScript[] {
 }
 
 // Also settle when a transport never finishes reading its response body.
-function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+export function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
     if (signal.aborted) onAbort();

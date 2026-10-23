@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
@@ -36,8 +37,8 @@ export async function GET(
       db.select().from(assets).where(eq(assets.projectId, id)).orderBy(desc(assets.createdAt)),
       db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)),
     ]);
-    const script = scriptRows.find((row) => row.selected) ?? scriptRows[0];
-    const rows = req.nextUrl.searchParams.get("all") === "1" ? allRows : filterAssetsForScript(allRows, script);
+    const script = resolveCurrentScript(scriptRows);
+    const rows = req.nextUrl.searchParams.get("all") === "1" ? allRows : script ? filterAssetsForScript(allRows, script) : [];
     return NextResponse.json(rows.map((row) => {
       const tailPath = row.filePath && /\.(mp4|webm|mov|m4v)$/i.test(row.filePath)
         ? resolveUploadFilePath(`${row.filePath}${LAST_FRAME_SUFFIX}`)
@@ -87,7 +88,7 @@ export async function POST(
       );
     }
     const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
-    const script = typeof body.scriptId === "string" ? scriptRows.find((row) => row.id === body.scriptId) : scriptRows.find((row) => row.selected) ?? scriptRows[0];
+    const script = typeof body.scriptId === "string" ? scriptRows.find((row) => row.id === body.scriptId) : resolveCurrentScript(scriptRows);
     const shot = script?.shots?.find((row) => row.shotId === shotId);
     if (scriptRows.length && (!script || !shot)) return NextResponse.json({ error: "目标脚本或镜头已变化，请刷新素材页" }, { status: 409 });
     const filePath = await persistAssetSource(id, sourceUrl, shotId);
@@ -150,7 +151,7 @@ export async function PATCH(
     const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
     if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
     const selectedScripts = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
-    const selectedScript = selectedScripts.find((row) => row.selected) ?? selectedScripts[0];
+    const selectedScript = resolveCurrentScript(selectedScripts);
     if (isPremiumProductCgProject(project)) {
       if (!selectedScript) {
         return premiumCgConflict(
@@ -184,8 +185,8 @@ export async function PATCH(
     }
     db.transaction((tx) => {
       const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)).all();
-      const script = scriptRows.find((row) => row.selected) ?? scriptRows[0];
-      if (!assetMatchesScript(target, script)) throw new Error("此素材属于其他脚本修订，请在原 Kling 任务详情中明确采用为当前镜头");
+      const script = resolveCurrentScript(scriptRows);
+      if (!script || !assetMatchesScript(target, script)) throw new Error("此素材属于其他脚本修订，请在原 Kling 任务详情中明确采用为当前镜头");
       const candidates = tx.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.shotId, target.shotId))).all();
       for (const candidate of filterAssetsForScript(candidates, script)) tx.update(assets).set({ selected: false }).where(eq(assets.id, candidate.id)).run();
       tx.update(assets).set({ selected: true }).where(eq(assets.id, target.id)).run();

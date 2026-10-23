@@ -341,13 +341,15 @@ export default function ExportPage() {
         }
         if (scriptsRes.ok) {
           const arr = await scriptsRes.json();
-          const sel = Array.isArray(arr) ? (arr.find((s: { selected?: boolean }) => s.selected) ?? arr[0]) : null;
+          const sel = Array.isArray(arr) ? arr.find((s: { selected?: boolean }) => s.selected) : null;
           if (!cancelled && sel) {
             setScriptInfo({
               styleType: sel.styleType,
               totalDuration: sel.totalDuration ?? 0,
               shotCount: Array.isArray(sel.shots) ? sel.shots.length : 0,
             });
+          } else if (!cancelled) {
+            setScriptInfo(null);
           }
         }
       } catch {

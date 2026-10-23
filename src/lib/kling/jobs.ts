@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -254,7 +255,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   const project = db.select().from(projects).where(eq(projects.id, request.projectId)).get();
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
   const allScripts = db.select().from(scripts).where(eq(scripts.projectId, request.projectId)).all();
-  const script = allScripts.find((item) => item.selected) ?? allScripts[0];
+  const script = resolveCurrentScript(allScripts);
   const shot = script?.shots?.find((item) => item.shotId === request.shotId);
   if (!script || script.id !== request.scriptId || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
   const creativeContext = assertCreativeProfileContext(project, script);
@@ -406,7 +407,7 @@ function assertCurrentContext(job: KlingJob): void {
   const project = db.select().from(projects).where(eq(projects.id, job.projectId)).get();
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在，已阻止首次生成。", 404);
   const rows = db.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
-  const selected = rows.find((row) => row.selected) ?? rows[0];
+  const selected = resolveCurrentScript(rows);
   if (!selected || selected.id !== job.scriptId || scriptRevision(selected) !== job.data.scriptRevision) throw new KlingError("KLING_CONTEXT_CHANGED", "原脚本或所选脚本已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
   const creativeContext = assertCreativeProfileContext(project, selected);
   if (isPremiumProductCgProfile(creativeContext.projectProfile)) {

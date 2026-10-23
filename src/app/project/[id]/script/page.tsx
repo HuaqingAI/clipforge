@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil } from "react-icons/lu";
+import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil, LuTrash2, LuHistory } from "react-icons/lu";
 import { checkScriptCompliance } from "@/lib/ad-compliance";
 import { checkPublishReadiness } from "@/lib/publish-readiness";
 import Link from "next/link";
@@ -19,9 +19,10 @@ import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useT, useLocale } from "@/lib/i18n";
 import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
-import { generateProjectScripts, type SavedScript as DbScript } from "@/lib/script-generation-client";
+import { abortable, currentScriptOptions, generateProjectScripts, type SavedScript as DbScript } from "@/lib/script-generation-client";
 import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
 import { ProjectHeader } from "@/components/project-header";
+import { ScriptHistoryDialog } from "@/components/script-history-dialog";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
@@ -130,6 +131,14 @@ export default function ScriptPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const generationInFlight = useRef(false);
   const generationAbort = useRef<AbortController | null>(null);
+  const deletionAbort = useRef<AbortController | null>(null);
+  const selectionAbort = useRef<AbortController | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectionError, setSelectionError] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [genError, setGenError] = useState("");
   const { llm } = useSettingsStore();
   // beginner/director split: simple mode swaps the 3-column editor for a read-and-go card
@@ -144,16 +153,26 @@ export default function ScriptPage() {
 
   useEffect(() => {
     setIsGenerating(false);
+    setIsDeleting(false);
+    setIsSelecting(false);
+    setSelectionError("");
+    setHistoryOpen(false);
+    setDeleteTarget(null);
+    setDeleteError("");
     return () => {
       generationAbort.current?.abort();
       generationAbort.current = null;
       generationInFlight.current = false;
+      deletionAbort.current?.abort();
+      deletionAbort.current = null;
+      selectionAbort.current?.abort();
+      selectionAbort.current = null;
     };
   }, [id]);
 
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
   const handleGenerate = async () => {
-    if (!projectMeta || generationInFlight.current) return;
+    if (!projectMeta || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     if (!llm.apiKey) {
       setGenError(t("errorNoLlm"));
       return;
@@ -203,19 +222,17 @@ export default function ScriptPage() {
         },
       });
       if (controller.signal.aborted) return;
-      const receivedIds = new Set(dbScripts.map((script) => script.id));
-      setScripts((previous) => [
-        ...dbScripts.map((script) => ({
+      const currentOptions = currentScriptOptions(dbScripts);
+      setScripts(
+        currentOptions.map((script) => ({
           id: script.id,
           title: script.title ?? t("untitledScript"),
           styleType: script.styleType,
           totalDuration: script.totalDuration ?? 0,
           shots: script.shots,
-        })),
-        // Commerce regeneration appends versions; topic regeneration replaces its scripts.
-        ...(!isTopic ? previous.filter((script) => !receivedIds.has(script.id)) : []),
-      ]);
-      const selectedIndex = dbScripts.findIndex((script) => script.selected);
+        }))
+      );
+      const selectedIndex = currentOptions.findIndex((script) => script.selected);
       setSelectedScript(selectedIndex >= 0 ? selectedIndex : 0);
     } catch (err) {
       if (!controller.signal.aborted) setGenError(friendlyError(err, locale));
@@ -224,6 +241,50 @@ export default function ScriptPage() {
         generationAbort.current = null;
         generationInFlight.current = false;
         setIsGenerating(false);
+      }
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deletionAbort.current || generationInFlight.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    const controller = new AbortController();
+    deletionAbort.current = controller;
+    setIsDeleting(true);
+    setDeleteError("");
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await fetch(`/api/project/${id}/scripts`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptId: deleteTarget.id }),
+        signal: controller.signal,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || t("deleteFailed"));
+      if (controller.signal.aborted) return;
+      if (!Array.isArray(data.scripts)) throw new Error(t("deleteFailed"));
+      const options = currentScriptOptions(data.scripts as DbScript[]);
+      setScripts(options.map((script) => ({
+        id: script.id,
+        title: script.title ?? t("untitledScript"),
+        styleType: script.styleType,
+        totalDuration: script.totalDuration ?? 0,
+        shots: script.shots ?? [],
+      })));
+      const selectedIndex = options.findIndex((script) => script.selected);
+      setSelectedScript(selectedIndex >= 0 ? selectedIndex : 0);
+      setJudgeReport(null);
+      setJudgeError("");
+      setJudgeApplied(false);
+      setEditingShotId(null);
+      setDeleteTarget(null);
+    } catch (error) {
+      if (deletionAbort.current === controller) setDeleteError(friendlyError(error, locale));
+    } finally {
+      clearTimeout(timeout);
+      if (deletionAbort.current === controller) {
+        deletionAbort.current = null;
+        setIsDeleting(false);
       }
     }
   };
@@ -290,7 +351,8 @@ export default function ScriptPage() {
           fetch(`/api/project/${id}/scripts`),
           fetch(`/api/project/${id}`),
         ]);
-        const dbScripts: DbScript[] = scriptsRes.ok ? await scriptsRes.json() : [];
+        const savedScripts: DbScript[] = scriptsRes.ok ? await scriptsRes.json() : [];
+        const dbScripts = Array.isArray(savedScripts) ? currentScriptOptions(savedScripts) : [];
         if (projectRes.ok) {
           const proj = await projectRes.json();
           if (!cancelled) {
@@ -353,7 +415,7 @@ export default function ScriptPage() {
   const { addTemplate } = useTemplateStore();
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [templateName, setTemplateName] = useState("");
-  // regeneration deletes and rebuilds from scratch (the route deletes old scripts first) and is irreversible — show a confirmation dialog when scripts already exist to prevent accidental loss
+  // Confirm before replacing the current alternatives; saved revisions remain in project history.
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
   const [savedTip, setSavedTip] = useState(false);
 
@@ -384,19 +446,84 @@ export default function ScriptPage() {
   // downstream steps (assets/video/export) read `selected` from the DB and use a different script ----
   const [selectionTip, setSelectionTip] = useState(false);
   const persistSelection = async (index: number) => {
-    setSelectedScript(index);
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     const target = scripts[index];
     if (!target) return;
+    const previousIndex = selectedScript;
+    const controller = new AbortController();
+    selectionAbort.current = controller;
+    setIsSelecting(true);
+    setSelectionError("");
+    setSelectedScript(index);
+    const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
-      await fetch(`/api/project/${id}/scripts`, {
+      const response = await fetch(`/api/project/${id}/scripts`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ selectedScriptId: target.id }),
+        signal: controller.signal,
       });
+      if (!response.ok) throw new Error(t("selectionFailed"));
+      if (controller.signal.aborted) return;
       setSelectionTip(true);
       setTimeout(() => setSelectionTip(false), 1500);
-    } catch {
-      /* selection is best-effort; the UI already reflects the choice locally */
+    } catch (error) {
+      if (selectionAbort.current === controller) {
+        setSelectedScript(previousIndex);
+        setSelectionError(friendlyError(error, locale));
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (selectionAbort.current === controller) {
+        selectionAbort.current = null;
+        setIsSelecting(false);
+      }
+    }
+  };
+
+  const restoreHistoricalScript = async (scriptId: string) => {
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving" || creativeConfigSaving || autoFinishing) {
+      throw new Error(t("historyRestoreBusy"));
+    }
+    const controller = new AbortController();
+    selectionAbort.current = controller;
+    setIsSelecting(true);
+    const timeout = setTimeout(() => controller.abort(new Error(t("historyRestoreTimedOut"))), 15_000);
+    try {
+      const { response, data } = await abortable((async () => {
+        const response = await fetch(`/api/project/${id}/scripts`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ restoreScriptId: scriptId }),
+          signal: controller.signal,
+        });
+        return { response, data: await response.json() };
+      })(), controller.signal);
+      if (!response.ok) throw new Error(data.error || t("historyRestoreFailed"));
+      if (controller.signal.aborted) throw new Error(t("historyRestoreFailed"));
+      const options = Array.isArray(data.scripts) ? currentScriptOptions(data.scripts as DbScript[]) : [];
+      if (!options.some((script) => script.id === scriptId && script.selected)) {
+        throw new Error(t("historyRestoreFailed"));
+      }
+      setScripts(options.map((script) => ({
+        id: script.id,
+        title: script.title ?? t("untitledScript"),
+        styleType: script.styleType,
+        totalDuration: script.totalDuration ?? 0,
+        shots: script.shots ?? [],
+      })));
+      setSelectedScript(options.findIndex((script) => script.selected));
+      setSelectionError("");
+      setGenError("");
+      setHistoryOpen(false);
+    } catch (error) {
+      throw new Error(friendlyError(error, locale));
+    } finally {
+      clearTimeout(timeout);
+      if (selectionAbort.current === controller) {
+        selectionAbort.current = null;
+        setIsSelecting(false);
+      }
     }
   };
 
@@ -405,11 +532,13 @@ export default function ScriptPage() {
   const [editDraft, setEditDraft] = useState<{ voiceover: string; description: string }>({ voiceover: "", description: "" });
   const [editStatus, setEditStatus] = useState<"" | "saving" | "saved" | "failed">("");
   const startEditShot = (shot: Shot) => {
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     setEditingShotId(shot.shotId);
     setEditDraft({ voiceover: shot.voiceover ?? "", description: shot.description ?? "" });
     setEditStatus("");
   };
   const cancelEditShot = () => {
+    if (editStatus === "saving") return;
     setEditingShotId(null);
     setEditStatus("");
   };
@@ -533,16 +662,18 @@ export default function ScriptPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
   }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun, isPremiumCgProject, projectMeta]);
 
-  // switching scripts invalidates the report — it was ruled on another script's lines
+  // Reports and open edits belong to a script ID; regeneration may retain the same list index.
   useEffect(() => {
     setJudgeReport(null);
     setJudgeError("");
     setJudgeApplied(false);
-  }, [selectedScript]);
+    setEditingShotId(null);
+    setEditStatus("");
+  }, [currentScript?.id]);
 
   // run the judge panel on the current script's voiceover lines (one LLM call, four judges)
   const runJudge = async () => {
-    if (!currentScript || judging) return;
+    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     setJudging(true);
     setJudgeError("");
     setJudgeReport(null);
@@ -568,7 +699,7 @@ export default function ScriptPage() {
 
   // apply the judges' rewrites through the existing shotTexts PATCH channel (+ optimistic update)
   const applyJudgeRewrites = async () => {
-    if (!currentScript || !judgeReport || judgeApplying) return;
+    if (!currentScript || !judgeReport || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     // tier gate applies to the button too: taste-tier rewrites stay suggestions in the list
     const autoRewrites = autoApplicableRewrites(judgeReport);
     const autoDescRewrites = autoApplicableDescriptionRewrites(judgeReport);
@@ -608,7 +739,7 @@ export default function ScriptPage() {
   };
 
   const saveEditShot = async (shotId: number) => {
-    if (!currentScript) return;
+    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     setEditStatus("saving");
     // optimistic local update so the timeline reflects the edit immediately
     setScripts((prev) =>
@@ -634,6 +765,15 @@ export default function ScriptPage() {
   };
 
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
+  const scriptActionsBusy = isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
+  const historyButton = (
+    <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={() => setHistoryOpen(true)}>
+      <LuHistory className="mr-1 h-3.5 w-3.5" />{t("historyButton")}
+    </Button>
+  );
+  const historyDialog = historyOpen ? (
+    <ScriptHistoryDialog key={id} projectId={id} busy={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClose={() => setHistoryOpen(false)} onRestore={restoreHistoricalScript} />
+  ) : null;
   const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} />;
   const creativeProfileSwitcher = projectMeta && projectMeta.contentType !== "topic" ? (
     <Card className="glass-card mb-5">
@@ -653,7 +793,7 @@ export default function ScriptPage() {
                 <button
                   key={option.value}
                   type="button"
-                  disabled={creativeConfigSaving}
+                  disabled={creativeConfigSaving || scriptActionsBusy || autoFinishing}
                   onClick={() => void switchCreationType(option.value)}
                   className={`rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
                     selected ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
@@ -728,8 +868,8 @@ export default function ScriptPage() {
               </Link>
             </div>
           )}
-          <div className="flex items-center gap-3">
-            <Button onClick={handleGenerate} disabled={isGenerating} className="brand-gradient text-white">
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Button onClick={handleGenerate} disabled={scriptActionsBusy || creativeConfigSaving} className="brand-gradient text-white">
               {isGenerating ? (
                 <>
                   <LuLoaderCircle className="w-4 h-4 mr-2 animate-spin" />
@@ -742,11 +882,13 @@ export default function ScriptPage() {
                 </>
               )}
             </Button>
+            {historyButton}
             <Link href="/projects">
               <Button variant="outline">{t("backToProjects")}</Button>
             </Link>
           </div>
         </div>
+        {historyDialog}
       </div>
     );
   }
@@ -860,10 +1002,14 @@ export default function ScriptPage() {
                 </Link>
               </div>
               {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
-              <div className="flex items-center gap-3">
-                <Button variant="outline" size="sm" className="text-xs" disabled={isGenerating} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
                   {isGenerating && <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" />}
                   {t(isGenerating ? "regenerating" : "regenerate")}
+                </Button>
+                {historyButton}
+                <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-destructive" disabled={scriptActionsBusy || autoFinishing} onClick={() => { setDeleteTarget(currentScript); setDeleteError(""); }}>
+                  <LuTrash2 className="mr-1 h-3.5 w-3.5" />{t("deleteScript")}
                 </Button>
                 <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => setUiMode("pro")}>
                   {t("simpleGoPro")}
@@ -875,9 +1021,9 @@ export default function ScriptPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* left panel: script option selection */}
           <div className="lg:col-span-1">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <h2 className="text-base font-semibold">{t("scriptOptions")}</h2>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {selectionTip && (
                   <span className="text-xs text-green-400 animate-in fade-in">{t("selectionSaved")}</span>
                 )}
@@ -888,13 +1034,15 @@ export default function ScriptPage() {
                   <LuBookmarkPlus className="w-3.5 h-3.5 mr-1" />
                   {t("saveAsTemplate")}
                 </Button>
-                <Button variant="outline" size="sm" disabled={isGenerating} aria-busy={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
+                <Button variant="outline" size="sm" disabled={scriptActionsBusy} aria-busy={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
                   {isGenerating ? <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" /> : <LuWand className="w-3.5 h-3.5 mr-1" />}
                   {t(isGenerating ? "regenerating" : "regenerate")}
                 </Button>
+                {historyButton}
               </div>
             </div>
 
+            {selectionError && <p role="alert" className="mb-3 text-xs text-destructive">{selectionError}</p>}
             <div className="space-y-3">
               {scripts.map((script, index) => (
                 <Card
@@ -905,9 +1053,14 @@ export default function ScriptPage() {
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between mb-2">
                       <h3 className="font-medium text-sm">{script.title}</h3>
-                      <Badge variant="secondary" className="text-xs shrink-0 ml-2">
-                        {styleLabelKeys[script.styleType] ? t(styleLabelKeys[script.styleType]) : script.styleType}
-                      </Badge>
+                      <div className="ml-2 flex shrink-0 items-center gap-1">
+                        <Badge variant="secondary" className="text-xs">
+                          {styleLabelKeys[script.styleType] ? t(styleLabelKeys[script.styleType]) : script.styleType}
+                        </Badge>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`${t("deleteScript")} ${script.title}`} title={t("deleteScript")} disabled={scriptActionsBusy || autoFinishing} onClick={(event) => { event.stopPropagation(); setDeleteTarget(script); setDeleteError(""); }}>
+                          <LuTrash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span>{t("shotCount", { n: script.shots.length })}</span>
@@ -948,7 +1101,7 @@ export default function ScriptPage() {
                   {!isPremiumCgProject && <Button
                       variant="outline"
                       className="text-sm"
-                      disabled={judging}
+                      disabled={scriptActionsBusy}
                       onClick={runJudge}
                       title={t("judgeHint")}
                     >
@@ -1002,7 +1155,7 @@ export default function ScriptPage() {
                         {judgeApplied ? (
                           <span className="text-xs text-green-400">{t("judgeAppliedTip")}</span>
                         ) : autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length > 0 ? (
-                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={judgeApplying} onClick={applyJudgeRewrites}>
+                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy} onClick={applyJudgeRewrites}>
                             {judgeApplying ? t("judgeApplying") : t("judgeApply", { n: autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length })}
                           </Button>
                         ) : (
@@ -1195,6 +1348,7 @@ export default function ScriptPage() {
                                       <button
                                         type="button"
                                         className="flex items-center gap-1 text-primary hover:underline"
+                                        disabled={scriptActionsBusy}
                                         onClick={() => startEditShot(shot)}
                                       >
                                         <LuPencil className="w-3 h-3" />
@@ -1240,8 +1394,8 @@ export default function ScriptPage() {
                                   </div>
                                   <div className="flex items-center justify-end gap-2">
                                     {editStatus === "failed" && <span className="text-[10px] text-red-400 mr-auto">{t("editSaveFailed")}</span>}
-                                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={cancelEditShot}>{tc("cancel")}</Button>
-                                    <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={editStatus === "saving"} onClick={() => saveEditShot(shot.shotId)}>{tc("save")}</Button>
+                                    <Button variant="outline" size="sm" className="h-7 text-xs" disabled={editStatus === "saving"} onClick={cancelEditShot}>{tc("cancel")}</Button>
+                                    <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy} onClick={() => saveEditShot(shot.shotId)}>{tc("save")}</Button>
                                   </div>
                                 </div>
                               ) : (
@@ -1288,6 +1442,8 @@ export default function ScriptPage() {
         )}
       </main>
 
+      {historyDialog}
+
       {/* save template dialog */}
       {showSaveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -1309,7 +1465,26 @@ export default function ScriptPage() {
         </div>
       )}
 
-      {/* regeneration confirmation dialog: deleting old scripts is irreversible, guard against accidental clicks */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="delete-script-title" aria-describedby="delete-script-description">
+          <Card className="glass-card mx-4 w-full max-w-md">
+            <CardContent className="space-y-4 p-6">
+              <h3 id="delete-script-title" className="flex items-center gap-2 text-base font-semibold"><LuTrash2 className="h-4 w-4 text-destructive" />{t("deleteConfirmTitle")}</h3>
+              <p className="break-words text-sm font-medium">{deleteTarget.title}</p>
+              <p id="delete-script-description" className="text-xs leading-relaxed text-muted-foreground">{t("deleteConfirmDesc")}</p>
+              {deleteError && <p role="alert" className="text-xs text-destructive">{deleteError}</p>}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" disabled={isDeleting} onClick={() => setDeleteTarget(null)}>{tc("cancel")}</Button>
+                <Button variant="destructive" size="sm" disabled={isDeleting} aria-busy={isDeleting} onClick={() => void confirmDelete()}>
+                  {isDeleting && <LuLoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" />}{t(isDeleting ? "deletingScript" : "deleteConfirmOk")}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Confirm before switching to a newly generated batch. */}
       {regenConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <Card className="glass-card w-full max-w-md mx-4">

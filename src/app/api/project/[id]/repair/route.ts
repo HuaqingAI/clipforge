@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { existsSync } from "fs";
 import { mkdtemp, readFile, rm } from "fs/promises";
 import { tmpdir } from "os";
@@ -61,7 +62,7 @@ async function loadRepairContext(projectId: string, assetId: string, reviewId: s
     db.select().from(assets).where(eq(assets.projectId, projectId)),
     db.select().from(scripts).where(eq(scripts.projectId, projectId)),
   ]);
-  const script = scriptRows.find((row) => row.selected) ?? scriptRows[0];
+  const script = resolveCurrentScript(scriptRows);
   if (asset && !assetMatchesScript(asset, script)) throw new Error("修复候选不属于当前脚本修订，请刷新后选择当前镜头");
   const projectAssets = filterAssetsForScript(allAssets, script);
   if (!asset?.filePath || asset.status !== "done" || !VIDEO_EXT.test(asset.filePath)) throw new Error("请选择已完成的视频候选");

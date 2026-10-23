@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { publishMetrics, projects, scripts as scriptsTable } from "@/lib/db/schema";
 import { apiError } from "@/lib/api-error";
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const [s] = await db
       .select({ styleType: scriptsTable.styleType })
       .from(scriptsTable)
-      .where(eq(scriptsTable.projectId, id))
+      .where(and(eq(scriptsTable.projectId, id), eq(scriptsTable.selected, true)))
       .orderBy(desc(scriptsTable.version))
       .limit(1);
     style = s?.styleType || "custom";

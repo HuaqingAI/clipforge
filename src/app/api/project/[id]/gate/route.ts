@@ -64,21 +64,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .orderBy(desc(compositions.createdAt))
       .limit(1);
 
-    // 1) script readiness — prefer the selected script (what actually got composed), else the latest version
+    // 1) script readiness — use the selected script; history cannot supply the current script
     const [selected] = await db
       .select()
       .from(scriptsTable)
       .where(and(eq(scriptsTable.projectId, id), eq(scriptsTable.selected, true)))
       .orderBy(desc(scriptsTable.version))
       .limit(1);
-    const [latest] = selected
-      ? [selected]
-      : await db
-          .select()
-          .from(scriptsTable)
-          .where(eq(scriptsTable.projectId, id))
-          .orderBy(desc(scriptsTable.version))
-          .limit(1);
+    const latest = selected;
     let readinessItem = gateItemFromReadiness(null, null);
     if (latest && Array.isArray(latest.shots) && latest.shots.length > 0) {
       const shots = latest.shots as Shot[];
@@ -112,7 +105,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from(assetsTable)
       .where(and(eq(assetsTable.projectId, id), eq(assetsTable.status, "done"), eq(assetsTable.selected, true)))
       .orderBy(desc(assetsTable.createdAt));
-    const current = filterAssetsForScript(rows, latest);
+    const current = latest ? filterAssetsForScript(rows, latest) : [];
     const reviewRows = await db.select().from(generationReviews).where(eq(generationReviews.projectId, id)).orderBy(desc(generationReviews.createdAt));
     const latestReviewByAsset = new Map<string, typeof generationReviews.$inferSelect>();
     for (const review of reviewRows) if (!latestReviewByAsset.has(review.assetId)) latestReviewByAsset.set(review.assetId, review);

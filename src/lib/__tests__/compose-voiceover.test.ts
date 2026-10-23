@@ -154,6 +154,21 @@ async function compose(body: Record<string, unknown> = {}) {
 }
 
 describe("composition shot take selection", () => {
+  it("refuses to compose historical scripts after the current selection is removed", async () => {
+    setShots([{ source: "audible" }]);
+    db.update(schema.scripts).set({ selected: false }).run();
+    db.insert(schema.scripts).values({ projectId, styleType: "scene", version: 2, selected: false, shots: [baseShot] }).run();
+
+    const response = await requestCompose({ voiceoverMode: "generated" });
+
+    expect(response.status).toBe(400);
+    expect(state.render).not.toHaveBeenCalled();
+    expect(state.freeTts).not.toHaveBeenCalled();
+    expect(state.paidTts).not.toHaveBeenCalled();
+    expect(db.select().from(schema.compositions).all()).toEqual([]);
+    expect(db.select().from(schema.scripts).all().every((row) => !row.selected)).toBe(true);
+  });
+
   it("combines independently chosen takes and pins them even when they are not the global selection", async () => {
     setShots([{ source: "audible" }, { source: "no-audio" }]);
     const script = db.select().from(schema.scripts).get()!;

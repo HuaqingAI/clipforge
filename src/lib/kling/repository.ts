@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { and, eq, isNull, lt, or, desc, sql } from "drizzle-orm";
@@ -75,7 +76,7 @@ export function klingJobView(row: KlingJob): KlingJobView {
   if (isKlingJobUnresolved(row)) actions.push("dismiss");
   if (!row.data.deletedAt) actions.push("delete");
   const scriptRows = getDb().select().from(scripts).where(eq(scripts.projectId, row.projectId)).all();
-  const selectedScript = scriptRows.find((script) => script.selected) ?? scriptRows[0];
+  const selectedScript = resolveCurrentScript(scriptRows);
   const currentAssets = selectedScript ? filterAssetsForScript(getDb().select().from(assets).where(and(eq(assets.projectId, row.projectId), eq(assets.shotId, row.shotId))).all(), selectedScript) : [];
   const outputs = getKlingOutputs(row.id).filter((output) => !output.data.deletedAt).map((output) => {
     const active = currentAssets.find((asset) => asset.selected && (asset.id === output.assetId || asset.derivedFromAssetId === output.assetId));

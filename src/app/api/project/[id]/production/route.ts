@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
@@ -27,8 +28,8 @@ async function projectRows(projectId: string) {
     db.select().from(videoClips).where(eq(videoClips.projectId, projectId)).orderBy(desc(videoClips.createdAt)),
     db.select().from(pipelineRuns).where(eq(pipelineRuns.projectId, projectId)).orderBy(desc(pipelineRuns.createdAt)),
   ]);
-  const selected = scriptRows.find((row) => row.selected) ?? scriptRows[0];
-  return { project: project[0], scripts: scriptRows, assets: filterAssetsForScript(assetRows, selected), tasks: taskRows, compositions: compositionRows, clips: clipRows, runs: runRows };
+  const selected = resolveCurrentScript(scriptRows);
+  return { project: project[0], scripts: scriptRows, assets: selected ? filterAssetsForScript(assetRows, selected) : [], tasks: taskRows, compositions: compositionRows, clips: clipRows, runs: runRows };
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -69,7 +70,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         })),
       ].sort((a, b) => Number(b.createdAt ?? 0) - Number(a.createdAt ?? 0))[0] ?? null,
       selectedScript: (() => {
-        const script = rows.scripts.find((item) => item.selected) ?? rows.scripts[0];
+        const script = resolveCurrentScript(rows.scripts);
         return script ? { id: script.id, shotCount: script.shots?.length ?? 0, totalDuration: script.totalDuration ?? 0 } : null;
       })(),
       counts: {
@@ -111,7 +112,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       updates.mediaInsights = (rows.project.mediaInsights ?? []).filter((item) => item.id !== body.removeInsightId);
     }
     if (body.action === "snapshot") {
-      const selected = rows.scripts.find((script) => script.selected) ?? rows.scripts[0];
+      const selected = resolveCurrentScript(rows.scripts);
       const latestDone = rows.compositions.find((composition) => composition.status === "done");
       const snapshot: ProductionSnapshot = {
         id: crypto.randomUUID(),

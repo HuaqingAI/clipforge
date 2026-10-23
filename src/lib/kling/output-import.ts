@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, stat, rename, unlink, copyFile } from "node:fs/promises";
@@ -42,7 +43,7 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
     const project = tx.select().from(projects).where(eq(projects.id, job.projectId)).get();
     if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目已不存在，视频仍保留在任务输出中", 409);
     const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
-    const selectedScript = scriptRows.find((script) => script.selected) ?? scriptRows[0];
+    const selectedScript = resolveCurrentScript(scriptRows);
     const sourceScript = scriptRows.find((script) => script.id === job.scriptId);
     const shot = sourceScript?.shots?.find((item) => item.shotId === job.shotId);
     const creativeContext = selectedScript ? checkCreativeProfileContext(project, selectedScript) : undefined;
@@ -162,7 +163,7 @@ export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentC
     const original = output?.assetId ? tx.select().from(assets).where(eq(assets.id, output.assetId)).get() : null;
     if (!original || output?.data.deletedAt || output?.importState !== "imported") throw new KlingError("KLING_OUTPUT_NOT_READY", "视频尚未入库", 409);
     const rows = tx.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
-    const script = rows.find((item) => item.selected) ?? rows[0];
+    const script = resolveCurrentScript(rows);
     const shot = script?.shots?.find((item) => item.shotId === job.shotId);
     if (!script || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本已没有对应镜头", 409);
     const project = tx.select().from(projects).where(eq(projects.id, job.projectId)).get();

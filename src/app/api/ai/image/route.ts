@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { createProvider } from "@/lib/providers";
 import { toRemoteUsableImage } from "@/lib/remote-image";
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
         ? db.select().from(scripts).where(and(eq(scripts.projectId, projectId), eq(scripts.selected, true))).all()
         : [];
       const selected = requiresScriptContext
-        ? selectedRows[0] ?? db.select().from(scripts).where(eq(scripts.projectId, projectId)).get()
+        ? resolveCurrentScript(selectedRows)
         : undefined;
       if (scriptId && !selected) {
         return apiError(req, "项目没有可用脚本", "Project has no usable script", 409);

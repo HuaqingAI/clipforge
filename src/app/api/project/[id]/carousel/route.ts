@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { join } from "path";
@@ -42,8 +43,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }, { status: 400 });
   }
   const rows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id)).orderBy(desc(scriptsTable.version));
-  if (!rows.length) return apiError(req, "该项目还没有脚本", "This project has no script yet", 404);
-  const script = rows.find((r) => r.selected) ?? rows[0];
+  const script = resolveCurrentScript(rows);
+  if (!script) return apiError(req, "该项目还没有脚本", "This project has no script yet", 404);
   const shots = (script.shots ?? []) as Shot[];
   if (!shots.some((s) => (s?.voiceover ?? "").trim())) {
     return apiError(req, "脚本没有可生成卡片的旁白文案", "The script has no voiceover text to generate cards from", 422);

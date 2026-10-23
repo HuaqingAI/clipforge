@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, desc } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { projects, scripts as scriptsTable } from "@/lib/db/schema";
 import { shotsToSrt, shotsToVtt } from "@/lib/subtitle-export";
@@ -34,8 +34,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const [script] = await db
     .select({ shots: scriptsTable.shots })
     .from(scriptsTable)
-    .where(eq(scriptsTable.projectId, id))
-    .orderBy(desc(scriptsTable.version))
+    .where(and(eq(scriptsTable.projectId, id), eq(scriptsTable.selected, true)))
     .limit(1);
 
   if (!script) return apiError(req, "该项目还没有脚本，先生成脚本再导出字幕", "This project has no script yet; generate a script before exporting subtitles", 404);

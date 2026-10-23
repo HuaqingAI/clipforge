@@ -305,14 +305,15 @@ function AssetsPageContent() {
         }
         if (request !== assetsRequest.current) return;
 
-        // use the selected script (fall back to the first one if none is marked selected)
+        // Historical scripts remain available, but only an explicit selection is current.
         const selected = Array.isArray(scripts)
-          ? scripts.find((s: { selected?: boolean }) => s.selected) ?? scripts[0]
+          ? scripts.find((s: { selected?: boolean }) => s.selected)
           : null;
 
         if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
           setScriptId("");
           setScriptTitle("");
+          lastFrameByShot.current.clear();
           setAssets([]);
           setLoadError(t("errorNoScript"));
           return;
@@ -352,9 +353,10 @@ function AssetsPageContent() {
     const imgs: string[] = project && Array.isArray(project.productImages) ? project.productImages : [];
     setProjectCreativeProfile(project?.creativeProfile);
     const selected = Array.isArray(scripts)
-      ? scripts.find((s: { selected?: boolean }) => s.selected) ?? scripts[0]
+      ? scripts.find((s: { selected?: boolean }) => s.selected)
       : null;
-    if (selected && Array.isArray(selected.shots)) {
+    if (selected && Array.isArray(selected.shots) && selected.shots.length > 0) {
+      setLoadError(null);
       setScriptId(typeof selected.id === "string" ? selected.id : "");
       setScriptTitle(typeof selected.title === "string" ? selected.title.trim() : "");
       const rows = buildAssetRows(selected.shots as Shot[], Array.isArray(savedAssets) ? savedAssets : [], imgs);
@@ -366,8 +368,9 @@ function AssetsPageContent() {
       setScriptTitle("");
       lastFrameByShot.current.clear();
       setAssets([]);
+      setLoadError(t("errorNoScript"));
     }
-  }, [id]);
+  }, [id, t]);
 
   const importedKlingSignature = useRef("");
   const klingJobsRequest = useRef({ serial: 0 });
@@ -1379,25 +1382,25 @@ function AssetsPageContent() {
                 </>
               );
             })()}
-            <Button
-              onClick={generateAll}
-              disabled={isBatchGenerating || isGridGenerating || batchMotionBusy || allDone || assets.length === 0}
-              className="brand-gradient text-white text-xs"
-            >
-              {isBatchGenerating ? (
-                <>
-                  <LuLoaderCircle className="animate-spin mr-1.5 h-3.5 w-3.5" />
-                  {t("generatingAll")}
-                </>
-              ) : allDone ? (
-                t("allDone")
-              ) : (
-                <>
-                  <LuZap className="w-3.5 h-3.5 mr-1" />
-                  {isKlingDefault ? "批量生成图片关键帧" : t("generateAll")}
-                </>
-              )}
-            </Button>
+            {(!allDone || isBatchGenerating) && (
+              <Button
+                onClick={generateAll}
+                disabled={isBatchGenerating || isGridGenerating || batchMotionBusy || assets.length === 0}
+                className="brand-gradient text-white text-xs"
+              >
+                {isBatchGenerating ? (
+                  <>
+                    <LuLoaderCircle className="animate-spin mr-1.5 h-3.5 w-3.5" />
+                    {t("generatingAll")}
+                  </>
+                ) : (
+                  <>
+                    <LuZap className="w-3.5 h-3.5 mr-1" />
+                    {isKlingDefault ? "批量生成图片关键帧" : t("generateAll")}
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </div>
         {uiMode === "pro" && (

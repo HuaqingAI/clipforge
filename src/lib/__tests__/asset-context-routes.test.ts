@@ -27,6 +27,21 @@ beforeEach(() => {
 afterEach(() => sqlite.close());
 
 describe("context-aware asset persistence and reading", () => {
+  it("keeps current assets empty when only unselected script history remains", async () => {
+    db.update(schema.scripts).set({ selected: false }).run();
+    db.insert(schema.assets).values({ id: "legacy-history", projectId, shotId: 1, type: "ai_generated", status: "done", selected: true }).run();
+
+    const current = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets`), context);
+    expect(await current.json()).toEqual([]);
+    const history = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?all=1`), context);
+    expect((await history.json()).map((row: { id: string }) => row.id).sort()).toEqual(["asset-script-a", "asset-script-b", "legacy-history"]);
+    const selection = await PATCH(new NextRequest(`http://localhost/api/project/${projectId}/assets`, {
+      method: "PATCH", body: JSON.stringify({ assetId: "legacy-history" }),
+    }), context);
+    expect(selection.status).toBe(409);
+    expect(db.select().from(schema.scripts).all().every((row) => !row.selected)).toBe(true);
+  });
+
   it("shows only the current script's asset and refuses to select another script's same-number take", async () => {
     const response = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets`), context);
     expect((await response.json()).map((row: { id: string }) => row.id)).toEqual(["asset-script-a"]);

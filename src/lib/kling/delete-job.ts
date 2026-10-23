@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -125,7 +126,7 @@ export function deleteKlingJob(id: string): { deleted: true; jobId: string } {
           const baseline = allAssets.find((asset) => asset.id === row.data.expectedSelectedAssetId && !removed.has(asset.id) &&
             asset.projectId === row.projectId && asset.shotId === row.shotId && asset.status === "done");
           const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, row.projectId)).all();
-          const currentScript = scriptRows.find((script) => script.selected) ?? scriptRows[0];
+          const currentScript = resolveCurrentScript(scriptRows);
           if (baseline && currentScript && assetMatchesScript(baseline, currentScript)) tx.update(assets).set({ selected: true }).where(eq(assets.id, baseline.id)).run();
         }
       }

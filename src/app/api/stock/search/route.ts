@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { getDataDir } from "@/lib/paths";
 import { mkdir } from "fs/promises";
@@ -180,7 +181,7 @@ export async function POST(req: NextRequest) {
   const saved: Array<Record<string, unknown>> = [];
   const db = getDb();
   const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, projectId));
-  const script = scriptRows.find((row) => row.selected) ?? scriptRows[scriptRows.length - 1];
+  const script = resolveCurrentScript(scriptRows);
   const shot = script?.shots?.find((row) => row.shotId === shotId);
   const candidatesForShot = await db.select().from(assetsTable).where(and(eq(assetsTable.projectId, projectId), eq(assetsTable.shotId, shotId)));
   for (const candidate of filterAssetsForScript(candidatesForShot, script)) await db.update(assetsTable).set({ selected: false }).where(eq(assetsTable.id, candidate.id));

@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { existsSync } from "fs";
 import { mkdtemp, readFile, rm } from "fs/promises";
 import { tmpdir } from "os";
@@ -73,7 +74,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       db.select().from(generationReviews).where(eq(generationReviews.projectId, id)).orderBy(desc(generationReviews.createdAt)),
       db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)),
     ]);
-    const assetRows = filterAssetsForScript(allAssets, scriptRows.find((row) => row.selected) ?? scriptRows[0]);
+    const script = resolveCurrentScript(scriptRows);
+    const assetRows = script ? filterAssetsForScript(allAssets, script) : [];
     const latestByAsset = new Map<string, typeof generationReviews.$inferSelect>();
     for (const review of reviewRows) if (!latestByAsset.has(review.assetId)) latestByAsset.set(review.assetId, review);
     const assetById = new Map(assetRows.map((asset) => [asset.id, asset]));
@@ -139,10 +141,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   ]);
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
   if (!asset?.filePath || asset.status !== "done") return apiError(req, "素材不存在或尚未就绪", "Asset not found or not ready", 404);
-  const script = scriptRows.find((row) => row.selected) ?? scriptRows[0];
+  const script = resolveCurrentScript(scriptRows);
   if (!assetMatchesScript(asset, script)) return apiError(req, "此候选不属于当前脚本修订", "The candidate belongs to a different script revision", 409);
   const shot = script?.shots?.find((row) => row.shotId === asset.shotId);
-  if (!shot) return apiError(req, "找不到素材对应的分镜", "The asset no longer matches a script shot", 400);
+  if (!script || !shot) return apiError(req, "找不到素材对应的分镜", "The asset no longer matches a script shot", 400);
   const assetPath = resolveUploadFilePath(asset.filePath);
   if (!assetPath || !existsSync(assetPath)) return apiError(req, "素材文件不存在", "Asset file does not exist", 404);
 
@@ -247,8 +249,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const [updated] = db.transaction((tx) => {
       if (decision === "accepted") {
         const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)).all();
-        const script = scriptRows.find((row) => row.selected) ?? scriptRows[0];
-        if (!assetMatchesScript(asset, script)) throw new Error("此候选不属于当前脚本修订，无法直接替换当前镜头");
+        const script = resolveCurrentScript(scriptRows);
+        if (!script || !assetMatchesScript(asset, script)) throw new Error("此候选不属于当前脚本修订，无法直接替换当前镜头");
         const candidates = tx.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.shotId, asset.shotId))).all();
         for (const candidate of filterAssetsForScript(candidates, script)) tx.update(assets).set({ selected: false }).where(eq(assets.id, candidate.id)).run();
         tx.update(assets).set({ selected: true }).where(eq(assets.id, asset.id)).run();

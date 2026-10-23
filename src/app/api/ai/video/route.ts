@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { createProvider } from "@/lib/providers";
 import { ProviderError } from "@/lib/providers/base";
@@ -155,7 +156,7 @@ export async function POST(req: NextRequest) {
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
       if (!project) return apiError(req, "项目不存在", "Project not found", 404);
       const selectedRows = db.select().from(scripts).where(and(eq(scripts.projectId, projectId), eq(scripts.selected, true))).all();
-      const selected = selectedRows[0] ?? db.select().from(scripts).where(eq(scripts.projectId, projectId)).get();
+      const selected = resolveCurrentScript(selectedRows);
       if (!selected) return apiError(req, "项目没有可用脚本", "Project has no usable script", 409);
       if (scriptId && selected.id !== scriptId) {
         return NextResponse.json({ error: "当前脚本已切换，请刷新后重新生成视频。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });

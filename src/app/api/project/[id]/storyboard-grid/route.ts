@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -396,7 +397,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // A film rejection should not make the same confirmed inputs buy another grid.
     // A cache-write failure must not hide already-generated and saved paid assets.
     const currentScripts = await db.select().from(scripts).where(eq(scripts.projectId, id));
-    const currentScript = currentScripts.find((item) => item.selected) ?? currentScripts[0];
+    const currentScript = resolveCurrentScript(currentScripts);
     const scopedCurrentSelected = currentScript
       ? filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), currentScript)
       : [];

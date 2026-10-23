@@ -1,3 +1,4 @@
+import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { getDataDir, fileNameOf } from "@/lib/paths";
 import { ffprobeBin, ffmpegBin } from "@/lib/ffmpeg-path";
@@ -227,7 +228,7 @@ export async function POST(
     const productImages = (project.productImages ?? []) as string[];
 
     const scriptRows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id)).orderBy(desc(scriptsTable.createdAt));
-    const selected = scriptRows.find((s) => s.selected) ?? scriptRows[0];
+    const selected = resolveCurrentScript(scriptRows);
     if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
       return NextResponse.json({ error: "尚未生成脚本，无法合成" }, { status: 400 });
     }
