@@ -282,7 +282,7 @@ export async function POST(
     const narrationMode: "none" | "restrained" = premiumProfile?.narrationMode ?? "none";
     if (premiumCg && premiumCgComposeConflicts(body, narrationMode)) {
       return NextResponse.json(
-        { error: "高端家具产品 CG 不支持字幕、编辑性文字、购买 CTA 或商品卡；旁白由创作档案统一控制", code: "PREMIUM_CG_OUTPUT_POLICY" },
+        { error: "高端产品 CG 不支持字幕、编辑性文字、购买 CTA 或商品卡；旁白由创作档案统一控制", code: "PREMIUM_CG_OUTPUT_POLICY" },
         { status: 400 },
       );
     }
@@ -310,7 +310,7 @@ export async function POST(
       const blocking = issues.filter((issue) => issue.code !== "text_overlay");
       if (blocking.length > 0) {
         return NextResponse.json(
-          { error: "高端家具产品 CG 脚本包含新增文字或营销指令，请重新生成脚本", code: "CREATIVE_POLICY_VIOLATION", issues: blocking },
+          { error: "高端产品 CG 脚本包含新增文字或营销指令，请重新生成脚本", code: "CREATIVE_POLICY_VIOLATION", issues: blocking },
           { status: 400 },
         );
       }

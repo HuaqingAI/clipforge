@@ -183,7 +183,7 @@ export async function POST(req: NextRequest) {
           return apiError(req, "Missing selected script", "Premium product CG video generation requires a script id", 400);
         }
         if (shotId === undefined) {
-          return apiError(req, "高端家具 CG 视频生成必须指定当前镜头", "Premium product CG video generation requires a shot id", 400);
+          return apiError(req, "高端产品 CG 视频生成必须指定当前镜头", "Premium product CG video generation requires a shot id", 400);
         }
         const shot = selected.shots?.find((item) => item.shotId === shotId);
         if (!shot) return apiError(req, "镜头不存在", "Shot not found", 404);

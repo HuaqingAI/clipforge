@@ -76,7 +76,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (isPremiumCgStockFillBlocked(id)) {
     return NextResponse.json({
-      error: "高端家具产品 CG 不能使用免费素材库自动配画面，请通过受控的产品参考与分镜生成流程创建素材。",
+      error: "高端产品 CG 不能使用免费素材库自动配画面，请通过受控的产品参考与分镜生成流程创建素材。",
       code: "PREMIUM_CG_STOCK_FILL_FORBIDDEN",
     }, { status: 409 });
   }

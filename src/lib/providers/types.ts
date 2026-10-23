@@ -82,6 +82,8 @@ export interface ImageOptions {
   width?: number
   /** Output height */
   height?: number
+  /** Opt in to a larger image canvas; consumed locally rather than sent as an API field. */
+  imageResolution?: 'standard' | '2k' | '4k'
   /** Number of images to generate */
   count?: number
   /** Reference image URL (image-to-image mode) */

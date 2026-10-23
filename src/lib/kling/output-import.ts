@@ -77,6 +77,7 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
 }
 
 async function importOutput(job: KlingJob, output: KlingJobOutput): Promise<void> {
+  if (output.data.deletedAt) return;
   if (output.importState === "imported" && output.assetId) return;
   const directory = join(getUploadsDir(), job.projectId, "kling", job.id);
   await mkdir(directory, { recursive: true });
@@ -159,7 +160,7 @@ export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentC
     assertKlingJobLease(job.id);
     const output = tx.select().from(klingJobOutputs).where(and(eq(klingJobOutputs.id, outputId), eq(klingJobOutputs.jobId, jobId))).get();
     const original = output?.assetId ? tx.select().from(assets).where(eq(assets.id, output.assetId)).get() : null;
-    if (!original || output?.importState !== "imported") throw new KlingError("KLING_OUTPUT_NOT_READY", "视频尚未入库", 409);
+    if (!original || output?.data.deletedAt || output?.importState !== "imported") throw new KlingError("KLING_OUTPUT_NOT_READY", "视频尚未入库", 409);
     const rows = tx.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
     const script = rows.find((item) => item.selected) ?? rows[0];
     const shot = script?.shots?.find((item) => item.shotId === job.shotId);

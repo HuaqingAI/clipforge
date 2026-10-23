@@ -13,6 +13,7 @@ import {
   parseUnitUsd,
 } from "@/lib/storyboard-film";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
+import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 /**
  * Grid-to-film prompt contract (v0.8.84). The exact shape was field-proven on a
@@ -39,6 +40,36 @@ const zhShots: Shot[] = [
   mkShot({ shotId: 2, type: "demo", duration: 5, description: "挤咖啡液入冰水", voiceover: "" }),
   mkShot({ shotId: 3, type: "cta", duration: 4, description: "举盒收尾", voiceover: "链接挂这了" }),
 ];
+
+describe("高端产品 CG 整片", () => {
+  it.each([
+    ["a glass perfume bottle with amber liquid", "a small vanity display"],
+    ["a wristwatch with its visible brushed bezel", "a watchmaker's display"],
+    ["headphones with a matte shell and visible controls", "an audio display"],
+  ])("保留 %s 的真实细节和场景，避免套用家具结构", (product, context) => {
+    const prompt = buildStoryboardFilmPrompt([
+      mkShot({ shotId: 1, duration: 4, description: `Observe ${product} on ${context}.`, camera: "A restrained slow lateral move." }),
+      mkShot({ shotId: 2, duration: 3, description: `A closer reference-supported view of ${product}.` }),
+    ], undefined, undefined, { creativeProfile: createPremiumProductCgProfile() });
+
+    expect(prompt).toContain(product);
+    expect(prompt).toContain(context);
+    expect(prompt).toContain("premium product CG film");
+    expect(prompt).toContain("documented use context in the approved shots");
+    expect(prompt).toContain("use a neutral studio when the context is unspecified");
+    expect(prompt).toContain("[0-4s] Shot 1");
+    expect(prompt).toContain("[4-7s] Shot 2");
+    expect(prompt).toContain("framing follows @Image2");
+    expect(prompt).toContain("component count");
+    expect(prompt).toContain("surface finishes");
+    expect(prompt).toContain("Do not invent unseen backs, interiors, mechanisms");
+    expect(prompt).toContain("Do not generate added on-screen text");
+    expect(prompt).toContain("preserve only product markings already visible");
+    expect(prompt).toContain("only when explicitly required by an approved shot and supported by supplied product facts");
+    expect(prompt).toContain("no dialogue, narration, voiceover");
+    expect(prompt).not.toMatch(/furniture|upholstery|\blegs\b|modern.home/i);
+  });
+});
 
 describe("时长计算", () => {
   it("filmTotalSeconds 求和；filmRequestSeconds 取整并夹在 4-30", () => {

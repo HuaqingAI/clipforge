@@ -10,8 +10,11 @@ import type { KlingJobView } from "@/lib/kling/job-types";
 import { validateVideoPrompt } from "@/lib/video-prompt";
 import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
 import { withVideoAudioMode } from "@/lib/video-audio";
+import type { BatchMotionPanel } from "@/components/batch-motion-panel";
+import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, showMaterialLibrary: false }));
+const batch = vi.hoisted(() => ({ props: null as ComponentProps<typeof BatchMotionPanel> | null }));
 const navigation = vi.hoisted(() => ({ router: { replace: vi.fn() }, listeners: new Set<() => void>() }));
 vi.mock("next/navigation", async () => {
   const { useSyncExternalStore } = await import("react");
@@ -32,10 +35,21 @@ vi.mock("@/app/project/[id]/assets/_components/local-material-library", async (i
   return { LocalMaterialLibrary: (props: ComponentProps<typeof actual.LocalMaterialLibrary>) => api.showMaterialLibrary ? <actual.LocalMaterialLibrary {...props} /> : null };
 });
 vi.mock("@/components/storyboard-film-panel", () => ({ StoryboardFilmPanel: ({ open, initialRunId, initialTaskId, onOpenChange }: { open: boolean; initialRunId?: string; initialTaskId?: string; onOpenChange(open: boolean): void }) => open ? <div aria-label="film-panel" data-run-id={initialRunId} data-task-id={initialTaskId}>{initialRunId ?? initialTaskId}<button aria-label="close-film-panel" onClick={() => onOpenChange(false)} /></div> : null }));
-vi.mock("@/components/kling-job-detail", () => ({ KlingJobDetail: ({ open, jobId, onOpenChange }: { open: boolean; jobId: string | null; onOpenChange(open: boolean): void }) => open ? <div aria-label="job-detail">{jobId}<button aria-label="close-job-detail" onClick={() => onOpenChange(false)} /></div> : null, klingJobBlocksSubmission: (job: { submissionState: string }) => job.submissionState === "submission_unknown", klingJobStatus: () => "待核对" }));
+vi.mock("@/components/batch-motion-panel", () => ({ BatchMotionPanel: (props: ComponentProps<typeof BatchMotionPanel>) => {
+  batch.props = props;
+  return props.open ? <div aria-label="batch-motion-panel"><button aria-label="close-batch-motion-panel" onClick={() => props.onOpenChange(false)} />{props.shots.map(({ asset, draft, disabledReason }) => <button key={asset.shotId} aria-label={`batch-submit-${asset.shotId}`} disabled={!draft || !!disabledReason} onClick={async () => { await draft!.generate(); props.onSubmitted(asset.shotId); }}>镜头 {asset.shotId}</button>)}</div> : null;
+} }));
+vi.mock("@/components/kling-job-detail", () => ({ KlingJobDetail: ({ open, jobId, onOpenChange, onChanged }: { open: boolean; jobId: string | null; onOpenChange(open: boolean): void; onChanged?(): void }) => open ? <div aria-label="job-detail">{jobId}<button aria-label="close-job-detail" onClick={() => onOpenChange(false)} /><button aria-label="refresh-job-detail" onClick={() => onChanged?.()} /></div> : null, klingJobBlocksSubmission: (job: { submissionState: string }) => job.submissionState === "submission_unknown", klingJobStatus: () => "待核对" }));
 vi.mock("@/lib/hooks/use-model-catalog", () => ({ useModelCatalog: () => ({ models: api.models, statuses: [], pending: false, retry: vi.fn() }) }));
 vi.mock("@/lib/kling/client", () => ({ klingFetch: api.kling, klingErrorMessage: (body: { error?: string | { message: string } }) => typeof body.error === "string" ? body.error : body.error?.message ?? "Kling 操作失败" }));
-vi.mock("@/lib/i18n", () => { const t = (key: string) => key; return { useT: () => t, useLocale: () => "zh" }; });
+vi.mock("@/lib/i18n", async () => {
+  const { assets } = await import("@/lib/i18n/messages/assets");
+  const t = (key: string, vars?: Record<string, string | number>) => {
+    const template = key.startsWith("gridResolution") ? assets.zh[key] ?? key : key;
+    return template.replace(/\{(\w+)\}/g, (placeholder, name: string) => vars?.[name] != null ? String(vars[name]) : placeholder);
+  };
+  return { useT: () => t, useLocale: () => "zh" };
+});
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, onOpenChange, children }: { open: boolean; onOpenChange(open: boolean): void; children: React.ReactNode }) => open ? <div><button aria-label="close-dialog" onClick={() => onOpenChange(false)}>关闭</button>{children}</div> : null,
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -64,7 +78,7 @@ beforeEach(() => {
   navigation.router.replace.mockReset().mockImplementation((url: string) => changeUrl(url));
   useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: ark, providers: { volcengine: { enabled: true, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
   api.models = [{ id: ark, name: "Ark", provider: "volcengine", mediaType: "video", modes: ["image-to-video"] }, { id: kling.selectionKey, name: "Chosen Kling", provider: "kling-cli", mediaType: "video", modes: ["image-to-video"] }];
-  api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; isVideo = false; pending = [];
+  api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; isVideo = false; pending = [];
   api.kling.mockReset().mockImplementation(async (url: string) => url.includes("/status") ? Response.json({ loggedIn: true, models: [kling], concurrency: api.concurrency }) : url.includes("/jobs?") ? Response.json({ jobs: api.jobs }) : Response.json({ jobId: "new-job" }, { status: 202 }));
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     if (url === "/api/project/project") return Response.json({ name: "Product", productImages: ["/api/files/product.jpg"] });
@@ -80,6 +94,68 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); vi.unstubAllGlobals(); });
 
 describe("assets uses the configured provider through one motion entry", () => {
+  it("submits the selected grid resolution and reports the actual cropped dimensions when the model is limited", async () => {
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image"] });
+    useSettingsStore.setState({ uiMode: "pro", defaultImageModel: "fixture-image", imageParams: { aspectRatio: "1:1", count: 4, seed: 23 } });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let finishGrid!: (response: Response) => void;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, shots: [1, 2].map((shotId) => ({ shotId, type: "demo", duration: 5, description: "Product rotates", visualSource: "ai_generate" })) }]));
+      if (url.endsWith("/storyboard-grid")) return new Promise<Response>((resolve) => { finishGrid = resolve; });
+      return normalFetch(url, init);
+    });
+    await mount(ark);
+    const select = container.querySelector<HTMLSelectElement>("#storyboard-grid-resolution")!;
+    expect(select.value).toBe("4k");
+    expect(container.querySelector(`label[for="${select.id}"]`)?.textContent).toBe("九宫格清晰度");
+    expect(container.querySelector("#storyboard-grid-resolution-hint")?.textContent).toContain("2160×3840");
+    await act(async () => { select.value = "2k"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await click("gridButton");
+    const request = fetchMock.mock.calls.find(([url]) => url.endsWith("/storyboard-grid"))!;
+    expect(JSON.parse(request[1].body)).toMatchObject({ gridResolution: "2k", options: { width: 1080, height: 1920, count: 1, seed: 23 } });
+    expect(select.disabled).toBe(true);
+    await act(async () => finishGrid(Response.json({ count: 2, resolution: { requested: "2k", gridWidth: 768, gridHeight: 1365, minCellWidth: 250, minCellHeight: 449, maxCellWidth: 250, maxCellHeight: 449, limited: true } })));
+    const notice = [...container.querySelectorAll('[role="status"]')].find((item) => item.textContent?.includes("gridDone"));
+    expect(notice?.textContent).toContain("实际九宫格 768×1365，裁剪后单格至少 250×449");
+    expect(notice?.textContent).toContain("未达到所选清晰度目标");
+    expect(select.disabled).toBe(false);
+  });
+
+  it("only shows local video tasks belonging to the selected script, including after refresh", async () => {
+    const current = savedKlingJob({ modelId: "current-script-video" });
+    const other = savedKlingJob({ jobId: "other-job", scriptId: "other-script", modelId: "other-script-video" });
+    api.jobs = [other, current];
+    await mount(kling.selectionKey);
+    const tasks = () => container.querySelector('[aria-label="Kling 视频任务"]')!;
+    expect(tasks().textContent).toContain("current-script-video");
+    expect(tasks().textContent).not.toContain("other-script-video");
+    await click("刷新本地记录");
+    expect(tasks().textContent).toContain("current-script-video");
+    expect(tasks().textContent).not.toContain("other-script-video");
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("hides the local video task list when only other scripts have tasks", async () => {
+    api.jobs = [savedKlingJob({ scriptId: "other-script" })];
+    await mount(kling.selectionKey);
+    expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
+    expect(button("查看 / 恢复")).toBeUndefined();
+    expect(deleteVideoButton()).toBeNull();
+  });
+
+  it("keeps tasks hidden until the selected script has loaded", async () => {
+    api.jobs = [savedKlingJob()];
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let finishScripts!: (response: Response) => void;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? new Promise<Response>((resolve) => { finishScripts = resolve; })
+      : normalFetch(url, init));
+    await mount(kling.selectionKey);
+    expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
+    await act(async () => finishScripts(Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, visualSource: "product_image" }] }])));
+    expect(container.querySelector('[aria-label="Kling 视频任务"]')).not.toBeNull();
+  });
+
   it("keeps task recovery separate from deletion and does not request deletion when cancelled", async () => {
     api.jobs = [savedKlingJob()];
     await mount(kling.selectionKey);
@@ -219,7 +295,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
   });
 
-  it("keeps the restored shot when the initial material load finishes after deletion", async () => {
+  it("waits for the initial material context before exposing task deletion", async () => {
     api.jobs = [savedKlingJob()]; isVideo = true;
     const originalFetch = fetchMock.getMockImplementation()!;
     let delayInitialAssets = true;
@@ -239,10 +315,12 @@ describe("assets uses the configured provider through one motion entry", () => {
     await mount(kling.selectionKey);
     expect(finishInitialAssets).toBeTypeOf("function");
     expect(container.querySelector('[data-testid="shot-material-preview"]')).toBeNull();
+    expect(deleteVideoButton()).toBeNull();
+    await act(async () => finishInitialAssets(Response.json([{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", provider: "kling-cli", filePath: "/api/files/clip.mp4", thumbnailPath: "/api/files/frame.jpg" }])));
+    expect(deleteVideoButton()).not.toBeNull();
     await act(async () => deleteVideoButton().click());
     await click("确认删除");
     expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
-    await act(async () => finishInitialAssets(Response.json([{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", provider: "kling-cli", filePath: "/api/files/clip.mp4", thumbnailPath: "/api/files/frame.jpg" }])));
     expect(container.querySelector('a[href="/api/files/clip.mp4"]')).toBeNull();
     expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="shot-material-preview"]')).not.toBeNull();
@@ -362,6 +440,28 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(preview.querySelector('img[src="/api/files/product.jpg"]')).toBeNull();
     expect(preview.querySelector(`img[src="${poster}"]`)).toBeNull();
     expect(container.querySelector(`img[src="${poster}"]`)).not.toBeNull();
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("opens the clicked source or thumbnail image independently of video playback", async () => {
+    const poster = "/api/files/project/generated.mp4.thumb.jpg";
+    const source = "/api/files/project/kling/job/source-keyframe.png";
+    const video = "/api/files/project/generated.mp4";
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/assets")
+      ? Promise.resolve(Response.json([{ id: "generated", shotId: 1, status: "done", selected: true, type: "ai_generated", provider: "kling-cli", filePath: video, thumbnailPath: poster, sourceKeyframeUrl: source }]))
+      : originalFetch(url, init));
+    await mount(kling.selectionKey);
+    for (const imageUrl of [source, poster]) {
+      const thumbnail = [...container.querySelectorAll("img")].find((image) => image.src === new URL(imageUrl, window.location.href).href)!;
+      await act(async () => thumbnail.closest("button")!.click());
+      const title = [...container.querySelectorAll("h2")].find((heading) => heading.textContent === "imagePreviewTitle");
+      expect(title).toBeDefined();
+      expect(title!.parentElement!.parentElement!.querySelector("img")?.src).toBe(new URL(imageUrl, window.location.href).href);
+      await act(async () => (container.querySelector('[aria-label="closeImagePreview"]') as HTMLButtonElement).click());
+      expect([...container.querySelectorAll("h2")].some((heading) => heading.textContent === "imagePreviewTitle")).toBe(false);
+    }
+    expect(container.querySelector('a[aria-label="playShotVideo"]')?.getAttribute("href")).toBe(video);
     expect(submissions()).toHaveLength(0);
   });
 
@@ -559,6 +659,148 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(1);
   });
 
+  it("prepares batch motion without submitting and generates only the chosen shots from their own silent keyframes", async () => {
+    const voiceover = "SCRIPTED VOICEOVER MUST NOT ENTER BATCH MOTION";
+    const shots = [1, 2, 3, 4].map((shotId) => ({ shotId, type: "demo", duration: 5, description: `Product detail ${shotId}`, camera: "Slow dolly in", voiceover, visualSource: "ai_generate", transition: "direct_concat" }));
+    const saved = shots.map(({ shotId }) => ({ id: `asset-${shotId}`, shotId, status: "done", selected: true, type: "ai_generate", provider: "volcengine", filePath: `/api/files/frame-${shotId}.jpg`, ...(shotId === 1 && { filePath: "/api/files/previous-video.mp4", sourceKeyframeUrl: "/api/files/frame-1.jpg", lastFrameUrl: "/api/files/previous-tail.jpg" }) }));
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve(Response.json([{ id: "script", selected: true, shots }]))
+      : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json(saved)) : normal(url, init));
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    useSettingsStore.setState({ chainMode: "tail", videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: true } });
+    await mount(ark);
+
+    expect(button("整片自动编排")).toBeUndefined();
+    await click("batchMotionButton");
+    expect(container.querySelector('[aria-label="batch-motion-panel"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
+    expect(batch.props).toMatchObject({ projectId: "project", scriptId: "script", provider: "volcengine", selectionKey: ark, valid: true });
+    expect(submissions()).toHaveLength(0);
+    const chosen = batch.props!.shots.filter(({ asset }) => asset.shotId === 2 || asset.shotId === 4);
+    expect(chosen).toHaveLength(2);
+    for (const { asset, draft } of chosen) {
+      expect(draft?.firstFrameUrl).toBe(`/api/files/frame-${asset.shotId}.jpg`);
+      expect(draft?.lastFrameUrl).toBeUndefined();
+      expect(draft?.prompt).toContain("全程静音");
+      expect(draft?.prompt).not.toContain(voiceover);
+    }
+
+    await act(async () => (container.querySelector('[aria-label="batch-submit-2"]') as HTMLButtonElement).click());
+    await act(async () => (container.querySelector('[aria-label="batch-submit-4"]') as HTMLButtonElement).click());
+    const requests = submissions().map(([, init]) => JSON.parse(init.body));
+    expect(requests.map(({ shotId }) => shotId)).toEqual([2, 4]);
+    for (const request of requests) {
+      expect(request.imageUrl ?? request.referenceImageUrls?.[0]).toBe(`/api/files/frame-${request.shotId}.jpg`);
+      expect(request.lastImageUrl).toBeUndefined();
+      expect(request.options.audioEnabled).toBe(false);
+      for (const field of ["voiceover", "audioPrompt", "audioUrl", "audioReferenceUrl", "tts", "ttsEnabled", "subtitles"]) expect(request.options[field]).toBeUndefined();
+      expect(request.referenceAudioUrls).toBeUndefined();
+      expect(JSON.stringify(request)).not.toContain("previous-tail.jpg");
+      expect(JSON.stringify(request)).not.toContain(voiceover);
+    }
+    expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([url]) => /\/film(?:\/|$)/.test(url))).toBe(false);
+  });
+
+  it("excludes existing videos, missing or generating frames and unresolved tasks from batch submission", async () => {
+    const shots = [1, 2, 3, 4, 5, 6].map((shotId) => ({ shotId, type: "demo", duration: 5, description: `Product detail ${shotId}`, camera: "Slow dolly in", visualSource: "ai_generate", transition: "direct_concat" }));
+    const saved = [1, 2, 4, 5, 6].map((shotId) => ({ id: `asset-${shotId}`, shotId, status: shotId === 4 ? "generating" : "done", selected: true, type: "ai_generate", provider: "volcengine", filePath: shotId === 2 ? "/api/files/video-2.mp4" : `/api/files/frame-${shotId}.jpg` }));
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve(Response.json([{ id: "script", selected: true, shots }]))
+      : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json(saved)) : normal(url, init));
+    pending = [{ id: "pending-row", shotId: 5, provider: "volcengine", model: ark, taskId: "pending-video", status: "processing" }];
+    api.jobs = [savedKlingJob({ shotId: 6, submissionState: "submission_unknown", remoteState: "unknown", importState: "not_ready", outputs: [] })];
+    await mount(ark);
+    await click("batchMotionButton");
+    expect(batch.props?.shots).toHaveLength(6);
+    expect(batch.props?.shots.find(({ asset }) => asset.shotId === 1)?.draft).toBeDefined();
+    for (const shotId of [2, 3, 4, 5, 6]) {
+      const row = batch.props!.shots.find(({ asset }) => asset.shotId === shotId)!;
+      expect(row.disabledReason).toBeTruthy();
+      expect(row.draft).toBeUndefined();
+      expect((container.querySelector(`[aria-label="batch-submit-${shotId}"]`) as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("invalidates prepared batch submissions after video settings change", async () => {
+    await mount(ark);
+    await click("batchMotionButton");
+    const draft = batch.props!.shots[0].draft!;
+    expect(batch.props?.valid).toBe(true);
+    await act(async () => useSettingsStore.setState({ motionIntensity: "strong" }));
+    expect(batch.props?.valid).toBe(false);
+    await act(async () => { await expect(draft.generate()).rejects.toThrow("设置已更改"); });
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("rejects a prepared batch draft when a refreshed shot has a different source image", async () => {
+    let source = "/api/files/original-frame.jpg";
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/assets") && !init?.method
+      ? Promise.resolve(Response.json([{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", provider: "volcengine", filePath: source }]))
+      : normal(url, init));
+    api.jobs = [savedKlingJob()];
+    await mount(ark);
+    await click("batchMotionButton");
+    const draft = batch.props!.shots[0].draft!;
+    expect(draft.firstFrameUrl).toBe(source);
+    source = "/api/files/replacement-frame.jpg";
+    await click("查看 / 恢复");
+    await act(async () => (container.querySelector('[aria-label="refresh-job-detail"]') as HTMLButtonElement).click());
+    expect(container.querySelector(`img[src="${source}"]`)).not.toBeNull();
+    await act(async () => { await expect(draft.generate()).rejects.toThrow(/分镜图片.*已更改/); });
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("persists a generated batch video against its original script and input keyframe", async () => {
+    await mount(ark);
+    await click("batchMotionButton");
+    const draft = batch.props!.shots[0].draft!;
+    await act(async () => { await draft.generate(); });
+    const saves = fetchMock.mock.calls.filter(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST");
+    expect(saves).toHaveLength(1);
+    expect(JSON.parse(saves[0][1].body)).toMatchObject({
+      scriptId: "script", shotId: 1, provider: "volcengine", model: ark,
+      sourceUrl: "/api/files/result.mp4", thumbnailPath: "/api/files/frame.jpg",
+    });
+    expect(container.querySelector('a[href="/api/files/saved.mp4"]')).not.toBeNull();
+    expect(submissions()).toHaveLength(1);
+  });
+
+  it("keeps a generated video recoverable and blocks resubmission when saving its asset fails", async () => {
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project/assets" && init?.method === "POST"
+      ? Promise.resolve(Response.json({ error: "Import unavailable" }, { status: 500 })) : normal(url, init));
+    await mount(ark);
+    await click("batchMotionButton");
+    const draft = batch.props!.shots[0].draft!;
+    await act(async () => { await expect(draft.generate()).rejects.toMatchObject({ uncertain: true, message: expect.stringContaining("保存素材失败") }); });
+    expect(container.textContent).toContain("Import unavailable");
+    expect(container.querySelector('a[href="/api/files/result.mp4"]')).toBeNull();
+    expect(button("btnRedoMotion")).toBeUndefined();
+    await act(async () => (container.querySelector('[aria-label="close-batch-motion-panel"]') as HTMLButtonElement).click());
+    await click("batchMotionButton");
+    const row = batch.props!.shots[0];
+    expect(row.disabledReason).toBe("batchMotionExistingTask");
+    expect(row.draft).toBeUndefined();
+    await act(async () => (container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).click());
+    expect(submissions()).toHaveLength(1);
+  });
+
+  it("blocks unsupported premium CG batch imports before starting a paid generation", async () => {
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project"
+      ? Promise.resolve(Response.json({ name: "Product", productImages: ["/api/files/product.jpg"], creativeProfile: createPremiumProductCgProfile() })) : normal(url, init));
+    await mount(ark);
+    await click("batchMotionButton");
+    expect(batch.props!.shots[0]).toMatchObject({ disabledReason: "batchMotionControlledModelRequired" });
+    expect(batch.props!.shots[0].draft).toBeUndefined();
+    expect((container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(submissions()).toHaveLength(0);
+  });
+
   it("opens a full-film task in the shared recovery panel without an old query or generation", async () => {
     pending = [{ id: "film-row", shotId: null, provider: "volcengine", model: ark, mode: "video-to-video", taskId: "original-film-task", status: "unknown" }];
     await mount(kling.selectionKey); await click("btnResumeTask");
@@ -641,18 +883,19 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each(["klingFilm=film-a", "klingJob=job-a"])("closes a task on history navigation away from %s and keeps manual film opening available", async (query) => {
+  it.each(["klingFilm=film-a", "klingJob=job-a"])("closes a task on history navigation away from %s and opens only batch motion from the header", async (query) => {
     await mount(kling.selectionKey);
     await navigate(`/project/project/assets?${query}`);
     expect(container.querySelector('[aria-label="film-panel"], [aria-label="job-detail"]')).not.toBeNull();
 
     await navigate("/project/project/assets");
     expect(container.querySelector('[aria-label="film-panel"], [aria-label="job-detail"]')).toBeNull();
-    await click("整片自动编排");
-    expect(container.querySelector('[aria-label="film-panel"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="film-panel"]')?.hasAttribute("data-run-id")).toBe(false);
+    expect(button("整片自动编排")).toBeUndefined();
+    await click("batchMotionButton");
+    expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
+    expect(container.querySelector('[aria-label="batch-motion-panel"]')).not.toBeNull();
     await navigate("/project/project/assets?view=shots#shot-1");
-    expect(container.querySelector('[aria-label="film-panel"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="batch-motion-panel"]')).not.toBeNull();
     expect(submissions()).toHaveLength(0);
   });
 });

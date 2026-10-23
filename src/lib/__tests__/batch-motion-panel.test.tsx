@@ -1,0 +1,228 @@
+import { act, type ComponentProps, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BatchMotionPanel } from "@/components/batch-motion-panel";
+import { VideoGenerationFailure } from "@/components/video-generation-dialog";
+import { prepareBatchMotionKling, silentBatchMotionOptions, type BatchMotionShot } from "@/lib/batch-motion";
+import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
+
+const api = vi.hoisted(() => ({ request: vi.fn() }));
+vi.mock("@/lib/kling/client", () => ({ klingFetch: api.request, klingErrorMessage: (body: { error?: string | { message?: string } }, fallback = "Kling 操作失败") => typeof body.error === "string" ? body.error : body.error?.message ?? fallback }));
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ open, children }: { open: boolean; children: ReactNode }) => open ? children : null,
+  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
+}));
+
+const model: KlingVideoModelDescriptor = {
+  selectionKey: '["kling-cli","image_to_video","model"]', provider: "kling-cli", profileId: "profile", region: "global", tool: "image_to_video", remoteModelId: "model", displayName: "My model", catalogRevision: "revision", available: true,
+  parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5, 10], default: 5 }, { name: "enable_audio", type: "string", required: true, allowedValues: ["true", "false"], default: "true" }],
+  inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { image: true, tailFrame: false, multiImage: false, audio: true },
+};
+const readyProfile = { id: "profile", environmentState: "ready", authState: "authenticated", authRevision: 1, principalKey: "account", catalogRevision: "revision", catalogCheckedAt: 1 };
+const status = (overrides: Record<string, unknown> = {}) => ({ configured: true, loggedIn: true, profile: readyProfile, models: [model], concurrency: { active: 0, max: 10, blockedByUnknownSubmission: false }, ...overrides });
+const json = (value: unknown, code = 200) => new Response(JSON.stringify(value), { status: code });
+function shot(shotId: number): BatchMotionShot {
+  const asset = { assetId: `asset-${shotId}`, shotId, type: "hook" as const, duration: 6, description: `Product ${shotId}`, prompt: "Static image", visualSource: "ai_generate" as const, status: "done" as const, thumbnailUrl: `/frame-${shotId}.png` };
+  return { asset, draft: { asset, prompt: "Camera slowly moves forward. Preserve the product.", firstFrameUrl: `/frame-${shotId}.png`, referenceImages: ["/product.png"], options: { duration: 6, resolution: "720p", audioEnabled: false }, klingParameters: { duration: 6, audioEnabled: true, voiceover: "must never submit", tts: true }, generate: vi.fn().mockResolvedValue(undefined) } };
+}
+let root: Root;
+let container: HTMLDivElement;
+let shots: BatchMotionShot[];
+const refreshTasks = vi.fn().mockResolvedValue(undefined);
+const onSubmitted = vi.fn();
+const onUncertain = vi.fn();
+const onBusyChange = vi.fn();
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  shots = [shot(1), shot(2)]; refreshTasks.mockClear(); onSubmitted.mockClear(); onUncertain.mockClear(); onBusyChange.mockClear();
+  api.request.mockReset().mockImplementation((url: string, init?: RequestInit) => Promise.resolve(url === "/api/ai/video" ? json({ jobId: `job-${JSON.parse(String(init?.body)).shotId}` }, 202) : json(status())));
+  container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
+});
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+async function mount(overrides: Partial<ComponentProps<typeof BatchMotionPanel>> = {}) {
+  await act(async () => root.render(<BatchMotionPanel open onOpenChange={() => undefined} projectId="project" scriptId="script" provider="kling-cli" profileId="profile" selectionKey={model.selectionKey} modelLabel="My model" shots={shots} valid onRefreshTasks={refreshTasks} onSubmitted={onSubmitted} onUncertain={onUncertain} onBusyChange={onBusyChange} {...overrides} />));
+}
+function checkbox(label: string) { return container.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement; }
+function button(text: string) { return Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes(text))!; }
+function videoRequests() { return api.request.mock.calls.filter(([url]) => url === "/api/ai/video").map(([, init]) => JSON.parse(init.body)); }
+async function confirmAndSubmit() { await act(async () => checkbox("确认批量生成费用").click()); await act(async () => button("确认提交").click()); }
+
+describe("batch shot animation", () => {
+  it("selects individual current frames and submits only selected shots after one acknowledgement", async () => {
+    shots.push({ ...shot(3), disabledReason: "此分镜已有视频" });
+    await mount();
+    expect(checkbox("选择分镜 1").checked).toBe(true);
+    expect(checkbox("选择分镜 3").disabled).toBe(true);
+    expect(button("确认提交").disabled).toBe(true);
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.textContent).not.toContain("配音设置"); expect(container.textContent).not.toContain("字幕设置");
+    await act(async () => checkbox("选择分镜 1").click());
+    expect(videoRequests()).toHaveLength(0);
+    await confirmAndSubmit();
+    expect(videoRequests()).toHaveLength(1);
+    expect(videoRequests()[0]).toMatchObject({ shotId: 2, imageUrl: "/frame-2.png", expectedSelectedAssetId: "asset-2", executionScope: "single-shot", selectionKey: model.selectionKey, options: { duration: 10, enable_audio: "false" } });
+    expect(videoRequests()[0].referenceImageUrls).toBeUndefined();
+    expect(videoRequests()[0].options).not.toHaveProperty("voiceover");
+    expect(videoRequests()[0].prompt).toContain("entire video silent");
+    expect(onSubmitted).toHaveBeenCalledWith(2, "job-2");
+    expect(refreshTasks).toHaveBeenCalledOnce();
+  });
+
+  it("supports select/deselect all and ignores a rapid duplicate submit", async () => {
+    await mount(); await act(async () => button("取消全选").click());
+    expect(button("确认提交").disabled).toBe(true);
+    await act(async () => button("全选").click()); await act(async () => checkbox("确认批量生成费用").click());
+    await act(async () => { const submit = button("确认提交"); submit.click(); submit.click(); });
+    const requests = videoRequests(); expect(requests).toHaveLength(2);
+    expect(new Set(requests.map((request) => request.clientRequestId)).size).toBe(2);
+    for (const request of requests) expect(request.billingAcknowledgement).toEqual({ policyRevision: "credits-v1", acceptedForRequestId: request.clientRequestId });
+    expect(container.textContent).toContain("已提交或完成 2 个");
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]]);
+    await act(async () => button("全选").click()); expect(button("确认提交").disabled).toBe(true);
+  });
+
+  it("continues after a definite rejection and retries only the failed shot", async () => {
+    let attempts = 0;
+    api.request.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/api/ai/video") return Promise.resolve(json(status()));
+      const shotId = JSON.parse(String(init?.body)).shotId;
+      return Promise.resolve(shotId === 1 && attempts++ === 0 ? json({ error: "Invalid parameter" }, 400) : json({ jobId: `job-${shotId}` }, 202));
+    });
+    await mount(); await confirmAndSubmit();
+    expect(videoRequests().map((request) => request.shotId)).toEqual([1, 2]);
+    expect(container.textContent).toContain("提交失败");
+    await confirmAndSubmit();
+    expect(videoRequests().map((request) => request.shotId)).toEqual([1, 2, 1]);
+    expect(onSubmitted.mock.calls).toEqual([[2, "job-2"], [1, "job-1"]]);
+  });
+
+  it.each(["network", "server", "missing-id", "unreadable"])("stops the batch and blocks retries after an ambiguous %s response", async (failure) => {
+    api.request.mockImplementation((url: string) => url !== "/api/ai/video" ? Promise.resolve(json(status()))
+      : failure === "network" ? Promise.reject(new TypeError("Connection lost"))
+        : Promise.resolve(failure === "unreadable" ? new Response("<html>bad gateway</html>", { status: 502 }) : failure === "server" ? json({ error: "Gateway timeout" }, 504) : json({}, 202)));
+    await mount(); await confirmAndSubmit();
+    expect(videoRequests()).toHaveLength(1);
+    expect(container.textContent).toContain("提交结果待核对");
+    expect(button("确认提交")).toBeUndefined();
+    expect(button("核对任务列表")).toBeDefined();
+    expect(refreshTasks).toHaveBeenCalledOnce();
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(onUncertain).toHaveBeenCalledWith(1, undefined);
+  });
+
+  it("stops when a rejected request cites an unresolved job that may belong to another shot", async () => {
+    api.request.mockImplementation((url: string) => Promise.resolve(url === "/api/ai/video" ? json({ error: { message: "Already queued", jobId: "existing-job" } }, 409) : json(status())));
+    await mount(); await confirmAndSubmit();
+    expect(videoRequests()).toHaveLength(1);
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(onUncertain).toHaveBeenCalledWith(1, "existing-job");
+    expect(container.textContent).toContain("已提交或完成 0 个");
+    expect(container.textContent).toContain("任务 ID：existing-job");
+    expect(button("确认提交")).toBeUndefined();
+  });
+
+  it("blocks a batch exceeding remaining capacity and permits a smaller selection from verified busy cache", async () => {
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/refresh") ? json({ error: { code: "KLING_PROFILE_BUSY" } }, 409) : url === "/api/ai/video" ? json({ jobId: "last-slot" }, 202) : json(status({ concurrency: { active: 9, max: 10, blockedByUnknownSubmission: false } }))));
+    await mount(); await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(true);
+    expect(container.textContent).toContain("当前还可提交 1 个");
+    await act(async () => checkbox("选择分镜 2").click()); await confirmAndSubmit();
+    expect(videoRequests()).toHaveLength(1);
+  });
+
+  it.each([
+    { concurrency: { active: 0, max: 10, blockedByUnknownSubmission: true } },
+    { concurrency: undefined },
+    { profile: { ...readyProfile, authState: "logged_out" } },
+    { models: [{ ...model, profileId: "other-account" }] },
+    { models: [{ ...model, tool: "text_to_video", capabilities: { ...model.capabilities, image: false } }] },
+  ])("blocks unavailable capacity, unauthenticated accounts and incompatible exact models: %j", async (overrides) => {
+    api.request.mockResolvedValue(json(status(overrides))); await mount();
+    await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(true); expect(videoRequests()).toHaveLength(0);
+  });
+
+  it("never uses the cached model following a failed catalog refresh", async () => {
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/refresh") ? json({ error: "Authentication failed" }, 401) : json(status())));
+    await mount(); await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(true); expect(container.textContent).toContain("Authentication failed");
+  });
+
+  it("uses only each selected API draft and keeps completed rows out of retries", async () => {
+    await mount({ provider: "volcengine" });
+    await act(async () => checkbox("选择分镜 2").click()); await confirmAndSubmit();
+    expect(shots[0].draft!.generate).toHaveBeenCalledOnce(); expect(shots[1].draft!.generate).not.toHaveBeenCalled();
+    expect(onSubmitted).toHaveBeenCalledWith(1); expect(videoRequests()).toHaveLength(0);
+    await act(async () => button("全选").click()); await confirmAndSubmit();
+    expect(shots[0].draft!.generate).toHaveBeenCalledOnce(); expect(shots[1].draft!.generate).toHaveBeenCalledOnce();
+  });
+
+  it("stops API batches with a returned task ID and exposes task recovery", async () => {
+    vi.mocked(shots[0].draft!.generate).mockRejectedValue(new VideoGenerationFailure("Please query task", true, "remote-1"));
+    await mount({ provider: "volcengine" }); await confirmAndSubmit();
+    expect(container.textContent).toContain("任务 ID：remote-1"); expect(button("确认提交")).toBeUndefined();
+    expect(shots[1].draft!.generate).not.toHaveBeenCalled();
+    expect(onUncertain).toHaveBeenCalledWith(1, "remote-1");
+  });
+
+  it("invalidates confirmation when the current generation settings change", async () => {
+    await mount(); await act(async () => checkbox("确认批量生成费用").click()); expect(button("确认提交").disabled).toBe(false);
+    await mount({ valid: false }); expect(button("确认提交").disabled).toBe(true);
+    expect(videoRequests()).toHaveLength(0);
+  });
+
+  it("validates each snapshot immediately before dispatch and stops when the next source changed", async () => {
+    shots[0].draft!.validate = () => true;
+    shots[1].draft!.validate = () => false;
+    await mount(); await confirmAndSubmit();
+    expect(videoRequests().map((request) => request.shotId)).toEqual([1]);
+    expect(container.textContent).toContain("分镜 2 的素材或生成设置已更改");
+    expect(onSubmitted).toHaveBeenCalledWith(1, "job-1");
+  });
+
+  it("finishes reconciling the dispatched request but stops remaining shots after unmount", async () => {
+    let finishFirst!: (response: Response) => void;
+    api.request.mockImplementation((url: string) => url === "/api/ai/video" ? new Promise<Response>((resolve) => { finishFirst = resolve; }) : Promise.resolve(json(status())));
+    await mount(); await act(async () => checkbox("确认批量生成费用").click());
+    await act(async () => button("确认提交").click());
+    expect(videoRequests()).toHaveLength(1);
+    await act(async () => root.unmount());
+    await act(async () => finishFirst(json({ jobId: "first-job" }, 202)));
+    expect(videoRequests()).toHaveLength(1);
+    expect(onSubmitted).toHaveBeenCalledWith(1, "first-job");
+    expect(refreshTasks).toHaveBeenCalledOnce();
+  });
+
+  it("stops undispatched shots when a status refresh changes the Kling account revision", async () => {
+    vi.useFakeTimers();
+    let finishFirst!: (response: Response) => void;
+    let authRevision = 1;
+    api.request.mockImplementation((url: string) => url === "/api/ai/video" ? new Promise<Response>((resolve) => { finishFirst = resolve; }) : Promise.resolve(json(status({ profile: { ...readyProfile, authRevision } }))));
+    await mount(); await act(async () => checkbox("确认批量生成费用").click());
+    await act(async () => button("确认提交").click());
+    authRevision = 2;
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    await act(async () => finishFirst(json({ jobId: "first-job" }, 202)));
+    expect(videoRequests()).toHaveLength(1);
+    expect(onSubmitted).toHaveBeenCalledWith(1, "first-job");
+    expect(container.textContent).toContain("Kling 账号或模型目录已更改");
+  });
+});
+
+describe("batch request preparation", () => {
+  it("drops sound and composition fields and disables declared native audio", () => {
+    expect(silentBatchMotionOptions({ duration: 6, audioEnabled: true, voiceover: "hi", audioPrompt: "hello", audioUrl: "/voice", tts: true, subtitles: true, captions: true, music: "song" })).toEqual({ duration: 6, audioEnabled: false });
+    const prepared = prepareBatchMotionKling(shots[0].draft!, model);
+    expect(prepared.options).toEqual({ duration: 10, enable_audio: "false" });
+    expect(prepared.images).toEqual(["/frame-1.png"]);
+  });
+
+  it("maps first frame, required extra references and tail into the exact model inputs", () => {
+    const multi = { ...model, inputSlots: [{ name: "image", required: true, role: "image" as const }, { name: "reference", required: true, role: "image" as const }, { name: "tail", required: true, role: "tailImage" as const }] };
+    const draft = { ...shots[0].draft!, lastFrameUrl: "/tail.png", referenceImages: ["/product.png", "/unused.png"] };
+    expect(prepareBatchMotionKling(draft, multi)).toMatchObject({ images: ["/frame-1.png", "/product.png"], lastImageUrl: "/tail.png", error: "" });
+    expect(prepareBatchMotionKling({ ...draft, lastFrameUrl: undefined }, multi).error).toContain("需要尾帧");
+  });
+});

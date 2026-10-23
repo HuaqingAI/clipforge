@@ -234,7 +234,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (isPremiumProductCgProject(project)) {
     return NextResponse.json(
       {
-        error: "高端家具产品 CG 暂不支持通用视频修复，请从受控分镜重新生成。",
+        error: "高端产品 CG 暂不支持通用视频修复，请从受控分镜重新生成。",
         code: "PREMIUM_CG_OUTPUT_POLICY",
       },
       { status: 400 },

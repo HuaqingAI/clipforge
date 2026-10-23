@@ -12,6 +12,7 @@ import { AD_TEMPLATE_GROUPS, listAdTemplates, getAdTemplate, adTemplateScriptDir
 import { CAMERA_PRESETS } from "@/lib/camera-presets";
 import { LOOK_PRESETS } from "@/lib/look-presets";
 import { CAPTION_PRESET_IDS, type CaptionPresetId } from "@/lib/caption-presets";
+import { PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION } from "@/lib/creative-profiles";
 import {
   createPremiumCgRecipeSnapshot,
   PREMIUM_CG_RECIPES,
@@ -153,7 +154,7 @@ interface PremiumCgCreativeDraft {
     cameraSafety: "reference-limited";
   };
   recipeSnapshot: PremiumCgRecipeSnapshot;
-  promptCompilerVersion: "premium-furniture-cg-1";
+  promptCompilerVersion: typeof PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION;
 }
 
 type CreativeProfileDrafts = {
@@ -181,11 +182,11 @@ const DEFAULT_CG_DRAFT: PremiumCgCreativeDraft = {
   },
   visualDirection: {
     setting: "studio",
-    look: "controlled neutral studio light, calm architectural backdrop, measured silhouette and edge highlights",
+    look: createPremiumCgRecipeSnapshot().visualLook,
     cameraSafety: "reference-limited",
   },
   recipeSnapshot: createPremiumCgRecipeSnapshot(),
-  promptCompilerVersion: "premium-furniture-cg-1",
+  promptCompilerVersion: PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
 };
 
 function createSalesRecipeSnapshot(

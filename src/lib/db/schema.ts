@@ -437,7 +437,7 @@ export interface Shot {
   visualSource: "ai_generate" | "product_image" | "user_upload";
   transition: "ai_start_end" | "ai_reference" | "direct_concat" | "ffmpeg_fade";
   voiceover: string; // Voiceover copy
-  /** Premium furniture CG narrative role. Existing commerce shots keep this absent. */
+  /** Premium product CG narrative role. Existing commerce shots keep this absent. */
   beatRole?: "establish" | "form" | "material" | "craft" | "function" | "lifestyle" | "hero";
   /** Pure visual direction for CG shots; never a request to render copy into the frame. */
   visualIntent?: string;

@@ -40,7 +40,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (isPremiumProductCgProfile(project.creativeProfile)) {
     return NextResponse.json(
       {
-        error: errText(req, "高端家具产品 CG 不支持标题式封面文字", "High-end furniture product CG does not allow title-based cover text."),
+        error: errText(req, "高端产品 CG 不支持标题式封面文字", "Premium product CG does not allow title-based cover text."),
         code: "PREMIUM_CG_OUTPUT_POLICY",
       },
       { status: 400 },

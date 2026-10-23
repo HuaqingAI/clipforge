@@ -192,6 +192,32 @@ describe("script generation provenance", () => {
     }));
   });
 
+  it.each(["other", "automotive"])("preserves the CG %s category beyond legacy sales categories", async (productCategory) => {
+    db.update(schema.projects)
+      .set({
+        creativeProfile: createPremiumProductCgProfile(),
+        productName: "Premium mechanical watch",
+        productCategory,
+      })
+      .where(eq(schema.projects.id, projectId))
+      .run();
+
+    const response = await commerceScript(request("/api/llm/script", {
+      projectId,
+      category: "beauty",
+      productAnalysis: "Visible product reference observations",
+      insightMode: false,
+      llmConfig,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(generation.commerce).toHaveBeenCalledWith(expect.objectContaining({
+      productName: "Premium mechanical watch",
+      productCategoryHint: productCategory,
+      styleType: "premium_product_cg",
+    }));
+  });
+
   it("does not select a legacy sales script after switching the project to premium CG", async () => {
     db.update(schema.projects)
       .set({ creativeProfile: createPremiumProductCgProfile({ narrationMode: "none" }) })

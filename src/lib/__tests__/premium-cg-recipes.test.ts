@@ -11,7 +11,7 @@ import {
 } from "@/lib/creative-profiles";
 import { buildPremiumProductCgUserPrompt } from "@/lib/script-engine/prompts";
 
-describe("premium furniture CG recipes", () => {
+describe("premium product CG recipes", () => {
   it("keeps sales template selections in the sales draft snapshot", () => {
     const sales = createShortVideoSalesProfile({
       styleType: "scene",
@@ -40,11 +40,14 @@ describe("premium furniture CG recipes", () => {
 
     const snapshot = normalizePremiumCgRecipeSnapshot({
       recipeId: "living_scale",
+      setting: "modern_home",
       visualLook: "client-provided copy must not be trusted",
       shotBeats: ["cta"],
     });
 
     expect(snapshot).toEqual(createPremiumCgRecipeSnapshot("living_scale"));
+    expect(snapshot?.setting).toBe("modern_home");
+    expect(snapshot?.visualLook).not.toMatch(/residen|home|interior/i);
   });
 
   it("derives CG defaults from the selected recipe while preserving the text policy", () => {
@@ -73,14 +76,16 @@ describe("premium furniture CG recipes", () => {
       narrationMode: "none",
     });
     const prompt = buildPremiumProductCgUserPrompt({
-      productName: "Lounge chair",
-      category: "home",
+      productName: "Premium headphones",
+      category: "tech",
       styleType: "premium_product_cg",
       creativeProfile: profile,
     });
 
     expect(prompt).toContain("Material & Craft");
-    expect(prompt).toContain("visible upholstery, seams, joins, feet, or hardware");
+    expect(prompt).toContain("select close details appropriate to the product category and visible in the supplied reference");
+    expect(prompt).toContain("When material or construction is unknown, describe visible appearance");
+    expect(prompt).not.toMatch(/furniture|upholstery|feet|residen/i);
     expect(prompt).toContain("no added text");
     expect(prompt).not.toContain("buy now");
     expect(prompt).not.toContain("add to cart");

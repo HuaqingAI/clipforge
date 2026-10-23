@@ -36,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (isPremiumProductCgProfile(proj.creativeProfile)) {
     return NextResponse.json(
       {
-        error: "高端家具产品 CG 不支持原生感后处理，请保留受控产品 CG 的光线与镜头质感。",
+        error: "高端产品 CG 不支持原生感后处理，请保留受控产品 CG 的光线与镜头质感。",
         code: "PREMIUM_CG_OUTPUT_POLICY",
       },
       { status: 400 },

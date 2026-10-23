@@ -220,7 +220,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const issues = lintCreativeProfileShots(creativeProfile, shots);
       if (issues.length) {
         return NextResponse.json({
-          error: "High-end furniture CG scripts cannot request generated text, promotional graphics, or unapproved narration.",
+          error: "Premium product CG scripts cannot request generated text, promotional graphics, or unapproved narration.",
           code: "CREATIVE_POLICY_VIOLATION",
           issues,
         }, { status: 400 });

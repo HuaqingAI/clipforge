@@ -39,11 +39,11 @@ const baseInput: ScriptGenerationInput = {
 
 describe("premium product CG prompt compiler", () => {
   it("registers the CG style and emits an isolated prompt branch", () => {
-    expect(styleNameMap.premium_product_cg).toBeTruthy();
+    expect(styleNameMap.premium_product_cg).toBe("高端产品 CG");
     expect(styleFormGroups.flatMap((group) => group.styles)).toContain("premium_product_cg");
 
     const prompt = buildUserPrompt(baseInput);
-    expect(prompt).toContain("premium furniture product CG film");
+    expect(prompt).toContain("premium product CG film");
     expect(prompt).toContain("Generate no added text in any frame");
     expect(prompt).toContain("voiceover: every shot must use an empty string");
     expect(prompt).not.toContain("REFERENCE_STRUCTURE_SENTINEL");
@@ -57,6 +57,7 @@ describe("premium product CG prompt compiler", () => {
     const batch = buildBatchPrompt(baseInput, 2);
     expect(batch).toContain("CG batch requirement");
     expect(batch).toContain("Generate 2 product-film options");
+    expect(batch).toContain("Skip unsupported materials, mechanisms, processes, or interactions in every option");
     expect(batch).not.toContain("REFERENCE_STRUCTURE_SENTINEL");
     expect(batch).not.toContain("PERFORMANCE_HINT_SENTINEL");
 
@@ -68,6 +69,89 @@ describe("premium product CG prompt compiler", () => {
     expect(restrained).not.toContain("every shot must use an empty string");
     expect(PREMIUM_PRODUCT_CG_SYSTEM_PROMPT).toContain("Generated frames contain no added text");
     expect(PREMIUM_PRODUCT_CG_SYSTEM_PROMPT).not.toContain("Buy now");
+  });
+
+  it.each([
+    { productName: "Perfume bottle", category: "beauty" as const },
+    { productName: "Wireless headphones", category: "tech" as const },
+    { productName: "Leather handbag", category: "fashion" as const },
+    { productName: "Artisan chocolate box", category: "food" as const },
+  ])("adapts the CG brief to $productName without imposing a furniture setting", ({ productName, category }) => {
+    const prompt = buildUserPrompt({
+      ...baseInput,
+      productName,
+      category,
+      productDescription: undefined,
+      creativeProfile: createPremiumProductCgProfile({
+        recipeSnapshot: { recipeId: "living_scale" },
+      }),
+    });
+
+    expect(prompt).toContain(`Product name: ${productName}`);
+    expect(prompt).toContain("Product category:");
+    expect(prompt).toContain("category-appropriate use context matched to the product brief");
+    expect(prompt).toContain("omit the person and interaction when unsupported");
+    expect(prompt).toContain("otherwise use observable form, surface, light, and composition");
+    expect(prompt).toContain("Generate no added text in any frame");
+    expect(prompt).not.toMatch(/furniture|upholstery|residen|living.room|modern_home/i);
+    expect(PREMIUM_PRODUCT_CG_SYSTEM_PROMPT).not.toMatch(/furniture|upholstery|residen/i);
+  });
+
+  it("keeps inferred image-analysis recommendations separate from verified product facts", () => {
+    const prompt = buildUserPrompt({
+      ...baseInput,
+      productName: "Perfume bottle",
+      category: "beauty",
+      productDescription: "A bottle with a visible translucent surface.",
+      productAnalysis: JSON.stringify({
+        visualFeatures: { texture: "translucent" },
+        usageScenarios: ["INFERRED_SCENARIO"],
+        videoSuggestions: { suggestedStyle: "pain_point" },
+      }),
+    });
+
+    expect(prompt).toContain("translucent");
+    expect(prompt).toContain("Use only directly visible product attributes and legible existing markings as reference evidence");
+    expect(prompt).toContain("suggested script styles are not verified product facts");
+    expect(prompt).toContain("omit those details unless the product brief independently confirms them");
+  });
+
+  it("uses the original digital category for CG after commerce category normalization", () => {
+    const prompt = buildUserPrompt({
+      ...baseInput,
+      productName: "Wireless headphones",
+      category: "beauty",
+      productCategoryHint: "digital",
+    });
+
+    expect(prompt).toContain("Product category: 数码3C");
+    expect(prompt).not.toContain("Product category: 美妆护肤");
+  });
+
+  it("lets the product brief resolve other or unspecified CG categories", () => {
+    for (const productCategoryHint of ["other", "unspecified"]) {
+      const prompt = buildUserPrompt({
+        ...baseInput,
+        productName: "Mechanical wristwatch",
+        category: "beauty",
+        productCategoryHint,
+      });
+
+      expect(prompt).toContain("Product category: unspecified; identify the actual product category from the supplied product brief");
+      expect(prompt).not.toContain("Product category: 美妆护肤");
+    }
+  });
+
+  it("preserves a specific CG category outside the commerce category list", () => {
+    const prompt = buildUserPrompt({
+      ...baseInput,
+      productName: "Grand touring coupe",
+      category: "beauty",
+      productCategoryHint: "Automotive",
+    });
+
+    expect(prompt).toContain("Product category: Automotive");
+    expect(prompt).not.toContain("Product category: 美妆护肤");
   });
 });
 

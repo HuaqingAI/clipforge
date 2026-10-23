@@ -456,7 +456,7 @@ describe("composition subtitles", () => {
   });
 });
 
-describe("premium furniture CG composition policy", () => {
+describe("premium product CG composition policy", () => {
   it("rejects explicit subtitle, TTS, CTA and product-card requests before creating work", async () => {
     setShots([{ source: "audible" }]);
     const profile = createPremiumProductCgProfile();
@@ -471,7 +471,7 @@ describe("premium furniture CG composition policy", () => {
         productCard: true,
       });
       expect(response.status).toBe(400);
-      expect((await response.json()).error).toContain("高端家具产品 CG");
+      expect((await response.json()).error).toContain("高端产品 CG");
       expect(state.freeTts).not.toHaveBeenCalled();
       expect(state.render).not.toHaveBeenCalled();
       expect(db.select().from(schema.compositions).all()).toHaveLength(0);

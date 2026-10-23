@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature } from "@/lib/storyboard-grid-cache";
+import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature, STORYBOARD_GRID_CROP_VERSION } from "@/lib/storyboard-grid-cache";
+import type { StoryboardGridManifest } from "@/lib/storyboard-grid-cache";
 
 let directory: string;
 const signatureInput = {
@@ -18,8 +19,8 @@ const signatureInput = {
   baseUrl: "https://provider.test/v1",
   options: { width: 720, height: 1280 },
 };
-const manifest = {
-  version: 1 as const,
+const manifest: StoryboardGridManifest = {
+  version: STORYBOARD_GRID_CROP_VERSION,
   signature: storyboardGridSignature(signatureInput),
   gridPath: "/api/files/project-a/grid.png",
   cells: [1, 2].map((shotId) => ({ shotId, filePath: `/api/files/project-a/cell-${shotId}.png` })),
@@ -56,6 +57,7 @@ describe("storyboard grid reuse manifest", () => {
   });
 
   it("loads a complete persisted grid using only its original active image cells", async () => {
+    expect(manifest.version).toBe(2);
     await saveStoryboardGridManifest("project-a", manifest);
     expect(await reusableStoryboardGrid("project-a", manifest.signature, [1, 2], active)).toEqual(manifest);
     expect(await reusableStoryboardGrid("project-a", "changed", [1, 2], active)).toBeUndefined();
@@ -71,6 +73,12 @@ describe("storyboard grid reuse manifest", () => {
     await writeFile(join(directory, "storyboard-grids", "project-a.json"), "{bad-json");
     expect(await reusableStoryboardGrid("project-a", manifest.signature, [1, 2], active)).toBeUndefined();
     await writeFile(join(directory, "storyboard-grids", "project-a.json"), JSON.stringify({ ...manifest, version: 0 }));
+    expect(await reusableStoryboardGrid("project-a", manifest.signature, [1, 2], active)).toBeUndefined();
+  });
+
+  it("rejects fixed-third crops from version 1 even when their signature and active cells match", async () => {
+    await saveStoryboardGridManifest("project-a", manifest);
+    await writeFile(join(directory, "storyboard-grids", "project-a.json"), JSON.stringify({ ...manifest, version: 1 }));
     expect(await reusableStoryboardGrid("project-a", manifest.signature, [1, 2], active)).toBeUndefined();
   });
 

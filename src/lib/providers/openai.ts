@@ -141,7 +141,7 @@ export class OpenAIProvider extends BaseProvider {
       prompt: options.prompt,
       // DALL·E 3 仅支持 n=1；其余按请求数量（gpt-image 支持多张）
       n: isDalle3 ? 1 : (options.count ?? 1),
-      size: this.pickSize(model, options.width, options.height),
+      size: this.pickSize(model, options.width, options.height, options.imageResolution),
       // 仅 DALL·E 系列支持 response_format；gpt-image-* 恒返回 b64_json，不能传该字段
       ...(isGptImage ? {} : { response_format: 'url' }),
       ...options.extra,
@@ -150,7 +150,7 @@ export class OpenAIProvider extends BaseProvider {
     const response = await this.request<OpenAIImageResponse>('/images/generations', {
       method: 'POST',
       body,
-      timeout: 120000, // 生图较慢，超时设为 2 分钟
+      timeout: this.imageTimeout(options),
     })
 
     return this.mapResult(model, response)
@@ -176,7 +176,7 @@ export class OpenAIProvider extends BaseProvider {
     form.append('model', model)
     form.append('prompt', options.prompt)
     form.append('n', String(isDalle2 ? 1 : (options.count ?? 1)))
-    form.append('size', this.pickSize(model, options.width, options.height))
+    form.append('size', this.pickSize(model, options.width, options.height, options.imageResolution))
     // gpt-image-* 用数组字段 image[]；dall-e-2 用单字段 image
     for (const { blob, filename } of images) {
       form.append(isDalle2 ? 'image' : 'image[]', blob, filename)
@@ -184,7 +184,7 @@ export class OpenAIProvider extends BaseProvider {
     // 仅 dall-e-2 支持 response_format；gpt-image-* 恒返回 b64_json
     if (isDalle2) form.append('response_format', 'url')
 
-    const response = await this.postMultipart<OpenAIImageResponse>('/images/edits', form)
+    const response = await this.postMultipart<OpenAIImageResponse>('/images/edits', form, this.imageTimeout(options))
     return this.mapResult(model, response)
   }
 
@@ -195,6 +195,11 @@ export class OpenAIProvider extends BaseProvider {
     if (references.length > 0) return references
     const single = options.referenceImageUrl?.trim()
     return single ? [single] : []
+  }
+
+  /** Larger canvases can take longer; ordinary images retain their two-minute limit. */
+  private imageTimeout(options: ImageOptions): number {
+    return options.imageResolution === '2k' || options.imageResolution === '4k' ? 300000 : 120000
   }
 
   /** 解析图片响应：url 直接用，b64_json 包成 data URI */
@@ -298,7 +303,7 @@ export class OpenAIProvider extends BaseProvider {
   /**
    * 把请求的宽高映射成 OpenAI 各模型允许的 size 字符串（按横/竖/方就近取值）
    */
-  private pickSize(model: string, width?: number, height?: number): string {
+  private pickSize(model: string, width?: number, height?: number, imageResolution?: ImageOptions['imageResolution']): string {
     const w = width ?? 1024
     const h = height ?? 1024
     const ratio = w / h
@@ -311,7 +316,12 @@ export class OpenAIProvider extends BaseProvider {
     // DALL·E 2 仅方图
     if (model.startsWith('dall-e-2')) return '1024x1024'
     // gpt-image-2 / 2.5（含日期版本）：支持任意分辨率，按真实比例就近取（带货可直接出 9:16）
-    if (model.startsWith('gpt-image-2')) return this.fitArbitrarySize(w, h)
+    if (model.startsWith('gpt-image-2')) {
+      if (imageResolution === '2k' || imageResolution === '4k') {
+        return this.fitHighResolutionSize(w, h, imageResolution === '4k' ? 3840 : 2048)
+      }
+      return this.fitArbitrarySize(w, h)
+    }
     // 其余 gpt-image-*（1 / 1.5 / mini）：标准三档 1024x1024 / 1536x1024 / 1024x1536
     if (ratio > 1.2) return '1536x1024'
     if (ratio < 0.83) return '1024x1536'
@@ -339,5 +349,59 @@ export class OpenAIProvider extends BaseProvider {
     if (w / h > 3) w = round16(h * 3)
     if (h / w > 3) h = round16(w * 3)
     return `${w}x${h}`
+  }
+
+  /**
+   * Explicit high-resolution canvases follow GPT Image 2/2.5's documented limits:
+   * /16 sides, at most 3840 per edge, 1:3..3:1, and 655,360..8,294,400 pixels.
+   * Preserve exact common ratios so a portrait grid divides into portrait cells.
+   * https://developers.openai.com/api/docs/guides/image-generation
+   */
+  private fitHighResolutionSize(width: number, height: number, maxSide: number): string {
+    const minPixels = 655360
+    const maxPixels = 8294400
+    let w = Number.isSafeInteger(width) && width > 0 ? width : 1024
+    let h = Number.isSafeInteger(height) && height > 0 ? height : 1024
+    if (w / h > 3) w = h * 3
+    if (h / w > 3) h = w * 3
+
+    const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b)
+    const divisor = gcd(w, h)
+    const baseW = (w / divisor) * 16
+    const baseH = (h / divisor) * 16
+    const basePixels = baseW * baseH
+    const minMultiple = Math.ceil(Math.sqrt(minPixels / basePixels))
+    const maxMultiple = Math.min(
+      Math.floor(maxSide / Math.max(baseW, baseH)),
+      Math.floor(Math.sqrt(maxPixels / basePixels))
+    )
+    if (maxMultiple >= minMultiple) {
+      const multiple = Math.max(minMultiple, Math.min(maxMultiple, Math.round(w / baseW)))
+      return `${baseW * multiple}x${baseH * multiple}`
+    }
+
+    // Unusual ratios can require an exact /16 base larger than the API allows.
+    // Choose the nearest legal canvas while retaining the requested proportions.
+    const ratio = w / h
+    let scale = Math.min(1, maxSide / Math.max(w, h), Math.sqrt(maxPixels / (w * h)))
+    scale = Math.max(scale, Math.sqrt(minPixels / (w * h)))
+    const targetW = w * scale
+    const targetH = h * scale
+    let bestW = 1024
+    let bestH = 1024
+    let bestDistance = Infinity
+    for (let candidateW = 16; candidateW <= maxSide; candidateW += 16) {
+      const minH = Math.ceil(Math.max(minPixels / candidateW, candidateW / 3) / 16) * 16
+      const maxH = Math.floor(Math.min(maxPixels / candidateW, candidateW * 3, maxSide) / 16) * 16
+      if (minH > maxH) continue
+      const candidateH = Math.max(minH, Math.min(maxH, Math.round(candidateW / ratio / 16) * 16))
+      const distance = (candidateW / targetW - 1) ** 2 + (candidateH / targetH - 1) ** 2
+      if (distance < bestDistance) {
+        bestW = candidateW
+        bestH = candidateH
+        bestDistance = distance
+      }
+    }
+    return `${bestW}x${bestH}`
   }
 }

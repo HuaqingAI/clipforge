@@ -3,6 +3,9 @@ import { mkdir, readFile, rename, stat, writeFile } from "fs/promises";
 import { join, sep } from "path";
 import { getDataDir } from "@/lib/paths";
 import { resolveUploadFilePath } from "@/lib/remote-image";
+import type { StoryboardGridResolutionInfo } from "@/lib/storyboard-grid-resolution";
+
+export const STORYBOARD_GRID_CROP_VERSION = 2;
 
 export interface StoryboardGridCell {
   shotId: number;
@@ -10,10 +13,11 @@ export interface StoryboardGridCell {
 }
 
 export interface StoryboardGridManifest {
-  version: 1;
+  version: typeof STORYBOARD_GRID_CROP_VERSION;
   signature: string;
   gridPath: string;
   cells: StoryboardGridCell[];
+  resolution?: StoryboardGridResolutionInfo;
 }
 
 interface SelectedAsset {
@@ -44,7 +48,10 @@ export function storyboardGridSignature(input: {
   baseUrl: string;
   options: Record<string, unknown>;
 }): string {
-  return createHash("sha256").update(JSON.stringify(stableValue(input))).digest("hex");
+  return createHash("sha256").update(JSON.stringify(stableValue({
+    cropVersion: STORYBOARD_GRID_CROP_VERSION,
+    input,
+  }))).digest("hex");
 }
 
 function manifestPath(projectId: string): string {
@@ -83,7 +90,7 @@ export async function reusableStoryboardGrid(
 ): Promise<StoryboardGridManifest | undefined> {
   try {
     const manifest = JSON.parse(await readFile(manifestPath(projectId), "utf8")) as StoryboardGridManifest;
-    if (manifest.version !== 1 || manifest.signature !== signature || !Array.isArray(manifest.cells)
+    if (manifest.version !== STORYBOARD_GRID_CROP_VERSION || manifest.signature !== signature || !Array.isArray(manifest.cells)
       || manifest.cells.length !== shotIds.length || !await existingProjectImage(projectId, manifest.gridPath)) return;
     for (let i = 0; i < shotIds.length; i++) {
       const cell = manifest.cells[i];

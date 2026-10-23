@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil } from "react-icons/lu";
 import { checkScriptCompliance } from "@/lib/ad-compliance";
@@ -16,10 +16,10 @@ import type { Shot } from "@/lib/db/schema";
 import { JUDGE_META, type JudgeReport, autoApplicableRewrites, autoApplicableDescriptionRewrites } from "@/lib/script-judge";
 import { useTemplateStore } from "@/lib/stores/template-store";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { StoryboardFilmPanel } from "@/components/storyboard-film-panel";
 import { useT, useLocale } from "@/lib/i18n";
 import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
+import { generateProjectScripts, type SavedScript as DbScript } from "@/lib/script-generation-client";
 import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
 import { ProjectHeader } from "@/components/project-header";
 import {
@@ -111,16 +111,6 @@ function projectMetaFromResponse(value: unknown): ProjectMeta {
   };
 }
 
-// structure of a script row returned from the backend scripts table
-interface DbScript {
-  id: string;
-  title: string | null;
-  styleType: string;
-  totalDuration: number | null;
-  shots: Shot[];
-  selected: boolean | null;
-}
-
 export default function ScriptPage() {
   const t = useT("script");
   const tc = useT("common");
@@ -138,6 +128,8 @@ export default function ScriptPage() {
   const [creativeConfigSaving, setCreativeConfigSaving] = useState(false);
   const [creativeConfigError, setCreativeConfigError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const generationInFlight = useRef(false);
+  const generationAbort = useRef<AbortController | null>(null);
   const [genError, setGenError] = useState("");
   const { llm } = useSettingsStore();
   // beginner/director split: simple mode swaps the 3-column editor for a read-and-go card
@@ -150,52 +142,25 @@ export default function ScriptPage() {
   const [judgeApplying, setJudgeApplying] = useState(false);
   const [judgeApplied, setJudgeApplied] = useState(false);
 
-  // fetch real scripts by projectId (stored in the scripts table)
-  const loadScripts = async () => {
-    setLoading(true);
-    try {
-      const [scriptsRes, projectRes] = await Promise.all([
-        fetch(`/api/project/${id}/scripts`),
-        fetch(`/api/project/${id}`),
-      ]);
-      const dbScripts: DbScript[] = scriptsRes.ok ? await scriptsRes.json() : [];
-      if (projectRes.ok) {
-        const proj = await projectRes.json();
-        setProjectName(proj.name ?? proj.productName ?? "");
-        setProjectMeta(projectMetaFromResponse(proj));
-      }
-      if (Array.isArray(dbScripts) && dbScripts.length > 0) {
-        setScripts(
-          dbScripts.map((s) => ({
-            id: s.id,
-            title: s.title ?? t("untitledScript"),
-            styleType: s.styleType,
-            totalDuration: s.totalDuration ?? 0,
-            shots: s.shots ?? [],
-          }))
-        );
-        const selIdx = dbScripts.findIndex((s) => s.selected);
-        setSelectedScript(selIdx >= 0 ? selIdx : 0);
-      } else {
-        // no real scripts: stay empty so the render layer shows the "generate" empty state
-        // (fixes issue #3: old logic fell back to the Debao demo data, so users opening their own
-        //  projects saw someone else's demo and thought "I can't find the task I created")
-        setScripts([]);
-      }
-    } catch {
-      setScripts([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    setIsGenerating(false);
+    return () => {
+      generationAbort.current?.abort();
+      generationAbort.current = null;
+      generationInFlight.current = false;
+    };
+  }, [id]);
 
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
   const handleGenerate = async () => {
-    if (!projectMeta) return;
+    if (!projectMeta || generationInFlight.current) return;
     if (!llm.apiKey) {
       setGenError(t("errorNoLlm"));
       return;
     }
+    generationInFlight.current = true;
+    const controller = new AbortController();
+    generationAbort.current = controller;
     setIsGenerating(true);
     setGenError("");
     try {
@@ -228,20 +193,38 @@ export default function ScriptPage() {
               visionModel: llm.visionModel,
             },
           };
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const dbScripts = await generateProjectScripts({
+        endpoint, payload, projectId: id, knownScriptIds: scripts.map((script) => script.id),
+        signal: controller.signal,
+        messages: {
+          failed: t("errorGenFailedCheckLlm"),
+          reload: t("errorReloadScripts"),
+          unconfirmed: t("errorGenerationUnconfirmed"),
+        },
       });
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e.error || t("errorGenFailedCheckLlm"));
-      }
-      await loadScripts();
+      if (controller.signal.aborted) return;
+      const receivedIds = new Set(dbScripts.map((script) => script.id));
+      setScripts((previous) => [
+        ...dbScripts.map((script) => ({
+          id: script.id,
+          title: script.title ?? t("untitledScript"),
+          styleType: script.styleType,
+          totalDuration: script.totalDuration ?? 0,
+          shots: script.shots,
+        })),
+        // Commerce regeneration appends versions; topic regeneration replaces its scripts.
+        ...(!isTopic ? previous.filter((script) => !receivedIds.has(script.id)) : []),
+      ]);
+      const selectedIndex = dbScripts.findIndex((script) => script.selected);
+      setSelectedScript(selectedIndex >= 0 ? selectedIndex : 0);
     } catch (err) {
-      setGenError(friendlyError(err, locale));
+      if (!controller.signal.aborted) setGenError(friendlyError(err, locale));
     } finally {
-      setIsGenerating(false);
+      if (generationAbort.current === controller) {
+        generationAbort.current = null;
+        generationInFlight.current = false;
+        setIsGenerating(false);
+      }
     }
   };
 
@@ -442,16 +425,12 @@ export default function ScriptPage() {
   const [autoMode, setAutoMode] = useState(false);
   const [autoModeTriggered, setAutoModeTriggered] = useState(false);
   // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
-  // the AI chain stops at the script gate — money is only spent after one explicit click here
+  // the AI chain stops at the script gate before continuing to Assets
   const [genPref, setGenPref] = useState<"free" | "ai">(SHOW_FREE_QUICK_CUT ? "free" : "ai");
-  // presenter picked at creation time (?presenter=<id>) — resolved to their sheet for identity locking
-  const [presenterParam, setPresenterParam] = useState("");
   useEffect(() => {
     const qs = new URLSearchParams(window.location.search);
     if (qs.get("auto") === "1") setAutoMode(true);
     if (qs.get("gen") === "ai") setGenPref("ai");
-    const p = qs.get("presenter");
-    if (p) setPresenterParam(p);
   }, []);
   // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
   // The free chain now runs SERVER-SIDE (pipeline_runs): the page only starts a run and
@@ -553,24 +532,6 @@ export default function ScriptPage() {
     if (genPref !== "ai") autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
   }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun, isPremiumCgProject, projectMeta]);
-
-  // Script and Assets open the same model-driven film surface.
-  const [filmOpen, setFilmOpen] = useState(false);
-  const [aiFilming, setAiFilming] = useState(false);
-  const [aiFilmError, setAiFilmError] = useState("");
-  const runAiFilm = async () => {
-    if (!currentScript || aiFilming || autoFinishing) return;
-    setAiFilming(true); setAiFilmError("");
-    try {
-      const selected = await fetch(`/api/project/${id}/scripts`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selectedScriptId: currentScript.id }),
-      });
-      if (!selected.ok) throw new Error("无法保存所选脚本，请稍后重试。");
-      setFilmOpen(true);
-    } catch (failure) { setAiFilmError(friendlyError(failure, locale)); }
-    finally { setAiFilming(false); }
-  };
 
   // switching scripts invalidates the report — it was ruled on another script's lines
   useEffect(() => {
@@ -790,11 +751,9 @@ export default function ScriptPage() {
     );
   }
 
-  // Hands-off takeover: while the auto chain (free) or the AI film chain (paid) runs,
+  // Hands-off takeover: while the auto chain (free) runs,
   // beginners see one progress card, not the editor
-  const aiFilmErrorPanel = aiFilmError && <p role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm text-destructive">{aiFilmError}</p>;
-
-  if ((SHOW_FREE_QUICK_CUT && !isPremiumCgProject && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
+  if (SHOW_FREE_QUICK_CUT && !isPremiumCgProject && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
@@ -807,17 +766,14 @@ export default function ScriptPage() {
           </div>
           <h2 className="text-xl font-bold">{t("autoModeTitle")}</h2>
           <p className="mt-2 text-sm text-primary">
-            {aiFilming ? "正在打开整片计划…" : (autoFinishStage || t("autoFinishSelecting"))}
+            {autoFinishStage || t("autoFinishSelecting")}
           </p>
           <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-            {aiFilming ? t("aiFilmHint") : t("autoModeHint")}
+            {t("autoModeHint")}
           </p>
-          {/* the paid film call keeps running server-side — no "go manual" escape mid-flight */}
-          {!aiFilming && (
-            <Button variant="outline" size="sm" className="mt-8 text-xs" onClick={() => setAutoMode(false)}>
-              {t("autoModeManual")}
-            </Button>
-          )}
+          <Button variant="outline" size="sm" className="mt-8 text-xs" onClick={() => setAutoMode(false)}>
+            {t("autoModeManual")}
+          </Button>
         </main>
       </div>
     );
@@ -826,16 +782,11 @@ export default function ScriptPage() {
   return (
     <div className="min-h-screen grid-bg">
       {headerBar}
-      <StoryboardFilmPanel open={filmOpen && Boolean(currentScript)} onOpenChange={setFilmOpen}
-        projectId={id} scriptId={currentScript?.id ?? ""} presenterId={presenterParam}
-        onAssetsChanged={() => undefined} />
-
       <main className="mx-auto max-w-7xl px-6 py-8">
         {creativeProfileSwitcher}
-        {aiFilmErrorPanel && <div className="mx-auto mb-5 max-w-2xl">{aiFilmErrorPanel}</div>}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
-        {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && resumableRun && !autoFinishing && !aiFilming && (
+        {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && resumableRun && !autoFinishing && (
           <div className="mx-auto mb-5 max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
             <p className="text-sm font-medium text-amber-500">
               ⏸ {resumableRun.interrupted ? t("pipelineInterruptedTitle") : t("pipelineFailedTitle")}
@@ -882,37 +833,37 @@ export default function ScriptPage() {
                 {autoFinishError}
               </div>
             )}
+            {genError && (
+              <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/40 bg-red-500/5 px-4 py-2.5 text-xs text-red-400">
+                <span>{genError}</span>
+                <Link href="/settings?tab=llm" className="shrink-0 text-primary underline underline-offset-2 hover:text-primary/80">
+                  {t("goToSettings")}
+                </Link>
+              </div>
+            )}
             <div className="flex flex-col items-center gap-3">
-              {/* two finishing paths, primary = what was chosen on the studio card; the AI one
-                  is the single paid click (billed to the user's own model platform) */}
               <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT && !isPremiumCgProject ? "sm:grid-cols-2" : ""}`}>
                 {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <Button
                   size="lg"
                   variant={genPref === "ai" ? "outline" : "default"}
                   className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
-                  disabled={autoFinishing || aiFilming || !currentScript}
+                  disabled={autoFinishing || !currentScript}
                   onClick={autoFinish}
                 >
                   {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
                 </Button>}
-                <Button
-                  size="lg"
-                  variant={!SHOW_FREE_QUICK_CUT || isPremiumCgProject || genPref === "ai" ? "default" : "outline"}
-                  className={`w-full ${!SHOW_FREE_QUICK_CUT || isPremiumCgProject || genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
-                  disabled={autoFinishing || aiFilming || !currentScript}
-                  onClick={runAiFilm}
-                >
-                  整片自动编排
-                </Button>
+                <Link href={`/project/${id}/assets`} className="w-full">
+                  <Button size="lg" className="w-full brand-gradient text-white" disabled={autoFinishing || !currentScript}>
+                    {t("nextStepAssets")}
+                    <LuArrowRight className="w-4 h-4 ml-1" />
+                  </Button>
+                </Link>
               </div>
               {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
-              <p className="text-center text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
-              {/* quality reassurance: both paths run the judge panel automatically — Easy mode
-                  hides the operation, never the quality features */}
-              <p className="text-center text-xs text-muted-foreground/80">视频模型在设置中统一选择，预览整片计划后再确认生成。</p>
               <div className="flex items-center gap-3">
-                <Button variant="outline" size="sm" className="text-xs" disabled={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
-                  {t("regenerate")}
+                <Button variant="outline" size="sm" className="text-xs" disabled={isGenerating} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
+                  {isGenerating && <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" />}
+                  {t(isGenerating ? "regenerating" : "regenerate")}
                 </Button>
                 <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => setUiMode("pro")}>
                   {t("simpleGoPro")}
@@ -937,9 +888,9 @@ export default function ScriptPage() {
                   <LuBookmarkPlus className="w-3.5 h-3.5 mr-1" />
                   {t("saveAsTemplate")}
                 </Button>
-                <Button variant="outline" size="sm" disabled={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
-                  <LuWand className="w-3.5 h-3.5 mr-1" />
-                  {t("regenerate")}
+                <Button variant="outline" size="sm" disabled={isGenerating} aria-busy={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
+                  {isGenerating ? <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" /> : <LuWand className="w-3.5 h-3.5 mr-1" />}
+                  {t(isGenerating ? "regenerating" : "regenerate")}
                 </Button>
               </div>
             </div>
@@ -1010,7 +961,6 @@ export default function ScriptPage() {
                         <>⚖️ {t("judgeButton")}</>
                       )}
                     </Button>}
-                  <Button variant="outline" className="text-sm" disabled={aiFilming || !currentScript} onClick={() => void runAiFilm()}>整片自动编排</Button>
                   {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && <Button
                     variant="outline"
                     className="text-sm"
@@ -1127,7 +1077,7 @@ export default function ScriptPage() {
               {/* regenerate errors (e.g. missing LLM key) used to fail silently in this view —
                   render them here with a direct jump to Settings */}
               {genError && (
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/40 bg-red-500/5 px-4 py-2.5 text-xs text-red-400">
+                <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/40 bg-red-500/5 px-4 py-2.5 text-xs text-red-400">
                   <span>{genError}</span>
                   <Link href="/settings?tab=llm" className="shrink-0 text-primary underline underline-offset-2 hover:text-primary/80">
                     {t("goToSettings")}

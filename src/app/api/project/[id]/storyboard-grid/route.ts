@@ -9,18 +9,25 @@ import { scripts, assets, projects } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
 import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
-import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
+import { buildStoryboardGridPrompt, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
+import { readStoryboardGridCells, StoryboardGridLayoutError } from "@/lib/storyboard-grid-crop";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
 import { normalizeOpenAIBaseUrl } from "@/lib/openai-config";
-import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature } from "@/lib/storyboard-grid-cache";
+import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature, STORYBOARD_GRID_CROP_VERSION } from "@/lib/storyboard-grid-cache";
 import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
 import { saveAssetCandidate } from "@/lib/asset-persistence";
 import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
 import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
+import {
+  normalizeStoryboardGridResolution,
+  storyboardGridTargetDimensions,
+  withStoryboardGridResolution,
+  type StoryboardGridResolutionInfo,
+} from "@/lib/storyboard-grid-resolution";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +39,13 @@ function gridGenerationOptions(value: unknown, premiumCg: boolean): Record<strin
   const options = value && typeof value === "object" && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
+  // UI image options carry dimensions, not an aspectRatio field. Keep both the
+  // canvas and the layout prompt portrait by default, including direct API calls.
+  if (typeof options.width !== "number" || !Number.isSafeInteger(options.width) || options.width <= 0
+    || typeof options.height !== "number" || !Number.isSafeInteger(options.height) || options.height <= 0) {
+    options.width = 1080;
+    options.height = 1920;
+  }
   if (!premiumCg) return options;
   for (const key of ["modelId", "mode", "prompt", "referenceImageUrl", "referenceImageUrls", "negativePrompt", "negative_prompt", "extra"]) {
     delete options[key];
@@ -40,11 +54,21 @@ function gridGenerationOptions(value: unknown, premiumCg: boolean): Record<strin
   return options;
 }
 
+function gridAspectRatio(options: Record<string, unknown>): string {
+  const width = options.width as number, height = options.height as number;
+  let a = width, b = height;
+  while (b) [a, b] = [b, a % b];
+  return `${width / a}:${height / a}`;
+}
+
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 async function usableSelectedMedia(asset: typeof assets.$inferSelect): Promise<boolean> {
+  // Older grid crops were made at fixed thirds and may include another shot.
+  // Do not let preserveExisting bypass the new layout validation for those images.
+  if (asset.prompt?.startsWith("[storyboard-grid ") && /-grid\.png$/i.test(asset.filePath ?? "")) return false;
   if (asset.status !== "done" || !asset.filePath || !/\.(png|jpe?g|webp|gif|avif|bmp|mp4|webm|mov|m4v)$/i.test(asset.filePath)) return false;
   const local = resolveUploadFilePath(asset.filePath);
   if (!local || !(await stat(local).catch(() => null))?.isFile()) return false;
@@ -104,13 +128,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const body = await req.json();
     if (body.provider === "kling-cli") return NextResponse.json({ error: "Kling CLI 首版仅支持素材页单镜头视频生成", code: "KLING_SCOPE_UNSUPPORTED" }, { status: 400 });
-    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl, productImageUrls, reuseExisting, preserveExisting } = body as {
+    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, gridResolution, characterSheetUrl, productImageUrl, productImageUrls, reuseExisting, preserveExisting } = body as {
       scriptId?: string;
       provider?: string;
       model?: string;
       apiKey?: string;
       baseUrl?: string;
       options?: Record<string, unknown>;
+      /** Whole-grid resolution, independent of single-shot image defaults. */
+      gridResolution?: unknown;
       /** Presenter's multi-view sheet — locks the person's identity across all nine cells */
       characterSheetUrl?: string;
       /** Product photo — locks the product's appearance across all nine cells */
@@ -155,7 +181,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const creativeProfile = profileContext.projectProfile;
     const premiumCg = isPremiumProductCgProfile(creativeProfile);
-    const generationOptions = gridGenerationOptions(options, premiumCg);
+    const resolution = normalizeStoryboardGridResolution(gridResolution);
+    const baseGenerationOptions = gridGenerationOptions(options, premiumCg);
+    const targetDimensions = storyboardGridTargetDimensions(baseGenerationOptions.width as number, baseGenerationOptions.height as number, resolution);
+    const generationOptions = withStoryboardGridResolution(baseGenerationOptions, resolution, providerName ?? "", model ?? "");
     const requestedProductImageUrl = nonEmptyString(productImageUrl);
     const requestedProductImageUrls = Array.isArray(productImageUrls)
       ? productImageUrls.map(nonEmptyString).filter((u): u is string => Boolean(u))
@@ -195,14 +224,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }
       if (projectProductRefs.length === 0) {
         return NextResponse.json({
-          error: "高端家具 CG 九宫格至少需要一张已保存的产品参考图。",
+          error: "高端产品 CG 九宫格至少需要一张已保存的产品参考图。",
           code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED",
         }, { status: 400 });
       }
       const projectProductRefSet = new Set(projectProductRefs);
       if (allRequestedProductRefs.some((reference) => !projectProductRefSet.has(reference))) {
         return NextResponse.json({
-          error: "高端家具 CG 九宫格只能使用本项目已保存的产品参考图。",
+          error: "高端产品 CG 九宫格只能使用本项目已保存的产品参考图。",
           code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID",
         }, { status: 400 });
       }
@@ -260,7 +289,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const primaryReferenceImageUrl = primaryProductReference ?? referenceImageUrls[0];
     if (premiumCg && !primaryProductReference) {
       return NextResponse.json({
-        error: "高端家具 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
+        error: "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
         code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
       }, { status: 400 });
     }
@@ -270,6 +299,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const prompt = buildStoryboardGridPrompt(shots, script.characters, {
       characterSheet: useCharacterSheet,
       productImageCount: productRefs.length,
+      aspectRatio: gridAspectRatio(generationOptions),
     }, { creativeProfile });
     const signature = storyboardGridSignature({
       scriptId,
@@ -281,7 +311,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       provider: providerName,
       model,
       baseUrl: providerName === "openai" ? normalizeOpenAIBaseUrl(baseUrl) : (baseUrl ?? "").trim().replace(/\/+$/, ""),
-      options: generationOptions,
+      options: { ...generationOptions, gridResolution: resolution },
     });
     if (reuseExisting === true) {
       const scopedSelectedAssets = filterAssetsForScript(
@@ -293,7 +323,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : scopedSelectedAssets;
       const cached = await reusableStoryboardGrid(id, signature, shots.map((shot) => shot.shotId), selectedAssets);
       if (cached) {
-        return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true });
+        return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true,
+          ...(cached.resolution && { resolution: cached.resolution }) });
       }
     }
     const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
@@ -312,7 +343,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { absPath, publicPath } = await persistGridImage(id, gridUrl);
     const probe = await probeMedia(absPath);
     if (!probe.width || !probe.height) throw new Error("无法读取九宫格图片尺寸");
-    const cells = computeGridCells(probe.width, probe.height);
+    // Validate the entire layout before saving/selecting any shot. Generated
+    // gutters regularly drift away from exact thirds, even with an equal-grid prompt.
+    const cells = await readStoryboardGridCells(absPath, probe.width, probe.height);
+    const usedCells = cells.slice(0, shots.length);
+    const resolutionInfo: StoryboardGridResolutionInfo = {
+      requested: resolution,
+      gridWidth: probe.width,
+      gridHeight: probe.height,
+      minCellWidth: Math.min(...usedCells.map((cell) => cell.w)),
+      minCellHeight: Math.min(...usedCells.map((cell) => cell.h)),
+      maxCellWidth: Math.max(...usedCells.map((cell) => cell.w)),
+      maxCellHeight: Math.max(...usedCells.map((cell) => cell.h)),
+      limited: resolution !== "standard" && (probe.width + 16 < targetDimensions.width || probe.height + 16 < targetDimensions.height),
+    };
 
     const dir = join(getDataDir(), "uploads", id);
     const saved: { shotId: number; filePath: string }[] = [];
@@ -323,9 +367,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const fileName = `asset-${shots[i].shotId}-${Date.now()}-grid.png`;
       const outPath = join(dir, fileName);
       await execFileAsync(ffmpegBin(), [
+        "-v", "error",
         "-y",
         "-i", absPath,
-        "-vf", `crop=${cell.w}:${cell.h}:${cell.x}:${cell.y}`,
+        "-vf", `format=rgb24,crop=${cell.w}:${cell.h}:${cell.x}:${cell.y}:exact=1`,
         "-frames:v", "1",
         outPath,
       ]);
@@ -338,7 +383,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         filePath,
         provider: providerName,
         model,
-        prompt: `[storyboard-grid 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
+        prompt: `[storyboard-grid-v${STORYBOARD_GRID_CROP_VERSION} 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
         scope: assetScopeForShot(script, shots[i]),
         selectedPolicy: premiumCg
           ? { mode: "select" }
@@ -360,12 +405,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       : scopedCurrentSelected;
     const fullMatchingGrid = saved.length === shots.length && !alternatives && currentScript?.id === scriptId && scriptRevision(currentScript) === revision &&
       saved.every((cell) => currentSelected.filter((asset) => asset.shotId === cell.shotId).length === 1 && currentSelected.some((asset) => asset.shotId === cell.shotId && asset.filePath === cell.filePath && asset.status === "done"));
-    if (fullMatchingGrid) await saveStoryboardGridManifest(id, { version: 1, signature, gridPath: publicPath, cells: saved })
+    if (fullMatchingGrid) await saveStoryboardGridManifest(id, { version: STORYBOARD_GRID_CROP_VERSION, signature, gridPath: publicPath, cells: saved, resolution: resolutionInfo })
       .catch((error) => console.error("保存九宫格复用记录失败:", error));
     const responseCells = preserveExisting === true ? shots.map((shot) => preserved.get(shot.shotId) ?? saved.find((cell) => cell.shotId === shot.shotId)!) : saved;
-    return NextResponse.json({ gridPath: publicPath, cells: responseCells, count: responseCells.length, reused: false,
+    return NextResponse.json({ gridPath: publicPath, cells: responseCells, count: responseCells.length, reused: false, resolution: resolutionInfo,
       ...(preserveExisting === true ? { preservedCount: preserved.size, generatedCount: saved.length, savedAsAlternatives: alternatives } : {}) });
   } catch (error) {
+    if (error instanceof StoryboardGridLayoutError) {
+      return NextResponse.json({ error: error.message, code: "STORYBOARD_GRID_LAYOUT_INVALID" }, { status: 422 });
+    }
     console.error("九宫格分镜生成失败:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : errText(req, "九宫格分镜生成失败", "Storyboard grid failed") },

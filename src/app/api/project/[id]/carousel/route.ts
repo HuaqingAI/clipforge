@@ -37,7 +37,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
   if (isPremiumProductCgProfile(project.creativeProfile)) {
     return NextResponse.json({
-      error: errText(req, "高端家具产品 CG 不支持图文轮播卡片，因为该输出会生成编辑性文案。", "High-end furniture product CG does not allow text-based carousel cards."),
+      error: errText(req, "高端产品 CG 不支持图文轮播卡片，因为该输出会生成编辑性文案。", "Premium product CG does not allow text-based carousel cards."),
       code: "PREMIUM_CG_OUTPUT_POLICY",
     }, { status: 400 });
   }

@@ -45,8 +45,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         {
           error: errText(
             req,
-            "高端家具产品 CG 不支持带货自动成片流水线，请使用受控分镜 CG 生成流程。",
-            "High-end furniture product CG does not allow the sales auto-production pipeline. Use the controlled storyboard CG generation flow.",
+            "高端产品 CG 不支持带货自动成片流水线，请使用受控分镜 CG 生成流程。",
+            "Premium product CG does not allow the sales auto-production pipeline. Use the controlled storyboard CG generation flow.",
           ),
           code: "PREMIUM_CG_OUTPUT_POLICY",
         },

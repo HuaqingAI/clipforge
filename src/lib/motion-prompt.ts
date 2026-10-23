@@ -343,7 +343,7 @@ const STATIC_ACTION = {
 };
 
 /**
- * Premium furniture CG intentionally has a different static-shot contract. The
+ * Premium product CG intentionally has a different static-shot contract. The
  * legacy line above protects commerce labels in a product shot; using it for CG
  * actively asks a video model to draw new pixels of copy. Keep product markings
  * that are already present in the reference, but never ask for new copy.

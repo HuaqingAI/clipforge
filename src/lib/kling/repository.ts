@@ -77,7 +77,7 @@ export function klingJobView(row: KlingJob): KlingJobView {
   const scriptRows = getDb().select().from(scripts).where(eq(scripts.projectId, row.projectId)).all();
   const selectedScript = scriptRows.find((script) => script.selected) ?? scriptRows[0];
   const currentAssets = selectedScript ? filterAssetsForScript(getDb().select().from(assets).where(and(eq(assets.projectId, row.projectId), eq(assets.shotId, row.shotId))).all(), selectedScript) : [];
-  const outputs = getKlingOutputs(row.id).map((output) => {
+  const outputs = getKlingOutputs(row.id).filter((output) => !output.data.deletedAt).map((output) => {
     const active = currentAssets.find((asset) => asset.selected && (asset.id === output.assetId || asset.derivedFromAssetId === output.assetId));
     return {
       outputId: output.id,

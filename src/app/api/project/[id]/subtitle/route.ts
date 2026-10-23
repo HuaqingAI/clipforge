@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
   if (isPremiumProductCgProfile(project.creativeProfile)) {
     return NextResponse.json({
-      error: errText(req, "高端家具产品 CG 不支持字幕导出，因为字幕在该创作档案中已锁定关闭。", "High-end furniture product CG does not allow subtitle export because captions are locked off."),
+      error: errText(req, "高端产品 CG 不支持字幕导出，因为字幕在该创作档案中已锁定关闭。", "Premium product CG does not allow subtitle export because captions are locked off."),
       code: "PREMIUM_CG_OUTPUT_POLICY",
     }, { status: 400 });
   }

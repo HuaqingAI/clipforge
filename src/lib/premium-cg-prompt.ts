@@ -1,4 +1,4 @@
-import { isPremiumProductCgProfile, type ProjectCreativeProfile } from "@/lib/creative-profiles";
+import { isPremiumProductCgProfile, sanitizeCreativeProfile, type ProjectCreativeProfile } from "@/lib/creative-profiles";
 
 /**
  * The image providers do not share a reliable negative-prompt contract. Keep the
@@ -6,20 +6,20 @@ import { isPremiumProductCgProfile, type ProjectCreativeProfile } from "@/lib/cr
  * every provider receives the same visual intent.
  */
 export const PREMIUM_CG_IMAGE_POLICY =
-  "Premium furniture product CG. Use supplied product references as the source of truth for silhouette, proportions, modules, materials, seams, hardware, color, and visible markings. Show one calm product observation in a restrained studio or contemporary interior; do not generate added on-screen text, captions, subtitles, labels, numbers, prices, promotional graphics, product cards, QR codes, watermarks, logos, or calls to action; preserve only markings already visible in the supplied product reference. Do not invent unseen construction, mechanisms, materials, functions, or extra product parts.";
+  "Premium product CG. Determine the actual product category and intended use from the supplied product information and references. Use supplied product references as the source of truth for silhouette, proportions, component count, visible construction, surface finishes, materials, color, and existing markings. Show one calm product observation with scale, framing, lighting, and setting suited to that product and its documented use context; use a neutral studio when the context is unspecified. Do not generate added on-screen text, captions, subtitles, labels, numbers, prices, promotional graphics, product cards, QR codes, watermarks, logos, or calls to action; preserve only markings already visible in the supplied product reference. Do not invent unseen construction, mechanisms, materials, functions, or extra product parts.";
 
 export const PREMIUM_CG_IMAGE_NEGATIVE_PROMPT =
-  "added text, captions, subtitles, labels, title cards, price, numbers, promotional graphic, product card, QR code, watermark, invented logo, CTA, buy now, discount, sale badge, extra furniture parts, invented mechanism, distorted geometry, duplicate product";
+  "added text, captions, subtitles, labels, title cards, price, numbers, promotional graphic, product card, QR code, watermark, invented logo, CTA, buy now, discount, sale badge, extra product parts, invented mechanism, distorted geometry, duplicate product";
 
 /**
  * Motion requests are compiled separately from keyframe prompts so a direct
  * video endpoint cannot inherit a client-side sales prompt.
  */
 export const PREMIUM_CG_VIDEO_POLICY =
-  "Premium furniture product CG motion. Use only the supplied project-owned product and approved keyframe references as the source of truth for silhouette, proportions, modules, materials, seams, hardware, color, and visible markings. Keep the product structurally stable while the camera makes one restrained, physically plausible movement. Do not generate added on-screen text, captions, subtitles, labels, numbers, prices, promotional graphics, product cards, QR codes, watermarks, logos, calls to action, presenter performance, or invented product parts, mechanisms, materials, or functions.";
+  "Premium product CG motion. Determine the actual product category and intended use from the supplied product information and references. Use only the supplied project-owned product and approved keyframe references as the source of truth for silhouette, proportions, component count, visible construction, surface finishes, materials, color, and existing markings. Match scale, framing, lighting, and setting to that product and its documented use context; use a neutral studio when the context is unspecified. Keep the product structurally stable while the camera makes one restrained, physically plausible movement limited to reference-supported angles. Do not generate added on-screen text, captions, subtitles, labels, numbers, prices, promotional graphics, product cards, QR codes, watermarks, logos, calls to action, presenter performance, or invented product parts, mechanisms, materials, or functions; preserve only markings already visible in the supplied references.";
 
 export const PREMIUM_CG_VIDEO_NEGATIVE_PROMPT =
-  "added text, captions, subtitles, labels, title cards, price, numbers, promotional graphic, product card, QR code, watermark, invented logo, CTA, buy now, discount, sale badge, presenter, exaggerated gesture, extra furniture parts, invented mechanism, distorted geometry, duplicate product, flicker";
+  "added text, captions, subtitles, labels, title cards, price, numbers, promotional graphic, product card, QR code, watermark, invented logo, CTA, buy now, discount, sale badge, presenter, exaggerated gesture, extra product parts, invented mechanism, distorted geometry, duplicate product, flicker";
 
 const POSITIVE_TEXT_DIRECTIVE = /(?:\b(?:add|show|display|render|include|place|write|overlay|insert)\b[^.\n]{0,100}\b(?:text|caption|subtitle|label|price|number|logo|watermark|card|cta|qr)\b|\b(?:text|caption|subtitle|label|price|number|logo|watermark|card|cta|qr)\b[^.\n]{0,100}\b(?:appears?|displayed|shown|fades?|animat|overlay|on[- ]screen)\b)/i;
 const POSITIVE_MARKETING_DIRECTIVE = /\b(?:buy\s+now|shop\s+now|add\s+to\s+cart|limited\s+time|discount|sale\s+badge|call\s+to\s+action|promotional\s+graphic)\b/i;
@@ -61,7 +61,8 @@ export function compilePremiumCgImagePrompt(
       .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
       .join("\n"),
   );
-  const profileLook = isPremiumProductCgProfile(profile) ? profile.visualDirection.look : "";
+  const normalizedProfile = sanitizeCreativeProfile(profile);
+  const profileLook = normalizedProfile?.creationType === "premium_product_cg" ? normalizedProfile.visualDirection.look : "";
   const promptParts = [visual, profileLook, PREMIUM_CG_IMAGE_POLICY].filter(Boolean);
   return {
     prompt: promptParts.join("\n"),
@@ -86,7 +87,8 @@ export function compilePremiumCgVideoPrompt(
       .join("\n"),
   );
   const camera = stripPremiumCgCopyDirectives(shot.camera);
-  const profileLook = isPremiumProductCgProfile(profile) ? profile.visualDirection.look : "";
+  const normalizedProfile = sanitizeCreativeProfile(profile);
+  const profileLook = normalizedProfile?.creationType === "premium_product_cg" ? normalizedProfile.visualDirection.look : "";
   const promptParts = [
     visual && `Approved shot direction: ${visual}`,
     camera && `Approved camera direction: ${camera}`,

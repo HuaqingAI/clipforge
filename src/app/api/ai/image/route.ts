@@ -135,8 +135,8 @@ export async function POST(req: NextRequest) {
         creativeProfile = profile;
       }
       if (isPremiumProductCgProfile(profile)) {
-        if (!selected) return apiError(req, "高端家具 CG 生图必须指定当前脚本", "Premium product CG image generation requires a current script", 400);
-        if (!scriptId) return apiError(req, "高端家具 CG 生图必须指定当前脚本", "Premium product CG image generation requires a script id", 400);
+        if (!selected) return apiError(req, "高端产品 CG 生图必须指定当前脚本", "Premium product CG image generation requires a current script", 400);
+        if (!scriptId) return apiError(req, "高端产品 CG 生图必须指定当前脚本", "Premium product CG image generation requires a script id", 400);
         const productImageUrls = Array.isArray(project.productImages)
           ? project.productImages
             .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
           : [];
         if (productImageUrls.length === 0) {
           return NextResponse.json({
-            error: "高端家具 CG 生图至少需要一张已保存的产品参考图。",
+            error: "高端产品 CG 生图至少需要一张已保存的产品参考图。",
             code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED",
           }, { status: 400 });
         }
@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
         );
         if (requestedReferences.some((value) => !projectProductImages.has(value))) {
           return NextResponse.json({
-            error: "高端家具 CG 只能使用本项目已保存的产品参考图。",
+            error: "高端产品 CG 只能使用本项目已保存的产品参考图。",
             code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID",
           }, { status: 400 });
         }
@@ -167,7 +167,7 @@ export async function POST(req: NextRequest) {
         else if (!imageUrl) imageUrl = requestedReferences[0];
         mode = "image-to-image";
         if (Number.isSafeInteger(body.shotId)) shotId = body.shotId as number;
-        if (shotId === undefined) return apiError(req, "高端家具 CG 生图必须指定当前镜头", "Premium product CG image generation requires a shot id", 400);
+        if (shotId === undefined) return apiError(req, "高端产品 CG 生图必须指定当前镜头", "Premium product CG image generation requires a shot id", 400);
         const shot = selected.shots?.find((item) => item.shotId === shotId);
         if (!shot) return apiError(req, "镜头不存在", "Shot not found", 404);
         const issues = lintCreativeProfileShot(profile, { ...shot, shotId });
@@ -186,7 +186,7 @@ export async function POST(req: NextRequest) {
     const profileIsPremium = isPremiumProductCgProfile(creativeProfile);
     if (profileIsPremium && !projectId) {
       return NextResponse.json({
-        error: "高端家具 CG 生图必须关联包含产品参考图的项目。",
+        error: "高端产品 CG 生图必须关联包含产品参考图的项目。",
         code: "PREMIUM_CG_PROJECT_CONTEXT_REQUIRED",
       }, { status: 400 });
     }
@@ -213,7 +213,7 @@ export async function POST(req: NextRequest) {
       : undefined;
     if (profileIsPremium && !referenceImageUrl && !referenceImageUrls?.length) {
       return NextResponse.json({
-        error: "高端家具 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
+        error: "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
         code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
       }, { status: 400 });
     }

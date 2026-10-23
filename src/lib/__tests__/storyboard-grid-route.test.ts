@@ -18,6 +18,7 @@ import {
   createShortVideoSalesProfile,
 } from "@/lib/creative-profiles";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
+import type { StoryboardGridResolutionInfo } from "@/lib/storyboard-grid-resolution";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
@@ -34,8 +35,16 @@ const presenterPath = `/api/files/${projectId}/presenter.png`;
 const fetchMock = vi.fn<typeof fetch>();
 let directory: string;
 let gridBase64: string;
+let gridBytes: Buffer;
 let productBytes: Buffer[];
 let presenterBytes: Buffer;
+const gridWidth = 300;
+const gridHeight = 540;
+const gridColors = [
+  [220, 30, 40], [20, 150, 60], [30, 60, 210],
+  [180, 110, 25], [110, 30, 170], [25, 135, 160],
+  [190, 55, 130], [90, 140, 25], [125, 80, 50],
+];
 const originalShots: schema.Shot[] = [1, 2].map((shotId) => ({
   shotId, type: "demo", duration: 3, description: `Product demonstration ${shotId}`,
   camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "",
@@ -70,10 +79,26 @@ beforeAll(async () => {
   execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=90x162:d=0.2", "-c:v", "libx264", "-pix_fmt", "yuv420p", join(uploads, "existing-video.mp4")]);
   productBytes = await Promise.all(["product-front.png", "product-side.png"].map((name) => readFile(join(uploads, name))));
   presenterBytes = await readFile(join(uploads, "presenter.png"));
-  gridBase64 = productBytes[0].toString("base64");
+  // Deliberately drift the separators from exact thirds so a fixed 3x3 crop
+  // would retain white seams and neighboring panels in the reference frames.
+  const rgb = Buffer.alloc(gridWidth * gridHeight * 3);
+  for (let y = 0; y < gridHeight; y++) {
+    for (let x = 0; x < gridWidth; x++) {
+      const row = y < 172 ? 0 : y < 354 ? 1 : 2;
+      const col = x < 106 ? 0 : x < 194 ? 1 : 2;
+      const seam = (x >= 106 && x < 108) || (x >= 194 && x < 196)
+        || (y >= 172 && y < 174) || (y >= 354 && y < 356);
+      rgb.set(seam ? [255, 255, 255] : gridColors[row * 3 + col], (y * gridWidth + x) * 3);
+    }
+  }
+  gridBytes = execFileSync(process.env.FFMPEG_PATH!, [
+    "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${gridWidth}x${gridHeight}`,
+    "-i", "pipe:0", "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1",
+  ], { input: rgb });
 }, 20_000);
 
 beforeEach(async () => {
+  gridBase64 = gridBytes.toString("base64");
   await rm(join(directory, "storyboard-grids", `${projectId}.json`), { force: true });
   const salesProfile = createShortVideoSalesProfile({ styleType: "scene" });
   db.update(schema.projects).set({
@@ -113,7 +138,7 @@ afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-async function generate(references: Record<string, unknown>, expectedRequests = 1) {
+async function generate(references: Record<string, unknown>, expectedRequests = 1, expectedCount = 2) {
   const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
     method: "POST",
     body: JSON.stringify({
@@ -128,9 +153,9 @@ async function generate(references: Record<string, unknown>, expectedRequests = 
   const result = await response.json();
   expect(result).not.toHaveProperty("error");
   expect(response.status).toBe(200);
-  expect(result).toMatchObject({ count: 2, cells: [{ shotId: 1 }, { shotId: 2 }] });
+  expect(result).toMatchObject({ count: expectedCount, cells: Array.from({ length: expectedCount }, (_, i) => ({ shotId: i + 1 })) });
   expect(fetchMock).toHaveBeenCalledTimes(expectedRequests);
-  return result as { gridPath: string; cells: { shotId: number; filePath: string }[]; count: number; reused: boolean };
+  return result as { gridPath: string; cells: { shotId: number; filePath: string }[]; count: number; reused: boolean; resolution: StoryboardGridResolutionInfo };
 }
 
 async function assertUploadedImages(expected: Buffer[]) {
@@ -150,6 +175,63 @@ async function assertUploadedImages(expected: Buffer[]) {
 }
 
 describe("storyboard grid uploaded product references", () => {
+  it.each([
+    { name: "default 4K portrait", options: undefined, gridResolution: undefined, ratio: "9:16", orientation: "竖版", size: "2160x3840" },
+    { name: "4K landscape", options: { width: 1920, height: 1080 }, gridResolution: "4k", ratio: "16:9", orientation: "横版", size: "3840x2160" },
+    { name: "2K portrait", options: undefined, gridResolution: "2k", ratio: "9:16", orientation: "竖版", size: "1152x2048" },
+    { name: "standard portrait", options: undefined, gridResolution: "standard", ratio: "9:16", orientation: "竖版", size: "864x1536" },
+    { name: "4K square within the pixel cap", options: { width: 1024, height: 1024 }, gridResolution: "4k", ratio: "1:1", orientation: "正方形", size: "2880x2880" },
+  ])("keeps the $name prompt and provider dimensions consistent", async ({ options, gridResolution, ratio, orientation, size }) => {
+    await generate({ productImageUrls: productPaths, gridResolution, ...(options ? { options } : {}) });
+    const form = await assertUploadedImages(productBytes);
+    expect(form.get("size")).toBe(size);
+    expect(form.get("prompt")).toContain(`${ratio} ${orientation}`);
+  });
+
+  it("requests one 4K image even when custom extras contain an older size", async () => {
+    await generate({ options: { width: 1080, height: 1920, count: 5, extra: { size: "864x1536", n: 5 } } });
+    const body = JSON.parse(fetchMock.mock.calls[0][1]!.body as string);
+    expect(body.size).toBe("2160x3840");
+    expect(body.n).toBe(1);
+  });
+
+  it("reports the actual resolution when the provider returns fewer pixels than requested", async () => {
+    const result = await generate({});
+    expect(result.resolution).toMatchObject({ requested: "4k", gridWidth, gridHeight, limited: true });
+    const dimensions = await Promise.all(result.cells.map((cell) =>
+      probeMedia(join(directory, "uploads", cell.filePath.replace("/api/files/", "")))));
+    expect(result.resolution.minCellWidth).toBe(Math.min(...dimensions.map((item) => item.width)));
+    expect(result.resolution.minCellHeight).toBe(Math.min(...dimensions.map((item) => item.height)));
+    expect(result.resolution.maxCellWidth).toBe(Math.max(...dimensions.map((item) => item.width)));
+    expect(result.resolution.maxCellHeight).toBe(Math.max(...dimensions.map((item) => item.height)));
+  });
+
+  it("retains native 4K pixels when cropping a high-resolution provider response", async () => {
+    const highResolutionGrid = execFileSync(process.env.FFMPEG_PATH!, [
+      "-v", "error", "-i", "pipe:0", "-vf", "scale=2160:3840:flags=neighbor",
+      "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1",
+    ], { input: gridBytes, maxBuffer: 4 * 1024 * 1024 });
+    gridBase64 = highResolutionGrid.toString("base64");
+    const result = await generate({ productImageUrls: productPaths });
+    expect(result.resolution).toMatchObject({ requested: "4k", gridWidth: 2160, gridHeight: 3840, limited: false });
+    expect(result.resolution.minCellWidth).toBeGreaterThan(570);
+    expect(result.resolution.minCellHeight).toBeGreaterThan(1150);
+    for (const cell of result.cells) {
+      const path = join(directory, "uploads", cell.filePath.replace("/api/files/", ""));
+      const probe = await probeMedia(path);
+      const rgb = execFileSync(process.env.FFMPEG_PATH!, [
+        "-v", "error", "-i", path, "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+      ], { maxBuffer: 8 * 1024 * 1024 });
+      expect(rgb.length).toBe(probe.width * probe.height * 3);
+      const expected = gridColors[cell.shotId - 1];
+      let foreignPixels = 0;
+      for (let offset = 0; offset < rgb.length; offset += 3) {
+        if (rgb[offset] !== expected[0] || rgb[offset + 1] !== expected[1] || rgb[offset + 2] !== expected[2]) foreignPixels++;
+      }
+      expect(foreignPixels).toBe(0);
+    }
+  }, 15_000);
+
   it("rejects premium CG frame text before submitting an image request", async () => {
     const profile = createPremiumProductCgProfile({ narrationMode: "none" });
     db.update(schema.projects).set({
@@ -204,7 +286,7 @@ describe("storyboard grid uploaded product references", () => {
     });
 
     const form = await assertUploadedImages([productBytes[0]]);
-    expect(form.get("prompt")).toContain("premium furniture product CG storyboard grid");
+    expect(form.get("prompt")).toContain("premium product CG storyboard grid");
     expect(form.get("prompt")).not.toContain("BUY NOW");
   });
 
@@ -348,17 +430,58 @@ describe("storyboard grid uploaded product references", () => {
     expect(form.get("prompt")).toContain("第 1 张参考图是商品实拍图");
     expect(form.get("prompt")).toContain("第 2 张参考图是商品实拍图");
     expect(await readFile(join(directory, "uploads", result.gridPath.replace("/api/files/", ""))))
-      .toEqual(productBytes[0]);
+      .toEqual(gridBytes);
     const saved = db.select().from(schema.assets).all();
     expect(saved.find((asset) => asset.id === "previous-take")?.selected).toBe(false);
     expect(saved.filter((asset) => asset.selected)).toHaveLength(2);
     for (const cell of result.cells) {
       const filePath = join(directory, "uploads", cell.filePath.replace("/api/files/", ""));
-      expect(await probeMedia(filePath)).toMatchObject({ width: 29, height: 52, videoCodec: "png" });
+      const probe = await probeMedia(filePath);
+      expect(probe.videoCodec).toBe("png");
+      expect(probe.width).toBeGreaterThan(70);
+      expect(probe.height).toBeGreaterThan(150);
       expect(saved).toContainEqual(expect.objectContaining({
         shotId: cell.shotId, filePath: cell.filePath, selected: true, status: "done",
       }));
     }
+  });
+
+  it("keeps every pixel of all nine reference frames inside its own panel when gutters drift", async () => {
+    db.update(schema.scripts).set({
+      shots: Array.from({ length: 9 }, (_, index) => ({ ...originalShots[0], shotId: index + 1 })),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+    const result = await generate({ productImageUrls: productPaths }, 1, 9);
+    for (const cell of result.cells) {
+      const filePath = join(directory, "uploads", cell.filePath.replace("/api/files/", ""));
+      const probe = await probeMedia(filePath);
+      expect(probe.width).toBeGreaterThan(70);
+      expect(probe.height).toBeGreaterThan(150);
+      const rgb = execFileSync(process.env.FFMPEG_PATH!, [
+        "-v", "error", "-i", filePath, "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+      ]);
+      expect(rgb.length).toBe(probe.width * probe.height * 3);
+      const expected = gridColors[cell.shotId - 1];
+      let foreignPixels = 0;
+      for (let offset = 0; offset < rgb.length; offset += 3) {
+        if (rgb[offset] !== expected[0] || rgb[offset + 1] !== expected[1] || rgb[offset + 2] !== expected[2]) foreignPixels++;
+      }
+      expect(foreignPixels, `shot ${cell.shotId} includes a seam or a neighboring panel`).toBe(0);
+    }
+  });
+
+  it("rejects a provider image without a grid before replacing selected media or saving a manifest", async () => {
+    gridBase64 = productBytes[0].toString("base64");
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST",
+      body: JSON.stringify({ scriptId, provider: "openai", model: "gpt-image-2", apiKey: "test-key", baseUrl: "https://image-provider.test/v1" }),
+    }), { params: Promise.resolve({ id: projectId }) });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ code: "STORYBOARD_GRID_LAYOUT_INVALID" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(db.select().from(schema.assets).all()).toEqual([
+      expect.objectContaining({ id: "previous-take", selected: true, status: "done" }),
+    ]);
+    await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps the presenter before every product view and gives the array precedence over the legacy field", async () => {
@@ -401,7 +524,8 @@ describe("storyboard grid uploaded product references", () => {
   it.each([
     ["reference order", { productImageUrls: [...productPaths].reverse() }],
     ["image model", { model: "gpt-image-1.5" }],
-    ["image options", { options: { width: 1080, height: 1920 } }],
+    ["image options", { options: { width: 1920, height: 1080 } }],
+    ["grid resolution", { gridResolution: "2k" }],
   ])("invalidates reuse when the %s changes", async (_reason, changed) => {
     await generate({ productImageUrls: productPaths, reuseExisting: true });
     const second = await generate({ productImageUrls: productPaths, reuseExisting: true, ...changed }, 2);
@@ -460,6 +584,44 @@ describe("storyboard grid uploaded product references", () => {
     expect(db.select().from(schema.assets).all()).toHaveLength(2);
     expect(db.select().from(schema.assets).where(eq(schema.assets.id, "previous-take")).get()?.selected).toBe(true);
     await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("replaces a usable legacy grid crop instead of preserving its possibly contaminated pixels", async () => {
+    const legacyPath = `/api/files/${projectId}/legacy-grid.png`;
+    await writeFile(join(directory, "uploads", projectId, "legacy-grid.png"), productBytes[0]);
+    db.update(schema.assets).set({
+      filePath: legacyPath,
+      prompt: "[storyboard-grid 第1格] Product demonstration",
+    }).where(eq(schema.assets.id, "previous-take")).run();
+    db.insert(schema.assets).values({
+      id: "existing-video", projectId, shotId: 2, type: "ai_generated",
+      filePath: `/api/files/${projectId}/existing-video.mp4`, selected: true, status: "done",
+    }).run();
+
+    const result = await generate({ preserveExisting: true });
+    expect(result).toMatchObject({ preservedCount: 1, generatedCount: 1 });
+    expect(result.cells[0].filePath).not.toBe(legacyPath);
+    expect(result.cells[1].filePath).toBe(`/api/files/${projectId}/existing-video.mp4`);
+    const rows = db.select().from(schema.assets).all();
+    expect(rows.find((row) => row.id === "previous-take")?.selected).toBe(false);
+    expect(rows.find((row) => row.id === "existing-video")?.selected).toBe(true);
+    expect(rows).toContainEqual(expect.objectContaining({
+      shotId: 1, filePath: result.cells[0].filePath, selected: true, prompt: expect.stringContaining("[storyboard-grid-v2 "),
+    }));
+  });
+
+  it("preserves validated version 2 grid crops without submitting another provider request", async () => {
+    const first = await generate({});
+    fetchMock.mockClear();
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+      method: "POST", body: JSON.stringify({ scriptId, preserveExisting: true }),
+    }), { params: Promise.resolve({ id: projectId }) });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      reused: true, preserved: true, generatedCount: 0, cells: first.cells,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.select().from(schema.assets).all()).toHaveLength(3);
   });
 
   it("keeps late grid results as alternatives after the user changes selection during generation", async () => {

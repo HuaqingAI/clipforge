@@ -469,7 +469,7 @@ describe("Kling durable submission and recovery", () => {
       referenceImageUrls: ["https://example.test/foreign-reference.png"],
     }));
 
-    expect(job.data.prompt).toContain("Premium furniture product CG motion");
+    expect(job.data.prompt).toContain("Premium product CG motion");
     expect(job.data.prompt).not.toContain("BUY NOW");
     expect(job.data.inputs).toEqual([expect.objectContaining({ role: "image", sourceUrl: "/api/files/project-1/product.png" })]);
     expect(JSON.stringify(job.data)).not.toContain("foreign-sale-card.png");

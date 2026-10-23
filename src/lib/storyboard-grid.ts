@@ -44,6 +44,29 @@ export interface StoryboardGridPolicyInput {
   outputPolicy?: unknown;
 }
 
+interface StoryboardGridReferences extends StoryboardGridPolicyInput {
+  characterSheet?: boolean;
+  productImage?: boolean;
+  productImageCount?: number;
+  aspectRatio?: string;
+}
+
+/** Only a numeric ratio may enter the layout instructions; provider-specific values fall back to portrait. */
+function promptAspectRatio(value?: string): { ratio: string; zh: string; en: string } {
+  const match = typeof value === "string" ? value.match(/^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/) : null;
+  let width = match ? Number(match[1]) : 9;
+  let height = match ? Number(match[2]) : 16;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    width = 9;
+    height = 16;
+  }
+  return {
+    ratio: `${width}:${height}`,
+    zh: width === height ? "正方形" : width > height ? "横版" : "竖版",
+    en: width === height ? "square" : width > height ? "landscape" : "portrait",
+  };
+}
+
 /**
  * Build the one-shot 3x3 storyboard-grid image prompt: global consistency block
  * (same person / outfit / room / light) + one numbered line per cell + realism
@@ -53,7 +76,7 @@ export interface StoryboardGridPolicyInput {
 export function buildStoryboardGridPrompt(
   shots: Shot[],
   characters?: ScriptCharacter[] | null,
-  refs?: { characterSheet?: boolean; productImage?: boolean; productImageCount?: number; creativeProfile?: unknown; outputPolicy?: unknown },
+  refs?: StoryboardGridReferences,
   policy?: StoryboardGridPolicyInput | unknown,
 ): string {
   const cells = shots.slice(0, GRID_MAX_SHOTS);
@@ -64,15 +87,21 @@ export function buildStoryboardGridPrompt(
     || isPremiumCgPromptPolicy(refs?.creativeProfile)
     || isPremiumCgPromptPolicy(refs?.outputPolicy);
   if (premiumCg) return buildPremiumStoryboardGridPrompt(cells, refs);
+  const aspect = promptAspectRatio(refs?.aspectRatio);
 
   const cast = (characters ?? [])
     .map((c) => `${c.name}：${c.appearance}`)
     .filter(Boolean)
     .join("；");
 
-  const cellLines = cells.map((s, i) => {
+  const cellLines = Array.from({ length: GRID_MAX_SHOTS }, (_, i) => {
+    const position = `固定位置：第 ${Math.floor(i / GRID_COLS) + 1} 行第 ${i % GRID_COLS + 1} 列`;
+    const s = cells[i];
+    if (!s) {
+      return `第 ${i + 1} 格（占位复用，不新增分镜）：${cells.length ? `完整重复第 ${cells.length} 格的画面` : "中性干净场景"}，保留独立单格及分隔线，不得将相邻画面扩展到此格。${position}。`;
+    }
     const label = SHOT_TYPE_LABELS[String(s.type)] ?? "分镜";
-    return `第 ${i + 1} 格（${label}）：${s.description}`;
+    return `第 ${i + 1} 格（${label}）：${s.description}。${position}。`;
   });
 
   // reference-image contract: the images array order is [character sheet?, ...product photos],
@@ -99,11 +128,13 @@ export function buildStoryboardGridPrompt(
   }
 
   return [
-    `一张 ${GRID_ROWS}x${GRID_COLS} 等分九宫格分镜图，整图 9:16 竖版，格与格之间只留极细的白色分隔缝。`,
+    `一张 ${GRID_ROWS}x${GRID_COLS} 等分九宫格分镜图，整图 ${aspect.ratio} ${aspect.zh}，每格画幅同为 ${aspect.ratio}，格与格之间只留极细的白色分隔缝。`,
+    "固定布局：必须画满 3 行 3 列九格，按从左到右、从上到下的行主序编号。两条竖直分隔线位于整图宽度的 1/3、2/3，两条水平分隔线位于整图高度的 1/3、2/3；分隔线必须笔直、连续贯穿整图、极细且为纯白色，禁止外边框和装饰边框。",
+    `前 ${cells.length} 格按脚本顺序一格一镜，剩余格仅作占位复用；不得重排、合并、跨格、放大某格或减少行列。以下编号和位置仅用于描述，不得画进图片。`,
     `全局一致性（最重要）：九格是同一支视频的分镜——同一人物、同一发型与同一身衣服、同一房间、同一光线方向与色调，道具与商品在各格间保持完全一致。`,
     ...refLines,
     cast ? `人物设定：${cast}。` : "",
-    `各格内容（每格是一个独立镜头的画面，构图按竖屏 9:16 设计；每格都是该镜动作即将开始前一瞬的定格，姿态里留着正要发生的势能）：`,
+    `各格内容（每格是一个独立镜头的画面，构图按 ${aspect.ratio} ${aspect.zh}设计；每格都是该镜动作即将开始前一瞬的定格，姿态里留着正要发生的势能）：`,
     ...cellLines,
     REAL_FACE_CONSTRAINT.zh + "。",
     UGC_FIRST_FRAME_RULES,
@@ -116,32 +147,40 @@ export function buildStoryboardGridPrompt(
 /** Product-only storyboard contract. It intentionally does not share the UGC/persona block. */
 function buildPremiumStoryboardGridPrompt(
   cells: Shot[],
-  refs?: { characterSheet?: boolean; productImage?: boolean; productImageCount?: number },
+  refs?: StoryboardGridReferences,
 ): string {
+  const aspect = promptAspectRatio(refs?.aspectRatio);
   const suppliedCount = refs?.productImageCount;
   const productImageCount = typeof suppliedCount === "number" && Number.isFinite(suppliedCount)
     ? Math.max(0, Math.floor(suppliedCount))
     : refs?.productImage ? 1 : 0;
   const refLines: string[] = [];
   if (refs?.characterSheet) {
-    refLines.push("A presenter or identity reference, if supplied, is reference-only and must not introduce a presenter, talking head, or persona into any cell.");
+    refLines.push("A presenter or identity reference, if supplied, must not introduce a presenter, talking head, or persona into any cell.");
   }
   for (let i = 0; i < productImageCount; i++) {
     refLines.push(productImageCount === 1
-      ? "The product reference image locks the furniture silhouette, proportions, construction, materials, colors, seams, legs, and visible markings in every cell."
-      : `Product reference image ${i + 1}/${productImageCount} is another view of the same furniture piece; reconcile all supplied views as one product and never invent a new variant.`);
+      ? "The product reference image locks the product silhouette, proportions, component count, visible construction, surface finishes, materials, colors, and existing markings in every cell."
+      : `Product reference image ${i + 1}/${productImageCount} is another view of the same product; reconcile all supplied views as one product and never invent a new variant.`);
   }
-  const cellLines = cells.map((shot, index) => {
+  const cellLines = Array.from({ length: GRID_MAX_SHOTS }, (_, index) => {
+    const position = `Fixed position: row ${Math.floor(index / GRID_COLS) + 1}, column ${index % GRID_COLS + 1}.`;
+    const shot = cells[index];
+    if (!shot) {
+      return `Cell ${index + 1} (padding repeat, not an additional shot): ${cells.length ? `repeat the complete image from Cell ${cells.length}` : "a clean neutral scene"}; retain this separate cell and its separators, and do not extend adjacent images into it. ${position}`;
+    }
     const label = PREMIUM_SHOT_TYPE_LABELS[String(shot.type)] ?? "product observation";
     const visual = sanitizePremiumCgVisualText(shot.visualIntent || shot.description) || "quiet product observation with stable form and material detail";
     const camera = sanitizePremiumCgVisualText(shot.camera);
-    return `Cell ${index + 1} (${label}): ${visual}${camera ? ` Camera: ${camera}.` : ""}`;
+    return `Cell ${index + 1} (${label}): ${visual}${camera ? ` Camera: ${camera}.` : ""} ${position}`;
   });
   return [
-    `A premium furniture product CG storyboard grid: a ${GRID_ROWS}x${GRID_COLS} equal-cell image in a 9:16 portrait canvas, with hairline neutral gutters only.`,
-    "All cells depict one identical furniture product with locked proportions, module count, seams, upholstery, wood or metal finish, color, hardware, and visible construction. Use controlled studio or quiet modern-home lighting with restrained, physically plausible reflections.",
+    `A premium product CG storyboard grid: a ${GRID_ROWS}x${GRID_COLS} equal-cell image in a ${aspect.ratio} ${aspect.en} canvas; every cell also has a ${aspect.ratio} aspect ratio, with hairline white separators only.`,
+    "Fixed layout: fill exactly 3 rows and 3 columns, in row-major order from left to right, then top to bottom. Place vertical separators at 1/3 and 2/3 of canvas width, and horizontal separators at 1/3 and 2/3 of canvas height. All separators must be straight, continuous across the entire canvas, very thin, and pure white. No outer frame or decorative borders.",
+    `The first ${cells.length} cells follow the script shot order; remaining cells are padding repeats only. Never rearrange, merge, span, enlarge cells, or reduce the row or column count. Cell numbers and positions are instructions only and must not appear in the image.`,
+    "All cells depict one identical product with locked category, silhouette, proportions, component count, visible construction, surface finishes, materials, colors, and existing markings as supported by the supplied references. Match scale, framing, lighting, and setting to the actual product and its documented use context in the approved shots; use a neutral studio when the context is unspecified. Keep lighting consistent with restrained, physically plausible reflections.",
     ...refLines,
-    "No people, presenter behavior, lifestyle acting, handheld phone texture, UGC framing, or sales narrative. Do not infer unseen backs, interiors, mechanisms, materials, dimensions, or functions. Use only structure and angles supported by the supplied references.",
+    "The product remains the subject. A cropped hand or unfaced person may establish scale or demonstrate one simple use only when explicitly required by an approved shot and supported by supplied product facts; otherwise show the product alone. No presenter behavior, talking heads, lifestyle acting, handheld phone texture, UGC framing, or sales narrative. Do not infer unseen backs, interiors, mechanisms, materials, dimensions, or functions. Use only structure and angles supported by the supplied references.",
     "Each cell is an independent keyframe before motion: one clear product observation, stable geometry, clean composition, and no added on-screen text, captions, subtitles, numbers, prices, promotional graphics, CTA, logo, or watermark. Preserve only markings already visible on the product reference.",
     ...cellLines,
     "Hard layout requirements: exactly nine equal cells, no borders inside cells, no labels or writing, and every cell must be crop-safe as a standalone product keyframe.",

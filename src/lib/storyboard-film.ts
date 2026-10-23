@@ -424,7 +424,7 @@ export function buildStoryboardFilmPrompt(
 }
 
 /**
- * Premium furniture CG film contract. Kept separate from the legacy UGC film prompt so a
+ * Premium product CG film contract. Kept separate from the legacy UGC film prompt so a
  * new policy cannot accidentally inherit presenter, handheld, dialogue, or CTA language.
  */
 function buildPremiumStoryboardFilmPrompt(
@@ -463,14 +463,14 @@ function buildPremiumStoryboardFilmPrompt(
   });
 
   const mapping = refs?.characterSheet
-    ? "Reference mapping: product keyframes are @Image1 onward. Any presenter or identity sheet is ignored for scene content and must never introduce a person."
+    ? "Reference mapping: product keyframes are @Image1 onward. Any presenter or identity sheet is ignored for scene content and must never introduce a presenter or persona."
     : `Reference mapping: @Image1 through @Image${shots.length} are the product keyframes for shots 1-${shots.length} in order.`;
   const language = zh ? "Use the same language as the approved factual narration and visual brief." : "Use the same language as the approved factual narration and visual brief.";
   return [
-    `Vertical 9:16 premium furniture product CG film, about ${total} seconds total, ${shots.length} controlled shots rendered as one continuous film with hard cuts at the timecodes below.`,
+    `Vertical 9:16 premium product CG film, about ${total} seconds total, ${shots.length} controlled shots rendered as one continuous film with hard cuts at the timecodes below.`,
     mapping,
-    "Keep one identical furniture product across every shot: locked silhouette, proportions, module count, seams, upholstery, wood or metal finish, colors, legs, hardware, and visible markings. Use quiet studio or modern-home architectural lighting, stable geometry, restrained reflections, and deliberate product-film pacing.",
-    "Use only construction, functions, materials, and camera angles supported by the supplied references. Do not invent unseen backs, interiors, mechanisms, dimensions, certifications, or features. No people, presenter behavior, lifestyle acting, handheld phone texture, UGC framing, or sales choreography.",
+    "Keep one identical product across every shot: locked category, silhouette, proportions, component count, visible construction, surface finishes, materials, colors, and existing markings as supported by the supplied references. Match scale, framing, lighting, and setting to the actual product and its documented use context in the approved shots; use a neutral studio when the context is unspecified. Use consistent controlled lighting, stable geometry, restrained reflections, and deliberate product-film pacing.",
+    "Use only construction, functions, materials, and camera angles supported by the supplied references. Do not invent unseen backs, interiors, mechanisms, dimensions, certifications, or features. The product remains the subject. A cropped hand or unfaced person may establish scale or demonstrate one simple use only when explicitly required by an approved shot and supported by supplied product facts; otherwise show the product alone. No presenter behavior, talking heads, lifestyle acting, handheld phone texture, UGC framing, or sales choreography.",
     "Do not generate added on-screen text, captions, subtitles, numbers, prices, promotional graphics, CTA, logos, or watermarks; preserve only product markings already visible in the references.",
     restrainedNarration
       ? "Audio policy: only the approved restrained factual narration and natural product or room sound; no dialogue performance, hype, scarcity, comparison, or purchase direction. No subtitles."

@@ -47,21 +47,23 @@ export const SYSTEM_PROMPT = `你是一位顶级电商短视频编导，拥有�
 你必须严格按照指定的 JSON 格式输出脚本，不要输出任何额外的解释文字。`;
 
 /**
- * A separate role prompt for premium furniture product CG films. Do not merge this into SYSTEM_PROMPT:
+ * A separate role prompt for premium product CG films. Do not merge this into SYSTEM_PROMPT:
  * the sales prompt deliberately optimizes for hooks, conversion, and on-screen copy, which conflicts
  * with a quiet product film and cannot be reliably overridden by a final negative instruction.
  */
-export const PREMIUM_PRODUCT_CG_SYSTEM_PROMPT = `You are a director for premium furniture product CG films.
+export const PREMIUM_PRODUCT_CG_SYSTEM_PROMPT = `You are a director for premium product CG films across product categories.
 
-Your work treats the furniture as the subject: its silhouette, proportions, materials, construction,
-comfort cues, and relationship to a calm interior. Build a deliberate visual sequence rather than a
-short-form sales pitch.
+Your work treats the supplied product as the subject: its silhouette, proportions, visible finish,
+documented materials and craftsmanship, and relationship to an appropriate use context. Adapt the
+visual language to the actual product category and scale. Build a deliberate visual sequence.
 
 Rules:
 - Use only product facts supplied in the brief. Do not invent dimensions, mechanisms, materials, or unseen sides.
+- Preserve the supplied product's geometry, color, finish, proportions, and existing markings. If a material, process, function, or use is not documented, show only observable appearance.
+- Choose product-appropriate settings and details; do not assume a specific product type, material, component, or use environment.
 - Every shot has one visual observation and one simple, physically plausible camera movement.
 - Favor quiet natural light or controlled studio light, restrained movement, stable geometry, believable contact shadows, and material detail.
-- A person may appear only as an unfaced scale or comfort cue when the brief supports it; never as a presenter.
+- A cropped hand or unfaced person may appear only for a simple, documented use or scale cue when the brief supports it; never as a presenter. Omit interactions when unsupported.
 - Generated frames contain no added text, subtitles, price, labels, promotional graphics, watermark, or call to action. Existing markings visible in supplied product reference may be preserved.
 - Do not use urgency, discounts, comparisons, audience bait, or purchase language.
 
@@ -96,7 +98,7 @@ export const styleNameMap: Record<ScriptStyleType, string> = {
   unboxing: "开箱测评",
   product_pov: "物品拟人",
   talking_head: "达人口播",
-  premium_product_cg: "高端家具产品 CG",
+  premium_product_cg: "高端产品 CG",
   custom: "自定义",
 };
 
@@ -295,8 +297,8 @@ ${presenterPromptBlock()}`,
   ${presenterPromptBlock()}`,
 
   premium_product_cg: `
-【脚本风格：高端家具产品 CG】
-以产品的形体、比例、材质、工艺、单一功能动作和空间尺度组织镜头。建议使用“空间建立 → 形体观察 → 材质细节 → 工艺或功能 → 生活尺度 → 英雄收束”的递进；每镜只回答一个视觉问题。
+【脚本风格：高端产品 CG】
+适用于各类高端产品，按实际品类、尺度和参考资料选择镜头。建议使用“产品全貌 → 形体观察 → 表面或材质细节 → 已验证的工艺或功能 → 适配场景与尺度 → 主视觉收束”的递进；每镜只回答一个视觉问题。材质、工艺、功能及使用动作仅在资料支持时呈现，缺少依据时以可见外观、光影与构图替代。场景服务于产品用途，不预设家居空间或特定品类部件。
 
 严格禁止：价格、促销、购买引导、夸张承诺、人物口播、文字贴片、字幕、数字标签、画面内生成品牌字。产品原图已有的真实标识可保留，但不能额外添加文字。
 
@@ -724,6 +726,8 @@ export interface ScriptGenerationInput {
   productName: string;
   /** product category */
   category: ProductCategory;
+  /** Original category before commerce normalization; CG uses this to retain unsupported or unspecified categories. */
+  productCategoryHint?: string;
   /** product description / selling points */
   productDescription?: string;
   /** script style */
@@ -791,7 +795,7 @@ Return one JSON object only:
       "type": "product_reveal",
       "beatRole": "establish | form | material | craft | function | lifestyle | hero",
       "duration": 4,
-      "description": "a concrete, visible furniture composition only",
+      "description": "a concrete, visible composition of the supplied product",
       "visualIntent": "the single visual fact this shot proves",
       "camera": "one restrained, physically plausible camera move",
       "visualSource": "product_image | ai_generate | user_upload",
@@ -813,26 +817,38 @@ ${narrationRule}`;
 const PREMIUM_PRODUCT_CG_MODE_DIRECTIVES: Record<PremiumProductCgProfile["videoMode"], string> = {
   product_closeup: `
 【CG visual mode: product portrait】
-Keep the furniture as the sole subject. Establish its silhouette and proportions, then move through controlled material and construction observations. Use a calm studio or minimal architectural setting. Do not introduce a presenter or a sales demonstration.`,
+Keep the supplied product as the sole subject. Establish its silhouette and proportions at its actual scale, then observe visible surfaces and documented material or craft details. Use a calm studio or minimal background appropriate to the product. Omit unsupported construction or function beats. Do not introduce people, a presenter, or a sales demonstration.`,
   scene_demo: `
-【CG visual mode: living-space product film】
-Place the furniture in a quiet contemporary living environment that supports scale and comfort. A cropped hand, back view, or unfaced silhouette is allowed only for a single supported interaction; the furniture remains the subject. Do not create a host, testimonial, or direct-to-camera performance.`,
+【CG visual mode: product context and scale】
+Choose a restrained use environment appropriate to the supplied product category and documented use. Let the supplied use context determine the background and preserve realistic scale. A cropped hand, back view, or unfaced silhouette is allowed only for one simple documented interaction; omit the person and interaction when unsupported. The product remains the subject. Do not create a host, testimonial, or direct-to-camera performance.`,
 };
 
-/** Builds the isolated prompt branch for premium furniture product CG. */
+function premiumProductCgCategoryLabel(input: ScriptGenerationInput): string {
+  const hint = input.productCategoryHint?.trim();
+  if (!hint) return categoryNameMap[input.category] ?? input.category;
+  const key = hint.toLowerCase();
+  if (key === "digital") return categoryNameMap.tech;
+  if (key === "other" || key === "unspecified") {
+    return "unspecified; identify the actual product category from the supplied product brief";
+  }
+  return categoryNameMap[key as ProductCategory] ?? hint;
+}
+
+/** Builds the isolated prompt branch for premium product CG. */
 export function buildPremiumProductCgUserPrompt(
   input: ScriptGenerationInput,
   profile: PremiumProductCgProfile = premiumProductCgProfileForInput(input) ?? createPremiumProductCgProfile(),
 ): string {
   const recipe = getPremiumCgRecipeFromSnapshot(profile.recipeSnapshot);
   const parts: string[] = [
-    "Create a premium furniture product CG film, not a commerce short-video script.",
+    "Create a premium product CG film tailored to the supplied product category, scale, and verified reference.",
     "\n【Product brief】",
     `- Product name: ${input.productName}`,
+    `- Product category: ${premiumProductCgCategoryLabel(input)} (use the specific product brief to resolve the category and suitable setting)`,
     `- Target duration: ${profile.targetDuration} seconds`,
     `- Creation profile: ${profile.id}`,
     `- Narration mode: ${profile.narrationMode}`,
-    `- Visual setting: ${profile.visualDirection.setting}`,
+    `- Visual setting: ${profile.visualDirection.setting === "modern_home" ? "category-appropriate use context matched to the product brief" : "neutral studio matched to product scale"}`,
     `- Visual look: ${profile.visualDirection.look}`,
     `- Camera safety: ${profile.visualDirection.cameraSafety}`,
     `\n${PREMIUM_PRODUCT_CG_MODE_DIRECTIVES[profile.videoMode]}`,
@@ -841,7 +857,10 @@ export function buildPremiumProductCgUserPrompt(
 - Do not add textOverlay. Do not describe words appearing, fading, animating, or being placed in the image.
 - No CTA, discount, urgency, sales hook, review, comparison, or audience-interaction language.
 - Product markings visible in approved reference imagery may remain unchanged; do not add or redraw brand copy.
-- Never invent an unseen back, mechanism, material, or feature. Use only supplied facts.`,
+- Preserve the supplied product's geometry, proportions, color, finish, and visible markings.
+- Never invent an unseen back, mechanism, material, process, or feature. Use only supplied facts.
+- Select details and surroundings for the actual product category. Show material, craftsmanship, function, and interaction only when supported by supplied notes or visible reference evidence; otherwise use observable form, surface, light, and composition.
+- Treat recipe beats as visual priorities, not permission to invent missing details or force a use interaction.`,
   ];
 
   if (recipe) {
@@ -852,7 +871,7 @@ export function buildPremiumProductCgUserPrompt(
     parts.push(`\n【Verified product notes】\n${input.productDescription}`);
   }
   if (input.productAnalysis) {
-    parts.push(`\n【Reference-image observations】\n${input.productAnalysis}`);
+    parts.push(`\n【Reference-image observations】\n${input.productAnalysis}\nUse only directly visible product attributes and legible existing markings as reference evidence. Inferred audiences, scenarios, pain points, selling claims, and suggested script styles are not verified product facts. They cannot establish a material, manufacturing process, function, scale, or supported interaction; omit those details unless the product brief independently confirms them.`);
   }
   if (input.targetAudience) {
     parts.push(`\n【Intended setting or viewer context】\n${input.targetAudience}`);
@@ -882,7 +901,7 @@ export function buildPremiumProductCgBatchPrompt(
   return `${base}
 
 【CG batch requirement】
-Generate ${count} product-film options. Keep the same profile and hard frame policy in every option. Vary only the visual emphasis and shot ordering, such as form portrait, material craft, or living-scale observation. Do not vary into sales scripts, hooks, testimonials, captions, or CTAs.
+Generate ${count} product-film options. Keep the same profile, product category, verified facts, and hard frame policy in every option. Vary only the visual emphasis and shot ordering, such as form portrait, supported surface or craft detail, or product-appropriate context and scale. Skip unsupported materials, mechanisms, processes, or interactions in every option. Do not vary into sales scripts, hooks, testimonials, captions, or CTAs.
 
 Return:
 {

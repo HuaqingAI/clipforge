@@ -32,7 +32,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!proj) return apiError(req, "项目不存在", "Project not found", 404);
   if (isPremiumProductCgProfile(proj.creativeProfile)) {
     return NextResponse.json({
-      error: errText(req, "高端家具产品 CG 不支持生成导购二维码。", "High-end furniture product CG does not allow shop QR output."),
+      error: errText(req, "高端产品 CG 不支持生成导购二维码。", "Premium product CG does not allow shop QR output."),
       code: "PREMIUM_CG_OUTPUT_POLICY",
     }, { status: 400 });
   }

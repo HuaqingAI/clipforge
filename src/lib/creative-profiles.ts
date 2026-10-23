@@ -14,6 +14,7 @@ import {
 
 export const PREMIUM_PRODUCT_CG_STYLE = "premium_product_cg" as const;
 export const PREMIUM_PRODUCT_CG_PROFILE_ID = "premium_product_cg_v1" as const;
+export const PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION = "premium-product-cg-2" as const;
 export const SHORT_VIDEO_SALES_PROFILE_ID = "short_video_sales_v1" as const;
 
 export type CreationType = "short_video_sales" | "premium_product_cg";
@@ -68,6 +69,7 @@ export interface PremiumProductCgTextPolicy {
 }
 
 export interface PremiumProductCgVisualDirection {
+  /** modern_home is the legacy storage key for a category-appropriate usage context. */
   setting: "studio" | "modern_home";
   look: string;
   cameraSafety: "reference-limited";
@@ -99,7 +101,7 @@ export interface PremiumProductCgProfile {
   visualDirection: PremiumProductCgVisualDirection;
   /** Frozen selection from the curated CG recipe library. */
   recipeSnapshot: PremiumCgRecipeSnapshot;
-  promptCompilerVersion: "premium-furniture-cg-1";
+  promptCompilerVersion: typeof PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION;
 }
 
 export type ProjectCreativeProfile = ShortVideoSalesProfile | PremiumProductCgProfile;
@@ -198,6 +200,19 @@ function boundedText(value: unknown, fallback: string, maxLength = 240): string 
   return text ? text.slice(0, maxLength) : fallback;
 }
 
+/** Upgrade only shipped defaults; an explicitly chosen custom look remains intact. */
+function normalizePremiumCgLook(value: unknown, fallback: string): string {
+  const look = asTrimmedString(value);
+  if (look === "quiet premium furniture product film") return fallback;
+  if (look === "controlled neutral studio light, calm architectural backdrop, measured silhouette and edge highlights") {
+    return createPremiumCgRecipeSnapshot("form_portrait").visualLook;
+  }
+  if (look === "bright quiet contemporary residence, soft natural window light, low-saturation neutral materials and balanced spatial scale") {
+    return createPremiumCgRecipeSnapshot("living_scale").visualLook;
+  }
+  return boundedText(look, fallback);
+}
+
 function shallowJsonRecord(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const output: Record<string, unknown> = {};
@@ -283,7 +298,7 @@ export function createShortVideoSalesProfile(fallback: CreativeProfileFallback =
 }
 
 /**
- * Creates the canonical premium furniture CG profile. The text and compose policy is deliberately
+ * Creates the canonical premium product CG profile. The text and compose policy is deliberately
  * not configurable here: user input cannot re-enable generated copy, captions, overlays, cards, or CTAs.
  */
 export function createPremiumProductCgProfile(options: {
@@ -326,11 +341,11 @@ export function createPremiumProductCgProfile(options: {
         : direction.setting === "studio"
           ? "studio"
           : recipeSnapshot.setting,
-      look: boundedText(direction.look, recipe?.visualLook ?? "quiet premium furniture product film"),
+      look: normalizePremiumCgLook(direction.look, recipe?.visualLook ?? "quiet premium product film"),
       cameraSafety: "reference-limited",
     },
     recipeSnapshot,
-    promptCompilerVersion: "premium-furniture-cg-1",
+    promptCompilerVersion: PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
   };
 }
 

@@ -281,6 +281,8 @@ export async function POST(req: NextRequest) {
     const scripts = await generateScript({
       productName,
       category,
+      // CG accepts any product category; the legacy sales fallback must not relabel it as beauty.
+      ...(premiumProfile && { productCategoryHint: typeof effectiveCategory === "string" && effectiveCategory.trim() ? effectiveCategory.trim() : "unspecified" }),
       productDescription,
       productAnalysis: analysis,
       styleType,

@@ -120,6 +120,91 @@ describe("OpenAI image reference contract", () => {
   });
 });
 
+describe("OpenAI image canvas resolution", () => {
+  it.each(imageModels.flatMap((modelId) => (["text-to-image", "image-to-image"] as const)
+    .map((mode) => ({ modelId, mode }))))("sends a native 4K portrait canvas for $modelId in $mode mode", async ({ modelId, mode }) => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({
+      modelId, mode, prompt: "A detailed 3x3 storyboard", width: 2160, height: 3840, imageResolution: "4k",
+      ...(mode === "image-to-image" && { referenceImageUrls: [product] }),
+    });
+    const body = fetchMock.mock.calls[0][1].body;
+    if (mode === "image-to-image") {
+      expect((body as FormData).get("size")).toBe("2160x3840");
+      expect((body as FormData).has("imageResolution")).toBe(false);
+    } else {
+      expect(JSON.parse(body)).toMatchObject({ size: "2160x3840" });
+      expect(JSON.parse(body)).not.toHaveProperty("imageResolution");
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps exact 9:16 proportions when opting into the 2K tier", async () => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({
+      modelId: "gpt-image-2", mode: "text-to-image", prompt: "A storyboard", width: 1080, height: 1920, imageResolution: "2k",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).size).toBe("1152x2048");
+  });
+
+  it("limits a large square canvas by total pixels as well as its longest edge", async () => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({
+      modelId: "gpt-image-2", mode: "text-to-image", prompt: "A square storyboard", width: 3840, height: 3840, imageResolution: "4k",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).size).toBe("2880x2880");
+  });
+
+  it.each(["text-to-image", "image-to-image"] as const)("retains the existing standard canvas in %s mode", async (mode) => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({
+      modelId: "gpt-image-2", mode, prompt: "A storyboard", width: 1080, height: 1920, imageResolution: "standard",
+      ...(mode === "image-to-image" && { referenceImageUrls: [product] }),
+    });
+    const body = fetchMock.mock.calls[0][1].body;
+    expect(mode === "image-to-image" ? (body as FormData).get("size") : JSON.parse(body).size).toBe("864x1536");
+  });
+
+  it.each([[999, 1234], [17, 17], [9999, 101], [100, 9999], [8000, 5000], [2222, 3701]])(
+    "adapts an unusual %i x %i request to the documented image limits", async (width, height) => {
+      const fetchMock = mockImageResponse();
+      await provider().generateImage({
+        modelId: "gpt-image-2", mode: "text-to-image", prompt: "A storyboard", width, height, imageResolution: "4k",
+      });
+      const [w, h] = JSON.parse(fetchMock.mock.calls[0][1].body).size.split("x").map(Number);
+      expect(w % 16).toBe(0);
+      expect(h % 16).toBe(0);
+      expect(Math.max(w, h)).toBeLessThanOrEqual(3840);
+      expect(Math.max(w, h) / Math.min(w, h)).toBeLessThanOrEqual(3);
+      expect(w * h).toBeGreaterThanOrEqual(655360);
+      expect(w * h).toBeLessThanOrEqual(8294400);
+    }
+  );
+
+  it("retains older models' supported size presets with the high-resolution option", async () => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({
+      modelId: "gpt-image-1.5", mode: "text-to-image", prompt: "A storyboard", width: 2160, height: 3840, imageResolution: "4k",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).size).toBe("1024x1536");
+  });
+
+  it.each(([undefined, "standard", "2k", "4k"] as const).flatMap((imageResolution) =>
+    (["text-to-image", "image-to-image"] as const).map((mode) => ({ imageResolution, mode }))))(
+    "allows additional generation time only for an explicit $imageResolution canvas in $mode mode", async ({ imageResolution, mode }) => {
+      const fetchMock = mockImageResponse();
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      await provider().generateImage({
+        modelId: "gpt-image-2", mode, prompt: "A storyboard", width: 2160, height: 3840, imageResolution,
+        ...(mode === "image-to-image" && { referenceImageUrls: [product] }),
+      });
+      const timeout = imageResolution === "2k" || imageResolution === "4k" ? 300000 : 120000;
+      expect(timer).toHaveBeenCalledWith(expect.any(Function), timeout);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  );
+});
+
 describe("OpenAI image API transport", () => {
   const edit = { modelId: "gpt-image-2", mode: "image-to-image" as const, prompt: "A sofa", referenceImageUrls: [presenter, product] };
 

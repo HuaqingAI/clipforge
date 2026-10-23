@@ -208,13 +208,13 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
   const shots = script.shots ?? [];
   if (isPremiumProductCgProfile(creativeProfile)) {
     if (model.tool !== "image_to_video") {
-      throw fail("CREATIVE_POLICY_UNSUPPORTED", "高端家具产品 CG 整片仅支持已验证的图生视频模型。");
+      throw fail("CREATIVE_POLICY_UNSUPPORTED", "高端产品 CG 整片仅支持已验证的图生视频模型。");
     }
     if (!Array.isArray(project.productImages) || !project.productImages.some((image) => typeof image === "string" && image.trim())) {
-      throw fail("PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED", "高端家具产品 CG 整片需要至少一张已保存的产品参考图。");
+      throw fail("PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED", "高端产品 CG 整片需要至少一张已保存的产品参考图。");
     }
     const issues = lintCreativeProfileShots(creativeProfile, shots);
-    if (issues.length) throw fail("CREATIVE_POLICY_VIOLATION", "高端家具产品 CG 脚本包含画面文字、营销图形或不符合旁白策略的内容，请修改脚本后重试。");
+    if (issues.length) throw fail("CREATIVE_POLICY_VIOLATION", "高端产品 CG 脚本包含画面文字、营销图形或不符合旁白策略的内容，请修改脚本后重试。");
   }
   const output = outputSettings(body.output, creativeProfile);
   if (output.audioStrategy === "native" && !model.capabilities.audio) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", "当前模型未声明原生音频能力，请选择免费配音。");

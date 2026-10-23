@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useState } from "react";
 import type { AssetItem } from "@/lib/assets-view";
 import { useT } from "@/lib/i18n";
+import { AssetImagePreview } from "./asset-image-preview";
 
 const VIDEO_URL = /\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i;
 const STATIC_IMAGE_URL = /\.(?:avif|gif|ico|jpe?g|png|svg|webp)(?:[?#]|$)/i;
@@ -22,7 +23,12 @@ function MaterialImage({ url, shotId, source }: { url: string; shotId: number; s
           {t("sourceImageLoadFailed")}
         </p>
       ) : (
-        <div className="relative h-36 w-full overflow-hidden rounded-md border border-border/50 bg-muted/20">
+        <AssetImagePreview
+          src={url}
+          alt={t("sourceImageAlt", { shot: shotId })}
+          shotId={shotId}
+          className="relative block h-36 w-full overflow-hidden rounded-md border border-border/50 bg-muted/20"
+        >
           <Image
             src={url}
             alt={t("sourceImageAlt", { shot: shotId })}
@@ -32,7 +38,7 @@ function MaterialImage({ url, shotId, source }: { url: string; shotId: number; s
             className="object-contain object-left"
             onError={() => setFailed(true)}
           />
-        </div>
+        </AssetImagePreview>
       )}
     </figure>
   );

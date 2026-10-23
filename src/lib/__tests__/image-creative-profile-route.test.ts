@@ -109,7 +109,7 @@ describe("premium image generation profile context", () => {
     expect(generated).toMatchObject({
       modelId: "image-model",
       mode: "image-to-image",
-      prompt: expect.stringContaining("do not generate added on-screen text"),
+      prompt: expect.stringMatching(/do not generate added on-screen text/i),
       negativePrompt: PREMIUM_CG_IMAGE_NEGATIVE_PROMPT,
       referenceImageUrl: productImage,
     });
@@ -147,7 +147,7 @@ describe("premium image generation profile context", () => {
     expect(state.generateImage).toHaveBeenCalledTimes(1);
     const options = state.generateImage.mock.calls[0][0];
     expect(options).toMatchObject({ width: 1024, mode: "image-to-image", referenceImageUrl: productImage });
-    expect(options.prompt).toContain("do not generate added on-screen text");
+    expect(options.prompt).toMatch(/do not generate added on-screen text/i);
     expect(options.prompt).not.toContain("flashing SALE");
     expect(options.extra).toBeUndefined();
   });

@@ -66,11 +66,11 @@ function premiumCgVideoOptions(
   const normalized = normalizeVideoParameters(model, source);
   const audio = model.parameters.find((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
   if (!audio) {
-    if (model.capabilities.audio) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", "当前 Kling 模型无法可靠关闭原生音频，不能用于高端家具产品 CG。", 422);
+    if (model.capabilities.audio) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", "当前 Kling 模型无法可靠关闭原生音频，不能用于高端产品 CG。", 422);
     return normalized;
   }
   const disabled = disabledAudioValue(audio);
-  if (disabled === undefined) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", "当前 Kling 模型未声明可关闭的音频参数，不能用于高端家具产品 CG。", 422);
+  if (disabled === undefined) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", "当前 Kling 模型未声明可关闭的音频参数，不能用于高端产品 CG。", 422);
   normalized[audio.name] = disabled;
   return normalized;
 }
@@ -103,8 +103,8 @@ function premiumCgReferenceInputs(
     throw new KlingError(
       resolved.code,
       resolved.code === "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED"
-        ? "高端家具产品 CG 需要至少一张已保存的产品参考图。"
-        : "高端家具产品 CG 只能使用已保存的产品图片和当前项目已选关键帧。",
+        ? "高端产品 CG 需要至少一张已保存的产品参考图。"
+        : "高端产品 CG 只能使用已保存的产品图片和当前项目已选关键帧。",
       422,
     );
   }
@@ -269,8 +269,8 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   let options: Record<string, string | number | boolean>;
   if (premiumCg) {
     const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
-    if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端家具产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
-    if (model.tool !== "image_to_video") throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "高端家具产品 CG 仅支持已验证的图生视频模型。", 422);
+    if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
+    if (model.tool !== "image_to_video") throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "高端产品 CG 仅支持已验证的图生视频模型。", 422);
     const compiled = compilePremiumCgVideoPrompt(shot, creativeContext.projectProfile);
     prompt = compiled.prompt;
     mode = "image-to-video";
@@ -413,23 +413,23 @@ function assertCurrentContext(job: KlingJob): void {
     const shot = selected.shots?.find((item) => item.shotId === job.shotId);
     if (!shot) throw new KlingError("KLING_CONTEXT_CHANGED", "原镜头已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
     const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
-    if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端家具产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
-    if (job.data.model.tool !== "image_to_video") throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 必须使用图生视频模型，请重新创建任务。", 422);
+    if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
+    if (job.data.model.tool !== "image_to_video") throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 必须使用图生视频模型，请重新创建任务。", 422);
     const compiled = compilePremiumCgVideoPrompt(shot, creativeContext.projectProfile);
     if (job.data.prompt !== compiled.prompt) {
-      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 未使用当前脚本的服务端提示词，请重新创建任务。", 422);
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 未使用当前脚本的服务端提示词，请重新创建任务。", 422);
     }
     const expectedReferences = premiumCgReferenceInputs(project, selected, job.shotId);
     if (canonicalJson(job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl }))) !== canonicalJson(expectedReferences)) {
-      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 参考图不再属于当前项目白名单，请重新创建任务。", 422);
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 参考图不再属于当前项目白名单，请重新创建任务。", 422);
     }
     const expectedOptions = premiumCgVideoOptions(job.data.model, job.data.options, compiled.negativePrompt);
     if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) {
-      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 未满足当前音频或提示词策略，请重新创建任务。", 422);
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 未满足当前音频或提示词策略，请重新创建任务。", 422);
     }
     const expectedArgs = buildKlingVideoArguments(job.data.model, compiled.prompt, expectedOptions, job.data.inputs, job.id);
     if (canonicalJson(expectedArgs) !== canonicalJson(job.data.args)) {
-      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端家具产品 CG 参数已失去服务端约束，请重新创建任务。", 422);
+      throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 参数已失去服务端约束，请重新创建任务。", 422);
     }
   }
   const scopedActive = filterAssetsForScript(

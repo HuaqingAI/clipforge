@@ -57,6 +57,8 @@ export interface KlingJobData {
   bindingCandidateHash?: string;
 }
 export interface KlingOutputData {
+  /** Retain the provider-work identity so querying cannot re-import a deleted local take. */
+  deletedAt?: number;
   url: string;
   urlObtainedAt: number;
   providerWorkId: string;

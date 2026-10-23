@@ -1,5 +1,5 @@
 /**
- * Curated visual recipes for the premium furniture CG profile.
+ * Curated visual recipes for the premium product CG profile.
  *
  * These are deliberately separate from commerce AdTemplate recipes. A premium
  * recipe may steer shot order, setting, and light, but it never carries copy,
@@ -13,6 +13,7 @@ export const PREMIUM_CG_RECIPE_IDS = [
 ] as const;
 
 export type PremiumCgRecipeId = (typeof PREMIUM_CG_RECIPE_IDS)[number];
+// Keep modern_home as the persisted identifier for category-adaptive use contexts.
 export type PremiumCgRecipeSetting = "studio" | "modern_home";
 export type PremiumCgRecipeVideoMode = "product_closeup" | "scene_demo";
 
@@ -54,37 +55,37 @@ export const PREMIUM_CG_RECIPES: readonly PremiumCgRecipe[] = [
     },
     setting: "studio",
     videoMode: "product_closeup",
-    visualLook: "controlled neutral studio light, calm architectural backdrop, measured silhouette and edge highlights",
+    visualLook: "controlled neutral studio light, minimal backdrop suited to product scale, measured silhouette and edge highlights",
     shotBeats: ["establish", "form", "proportion", "material", "hero"],
-    promptDirective: "Use the Form Portrait recipe. Build a calm sequence from a full silhouette to proportion, contour, and a final hero composition. Keep the setting neutral and the product isolated; use light to describe edges and volume rather than spectacle.",
+    promptDirective: "Use the Form Portrait recipe. Build a calm sequence from a full silhouette to proportion, contour, and a final hero composition. Keep the setting neutral and the product isolated at its actual scale; use light to describe reference-supported edges and volume. Preserve the supplied product's shape, finish, and visible markings without inventing unseen angles.",
   },
   {
     id: "material_craft",
     version: 1,
     name: { zh: "材质工艺", en: "Material & Craft" },
     description: {
-      zh: "围绕面料、接缝、五金和结构细节，适合高质量细节素材。",
-      en: "A detail-led study of material, seams, hardware, and construction evidence.",
+      zh: "以参考资料可见的表面质感、材质与工艺细节呈现产品品质。",
+      en: "A detail-led study of the product's documented surface, materials, and craftsmanship.",
     },
     setting: "studio",
     videoMode: "product_closeup",
     visualLook: "soft raking studio light, faithful material texture, restrained macro detail, clean contact shadows",
-    shotBeats: ["establish", "material", "craft", "hardware", "hero"],
-    promptDirective: "Use the Material & Craft recipe. Start with one clear whole-product view, then observe only visible upholstery, seams, joins, feet, or hardware in controlled close detail. Return to the complete product for the final frame; do not infer hidden construction.",
+    shotBeats: ["establish", "material", "craft", "detail", "hero"],
+    promptDirective: "Use the Material & Craft recipe. Start with one clear whole-product view, then select close details appropriate to the product category and visible in the supplied reference. Observe surface texture, finish, edges, or documented craftsmanship only where supported. When material or construction is unknown, describe visible appearance without naming a material or manufacturing process. Return to the complete product for the final frame; do not infer hidden construction or add category-specific parts.",
   },
   {
     id: "living_scale",
     version: 1,
-    name: { zh: "融入生活", en: "Living Scale" },
+    name: { zh: "场景尺度", en: "Context & Scale" },
     description: {
-      zh: "以安静的现代居住空间呈现尺度与一次真实使用动作。",
-      en: "A quiet contemporary interior that shows scale and one supported use moment.",
+      zh: "按产品用途选择适配场景，呈现真实尺度与资料支持的使用关系。",
+      en: "A setting matched to the product's use, with faithful scale and supported usage context.",
     },
     setting: "modern_home",
     videoMode: "scene_demo",
-    visualLook: "bright quiet contemporary residence, soft natural window light, low-saturation neutral materials and balanced spatial scale",
+    visualLook: "calm category-appropriate use setting, soft natural or controlled light, restrained background and faithful product scale",
     shotBeats: ["establish", "lifestyle", "scale", "function", "hero"],
-    promptDirective: "Use the Living Scale recipe. Establish a quiet contemporary home, show how the furniture sits in the room, and include at most one supported unfaced interaction to establish scale or comfort. The furniture remains the subject and the camera movement stays slow and physically plausible.",
+    promptDirective: "Use the Context & Scale recipe. Choose a restrained setting appropriate to the supplied product category and documented use. Let the actual product use determine the setting and show its scale and relationship to its surroundings. Include at most one simple interaction with a cropped hand or unfaced person only when the supplied facts support that use; otherwise keep the product still and use framing to convey scale. The product remains the subject and camera movement stays slow and physically plausible.",
   },
 ] as const;
 

@@ -33,7 +33,7 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
     expect(p).not.toContain("logo");
   });
 
-  it("premium furniture CG uses a no-added-text motion contract for static shots", () => {
+  it("premium product CG uses a no-added-text motion contract for static shots", () => {
     const p = buildMotionPrompt({
       shotType: "cta",
       camera: "static camera",

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { LuPlus, LuFolderOpen, LuLoader, LuTrash2, LuDownload, LuImage, LuPlay } from "react-icons/lu";
 import { useT, useLocale } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/relative-time";
+import { ShotLibrary } from "./_components/shot-library";
 
 interface ProjectRow {
   id: string;
@@ -74,11 +75,12 @@ function statusKeyFor(status: string): string {
 }
 
 /**
- * Project library with two views:
+ * Project library with three views:
  * - Projects: every project, searchable, resuming at the right step — now with a poster
  *   (latest render's first frame, falling back to the product photo) and a delete entrance.
  * - Works: the cross-project feed of finished videos, newest first, found by their pictures
  *   instead of by opening N export pages one by one.
+ * - Shots: locally saved generated takes, grouped by project and script.
  */
 export default function ProjectsPage() {
   const t = useT("projectsPage");
@@ -89,7 +91,9 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [view, setView] = useState<"projects" | "works">("projects");
+  const [view, setView] = useState<"projects" | "works" | "shots">("projects");
+  const [shotCount, setShotCount] = useState<number | null>(null);
+  const [removedProjectIds, setRemovedProjectIds] = useState<string[]>([]);
   const [deleteIssues, setDeleteIssues] = useState<Record<string, ProjectDeleteIssue>>({});
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const deleting = useRef(new Set<string>());
@@ -164,6 +168,7 @@ export default function ProjectsPage() {
       }
       setRows((prev) => prev.filter((r) => r.id !== p.id));
       setWorks((prev) => prev.filter((w) => w.projectId !== p.id));
+      setRemovedProjectIds((prev) => [...prev, p.id]);
     } catch {
       setDeleteIssues((prev) => ({ ...prev, [p.id]: { message: t("deleteFailed"), blockingTasks: [] } }));
     } finally {
@@ -215,20 +220,22 @@ export default function ProjectsPage() {
           </Link>
         </div>
 
-        {/* projects / works view switch */}
+        {/* projects / works / shots view switch */}
         <div className="mb-5 flex flex-wrap items-center gap-3">
           <div className="flex rounded-lg border border-border/50 p-0.5">
-            {(["projects", "works"] as const).map((v) => (
+            {(["projects", "works", "shots"] as const).map((v) => (
               <button
                 key={v}
                 type="button"
                 onClick={() => setView(v)}
+                aria-pressed={view === v}
                 className={`rounded-md px-4 py-1.5 text-xs font-medium transition-colors ${
                   view === v ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {t(v === "projects" ? "tabProjects" : "tabWorks")}
+                {t(v === "projects" ? "tabProjects" : v === "works" ? "tabWorks" : "tabShots")}
                 {v === "works" && works.length > 0 && <span className="ml-1 opacity-70">({works.length})</span>}
+                {v === "shots" && shotCount !== null && <span className="ml-1 opacity-70">({shotCount})</span>}
               </button>
             ))}
           </div>
@@ -242,7 +249,7 @@ export default function ProjectsPage() {
           )}
         </div>
 
-        {loading ? (
+        {view === "shots" ? null : loading ? (
           <div className="flex items-center gap-2 py-16 justify-center text-sm text-muted-foreground">
             <LuLoader className="h-4 w-4 animate-spin" />
             {tc("loading")}
@@ -408,6 +415,7 @@ export default function ProjectsPage() {
             })}
           </div>
         )}
+        <ShotLibrary active={view === "shots"} onCountChange={setShotCount} excludedProjectIds={removedProjectIds} />
       </main>
     </div>
   );

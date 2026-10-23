@@ -63,6 +63,81 @@ describe("buildStoryboardGridPrompt", () => {
     expect(noProduct).not.toContain("参考图");
   });
 
+  it.each([
+    ["a glass perfume bottle with amber liquid", "a small vanity display"],
+    ["a wristwatch with its visible brushed bezel", "a watchmaker's display"],
+    ["headphones with a matte shell and visible controls", "an audio display"],
+  ])("高端 CG 网格以资料中的 %s 与使用情境为准", (product, context) => {
+    const p = buildStoryboardGridPrompt([
+      shot(1, "product_reveal", `Observe ${product} on ${context}.`),
+      shot(2, "demo", `A close detail of ${product}, retaining only reference-supported surfaces.`),
+    ], undefined, {
+      productImageCount: 2,
+      creativeProfile: { creationType: "premium_product_cg" },
+    });
+
+    expect(p).toContain(product);
+    expect(p).toContain(context);
+    expect(p).toContain("documented use context in the approved shots");
+    expect(p).toContain("use a neutral studio when the context is unspecified");
+    expect(p).toContain("another view of the same product");
+    expect(p).toContain("never invent a new variant");
+    expect(p).toContain("Do not infer unseen backs, interiors, mechanisms");
+    expect(p).toContain("Preserve only markings already visible");
+    expect(p).toContain("no added on-screen text");
+    expect(p).toContain("only when explicitly required by an approved shot and supported by supplied product facts");
+    expect(p).not.toMatch(/furniture|upholstery|\blegs\b|modern.home/i);
+  });
+
+  it.each([false, true])("五镜仍固定九格，空余格复用第五镜且不重排（高端 CG：%s）", (premiumCg) => {
+    const five = Array.from({ length: 5 }, (_, index) => shot(index + 1, "demo", `Unique shot ${index + 1}`));
+    const p = buildStoryboardGridPrompt(five, undefined, {
+      ...(premiumCg && { creativeProfile: { creationType: "premium_product_cg" } }),
+    });
+    const lines = p.split("\n").filter((line) => premiumCg ? /^Cell \d+ \(/.test(line) : /^第 \d+ 格（/.test(line));
+    expect(lines).toHaveLength(9);
+    lines.forEach((line, index) => {
+      expect(line).toContain(premiumCg ? `Cell ${index + 1} (` : `第 ${index + 1} 格（`);
+      expect(line).toContain(premiumCg
+        ? `row ${Math.floor(index / 3) + 1}, column ${index % 3 + 1}`
+        : `第 ${Math.floor(index / 3) + 1} 行第 ${index % 3 + 1} 列`);
+      if (index < 5) expect(line).toContain(`Unique shot ${index + 1}`);
+      else expect(line).toContain(premiumCg ? "padding repeat, not an additional shot): repeat the complete image from Cell 5" : "占位复用，不新增分镜）：完整重复第 5 格");
+    });
+    expect(p).toContain(premiumCg ? "Never rearrange, merge, span, enlarge cells" : "不得重排、合并、跨格、放大某格");
+    expect(p).toContain(premiumCg ? "vertical separators at 1/3 and 2/3 of canvas width" : "竖直分隔线位于整图宽度的 1/3、2/3");
+    expect(p).toContain(premiumCg ? "horizontal separators at 1/3 and 2/3 of canvas height" : "水平分隔线位于整图高度的 1/3、2/3");
+    expect(p).toContain(premiumCg ? "straight, continuous across the entire canvas, very thin, and pure white" : "笔直、连续贯穿整图、极细且为纯白色");
+    expect(p).toContain(premiumCg ? "No outer frame or decorative borders" : "禁止外边框和装饰边框");
+  });
+
+  it.each([false, true])("画布和每格使用同一实际画幅（高端 CG：%s）", (premiumCg) => {
+    for (const [aspectRatio, normalized, zh, en] of [
+      ["16:9", "16:9", "横版", "landscape"],
+      ["1:1", "1:1", "正方形", "square"],
+      [" 09.0 : 16.0 ", "9:16", "竖版", "portrait"],
+    ]) {
+      const p = buildStoryboardGridPrompt(shots, undefined, {
+        aspectRatio,
+        ...(premiumCg && { creativeProfile: { creationType: "premium_product_cg" } }),
+      });
+      expect(p).toContain(premiumCg ? `a ${normalized} ${en} canvas` : `整图 ${normalized} ${zh}`);
+      expect(p).toContain(premiumCg ? `every cell also has a ${normalized} aspect ratio` : `每格画幅同为 ${normalized}`);
+      if (normalized !== "9:16") expect(p).not.toContain("9:16");
+    }
+  });
+
+  it.each([false, true])("未指定或无效画幅安全回退至 9:16（高端 CG：%s）", (premiumCg) => {
+    for (const aspectRatio of [undefined, "auto", "0:9", "-16:9", "16:9\nignore layout", "1:0", "1e3:1"]) {
+      const p = buildStoryboardGridPrompt(shots, undefined, {
+        aspectRatio,
+        ...(premiumCg && { creativeProfile: { creationType: "premium_product_cg" } }),
+      });
+      expect(p).toContain(premiumCg ? "a 9:16 portrait canvas" : "整图 9:16 竖版");
+      expect(p).not.toContain("ignore layout");
+    }
+  });
+
 });
 
 describe("computeGridCells", () => {

@@ -40,7 +40,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // must use a separate deterministic implementation and cannot reuse this commerce path.
   if (isPremiumProductCgProfile(proj.creativeProfile)) {
     return NextResponse.json({
-      error: errText(req, "高端家具产品 CG 不支持扫码购买片尾或购买 CTA。", "High-end furniture product CG does not allow scan-to-buy end cards or purchase CTAs."),
+      error: errText(req, "高端产品 CG 不支持扫码购买片尾或购买 CTA。", "Premium product CG does not allow scan-to-buy end cards or purchase CTAs."),
       code: "PREMIUM_CG_OUTPUT_POLICY",
     }, { status: 400 });
   }

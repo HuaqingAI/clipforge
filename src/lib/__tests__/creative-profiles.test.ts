@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PREMIUM_PRODUCT_CG_PROFILE_ID,
+  PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
   PREMIUM_PRODUCT_CG_STYLE,
   SHORT_VIDEO_SALES_PROFILE_ID,
   createCreativeProfileSnapshot,
@@ -10,6 +11,7 @@ import {
   sanitizeCreativeProfile,
   validateCreativeProfileInput,
 } from "@/lib/creative-profiles";
+import { createPremiumCgRecipeSnapshot } from "@/lib/premium-cg-recipes";
 
 describe("creative profile canonicalization", () => {
   it("keeps the premium CG policy canonical even when options try to enable sales layers", () => {
@@ -75,6 +77,44 @@ describe("creative profile canonicalization", () => {
 
     expect(result).toMatchObject({ error: expect.stringContaining("same profile") });
     expect(validateCreativeProfileInput("unknown_profile")).toMatchObject({ error: expect.any(String) });
+  });
+
+  it.each([
+    ["form_portrait", "studio", "controlled neutral studio light, calm architectural backdrop, measured silhouette and edge highlights"],
+    ["living_scale", "modern_home", "bright quiet contemporary residence, soft natural window light, low-saturation neutral materials and balanced spatial scale"],
+  ] as const)("upgrades the legacy %s look without changing its saved selection", (recipeId, setting, look) => {
+    const profile = sanitizeCreativeProfile({
+      id: PREMIUM_PRODUCT_CG_PROFILE_ID,
+      promptCompilerVersion: "premium-furniture-cg-1",
+      recipeSnapshot: { recipeId },
+      visualDirection: { setting, look },
+      narrationMode: "restrained",
+      targetDuration: 60,
+    });
+
+    expect(profile).toMatchObject({
+      id: PREMIUM_PRODUCT_CG_PROFILE_ID,
+      promptCompilerVersion: PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
+      recipeSnapshot: { recipeId },
+      visualDirection: { setting, look: createPremiumCgRecipeSnapshot(recipeId).visualLook },
+      narrationMode: "restrained",
+      targetDuration: 60,
+      textPolicy: { generatedFrameText: "forbid-added", captions: false, cta: "none" },
+    });
+    expect(sanitizeCreativeProfile(profile)).toEqual(profile);
+  });
+
+  it("preserves a custom product setting while upgrading the compiler", () => {
+    const profile = sanitizeCreativeProfile({
+      id: PREMIUM_PRODUCT_CG_PROFILE_ID,
+      promptCompilerVersion: "premium-furniture-cg-1",
+      visualDirection: { setting: "modern_home", look: "quiet watchmaker workbench with soft side light" },
+    });
+
+    expect(profile).toMatchObject({
+      promptCompilerVersion: PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
+      visualDirection: { setting: "modern_home", look: "quiet watchmaker workbench with soft side light" },
+    });
   });
 
   it("keeps legacy sales rows resolvable and snapshots a bounded config revision", () => {

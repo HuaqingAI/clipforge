@@ -225,7 +225,7 @@ describe("premium CG video generation profile context", () => {
       mode: "image-to-video",
       firstFrameUrl: "/api/files/frame.png",
     });
-    expect(options.prompt).toContain("Premium furniture product CG motion");
+    expect(options.prompt).toContain("Premium product CG motion");
     expect(options.prompt).not.toContain(forgedPrompt);
     expect(options.lastFrameUrl).toBeUndefined();
     expect(options.referenceImageUrls).toBeUndefined();

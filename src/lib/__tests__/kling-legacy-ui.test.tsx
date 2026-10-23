@@ -42,27 +42,18 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); vi.unstubAllGlobals(); });
 
 describe("Kling defaults never become another paid provider", () => {
-  it.each([cliModel, atlasModel])("opens the shared film panel in place with default %s before any paid request", async (selectedModel) => {
+  it.each([
+    ["simple", cliModel], ["pro", cliModel], ["simple", atlasModel], ["pro", atlasModel],
+  ] as const)("keeps full-film orchestration off the %s script page with default %s", async (uiMode, selectedModel) => {
+    useSettingsStore.setState({ uiMode });
     useSettingsStore.getState().setDefaultVideoModel(selectedModel);
     await mount(createElement(ScriptPage));
-    expect(button("整片自动编排").disabled).toBe(false);
+    expect(button("整片自动编排")).toBeUndefined();
     expect(container.querySelector('[aria-label="shared-film-panel"]')).toBeNull();
-    await act(async () => button("整片自动编排").click());
-    expect(container.querySelector('[aria-label="shared-film-panel"]')).toBeTruthy();
+    expect(container.querySelector('a[href="/project/project-1/assets"]')).not.toBeNull();
     expect(navigation.push).not.toHaveBeenCalled();
-    const saved = fetchMock.mock.calls.find(([url, init]) => url.endsWith("/scripts") && init?.method === "PATCH");
-    expect(JSON.parse(saved![1].body)).toEqual({ selectedScriptId: "script-1" });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
     expect(fetchMock.mock.calls.some(([url]) => /script-judge|storyboard-film|storyboard-grid/.test(url))).toBe(false);
-  });
-
-  it("does not open a film plan when the current script could not be saved", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => url.endsWith("/scripts") && init?.method === "PATCH" ? Response.json({ error: "Save failed" }, { status: 500 }) : normalFetch(url, init));
-    await mount(createElement(ScriptPage));
-    await act(async () => button("整片自动编排").click());
-    expect(container.querySelector('[aria-label="shared-film-panel"]')).toBeNull();
-    expect(navigation.push).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.some(([url]) => /characters\/sheet|storyboard-grid|\/ai\/video/.test(url))).toBe(false);
   });
 
   it("hides the model-tier replication entry while keeping reference analysis", async () => {
@@ -92,5 +83,81 @@ describe("Kling defaults never become another paid provider", () => {
     await act(async () => { select.value = `atlas-cloud::${atlasModel}`; select.dispatchEvent(new Event("change", { bubbles: true })); });
     expect(button("repairCreatePreview").disabled).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("script regeneration progress", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ llm: { provider: "fixture", baseUrl: "https://example.test", apiKey: "fixture-key", model: "fixture-model" } });
+  });
+
+  it.each(["simple", "pro"] as const)("keeps the %s regenerate button busy through generation and script refresh", async (uiMode) => {
+    useSettingsStore.setState({ uiMode });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let finishGeneration!: (response: Response) => void;
+    let finishRefresh!: (response: Response) => void;
+    let generated = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/llm/script") return new Promise<Response>((resolve) => { finishGeneration = resolve; });
+      if (url.endsWith("/scripts") && generated) return new Promise<Response>((resolve) => { finishRefresh = resolve; });
+      return normalFetch(url, init);
+    });
+    await mount(createElement(ScriptPage));
+    await act(async () => button("regenerate").click());
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/llm/script")).toBe(false);
+    const confirm = button("regenConfirmOk");
+    await act(async () => { confirm.click(); confirm.click(); });
+    const busy = button("regenerating");
+    expect(busy.disabled).toBe(true);
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    expect(busy.querySelector(".animate-spin")).not.toBeNull();
+    await act(async () => busy.click());
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/llm/script")).toHaveLength(1);
+
+    await act(async () => { generated = true; finishGeneration(Response.json({ success: true })); });
+    expect(button("regenerating")).toBe(busy);
+    expect(busy.disabled).toBe(true);
+    await act(async () => finishRefresh(Response.json([{ id: "script-new", title: "Regenerated result", styleType: "scene", totalDuration: 5, selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, description: "Updated product", voiceover: "Updated details", visualSource: "ai_generate", transition: "direct_concat" }] }])));
+    expect(button("regenerate").disabled).toBe(false);
+    expect(button("regenerate").getAttribute("aria-busy")).toBe("false");
+    expect(container.textContent).toContain("Regenerated result");
+    expect(container.textContent).not.toContain("regenerating");
+  });
+
+  it.each(["simple", "pro"] as const)("restores the %s regenerate button and shows the error after a failed request", async (uiMode) => {
+    useSettingsStore.setState({ uiMode });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let finishGeneration!: (response: Response) => void;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/llm/script"
+      ? new Promise<Response>((resolve) => { finishGeneration = resolve; })
+      : normalFetch(url, init));
+    await mount(createElement(ScriptPage));
+    await act(async () => button("regenerate").click());
+    await act(async () => button("regenConfirmOk").click());
+    expect(button("regenerating").disabled).toBe(true);
+    await act(async () => finishGeneration(Response.json({ error: "fixture generation failed" }, { status: 500 })));
+    expect(button("regenerate").disabled).toBe(false);
+    expect(button("regenerate").getAttribute("aria-busy")).toBe("false");
+    expect(container.textContent).toContain("fixture generation failed");
+    expect(container.textContent).toContain("Test");
+    expect(container.textContent).not.toContain("regenerating");
+  });
+
+  it("keeps the current editor and restores the button when the regenerated scripts cannot be refreshed", async () => {
+    useSettingsStore.setState({ uiMode: "pro" });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let generated = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/llm/script") { generated = true; return Promise.resolve(Response.json({ success: true })); }
+      if (url.endsWith("/scripts") && generated) return Promise.resolve(Response.json({}, { status: 503 }));
+      return normalFetch(url, init);
+    });
+    await mount(createElement(ScriptPage));
+    await act(async () => button("regenerate").click());
+    await act(async () => button("regenConfirmOk").click());
+    expect(button("regenerate").disabled).toBe(false);
+    expect(container.textContent).toContain("errorReloadScripts");
+    expect(container.textContent).toContain("Test");
+    expect(container.textContent).not.toContain("emptyTitle");
   });
 });
