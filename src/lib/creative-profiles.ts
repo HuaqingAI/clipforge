@@ -18,7 +18,6 @@ export const PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION = "premium-product-cg-2"
 export const SHORT_VIDEO_SALES_PROFILE_ID = "short_video_sales_v1" as const;
 
 export type CreationType = "short_video_sales" | "premium_product_cg";
-export type ProductVisualSource = "product_image" | "ai_generate";
 export type NarrationMode = "none" | "restrained";
 export type PremiumSoundMode = "ambient" | "music" | "restrained-voice";
 export type LegacyVideoMode = "product_closeup" | "graphic_montage" | "scene_demo" | "live_presenter";
@@ -82,7 +81,6 @@ export interface ShortVideoSalesProfile {
   creationType: "short_video_sales";
   styleType: LegacySalesStyle;
   videoMode: LegacyVideoMode;
-  visualSource: ProductVisualSource;
   targetDuration: number;
   composeSnapshot: LegacyComposeSettings;
   creativeSettings: LegacyCreativeSettings;
@@ -96,7 +94,6 @@ export interface PremiumProductCgProfile {
   creationType: "premium_product_cg";
   styleType: typeof PREMIUM_PRODUCT_CG_STYLE;
   videoMode: PremiumProductCgVideoMode;
-  visualSource: ProductVisualSource;
   targetDuration: 15 | 30 | 60;
   narrationMode: NarrationMode;
   soundMode: PremiumSoundMode;
@@ -117,7 +114,6 @@ export interface ProjectCreativeProfileDrafts {
 export interface CreativeProfileFallback {
   styleType?: unknown;
   videoMode?: unknown;
-  visualSource?: unknown;
   targetDuration?: unknown;
   composeSnapshot?: unknown;
   creativeSettings?: unknown;
@@ -254,10 +250,6 @@ function normalizePremiumVideoMode(value: unknown): PremiumProductCgVideoMode {
   return PREMIUM_VIDEO_MODES.has(candidate as PremiumProductCgVideoMode) ? candidate as PremiumProductCgVideoMode : "product_closeup";
 }
 
-function normalizeProductVisualSource(value: unknown): ProductVisualSource {
-  return value === "ai_generate" ? "ai_generate" : "product_image";
-}
-
 function normalizeSalesDuration(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 30;
   return Math.max(1, Math.min(600, Math.round(value)));
@@ -297,7 +289,6 @@ export function createShortVideoSalesProfile(fallback: CreativeProfileFallback =
     creationType: "short_video_sales",
     styleType: normalizeSalesStyle(fallback.styleType),
     videoMode: normalizeVideoMode(fallback.videoMode),
-    visualSource: normalizeProductVisualSource(fallback.visualSource),
     targetDuration: normalizeSalesDuration(fallback.targetDuration),
     composeSnapshot: sanitizeComposeSnapshot(fallback.composeSnapshot),
     creativeSettings: sanitizeCreativeSettings(fallback.creativeSettings),
@@ -313,7 +304,6 @@ export function createShortVideoSalesProfile(fallback: CreativeProfileFallback =
 export function createPremiumProductCgProfile(options: {
   targetDuration?: unknown;
   videoMode?: unknown;
-  visualSource?: unknown;
   narrationMode?: unknown;
   soundMode?: unknown;
   visualDirection?: unknown;
@@ -333,7 +323,6 @@ export function createPremiumProductCgProfile(options: {
     videoMode: options.videoMode === undefined
       ? recipeSnapshot.videoMode
       : normalizePremiumVideoMode(options.videoMode),
-    visualSource: normalizeProductVisualSource(options.visualSource),
     targetDuration: normalizePremiumDuration(options.targetDuration),
     narrationMode,
     soundMode: normalizeSoundMode(options.soundMode, narrationMode),
@@ -404,9 +393,6 @@ export function validateCreativeProfileInput(value: unknown): CreativeProfileInp
   if (!isRecord(value)) {
     return { error: "Creative profile must be an object or a known profile identifier." };
   }
-  if (value.visualSource !== undefined && value.visualSource !== "product_image" && value.visualSource !== "ai_generate") {
-    return { error: "Creative profile visualSource must be product_image or ai_generate." };
-  }
 
   const identities: CreationType[] = [];
   const creationType = value.creationType;
@@ -471,7 +457,6 @@ export function sanitizeCreativeProfile(value: unknown): ProjectCreativeProfile 
     return createPremiumProductCgProfile({
       targetDuration: value.targetDuration,
       videoMode: value.videoMode,
-      visualSource: value.visualSource,
       narrationMode: value.narrationMode,
       soundMode: value.soundMode,
       visualDirection: value.visualDirection,
@@ -488,7 +473,6 @@ export function sanitizeCreativeProfile(value: unknown): ProjectCreativeProfile 
   return createShortVideoSalesProfile({
     styleType: value.styleType,
     videoMode: value.videoMode,
-    visualSource: value.visualSource,
     targetDuration: value.targetDuration,
     composeSnapshot: value.composeSnapshot ?? value.compose,
     creativeSettings: value.creativeSettings,
@@ -502,27 +486,6 @@ export function resolveCreativeProfile(
   fallback: CreativeProfileFallback = {},
 ): ProjectCreativeProfile {
   return sanitizeCreativeProfile(value) ?? createShortVideoSalesProfile(fallback);
-}
-
-/** Validate new draft writes before the tolerant persisted-data sanitizer can apply defaults. */
-export function creativeProfileDraftsInputError(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) return "creativeProfileDrafts must be a JSON object.";
-  const draftTypes: Record<string, CreationType> = {
-    short_video_sales: "short_video_sales",
-    sales: "short_video_sales",
-    premium_product_cg: "premium_product_cg",
-    cg: "premium_product_cg",
-  };
-  for (const [key, creationType] of Object.entries(draftTypes)) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-    const checked = validateCreativeProfileInput(value[key]);
-    if (checked.error) return `creativeProfileDrafts.${key}: ${checked.error}`;
-    if (checked.profile?.creationType !== creationType) {
-      return `creativeProfileDrafts.${key} must describe the ${creationType} profile.`;
-    }
-  }
-  return undefined;
 }
 
 export function sanitizeCreativeProfileDrafts(value: unknown): ProjectCreativeProfileDrafts | undefined {

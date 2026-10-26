@@ -152,7 +152,7 @@ export function buildAssetRows(
       characterId: s.characterId || undefined,
       voiceover: s.voiceover || undefined,
       visualSource: s.visualSource,
-      status: s.visualSource === "product_image" && firstProduct ? "done" : saved?.status === "failed" || saved?.status === "generating" ? saved.status : "pending",
+      status: s.visualSource === "product_image" ? "done" : saved?.status === "failed" || saved?.status === "generating" ? saved.status : "pending",
       thumbnailUrl: s.visualSource === "product_image" ? firstProduct : undefined,
     };
   });

@@ -13,7 +13,6 @@ import { isKlingVideoSelection } from "@/lib/assets-view";
 interface FilmPreview {
   prompt: string; model: string; shotCount: number; seconds: number; scriptSeconds: number;
   durationOverflow: boolean; modelMaxSeconds: number; referenceImages: number;
-  usesProductOriginals?: boolean;
   referenceQuota?: { ok: boolean; count: number; limit?: number };
   dialogueWarnings: { index: number; seconds: number; count: number; limit: number }[];
   estimate?: { unitUsd: number; seconds: number; minUsd: number; maxUsd: number; tierMultiplier: number };
@@ -145,29 +144,26 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
         setPreview(fresh); setConfirmed(false); throw new Error("脚本、费用或参考素材已变化，请核对新计划并重新确认。");
       }
       const s = useSettingsStore.getState();
-      let sheet: string | undefined;
-      if (!fresh.usesProductOriginals) {
-        const imageTarget = await resolveDefaultModelTarget(s.providers, s.defaultImageModel, s.customModels, "image");
-        if (!imageTarget) throw new Error("请先在设置中配置可用的默认图片模型。");
+      const imageTarget = await resolveDefaultModelTarget(s.providers, s.defaultImageModel, s.customModels, "image");
+      if (!imageTarget) throw new Error("请先在设置中配置可用的默认图片模型。");
+      assertAuthorized();
+      const library = useCharacterStore.getState();
+      const selectedPresenterId = presenterId || project?.characterId;
+      const presenter = library.characters.find((item) => item.id === selectedPresenterId);
+      if (selectedPresenterId && !presenter) throw new Error("所选主播在人物库中不存在，已停止后续生成。");
+      presenterSnapshot = presenter;
+      let sheet = presenter?.referenceImages?.[0];
+      if (presenter && !sheet && hasCharacterSheetInput(presenter)) {
+        setStage("正在生成主播定妆照…"); assertAuthorized();
+        const data = await dataFrom(await fetch("/api/characters/sheet", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...characterSheetRequest(presenter), provider: imageTarget.provider, model: imageTarget.model, apiKey: imageTarget.apiKey, baseUrl: imageTarget.baseUrl, options: buildImageOptions({ ...s.imageParams, aspectRatio: "1:1", count: 1 }) }) }));
+        if (typeof data.url !== "string" || !data.url) throw new Error("主播定妆照生成失败，已停止后续生成。");
         assertAuthorized();
-        const library = useCharacterStore.getState();
-        const selectedPresenterId = presenterId || project?.characterId;
-        const presenter = library.characters.find((item) => item.id === selectedPresenterId);
-        if (selectedPresenterId && !presenter) throw new Error("所选主播在人物库中不存在，已停止后续生成。");
-        presenterSnapshot = presenter;
-        sheet = presenter?.referenceImages?.[0];
-        if (presenter && !sheet && hasCharacterSheetInput(presenter)) {
-          setStage("正在生成主播定妆照…"); assertAuthorized();
-          const data = await dataFrom(await fetch("/api/characters/sheet", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...characterSheetRequest(presenter), provider: imageTarget.provider, model: imageTarget.model, apiKey: imageTarget.apiKey, baseUrl: imageTarget.baseUrl, options: buildImageOptions({ ...s.imageParams, aspectRatio: "1:1", count: 1 }) }) }));
-          if (typeof data.url !== "string" || !data.url) throw new Error("主播定妆照生成失败，已停止后续生成。");
-          assertAuthorized();
-          sheet = data.url; library.updateCharacter(presenter.id, { referenceImages: [sheet!, ...(presenter.referenceImages ?? []).slice(1)] });
-        }
-        if (presenter && !sheet) throw new Error("所选主播没有可用定妆照，已停止后续生成。");
-        setStage("正在准备分镜关键帧…"); assertAuthorized();
-        await dataFrom(await fetch(`/api/project/${projectId}/storyboard-grid`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scriptId, provider: imageTarget.provider, model: sheet || productImages.length ? toEditVariant(imageTarget.model) : imageTarget.model, apiKey: imageTarget.apiKey, baseUrl: imageTarget.baseUrl, ...(sheet && { characterSheetUrl: sheet }), productImageUrls: productImages, reuseExisting: !regenerateGrid, options: buildImageOptions({ ...s.imageParams, aspectRatio: s.videoParams.aspectRatio, count: 1 }) }) }));
-        await onAssetsChanged(); setInputBlocked(false); setRejected(null);
+        sheet = data.url; library.updateCharacter(presenter.id, { referenceImages: [sheet!, ...(presenter.referenceImages ?? []).slice(1)] });
       }
+      if (presenter && !sheet) throw new Error("所选主播没有可用定妆照，已停止后续生成。");
+      setStage("正在准备分镜关键帧…"); assertAuthorized();
+      await dataFrom(await fetch(`/api/project/${projectId}/storyboard-grid`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scriptId, provider: imageTarget.provider, model: sheet || productImages.length ? toEditVariant(imageTarget.model) : imageTarget.model, apiKey: imageTarget.apiKey, baseUrl: imageTarget.baseUrl, ...(sheet && { characterSheetUrl: sheet }), productImageUrls: productImages, reuseExisting: !regenerateGrid, options: buildImageOptions({ ...s.imageParams, aspectRatio: s.videoParams.aspectRatio, count: 1 }) }) }));
+      await onAssetsChanged(); setInputBlocked(false); setRejected(null);
       setStage("正在生成整片，任务受理后会保存恢复记录…"); assertAuthorized();
       filmSubmitted = true;
       const response = await fetch(`/api/project/${projectId}/storyboard-film`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scriptId, provider: videoTarget.provider, model: preview.model, expectedPrompt: preview.prompt, apiKey: videoTarget.apiKey, baseUrl: videoTarget.baseUrl, spendCapUsd: s.spendCapUsd, acknowledgeOverCap: overCapAck, ...(sheet && { characterSheetUrl: sheet }), options: buildVideoOptions(s.videoParams) }) });
@@ -233,13 +229,11 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
         {preview.dialogueWarnings?.length > 0 && <p className="text-xs text-amber-600">镜头 {preview.dialogueWarnings.map((item) => item.index + 1).join("、")} 的台词较密，可能影响音画同步。</p>}
         <details className="rounded border p-3 text-xs"><summary>实际提交的提示词</summary><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap">{preview.prompt}</pre></details>
         <div className="space-y-2 rounded border border-amber-500/40 p-3 text-sm">
-          <p>{preview.estimate ? `预计视频费用 $${preview.estimate.minUsd.toFixed(2)}–$${preview.estimate.maxUsd.toFixed(2)}，以平台实际计费为准。` : "视频费用未获得准确报价，实际计费以所选平台为准。"} {preview.usesProductOriginals ? "分镜直接使用已保存的商品原图，无需 AI 生图。" : "分镜图及必要的主播定妆照由图片平台另行计费；失败重试会尽量复用已有九宫格。"}</p>
+          <p>{preview.estimate ? `预计视频费用 $${preview.estimate.minUsd.toFixed(2)}–$${preview.estimate.maxUsd.toFixed(2)}，以平台实际计费为准。` : "视频费用未获得准确报价，实际计费以所选平台为准。"} 分镜图及必要的主播定妆照由图片平台另行计费；失败重试会尽量复用已有九宫格。</p>
           {overCap && <label className="flex gap-2"><input aria-label="允许超过整片预算" type="checkbox" checked={overCapAck} disabled={busy} onChange={(event) => setOverCapAck(event.target.checked)} />我确认本次费用可能超过 ${settings.spendCapUsd} 的预算。</label>}
-          <label className="flex items-start gap-2"><input aria-label="确认整片视频计费" type="checkbox" checked={confirmed} disabled={busy || invalidated || hasTask} onChange={(event) => setConfirmed(event.target.checked)} />我已核对脚本、默认模型、图片和参数，确认生成可能产生{preview.usesProductOriginals ? "视频" : "图片与视频"}费用。</label>
+          <label className="flex items-start gap-2"><input aria-label="确认整片视频计费" type="checkbox" checked={confirmed} disabled={busy || invalidated || hasTask} onChange={(event) => setConfirmed(event.target.checked)} />我已核对脚本、默认模型、图片和参数，确认生成可能产生图片与视频费用。</label>
           <Button disabled={busy || blocked || !confirmed || inputBlocked} onClick={() => void generate()}>确认生成整片（可能计费）</Button>
-          {inputBlocked && (preview.usesProductOriginals
-            ? <p className="text-sm text-muted-foreground">请在项目信息中更换被拒绝的商品图片，再重新预览整片计划。</p>
-            : <Button variant="outline" disabled={busy || blocked || !confirmed} onClick={() => void generate(true)}>重新绘制分镜并生成视频（图片和视频重新计费）</Button>)}
+          {inputBlocked && <Button variant="outline" disabled={busy || blocked || !confirmed} onClick={() => void generate(true)}>重新绘制分镜并生成视频（图片和视频重新计费）</Button>}
         </div>
       </section>}
       {busy && <p role="status" className="text-sm text-muted-foreground">{stage} 请勿重复操作。</p>}

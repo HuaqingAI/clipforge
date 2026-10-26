@@ -41,7 +41,6 @@ interface ScriptRequestBody {
   productCategory?: string;
   styleType?: string;
   videoMode?: string;
-  visualSource?: unknown;
   targetDuration?: number;
   duration?: number;
   insightMode?: boolean;
@@ -175,9 +174,6 @@ export async function POST(req: NextRequest) {
     return apiError(req, "璇锋眰鏍煎紡鏃犳晥", "Request body must be a JSON object");
   }
   const body = rawBody as ScriptRequestBody;
-  if (body.visualSource !== undefined && body.visualSource !== "product_image" && body.visualSource !== "ai_generate") {
-    return apiError(req, "请选择商品原图或 AI 生成", "Choose original product photos or AI generation", 400);
-  }
   const {
     productImages: requestedProductImages,
     productName: requestedProductName,
@@ -210,7 +206,6 @@ export async function POST(req: NextRequest) {
             profileId: body.profileId ?? body.creativeProfileId,
             styleType: body.styleType,
             videoMode: body.videoMode,
-            visualSource: body.visualSource,
             targetDuration: body.targetDuration ?? body.duration,
             narrationMode: body.narrationMode,
           }
@@ -228,7 +223,6 @@ export async function POST(req: NextRequest) {
       projectProfile = createShortVideoSalesProfile({
         styleType: body.styleType,
         videoMode: body.videoMode,
-        visualSource: body.visualSource,
         targetDuration: body.targetDuration ?? body.duration,
       });
     }

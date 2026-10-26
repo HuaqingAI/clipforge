@@ -84,7 +84,6 @@ describe("premium product CG prompt compiler", () => {
       productDescription: undefined,
       creativeProfile: createPremiumProductCgProfile({
         recipeSnapshot: { recipeId: "living_scale" },
-        visualSource: "ai_generate",
       }),
     });
 

@@ -12,7 +12,6 @@ import { apiError, errText } from "@/lib/api-error";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
-  creativeProfileDraftsInputError,
   sanitizeCreativeProfileDrafts,
   validateCreativeProfileInput,
   type CreativeProfileFallback,
@@ -44,7 +43,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
-    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot", "visualSource",
+    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
   }
@@ -57,7 +56,6 @@ function creativeFallback(value: JsonRecord): CreativeProfileFallback {
   return {
     styleType: value.styleType,
     videoMode: value.videoMode,
-    visualSource: value.visualSource,
     targetDuration: value.targetDuration ?? value.duration,
     composeSnapshot: value.composeSnapshot ?? value.compose,
     creativeSettings: value.creativeSettings,
@@ -150,13 +148,14 @@ export async function POST(req: NextRequest) {
 
   // Product-library imports only analyze and save library media. A project-creating request must
   // explicitly declare its creation type instead of inheriting the historical sales default.
-  const draftError = creativeProfileDraftsInputError(body.creativeProfileDrafts);
-  if (draftError) return NextResponse.json({ error: draftError }, { status: 400 });
   const projectCreativeConfig = createProject && !libraryProductId
     ? projectCreationCreativeConfig(body)
     : undefined;
   if (projectCreativeConfig && "error" in projectCreativeConfig) {
     return NextResponse.json(projectCreativeConfig, { status: 400 });
+  }
+  if (hasOwn(body, "creativeProfileDrafts") && !isRecord(body.creativeProfileDrafts)) {
+    return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
   }
 
   // Fetch HTML (descriptive UA + timeout + size cap)

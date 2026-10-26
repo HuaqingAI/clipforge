@@ -10,7 +10,6 @@ import { persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence"
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
 import { assetScopeForShot, assetMatchesScript, filterAssetsForScript } from "@/lib/asset-context";
 import { errText } from "@/lib/api-error";
-import { saveProductOriginalAsset } from "@/lib/product-original-assets";
 import {
   checkCreativeProfileContext,
   isPremiumProductCgProject,
@@ -18,7 +17,6 @@ import {
 import {
   hasTrustedPremiumCgAssetProvenance,
   PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-  PRODUCT_ORIGINAL_ASSET_PROVIDER,
 } from "@/lib/premium-cg-assets";
 
 const PREMIUM_CG_DIRECT_ASSET_IMPORT_FORBIDDEN = "PREMIUM_CG_DIRECT_ASSET_IMPORT_FORBIDDEN";
@@ -113,24 +111,10 @@ export async function POST(
     const db = getDb();
     const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
     if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-    const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
-    const currentScript = resolveCurrentScript(scriptRows);
-    const script = typeof body.scriptId === "string" ? scriptRows.find((row) => row.id === body.scriptId) : currentScript;
-    const shot = script?.shots?.find((row) => row.shotId === shotId);
-    if (scriptRows.length && (!script || !shot)) return NextResponse.json({ error: "目标脚本或镜头已变化，请刷新素材页" }, { status: 409 });
     // This endpoint receives arbitrary URLs from the browser. It cannot prove that one was
     // produced under the locked Premium CG prompt/reference policy, so CG output must enter
     // through a server-owned generation/import flow (grid or Kling) instead.
     if (isPremiumProductCgProject(project)) {
-      const context = script ? checkCreativeProfileContext(project, script) : undefined;
-      if (context?.ok && script && shot && currentScript?.id === script.id
-        && context.projectProfile.visualSource === "product_image"
-        && shot.visualSource === "product_image" && body.type === "product_image"
-        && project.productImages?.includes(sourceUrl)) {
-        return NextResponse.json(await saveProductOriginalAsset({
-          projectId: id, productImages: project.productImages, sourceUrl, script, shot,
-        }));
-      }
       return premiumCgConflict(
         req,
         PREMIUM_CG_DIRECT_ASSET_IMPORT_FORBIDDEN,
@@ -138,6 +122,10 @@ export async function POST(
         "Premium product CG does not accept direct unverified asset imports. Generate the take through the controlled storyboard or Kling flow.",
       );
     }
+    const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
+    const script = typeof body.scriptId === "string" ? scriptRows.find((row) => row.id === body.scriptId) : resolveCurrentScript(scriptRows);
+    const shot = script?.shots?.find((row) => row.shotId === shotId);
+    if (scriptRows.length && (!script || !shot)) return NextResponse.json({ error: "目标脚本或镜头已变化，请刷新素材页" }, { status: 409 });
     const filePath = await persistAssetSource(id, sourceUrl, shotId);
 
     const typeMap: Record<string, "ai_generated" | "product_image" | "user_upload"> = {
@@ -164,7 +152,7 @@ export async function POST(
       type: assetType,
       filePath,
       thumbnailPath,
-      provider: body.provider === PRODUCT_ORIGINAL_ASSET_PROVIDER ? undefined : body.provider,
+      provider: body.provider,
       model: body.model,
       prompt: body.prompt,
       generationPlan,

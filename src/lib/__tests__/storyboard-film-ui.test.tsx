@@ -113,19 +113,6 @@ describe("shared model-driven full-film interaction", () => {
     expect(assetsChanged).toHaveBeenCalledTimes(2);
   });
 
-  it("uses product originals without resolving an image model or generating a grid", async () => {
-    useSettingsStore.getState().setDefaultImageModel("unavailable");
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.endsWith("/storyboard-film") && JSON.parse(String(init?.body)).dryRun) return json({ ...filmPreview, usesProductOriginals: true });
-      return normalFetch(url, init);
-    });
-    await mount(); await click("预览整片计划"); await confirmAndGenerate();
-    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/storyboard-grid"))).toBe(false);
-    expect(api.resolve.mock.calls.some(([, , , type]) => type === "image")).toBe(false);
-    expect(container.querySelector("video")?.getAttribute("src")).toBe("/api/files/film.mp4");
-  });
-
   it("generates a presenter sheet from every uploaded portrait even without an appearance description", async () => {
     const portraits = ["/api/files/characters/front.png", "/api/files/characters/side.png"];
     useCharacterStore.setState({ characters: [{ id: "presenter", name: "Presenter", appearance: "", referenceImages: [], sourceReferenceImages: portraits }] });

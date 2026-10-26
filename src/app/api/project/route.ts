@@ -5,7 +5,6 @@ import { desc } from "drizzle-orm";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
-  creativeProfileDraftsInputError,
   sanitizeCreativeProfileDrafts,
   validateCreativeProfileInput,
   type CreativeProfileFallback,
@@ -37,7 +36,6 @@ function creativeFallback(value: JsonRecord): CreativeProfileFallback {
   return {
     styleType: value.styleType,
     videoMode: value.videoMode,
-    visualSource: value.visualSource,
     targetDuration: value.targetDuration ?? value.duration,
     composeSnapshot: value.composeSnapshot ?? value.compose,
     creativeSettings: value.creativeSettings,
@@ -56,7 +54,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
-    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot", "visualSource",
+    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
   }
@@ -115,8 +113,9 @@ export async function POST(req: NextRequest) {
     if ("error" in profileResult) {
       return NextResponse.json({ error: profileResult.error }, { status: 400 });
     }
-    const draftError = creativeProfileDraftsInputError(body.creativeProfileDrafts);
-    if (draftError) return NextResponse.json({ error: draftError }, { status: 400 });
+    if (hasOwn(body, "creativeProfileDrafts") && !isRecord(body.creativeProfileDrafts)) {
+      return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
+    }
     const creativeProfile = profileResult.profile;
     const creativeProfileDrafts = createProfileDrafts(creativeProfile, body.creativeProfileDrafts, fallback);
     const sourceType = body.sourceType === "clone" ? "clone" : undefined;

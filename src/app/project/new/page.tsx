@@ -12,7 +12,7 @@ import { AD_TEMPLATE_GROUPS, listAdTemplates, getAdTemplate, adTemplateScriptDir
 import { CAMERA_PRESETS } from "@/lib/camera-presets";
 import { LOOK_PRESETS } from "@/lib/look-presets";
 import { CAPTION_PRESET_IDS, type CaptionPresetId } from "@/lib/caption-presets";
-import { PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION, type ProductVisualSource } from "@/lib/creative-profiles";
+import { PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION } from "@/lib/creative-profiles";
 import {
   createPremiumCgRecipeSnapshot,
   PREMIUM_CG_RECIPES,
@@ -119,7 +119,6 @@ interface SalesCreativeDraft {
   profileId: "short_video_sales_v1";
   styleType: string;
   videoMode: string;
-  visualSource: ProductVisualSource;
   targetDuration: number;
   selectedTemplateId: string | null;
   selectedAdTemplateId: string;
@@ -137,7 +136,6 @@ interface PremiumCgCreativeDraft {
   profileId: "premium_product_cg_v1";
   styleType: "premium_product_cg";
   videoMode: CgVideoMode;
-  visualSource: ProductVisualSource;
   targetDuration: 15 | 30 | 60;
   narrationMode: CgNarrationMode;
   soundMode: CgSoundMode;
@@ -170,7 +168,6 @@ const DEFAULT_CG_DRAFT: PremiumCgCreativeDraft = {
   profileId: "premium_product_cg_v1",
   styleType: "premium_product_cg",
   videoMode: "product_closeup",
-  visualSource: "product_image",
   targetDuration: 30,
   narrationMode: "none",
   soundMode: "ambient",
@@ -229,7 +226,6 @@ export default function NewProjectPage() {
       profileId: "short_video_sales_v1",
       styleType: "auto",
       videoMode: "product_closeup",
-      visualSource: "product_image",
       targetDuration: 30,
       selectedTemplateId: null,
       selectedAdTemplateId: "",
@@ -247,17 +243,6 @@ export default function NewProjectPage() {
   const premiumCgDraft = creativeProfileDrafts.premium_product_cg;
   const hasChosenCreationType = creationType !== null;
   const isPremiumCg = creationType === "premium_product_cg";
-  const visualSource = isPremiumCg
-    ? premiumCgDraft.visualSource
-    : creativeProfileDrafts.short_video_sales.visualSource;
-
-  const updateVisualSource = (nextSource: ProductVisualSource) => {
-    if (!creationType) return;
-    setCreativeProfileDrafts((prev) => ({
-      ...prev,
-      [creationType]: { ...prev[creationType], visualSource: nextSource },
-    }));
-  };
 
   const updatePremiumCgDraft = (update: Partial<PremiumCgCreativeDraft>) => {
     setCreativeProfileDrafts((prev) => ({
@@ -838,12 +823,11 @@ export default function NewProjectPage() {
       const { paths } = await uploadRes.json();
 
       // step 2.5: update the project's image paths
-      const imagesRes = await fetch(`/api/project/${project.id}`, {
+      await fetch(`/api/project/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ productImages: paths }),
       });
-      if (!imagesRes.ok) throw new Error(t("errorUploadFailed"));
 
       // step 3: generate the script
       setProgress({
@@ -1367,43 +1351,6 @@ export default function NewProjectPage() {
 
               {/* divider */}
               <div className="my-5 border-t border-border/40" />
-
-              {/* visual source */}
-              <fieldset className="mb-5" disabled={isSubmitting || ingesting}>
-                <legend className="text-sm font-medium mb-3">{t("visualSourceLabel")}</legend>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {([
-                    { value: "product_image" as const, labelKey: "visualSourceOriginal", descKey: "visualSourceOriginalDesc" },
-                    { value: "ai_generate" as const, labelKey: "visualSourceAi", descKey: "visualSourceAiDesc" },
-                  ]).map((option) => {
-                    const selected = visualSource === option.value;
-                    return (
-                      <label
-                        key={option.value}
-                        className={`flex items-start gap-3 p-3.5 rounded-lg border text-left transition-all cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 ${
-                          selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="visualSource"
-                          value={option.value}
-                          checked={selected}
-                          onChange={() => updateVisualSource(option.value)}
-                          className="mt-1 accent-primary"
-                        />
-                        <span>
-                          <span className={`block text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>{t(option.labelKey)}</span>
-                          <span className="block text-xs text-muted-foreground mt-0.5">{t(option.descKey)}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                {isPremiumCg && visualSource === "product_image" && (
-                  <p className="mt-2 text-xs text-muted-foreground">{t("visualSourceOriginalCgHint")}</p>
-                )}
-              </fieldset>
 
               {/* video mode */}
               <Label className="text-sm font-medium mb-3 block">

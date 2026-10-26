@@ -32,7 +32,6 @@ import {
   type CreationType,
   type ProjectCreativeProfile,
   type ProjectCreativeProfileDrafts,
-  type ProductVisualSource,
 } from "@/lib/creative-profiles";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
@@ -129,8 +128,6 @@ export default function ScriptPage() {
   // project metadata: reused when re-generating the script from the empty state
   const [projectMeta, setProjectMeta] = useState<ProjectMeta | null>(null);
   const [creativeConfigSaving, setCreativeConfigSaving] = useState(false);
-  const creativeConfigInFlight = useRef(false);
-  const creativeConfigAbort = useRef<AbortController | null>(null);
   const [creativeConfigError, setCreativeConfigError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const generationInFlight = useRef(false);
@@ -156,8 +153,6 @@ export default function ScriptPage() {
   const [judgeApplied, setJudgeApplied] = useState(false);
 
   useEffect(() => {
-    setCreativeConfigSaving(false);
-    setCreativeConfigError("");
     setIsGenerating(false);
     setIsDeleting(false);
     setIsSelecting(false);
@@ -166,9 +161,6 @@ export default function ScriptPage() {
     setDeleteTarget(null);
     setDeleteError("");
     return () => {
-      creativeConfigAbort.current?.abort();
-      creativeConfigAbort.current = null;
-      creativeConfigInFlight.current = false;
       generationAbort.current?.abort();
       generationAbort.current = null;
       generationInFlight.current = false;
@@ -181,7 +173,7 @@ export default function ScriptPage() {
 
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
   const handleGenerate = async () => {
-    if (!projectMeta || creativeConfigInFlight.current || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!projectMeta || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
     if (!llm.apiKey) {
       setGenError(t("errorNoLlm"));
       return;
@@ -298,24 +290,28 @@ export default function ScriptPage() {
     }
   };
 
-  const saveCreativeProfile = async (nextProfile: ProjectCreativeProfile) => {
-    if (!projectMeta || projectMeta.contentType === "topic" || creativeConfigInFlight.current || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+  const switchCreationType = async (nextType: CreationType) => {
+    if (!projectMeta || projectMeta.contentType === "topic" || creativeConfigSaving) return;
+    if (projectMeta.creativeProfile.creationType === nextType) return;
+
     const currentProfile = projectMeta.creativeProfile;
-    const nextDrafts: ProjectCreativeProfileDrafts = {
+    const drafts: ProjectCreativeProfileDrafts = {
       ...projectMeta.creativeProfileDrafts,
       [currentProfile.creationType]: currentProfile,
-      [nextProfile.creationType]: nextProfile,
+    };
+    const nextProfile = nextType === "premium_product_cg"
+      ? drafts.premium_product_cg ?? createPremiumProductCgProfile()
+      : drafts.short_video_sales ?? createShortVideoSalesProfile({ videoMode: projectMeta.videoMode });
+    const nextDrafts: ProjectCreativeProfileDrafts = {
+      ...drafts,
+      [nextType]: nextProfile,
     };
 
-    const controller = new AbortController();
-    creativeConfigAbort.current = controller;
-    creativeConfigInFlight.current = true;
     setCreativeConfigSaving(true);
     setCreativeConfigError("");
     try {
       const response = await fetch(`/api/project/${id}`, {
         method: "PATCH",
-        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           creativeProfile: nextProfile,
@@ -325,14 +321,11 @@ export default function ScriptPage() {
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (controller.signal.aborted) return;
       if (!response.ok) {
         if (data.code === "CREATIVE_CONFIG_CONFLICT") {
           setProjectMeta((previous) => previous
             ? projectMetaFromResponse({
                 ...previous,
-                productCategory: previous.category,
-                productDescription: previous.description,
                 creativeProfile: data.creativeProfile,
                 creativeProfileDrafts: data.creativeProfileDrafts,
                 creativeConfigRevision: data.creativeConfigRevision,
@@ -344,27 +337,10 @@ export default function ScriptPage() {
       }
       setProjectMeta(projectMetaFromResponse(data));
     } catch (error) {
-      if (!controller.signal.aborted) setCreativeConfigError(friendlyError(error, locale));
+      setCreativeConfigError(friendlyError(error, locale));
     } finally {
-      if (creativeConfigAbort.current === controller) {
-        creativeConfigAbort.current = null;
-        creativeConfigInFlight.current = false;
-        setCreativeConfigSaving(false);
-      }
+      setCreativeConfigSaving(false);
     }
-  };
-
-  const switchCreationType = async (nextType: CreationType) => {
-    if (!projectMeta || projectMeta.creativeProfile.creationType === nextType) return;
-    const nextProfile = nextType === "premium_product_cg"
-      ? projectMeta.creativeProfileDrafts.premium_product_cg ?? createPremiumProductCgProfile()
-      : projectMeta.creativeProfileDrafts.short_video_sales ?? createShortVideoSalesProfile({ videoMode: projectMeta.videoMode });
-    await saveCreativeProfile(nextProfile);
-  };
-
-  const switchVisualSource = async (visualSource: ProductVisualSource) => {
-    if (!projectMeta || projectMeta.creativeProfile.visualSource === visualSource) return;
-    await saveCreativeProfile({ ...projectMeta.creativeProfile, visualSource });
   };
 
   useEffect(() => {
@@ -790,7 +766,7 @@ export default function ScriptPage() {
   };
 
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
-  const scriptActionsBusy = creativeConfigSaving || isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
+  const scriptActionsBusy = isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
   const historyButton = (
     <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={() => setHistoryOpen(true)}>
       <LuHistory className="mr-1 h-3.5 w-3.5" />{t("historyButton")}
@@ -830,31 +806,6 @@ export default function ScriptPage() {
             })}
           </div>
         </div>
-        <fieldset className="mt-4" disabled={scriptActionsBusy || autoFinishing}>
-          <legend className="mb-2 text-xs font-medium">{t("visualSourceLabel")}</legend>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {([
-              { value: "product_image" as const, labelKey: "visualSourceProduct", hintKey: "visualSourceProductHint" },
-              { value: "ai_generate" as const, labelKey: "visualSourceAi", hintKey: "visualSourceAiHint" },
-            ]).map((option) => (
-              <label key={option.value} className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-xs ${projectMeta.creativeProfile.visualSource === option.value ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20"} has-disabled:cursor-not-allowed has-disabled:opacity-50`}>
-                <input
-                  type="radio"
-                  name="script-visual-source"
-                  value={option.value}
-                  checked={projectMeta.creativeProfile.visualSource === option.value}
-                  onChange={() => void switchVisualSource(option.value)}
-                  className="mt-0.5 accent-primary"
-                />
-                <span>
-                  <span className="font-medium">{t(option.labelKey)}</span>
-                  <span className="mt-1 block text-muted-foreground">{t(option.hintKey)}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">{t("visualSourceNextGenerationHint")}</p>
-        </fieldset>
         {projectMeta.creativeProfile.creationType === "premium_product_cg" && (
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span className="text-primary">{t("creativeTypeCgActive")}</span>
@@ -883,7 +834,7 @@ export default function ScriptPage() {
                 </a>
               ))}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">{t(projectMeta.creativeProfile.visualSource === "product_image" ? "productOriginalsHint" : "productReferencesHint")}</p>
+            <p className="mt-2 text-xs text-muted-foreground">{t("productReferencesHint")}</p>
           </section>
         )}
         {creativeConfigError && <p role="alert" className="mt-2 text-xs text-destructive">{creativeConfigError}</p>}
