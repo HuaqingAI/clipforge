@@ -75,7 +75,7 @@ export function assertTideweImportedCopyClaims(text: string, facts: ProductFacts
 }
 
 /** Reject deterministic factual/style violations; semantic claim grounding also happens in the compiler. */
-export function assertTideweCopyClaims(text: string, facts: ProductFacts, claimedIds: string[]): void {
+export function assertTideweCopyClaims(text: string, facts: ProductFacts, claimedIds: string[], fullTextContext = text): void {
   if (!text.trim() || text.length > 15000 || /[\u3400-\u9fff]/u.test(text)) fail("TIDEWE narration must be complete English copy");
   if (/\[[^\]]+\]|\b(?:shot|scene)\s*\d+\s*:|\b\d{1,2}:\d{2}\b/i.test(text)) fail("Remove stage directions, pause markup and timestamps from spoken copy");
   if (/\b(?:buy now|limited time|hurry|selling out|guaranteed (?:success|kill|hunt)|completely silent|100% silent|lifetime warranty)\b/i.test(text)) fail("Remove unsupported urgency, absolute claims or guarantees");
@@ -90,7 +90,8 @@ export function assertTideweCopyClaims(text: string, facts: ProductFacts, claime
   const sku = facts.sku?.toUpperCase() ?? "";
   if (sku.startsWith("HJ006")) {
     if (/battery (?:is )?included|included battery|full[- ]zip|heated (?:front )?(?:pouch|pocket)/i.test(text)) fail("HJ006 must remain half-zip with compatible battery sold separately");
-    if (/heat|heated|heating/i.test(text) && !/battery[^.!?]{0,80}(?:sold separately|not included)|(?:separate|separately)[^.!?]{0,40}battery/i.test(text)) fail("HJ006 copy must state the compatible battery purchase condition");
+    // Local edits may have the purchase condition in a different, unchanged shot.
+    if (/heat|heated|heating/i.test(fullTextContext) && !/battery[^.!?]{0,80}(?:sold separately|not included)|(?:separate|separately)[^.!?]{0,40}battery/i.test(fullTextContext)) fail("HJ006 copy must state the compatible battery purchase condition");
   }
   if (sku.startsWith("JTC001") && /waterproof|\b\d+\s*(?:hour|hr)/i.test(text)) fail("JTC001 waterproofing/runtime claims are not supported by the reference batch");
   if (sku.startsWith("HC001") && /heated|waterproof|silent/i.test(text)) fail("HC001 is nonheated, water resistant and low noise");

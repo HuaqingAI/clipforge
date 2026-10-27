@@ -9,6 +9,7 @@ import { createLLMClient, llmErrorPair, jsonModeParams } from "@/lib/llm-error";
 import { apiError, errText } from "@/lib/api-error";
 import { isTideweOutdoorProfile, checkCreativeProfileContext } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
+import { scriptRevision } from "@/lib/asset-context";
 
 /**
  * POST /api/project/[id]/script-judge — the judge panel: tear the lines apart
@@ -51,22 +52,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       assertTideweScript(script);
     }
 
-    const shots: JudgeShotInput[] = (Array.isArray(script.shots) ? script.shots : [])
-      .filter((s) => typeof s.voiceover === "string" && s.voiceover.trim())
-      // description rides along for the visual judge ("who does what in this second")
+    const allShots: JudgeShotInput[] = (Array.isArray(script.shots) ? script.shots : [])
+      // Keep silent shots for timing without expanding the original review scope.
       .map((s) => ({
         shotId: s.shotId,
-        voiceover: s.voiceover.trim(),
+        voiceover: typeof s.voiceover === "string" ? s.voiceover.trim() : "",
+        ...(typeof s.duration === "number" && { duration: s.duration }),
         ...(typeof s.description === "string" && s.description.trim() && { description: s.description.trim() }),
       }));
+    const shots = allShots.filter((shot) => shot.voiceover);
     if (shots.length === 0) {
       return apiError(req, "该脚本没有台词可评审", "This script has no voiceover lines to judge", 400);
     }
 
     const styleLabel = script.styleType ? styleNameMap[script.styleType] : undefined;
+    const timing = { plannedTotalDuration: script.creativeProfileSnapshot?.profile.targetDuration ?? project?.creativeProfile?.targetDuration, timelineShots: allShots };
     const prompt = tidewe && script.copyDocument
-      ? buildTideweJudgePrompt(script.copyDocument, shots)
-      : buildJudgePrompt(shots, { styleLabel, styleType: script.styleType ?? undefined });
+      ? buildTideweJudgePrompt(script.copyDocument, shots, timing)
+      : buildJudgePrompt(shots, { styleLabel, styleType: script.styleType ?? undefined, ...timing });
 
     const client = createLLMClient({
       baseUrl: llmConfig.baseUrl ?? "",
@@ -90,7 +93,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       (content) => parseJudgeResponse(content, shots),
     );
     // The model cannot open an alternate edit channel around canonical-copy validation.
-    return NextResponse.json(tidewe ? { ...report, rewrites: [], descriptionRewrites: [] } : report);
+    return NextResponse.json({ ...(tidewe ? { ...report, rewrites: [], descriptionRewrites: [] } : report), sourceScriptHash: scriptRevision(script) });
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && String(error.code).startsWith("TIDEWE_")) return NextResponse.json({ error: error instanceof Error ? error.message : "Script validation failed", code: error.code }, { status: "status" in error ? Number(error.status) || 400 : 400 });
     console.error("判官团评审失败:", error);

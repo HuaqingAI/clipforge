@@ -174,6 +174,7 @@ export default function ScriptPage() {
   const [judgeError, setJudgeError] = useState("");
   const [judgeApplying, setJudgeApplying] = useState(false);
   const [judgeApplied, setJudgeApplied] = useState(false);
+  const judgeAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setIsGenerating(false);
@@ -183,6 +184,8 @@ export default function ScriptPage() {
     setHistoryOpen(false);
     setDeleteTarget(null);
     setDeleteError("");
+    setJudging(false);
+    setJudgeApplying(false);
     setTideweCopySource("ai");
     setTideweCopyText("");
     tideweCopyDraftTouched.current = false;
@@ -194,12 +197,14 @@ export default function ScriptPage() {
       deletionAbort.current = null;
       selectionAbort.current?.abort();
       selectionAbort.current = null;
+      judgeAbort.current?.abort();
+      judgeAbort.current = null;
     };
   }, [id]);
 
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
   const handleGenerate = async () => {
-    if (!projectMeta || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!projectMeta || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     const manualTideweCopy = projectMeta.creativeProfile.creationType === "tidewe_outdoor" && tideweCopySource === "manual";
     const copyError = manualTideweCopy ? tideweCopyInputError(tideweCopyText) : undefined;
     if (copyError) {
@@ -284,7 +289,7 @@ export default function ScriptPage() {
   };
 
   const confirmDelete = async () => {
-    if (!deleteTarget || deletionAbort.current || generationInFlight.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!deleteTarget || deletionAbort.current || generationInFlight.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     const controller = new AbortController();
     deletionAbort.current = controller;
     setIsDeleting(true);
@@ -443,7 +448,7 @@ export default function ScriptPage() {
   // downstream steps (assets/video/export) read `selected` from the DB and use a different script ----
   const [selectionTip, setSelectionTip] = useState(false);
   const persistSelection = async (index: number) => {
-    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     const target = scripts[index];
     if (!target) return;
     const previousIndex = selectedScript;
@@ -488,7 +493,7 @@ export default function ScriptPage() {
   };
 
   const restoreHistoricalScript = async (scriptId: string) => {
-    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving" || creativeConfigSaving || autoFinishing) {
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving" || creativeConfigSaving || autoFinishing) {
       throw new Error(t("historyRestoreBusy"));
     }
     const controller = new AbortController();
@@ -541,7 +546,7 @@ export default function ScriptPage() {
   const [editDraft, setEditDraft] = useState<{ voiceover: string; description: string }>({ voiceover: "", description: "" });
   const [editStatus, setEditStatus] = useState<"" | "saving" | "saved" | "failed">("");
   const startEditShot = (shot: Shot) => {
-    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     setEditingShotId(shot.shotId);
     setEditDraft({ voiceover: shot.voiceover ?? "", description: shot.description ?? "" });
     setEditStatus("");
@@ -680,9 +685,11 @@ export default function ScriptPage() {
     setEditStatus("");
   }, [currentScript?.id]);
 
-  // run the judge panel on the current script's voiceover lines (one LLM call, four judges)
+  // Review and apply operations share a synchronous guard so repeated clicks cannot overlap.
   const runJudge = async () => {
-    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
+    const controller = new AbortController();
+    judgeAbort.current = controller;
     setJudging(true);
     setJudgeError("");
     setJudgeReport(null);
@@ -690,6 +697,7 @@ export default function ScriptPage() {
     try {
       const res = await fetch(`/api/project/${id}/script-judge`, {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scriptId: currentScript.id,
@@ -697,18 +705,23 @@ export default function ScriptPage() {
         }),
       });
       const data = await res.json();
+      if (controller.signal.aborted) return;
       if (!res.ok) throw new Error(data.error || t("judgeFailed"));
       setJudgeReport(data as JudgeReport);
     } catch (e) {
-      setJudgeError(e instanceof Error ? e.message : t("judgeFailed"));
+      if (!controller.signal.aborted) setJudgeError(e instanceof Error ? e.message : t("judgeFailed"));
     } finally {
-      setJudging(false);
+      if (judgeAbort.current === controller) {
+        judgeAbort.current = null;
+        setJudging(false);
+      }
     }
   };
 
-  // apply the judges' rewrites through the existing shotTexts PATCH channel (+ optimistic update)
+  // Standalone concrete rewrites use the shot-edit endpoint; reports with feedback use the complete editing pass.
   const applyJudgeRewrites = async () => {
-    if (isTideweProject || !currentScript || !judgeReport || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (isTideweProject || !currentScript || !judgeReport || judgeApplied || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
+    if (judgeReport.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default"))) return;
     // tier gate applies to the button too: taste-tier rewrites stay suggestions in the list
     const autoRewrites = autoApplicableRewrites(judgeReport);
     const autoDescRewrites = autoApplicableDescriptionRewrites(judgeReport);
@@ -718,37 +731,80 @@ export default function ScriptPage() {
     for (const r of autoDescRewrites) {
       patchByShot.set(r.shotId, { ...(patchByShot.get(r.shotId) ?? { shotId: r.shotId }), description: r.description });
     }
+    const controller = new AbortController();
+    judgeAbort.current = controller;
     setJudgeApplying(true);
-    setScripts((prev) =>
-      prev.map((s) =>
-        s.id === currentScript.id
-          ? {
-              ...s,
-              shots: s.shots.map((sh) => {
-                const p = patchByShot.get(sh.shotId);
-                return p ? { ...sh, ...(p.voiceover && { voiceover: p.voiceover }), ...(p.description && { description: p.description }) } : sh;
-              }),
-            }
-          : s
-      )
-    );
+    setJudgeError("");
     try {
       const res = await fetch(`/api/project/${id}/scripts`, {
         method: "PATCH",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scriptId: currentScript.id, shotTexts: Array.from(patchByShot.values()) }),
       });
-      if (!res.ok) throw new Error("apply failed");
+      const data = await res.json();
+      if (controller.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || t("judgeApplyFailed"));
+      setScripts((previous) => previous.map((row) => row.id === currentScript.id ? {
+        ...row,
+        shots: row.shots.map((shot) => ({ ...shot, ...patchByShot.get(shot.shotId) })),
+        ...data.script,
+      } : row));
       setJudgeApplied(true);
-    } catch {
-      setJudgeError(t("judgeApplyFailed"));
+    } catch (cause) {
+      if (!controller.signal.aborted) setJudgeError(cause instanceof Error ? cause.message : t("judgeApplyFailed"));
     } finally {
-      setJudgeApplying(false);
+      if (judgeAbort.current === controller) {
+        judgeAbort.current = null;
+        setJudgeApplying(false);
+      }
+    }
+  };
+
+  // Apply all actionable feedback together, including issues without a proposed rewrite.
+  const applyJudgeAdvice = async () => {
+    if (!currentScript || !judgeReport || judgeApplied || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
+    if (!judgeReport.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default"))) return;
+    if (!judgeReport.sourceScriptHash || (currentScript.scriptHash && currentScript.scriptHash !== judgeReport.sourceScriptHash)) {
+      setJudgeError(t("judgeReportStale"));
+      return;
+    }
+    const controller = new AbortController();
+    judgeAbort.current = controller;
+    setJudgeApplying(true);
+    setJudgeError("");
+    try {
+      const res = await fetch(`/api/project/${id}/script-judge/apply`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scriptId: currentScript.id,
+          expectedScriptHash: judgeReport.sourceScriptHash,
+          report: judgeReport,
+          llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model },
+        }),
+      });
+      const data = await res.json();
+      if (controller.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || t("judgeApplyFailed"));
+      if (data.script?.id !== currentScript.id || !data.script.scriptHash || !Array.isArray(data.script.shots) || (isTideweProject && !data.script.copyDocument)) throw new Error(t("judgeApplyFailed"));
+      setScripts((previous) => previous.map((row) => row.id === currentScript.id ? { ...row, ...data.script } : row));
+      setEditingShotId(null);
+      setEditStatus("");
+      setJudgeApplied(true);
+    } catch (cause) {
+      if (!controller.signal.aborted) setJudgeError(cause instanceof Error ? cause.message : t("judgeApplyFailed"));
+    } finally {
+      if (judgeAbort.current === controller) {
+        judgeAbort.current = null;
+        setJudgeApplying(false);
+      }
     }
   };
 
   const saveEditShot = async (shotId: number) => {
-    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     setEditStatus("saving");
     // optimistic local update so the timeline reflects the edit immediately
     setScripts((prev) =>
@@ -765,9 +821,9 @@ export default function ScriptPage() {
         body: JSON.stringify({ scriptId: currentScript.id, ...(isTideweProject ? { expectedScriptHash: currentScript.scriptHash, expectedCreativeConfigRevision: projectMeta?.creativeConfigRevision, shotTexts: [{ shotId, description: editDraft.description }] } : { shotTexts: [{ shotId, voiceover: editDraft.voiceover, description: editDraft.description }] }) }),
       });
       if (!res.ok) throw new Error("save failed");
-      if (isTideweProject) {
-        const data = await res.json();
-        if (!data.script?.scriptHash) throw new Error(tt("missingHash"));
+      const data = await res.json();
+      if (isTideweProject && !data.script?.scriptHash) throw new Error(tt("missingHash"));
+      if (data.script) {
         setScripts((previous) => previous.map((row) => row.id === currentScript.id ? { ...row, ...data.script } : row));
       }
       setEditStatus("saved");
@@ -783,7 +839,7 @@ export default function ScriptPage() {
   const saveTideweCopy = async (copyText: string) => {
     if (!currentScript?.scriptHash || !projectMeta) throw new Error(tt("missingHash"));
     if (!llm.apiKey) throw new Error(tt("missingLlm"));
-    if (generationInFlight.current || creativeConfigSaving || editStatus === "saving") return;
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
     generationInFlight.current = true;
     const controller = new AbortController(); generationAbort.current = controller;
     setEditStatus("saving");
@@ -809,6 +865,9 @@ export default function ScriptPage() {
   };
 
   const scriptActionsBusy = isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
+  const judgeRewriteCount = judgeReport ? autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length : 0;
+  const judgeHasActionableAdvice = judgeReport?.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default")) ?? false;
+  const judgeHasSuggestions = judgeReport ? judgeReport.verdicts.some((verdict) => verdict.issues.length > 0) || judgeReport.rewrites.length > 0 || judgeReport.descriptionRewrites.length > 0 : false;
   const manualTideweCopy = isTideweProject && tideweCopySource === "manual";
   const generationDisabled = scriptActionsBusy || creativeConfigSaving || autoFinishing || Boolean(manualTideweCopy && tideweCopyInputError(tideweCopyText));
   const tideweGenerationInput = isTideweProject ? (
@@ -997,7 +1056,7 @@ export default function ScriptPage() {
       <main className="mx-auto max-w-7xl px-6 py-8">
         {creativeProfileSummary}
         {tideweGenerationInput}
-        {isTideweProject && currentScript?.copyDocument && <TideweCopyEditor key={currentScript.id} document={currentScript.copyDocument} busy={scriptActionsBusy || creativeConfigSaving} onSave={saveTideweCopy} />}
+        {isTideweProject && currentScript?.copyDocument && <TideweCopyEditor key={`${currentScript.id}:${currentScript.scriptHash}`} document={currentScript.copyDocument} busy={scriptActionsBusy || creativeConfigSaving} onSave={saveTideweCopy} />}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
         {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && resumableRun && !autoFinishing && (
@@ -1226,16 +1285,20 @@ export default function ScriptPage() {
                       <div className="flex items-center gap-2">
                         {judgeApplied ? (
                           <span className="text-xs text-green-400">{t("judgeAppliedTip")}</span>
-                        ) : !isTideweProject && autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length > 0 ? (
-                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy} onClick={applyJudgeRewrites}>
-                            {judgeApplying ? t("judgeApplying") : t("judgeApply", { n: autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length })}
+                        ) : judgeHasActionableAdvice ? (
+                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={applyJudgeAdvice}>
+                            {judgeApplying ? t("judgeAdviceApplying") : t("judgeApplyAdvice")}
                           </Button>
-                        ) : isTideweProject && judgeReport.verdicts.some((verdict) => verdict.issues.length > 0) ? (
-                          <span className="text-xs text-muted-foreground">{tt("judgeReviewHint")}</span>
+                        ) : !isTideweProject && judgeRewriteCount > 0 ? (
+                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={applyJudgeRewrites}>
+                            {judgeApplying ? t("judgeApplying") : t("judgeApply", { n: judgeRewriteCount })}
+                          </Button>
+                        ) : judgeHasSuggestions ? (
+                          <span className="text-xs text-muted-foreground">{t("judgeTasteOnly")}</span>
                         ) : (
                           <span className="text-xs text-green-400">{t("judgeAllPass")}</span>
                         )}
-                        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setJudgeReport(null)}>{tc("cancel")}</Button>
+                        <Button variant="outline" size="sm" className="h-7 text-xs" disabled={scriptActionsBusy} onClick={() => setJudgeReport(null)}>{tc("cancel")}</Button>
                       </div>
                     </div>
                     {judgeReport.summary && <p className="text-xs text-muted-foreground">{judgeReport.summary}</p>}
@@ -1458,6 +1521,7 @@ export default function ScriptPage() {
                                   <div>
                                     <label className="text-[10px] text-muted-foreground">{isTideweProject ? tt("shotCopyHint") : t("editVoiceoverLabel")}</label>
                                     <Textarea
+                                      lang={isTideweProject ? "en-US" : undefined}
                                       className="mt-1 min-h-[64px] bg-background/50 text-xs leading-relaxed"
                                       readOnly={isTideweProject}
                                       value={editDraft.voiceover}
@@ -1481,7 +1545,7 @@ export default function ScriptPage() {
                               ) : (
                                 shot.voiceover && (
                                   <div className="mt-3 p-2.5 bg-muted/30 rounded-md">
-                                    <p className="text-xs text-muted-foreground leading-relaxed">
+                                    <p lang={isTideweProject ? "en-US" : undefined} className="text-xs text-muted-foreground leading-relaxed">
                                       🎙 {shot.voiceover}
                                     </p>
                                   </div>
@@ -1504,6 +1568,7 @@ export default function ScriptPage() {
                         silent-discard where typing here was never saved) */}
                     <Textarea
                       readOnly
+                      lang={isTideweProject ? "en-US" : undefined}
                       className="min-h-[300px] bg-background/50 text-sm leading-relaxed cursor-default"
                       value={currentScript?.copyDocument?.text ?? currentScript?.shots.map((s) => s.voiceover).filter(Boolean).join("\n\n") ?? ""}
                     />

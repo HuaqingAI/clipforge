@@ -577,7 +577,34 @@ describe("TIDEWE editing and import", () => {
     expect(response.status).toBe(200);
     const report = await response.json();
     expect(report.rewrites).toEqual([]);
+    expect(report.sourceScriptHash).toBe(scriptRevision(source));
     expect(calls.complete.mock.calls[0][1].messages[0].content).toContain("Off-screen");
     expect(calls.complete.mock.calls[0][1].messages[0].content).toContain(copyText);
+  });
+
+  it("reviews all storyboard seconds including silent shots against the frozen duration target", async () => {
+    const source = seedScript();
+    const spoken = source.shots![0];
+    const silent = (shotId: number, duration: number, offset: number): schema.Shot => ({
+      ...spoken, shotId, duration, voiceover: "", description: "林间湿草上的露水近景。",
+      tidewe: { ...spoken.tidewe!, copySpan: { start: offset, end: offset } },
+    });
+    const updated = db.update(schema.scripts).set({
+      shots: [silent(1, 3.5, 0), { ...spoken, shotId: 2 }, silent(3, 2.5, copyText.length)],
+      totalDuration: 99,
+      creativeProfileSnapshot: createCreativeProfileSnapshot(createTideweOutdoorProfile({ targetDuration: 40 }), 1),
+    }).where(eq(schema.scripts.id, source.id)).returning().get()!;
+    db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ targetDuration: 60 }) }).where(eq(schema.projects.id, projectId)).run();
+
+    const response = await judge(req(`/api/project/${projectId}/script-judge`, { scriptId: source.id, llmConfig }), params());
+    expect(response.status).toBe(200);
+    expect((await response.json()).sourceScriptHash).toBe(scriptRevision(updated));
+    const prompt = calls.complete.mock.calls[0][1].messages[0].content;
+    expect(prompt).toContain('"actualTotalDuration":16,"plannedTotalDuration":40');
+    expect(prompt).toContain('"shotId":2,"start":3.5,"end":13.5,"duration":10');
+    expect(prompt).toContain('"shotId":3,"start":13.5,"end":16,"duration":2.5,"hasNarration":false');
+    expect(prompt).not.toContain("林间湿草上的露水近景。");
+    const reviewShots = JSON.parse(prompt.split("\n").find((line: string) => line.startsWith("SHOTS: ")).slice("SHOTS: ".length));
+    expect(reviewShots.map((shot: { shotId: number }) => shot.shotId)).toEqual([2]);
   });
 });

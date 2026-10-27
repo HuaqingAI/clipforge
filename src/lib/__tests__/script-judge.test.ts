@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   buildJudgePrompt,
+  buildTideweJudgePrompt,
+  buildJudgeTimingContext,
   parseJudgeResponse,
   autoApplicableRewrites,
   autoApplicableDescriptionRewrites,
@@ -8,6 +10,7 @@ import {
   preservesFactTokens,
   JUDGE_IDS,
 } from "@/lib/script-judge";
+import type { TideweCopyDocument } from "@/lib/tidewe/types";
 
 const SHOTS = [
   { shotId: 1, voiceover: "这款纸巾我回购了十次，真的谁用谁知道", description: "女生举着纸巾对镜头说话" },
@@ -48,6 +51,62 @@ describe("buildJudgePrompt（判官团二期）", () => {
   it("全英文台词 → 附加英文输出指令", () => {
     const p = buildJudgePrompt([{ shotId: 1, voiceover: "I bought this ten times." }]);
     expect(p).toContain("in English");
+  });
+});
+
+describe("judge timing context", () => {
+  const timedShots = [
+    { shotId: 1, voiceover: "", duration: 2.5, description: "清晨林间的湿草" },
+    { shotId: 2, voiceover: "I would check the fit first.", duration: 5.2 },
+    { shotId: 3, voiceover: "", duration: 1.3, description: "靴子放在车旁" },
+  ];
+
+  it("includes silent footage when locating narration and comparing the full storyboard with its target", () => {
+    expect(buildJudgeTimingContext(timedShots, { plannedTotalDuration: 30 })).toEqual({
+      unit: "seconds", actualTotalDuration: 9, plannedTotalDuration: 30,
+      shots: [
+        { shotId: 1, start: 0, end: 2.5, duration: 2.5, hasNarration: false },
+        { shotId: 2, start: 2.5, end: 7.7, duration: 5.2, hasNarration: true },
+        { shotId: 3, start: 7.7, end: 9, duration: 1.3, hasNarration: false },
+      ],
+    });
+  });
+
+  it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])("keeps missing or invalid seconds (%s) unknown without inventing downstream timing", duration => {
+    const context = buildJudgeTimingContext([
+      { shotId: 1, voiceover: "Hello", duration: 3 },
+      { shotId: 2, voiceover: "Unknown", duration },
+      { shotId: 3, voiceover: "Later", duration: 5 },
+    ]);
+    expect(context.actualTotalDuration).toBeNull();
+    expect(context.plannedTotalDuration).toBeNull();
+    expect(context.shots[1]).toMatchObject({ start: 3, end: null, duration: null });
+    expect(context.shots[2]).toMatchObject({ start: null, end: null, duration: 5 });
+  });
+
+  it("adds the same seconds and language-aware estimation limits to both review paths without enabling TIDEWE rewrites", () => {
+    const copy: TideweCopyDocument = {
+      version: 1, language: "en-US", text: timedShots[1].voiceover, translation: "我会先检查合脚程度。",
+      angle: "choice", hookType: "question", claimedFactIds: [],
+      factsSnapshot: { version: 1, brand: "TIDEWE", category: "waterproof_boots", items: [] },
+      factsHash: "test", corpusVersion: "test", compilerVersion: "test", exampleIds: [], wordCount: 6, estimatedDuration: 3,
+    };
+    const reviewShots = timedShots.filter((shot) => shot.voiceover);
+    const prompts = [
+      buildJudgePrompt(reviewShots, { plannedTotalDuration: 30, timelineShots: timedShots }),
+      buildTideweJudgePrompt(copy, reviewShots, { plannedTotalDuration: 30, timelineShots: timedShots }),
+    ];
+    for (const prompt of prompts) {
+      expect(prompt).toContain('"actualTotalDuration":9,"plannedTotalDuration":30');
+      expect(prompt).toContain('"shotId":2,"start":2.5,"end":7.7,"duration":5.2');
+      expect(prompt).toContain("英语约 2–3 词/秒，中文约 3–5 字/秒");
+      expect(prompt).toContain("不是实测音频或成片时长");
+      expect(prompt).toContain("null 表示未知");
+      expect(prompt).not.toContain("清晨林间的湿草");
+      expect(prompt).not.toContain("靴子放在车旁");
+    }
+    expect(prompts[1]).toContain("Return feedback only; do not rewrite or translate it.");
+    expect(prompts[1]).toContain("Do not demand dual CTAs, a mid-video suspense hook");
   });
 });
 

@@ -71,6 +71,8 @@ export interface JudgeReport {
   rewrites: JudgeRewrite[];
   descriptionRewrites: JudgeDescriptionRewrite[];
   summary?: string;
+  /** Saved script version reviewed by the panel; used to reject stale follow-up edits. */
+  sourceScriptHash?: string;
 }
 
 /** Minimal shot view the judges need (id + spoken line + what the frame shows). */
@@ -79,7 +81,45 @@ export interface JudgeShotInput {
   voiceover: string;
   /** Shot visual description — feeds the visual judge; optional for line-only callers */
   description?: string;
+  /** Allocated storyboard seconds, including shots without narration; not measured audio. */
+  duration?: number;
 }
+
+export interface JudgeTimingOptions {
+  plannedTotalDuration?: number;
+  /** Complete storyboard for timing only; does not add shots to the review scope. */
+  timelineShots?: JudgeShotInput[];
+}
+
+function validDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/** Keep silent shots on the timeline; missing durations must never become invented seconds. */
+export function buildJudgeTimingContext(shots: JudgeShotInput[], opts: JudgeTimingOptions = {}) {
+  let cursor: number | null = 0;
+  const seconds = (value: number) => Math.round(value * 1000) / 1000;
+  const timeline = shots.map((shot) => {
+    const duration = validDuration(shot.duration) ? shot.duration : null;
+    const start = cursor;
+    const end: number | null = start !== null && duration !== null ? start + duration : null;
+    cursor = end;
+    return { shotId: shot.shotId, start: start === null ? null : seconds(start),
+      end: end === null ? null : seconds(end), duration, hasNarration: Boolean(shot.voiceover.trim()) };
+  });
+  return {
+    unit: "seconds",
+    actualTotalDuration: shots.length > 0 && cursor !== null ? seconds(cursor) : null,
+    plannedTotalDuration: validDuration(opts.plannedTotalDuration) ? opts.plannedTotalDuration : null,
+    shots: timeline,
+  };
+}
+
+const TIMING_REVIEW_RULES = [
+  "时长依据：TIMING_CONTEXT 的 start/end/duration 是分镜安排的秒数；actualTotalDuration 是全部分镜（包括无旁白镜头）的合计，plannedTotalDuration 是创作计划目标，二者不是实测音频或成片时长。",
+  "节奏判断必须结合每镜时长、台词密度和完整时间线。按原口播语言粗估语速：英语约 2–3 词/秒，中文约 3–5 字/秒；其他语言或混合语言按其实际语言保守估算，不要把英文按中文字数计算。停顿与动作会占时间，估算必须明确标为估算，不能声称已测配音时长或口型同步。",
+  "null 表示未知：缺少或无效的分镜秒数会使总时长及后续时间点无法确定，不得补造秒数或断言超时；可以指出需要试听核对。若该创作类型适用中段钩子规则，仅在已知 actualTotalDuration 时按实际秒数判断超过 20 秒和 40%–60% 的位置，不能用目标时长代替实际分镜合计。",
+].join("\n");
 
 /** True when the text contains CJK characters (rewrite-language pick). */
 function hasCjk(s: string): boolean {
@@ -113,7 +153,7 @@ const STYLE_CRITERIA: Record<string, string> = {
  */
 export function buildJudgePrompt(
   shots: JudgeShotInput[],
-  opts: { styleLabel?: string; styleType?: string } = {}
+  opts: { styleLabel?: string; styleType?: string } & JudgeTimingOptions = {}
 ): string {
   const lines = shots.map((s) => {
     const desc = (s.description ?? "").trim();
@@ -149,6 +189,8 @@ export function buildJudgePrompt(
     ``,
     `逐镜内容：`,
     ...lines,
+    `TIMING_CONTEXT: ${JSON.stringify(buildJudgeTimingContext(opts.timelineShots ?? shots, opts))}`,
+    TIMING_REVIEW_RULES,
     ``,
     `只输出 JSON，格式：`,
     `{"verdicts":[{"judge":"pace","issues":[{"shotId":1,"issue":"「原句片段」——什么没有成立","tier":"default"}]},{"judge":"voice","issues":[]},{"judge":"idea","issues":[]},{"judge":"structure","issues":[]},{"judge":"visual","issues":[]}],"rewrites":[{"shotId":1,"voiceover":"重写后的台词","tier":"default"}],"descriptionRewrites":[{"shotId":2,"description":"重写后的画面描述（可见动作）","tier":"invariant"}],"summary":"一句话总评"}`,
@@ -165,7 +207,7 @@ export function buildJudgePrompt(
 }
 
 /** Review the canonical brand copy without offering executable per-shot narration rewrites. */
-export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeShotInput[]): string {
+export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeShotInput[], opts: JudgeTimingOptions = {}): string {
   return [
     "Review this US-English TIDEWE outdoor product narration. Return feedback only; do not rewrite or translate it.",
     "Judge pace, natural American spoken voice, specific outdoor situations, one coherent angle, and visible feasible actions.",
@@ -177,6 +219,8 @@ export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeSho
     `CURRENT_PRODUCT_FACTS: ${JSON.stringify(copy.factsSnapshot)}`,
     `FINAL_COPY: ${JSON.stringify(copy.text)}`,
     `SHOTS: ${JSON.stringify(shots)}`,
+    `TIMING_CONTEXT: ${JSON.stringify(buildJudgeTimingContext(opts.timelineShots ?? shots, opts))}`,
+    TIMING_REVIEW_RULES,
     'Return JSON only: {"verdicts":[{"judge":"pace","issues":[{"shotId":1,"issue":"quoted evidence and reason","tier":"default"}]},{"judge":"voice","issues":[]},{"judge":"idea","issues":[]},{"judge":"structure","issues":[]},{"judge":"visual","issues":[]}],"rewrites":[],"descriptionRewrites":[],"summary":"中文总评"}.',
     "Use invariant only for factual/structural defects, default for clear writing problems, taste for preferences. Never output rewritten narration.",
   ].join("\n");

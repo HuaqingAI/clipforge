@@ -35,7 +35,7 @@ export const tidewe: NamespaceMessages = {
     modeCloseupLabel: "产品特写", modeCloseupDesc: "真人口播介绍装备细节，穿插无口播特写",
     modeSceneLabel: "真人场景演示", modeSceneDesc: "真人边演示边用英语口播，嘴部清晰可见",
     shotCopyHint: "口播由完整英文文案派生；修改口播请使用上方“编辑全文”。", modeHint: "真人自然演示，可露脸出镜，用美式英语介绍装备，嘴型配合发音并保留原声；同步程度取决于视频模型。",
-    judgeReviewHint: "请审阅建议，再通过“编辑全文”修改原稿。",
+    judgeReviewHint: "可按建议一键修改，英文全文、中文译文与分镜会同步更新。",
   },
   en: {
     label: "TIDEWE style", description: "Practical hunting situations, conversational US English, and clear product benefits.",
@@ -71,6 +71,6 @@ export const tidewe: NamespaceMessages = {
     modeCloseupLabel: "Product close-ups", modeCloseupDesc: "People explain gear details on camera, with unvoiced detail cutaways",
     modeSceneLabel: "People demonstrating gear", modeSceneDesc: "People demonstrate while speaking English, with their mouths clearly visible",
     shotCopyHint: "Narration comes from the complete English copy. Use Edit complete copy above to change it.", modeHint: "Natural demonstrations with visible faces and on-camera US-English speech. Keep the original audio and request mouth movements matching pronunciation; synchronization depends on the video model.",
-    judgeReviewHint: "Review these suggestions, then use Edit complete copy to revise the narration.",
+    judgeReviewHint: "Apply the feedback to update the complete English copy, Chinese translation, and storyboard together.",
   },
 };
