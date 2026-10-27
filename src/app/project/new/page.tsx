@@ -22,6 +22,8 @@ import {
 import Link from "next/link";
 import { TideweProductFields, buildTideweProductFacts, type TideweProductInput } from "@/components/tidewe-product-fields";
 import { TidewePresenterPicker } from "@/components/tidewe-presenter-picker";
+import { TideweCopyInput, type TideweCopySource } from "@/components/tidewe-copy-input";
+import { tideweCopyInputError } from "@/lib/tidewe/copy-input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -268,6 +270,9 @@ export default function NewProjectPage() {
   const isTidewe = creationType === "tidewe_outdoor";
   const isSales = creationType === "short_video_sales";
   const [tideweProduct, setTideweProduct] = useState<TideweProductInput>({ category: "other", sku: "", specifications: "", source: "" });
+  const [tideweCopySource, setTideweCopySource] = useState<TideweCopySource>("ai");
+  const [tideweCopyText, setTideweCopyText] = useState("");
+  const useTideweOriginal = isTidewe && tideweCopySource === "manual";
   const tideweDraft = creativeProfileDrafts.tidewe_outdoor;
   const updateTideweDraft = (update: Partial<TideweOutdoorProfile>) => setCreativeProfileDrafts((previous) => ({ ...previous, tidewe_outdoor: { ...previous.tidewe_outdoor, ...update } }));
 
@@ -703,7 +708,9 @@ export default function NewProjectPage() {
   }, [libraryProducts, prefillFromProduct]);
 
   // form validation
-  const isValid = hasChosenCreationType && productName.trim().length > 0 && images.length >= 1;
+  const hasProductInput = hasChosenCreationType && productName.trim().length > 0 && images.length >= 1;
+  const originalCopyError = useTideweOriginal ? tideweCopyInputError(tideweCopyText) : undefined;
+  const isValid = hasProductInput && !originalCopyError;
 
   // summary badge for the folded templates drawer: surfaces what's currently applied while closed
   const pickedAdTpl = resolveAdTemplate(selectedAdTemplateId);
@@ -856,7 +863,7 @@ export default function NewProjectPage() {
       setProgress({
         step: "generating",
         percent: 60,
-        message: isTidewe ? tt("generating") : t(isPremiumCg ? "progressGeneratingCg" : "progressGenerating"),
+        message: isTidewe ? tt(useTideweOriginal ? "copyInputGenerating" : "generating") : t(isPremiumCg ? "progressGeneratingCg" : "progressGenerating"),
       });
       // if a presenter character was selected, include their info
       const selectedCharacter = isSales && selectedCharacterId
@@ -879,6 +886,7 @@ export default function NewProjectPage() {
         body: JSON.stringify({
           projectId: project.id,
           ...(isTidewe && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: updatedProject.creativeConfigRevision ?? project.creativeConfigRevision ?? 0 }),
+          ...(useTideweOriginal && { copyText: tideweCopyText, count: 1 }),
           productName,
           category: isTidewe ? tideweProduct.category : category,
           productDescription: isTidewe ? tideweProduct.specifications : sellingPoints,
@@ -934,7 +942,7 @@ export default function NewProjectPage() {
       setProgress({
         step: "done",
         percent: 100,
-        message: isTidewe ? tt("complete") : t(isPremiumCg ? "progressDoneCg" : "progressDone"),
+        message: isTidewe ? tt(useTideweOriginal ? "copyInputComplete" : "complete") : t(isPremiumCg ? "progressDoneCg" : "progressDone"),
       });
       await new Promise((r) => setTimeout(r, 800));
       router.push(`/project/${project.id}/script`);
@@ -1188,6 +1196,7 @@ export default function NewProjectPage() {
               </div>
 
               {isTidewe && <TideweProductFields value={tideweProduct} onChange={setTideweProduct} />}
+              {isTidewe && <TideweCopyInput source={tideweCopySource} text={tideweCopyText} onSourceChange={setTideweCopySource} onTextChange={setTideweCopyText} disabled={isSubmitting} />}
               {/* product selling points */}
               {!isTidewe && <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -1387,10 +1396,10 @@ export default function NewProjectPage() {
 
               {isTidewe && <div className="mt-4 space-y-3">
                 <p className="text-xs text-primary">{tt("language")}</p>
-                <Label htmlFor="tidewe-angle">{tt("angle")}</Label>
+                {!useTideweOriginal && <><Label htmlFor="tidewe-angle">{tt("angle")}</Label>
                 <select id="tidewe-angle" value={tideweDraft.narrativeAngle} onChange={(event) => updateTideweDraft({ narrativeAngle: event.target.value as TideweOutdoorProfile["narrativeAngle"] })} className="h-10 w-full rounded-md border border-border/50 bg-background px-3 text-sm">
                   {["auto", "scene_pain", "choice", "use_demo", "long_wait", "gift"].map((angle) => <option key={angle} value={angle}>{tt(`angle_${angle}`)}</option>)}
-                </select>
+                </select></>}
               </div>}
               {/* divider */}
               <div className="my-5 border-t border-border/40" />
@@ -2251,7 +2260,7 @@ export default function NewProjectPage() {
               ) : (
                 <>
                   {isPremiumCg ? <LuBox className="w-5 h-5 mr-2" /> : <LuZap className="w-5 h-5 mr-2" />}
-                  {isTidewe ? tt("submit") : t(isPremiumCg ? "submitGenerateCg" : "submitGenerate")}
+                  {isTidewe ? tt(useTideweOriginal ? "copyInputGenerate" : "submit") : t(isPremiumCg ? "submitGenerateCg" : "submitGenerate")}
                 </>
               )}
             </Button>
@@ -2260,8 +2269,8 @@ export default function NewProjectPage() {
                 {!isLLMConfigured
                   ? t("hintNeedLlm")
                   : !isValid
-                    ? t(isPremiumCg ? "hintNeedInputCg" : "hintNeedInput")
-                    : isTidewe ? tt("ready") : t(isPremiumCg ? "hintReadyCg" : "hintReady")}
+                    ? hasProductInput && originalCopyError ? tt(originalCopyError) : t(isPremiumCg ? "hintNeedInputCg" : "hintNeedInput")
+                    : isTidewe ? tt(useTideweOriginal ? "copyInputReady" : "ready") : t(isPremiumCg ? "hintReadyCg" : "hintReady")}
               </p>
             )}
           </div>

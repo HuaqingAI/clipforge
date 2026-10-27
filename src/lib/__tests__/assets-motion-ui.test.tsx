@@ -397,7 +397,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each(["pin", "tail"] as const)("only chains %s frames within matching TIDEWE scenes and product visibility", async (chainMode) => {
+  it.each(["pin", "tail"] as const)("keeps TIDEWE's own first frame while allowing matching-scene pin chaining with %s", async (chainMode) => {
     const { planned } = configureTideweAssets();
     useSettingsStore.setState({ chainMode });
     const shots = [1, 2, 3].map((shotId): Shot => ({ ...planned, shotId, type: "hook", tidewe: { ...planned.tidewe!, sceneId: "same-woods", productVisible: true } }));
@@ -414,10 +414,59 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(previewRequests()).toHaveLength(1);
     const request = previewRequests()[0];
     expect(request.shotId).toBe(2);
-    expect(request.controlInputs?.firstFrameUrl).toBe(chainMode === "tail" ? "/api/files/previous-tail.jpg" : "/api/files/frame-2.jpg");
+    expect(request.controlInputs?.firstFrameUrl).toBe("/api/files/frame-2.jpg");
     expect(request.controlInputs?.lastFrameUrl).toBe(chainMode === "pin" ? "/api/files/frame-3.jpg" : undefined);
-    expect(request.controlInputs?.continuityReferenceUrl).toBe("/api/files/previous-tail.jpg");
+    expect(request.controlInputs?.continuityReferenceUrl).toBeUndefined();
     expect(request.chainToNext).toBe(chainMode === "pin");
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it.each([false, true])("uses each selected presenter's own keyframe with single-image Kling and tail mode, batch=%s", async (batchMode) => {
+    const presenter = snapshotTidewePresenter(selectedPresenter)!;
+    const { planned } = configureTideweAssets({ projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
+    useSettingsStore.setState({ chainMode: "tail" });
+    const shots = [1, 2, 3].map((shotId): Shot => ({
+      ...planned, shotId, characterId: presenter.id,
+      tidewe: { ...planned.tidewe!, sceneId: "same-woods", personVisible: true, presenter },
+    }));
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots }]));
+      if (url.endsWith("/assets") && !init?.method) return Promise.resolve(Response.json([
+        { id: "video-1", shotId: 1, status: "done", selected: true, provider: "kling-cli", filePath: "/api/files/previous.mp4", sourceKeyframeUrl: "/api/files/frame-1.jpg", lastFrameUrl: "/api/files/previous.mp4.last.jpg" },
+        ...[2, 3].map((shotId) => ({ id: `keyframe-${shotId}`, shotId, status: "done", selected: true, type: "ai_generated", filePath: `/api/files/presenter-frame-${shotId}.jpg` })),
+      ]));
+      if (url === videoPromptUrl) {
+        const request = JSON.parse(init!.body as string) as VideoPromptRequest;
+        if (request.controlInputs?.firstFrameUrl !== `/api/files/presenter-frame-${request.shotId}.jpg`) {
+          return Promise.resolve(Response.json({ code: "TIDEWE_PRESENTER_KEYFRAME_REQUIRED", error: "The selected presenter's current keyframe is required." }, { status: 400 }));
+        }
+      }
+      return normal(url, init);
+    });
+    await mount(kling.selectionKey);
+    await click(batchMode ? "batchMotionButton" : "btnConvertMotion");
+    const requests = previewRequests();
+    expect(requests.map((request) => request.shotId)).toEqual(batchMode ? [2, 3] : [2]);
+    for (const request of requests) {
+      expect(request).toMatchObject({
+        provider: "kling-cli", model: kling.selectionKey,
+        controlInputs: { firstFrameUrl: `/api/files/presenter-frame-${request.shotId}.jpg`, characterReferenceUrl: "/api/files/frozen-presenter.png" },
+      });
+      expect(request.controlInputs?.lastFrameUrl).toBeUndefined();
+      expect(request.controlInputs?.continuityReferenceUrl).toBeUndefined();
+      expect(JSON.stringify(request)).not.toContain("previous.mp4.last.jpg");
+    }
+    if (batchMode) {
+      expect(container.querySelector('[aria-label="batch-motion-panel"]')).not.toBeNull();
+      for (const shotId of [2, 3]) {
+        expect(batch.props!.shots.find(({ asset }) => asset.shotId === shotId)).toMatchObject({
+          draft: { firstFrameUrl: `/api/files/presenter-frame-${shotId}.jpg` },
+        });
+      }
+    } else {
+      expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(serverPrompt(2));
+    }
     expect(submissions()).toHaveLength(0);
   });
 

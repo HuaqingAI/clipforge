@@ -15,9 +15,9 @@ import { POST as generateScripts } from "@/app/api/llm/script/route";
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
 /**
- * POST /api/project/[id]/import-script — Produce a video directly from a user-written script/narration (no AI generation step).
- * Splits the full copy into shots sentence-by-sentence with estimated durations and saves it as the currently selected script;
- * then proceeds normally: auto-match visuals (or use local assets) + voiceover + compose.
+ * POST /api/project/[id]/import-script — Start from user-written narration.
+ * TIDEWE freezes complete English prose and uses AI only for translation/semantic visual planning.
+ * Other sales profiles use the local sentence splitter, then continue through their normal media workflow.
  * body: { script: string, title?: string }
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

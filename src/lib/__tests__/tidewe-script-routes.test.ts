@@ -537,6 +537,29 @@ describe("TIDEWE editing and import", () => {
     expect(db.select().from(schema.scripts).get()?.styleType).toBe("tidewe_outdoor");
   });
 
+  it("persists staff prose with original paragraphs and punctuation through the import entry point", async () => {
+    const text = "I’ve worn this for 3 seasons.\r\n\r\nWait.  Wait. Buy now if it fits.";
+    const result = generated(text);
+    result.copyDocument.source = "user_provided";
+    calls.generate.mockResolvedValueOnce([result]);
+    const response = await importCopy(req(`/api/project/${projectId}/import-script`, { script: `  ${text}\r\n`, requestId: "staff-copy-import", llmConfig }), params());
+    expect(response.status).toBe(200);
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ copyText: text, count: 1 }));
+    const saved = db.select().from(schema.scripts).get()!;
+    expect(saved.copyDocument).toMatchObject({ text, source: "user_provided", factsSnapshot: facts });
+    expect(saved.shots?.[0].voiceover).toBe(text);
+    expect(saved.selected).toBe(true);
+  });
+
+  it.each(["全中文口播", "English copy with 中文译文", "12345", "a".repeat(12001)])("rejects invalid custom English copy before vision or script calls: %s", async copyText => {
+    const response = await generate(req("/api/llm/script", { ...generationBody("bad-custom-copy"), copyText }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_IMPORTED_COPY_INVALID", requestId: "bad-custom-copy" });
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.generate).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).all()).toEqual([]);
+  });
+
   it("freezes the persisted presenter during full-copy import despite body character overrides", async () => {
     const persisted = createTideweOutdoorProfile({ presenter: presenterA });
     db.update(schema.projects).set({ creativeProfile: persisted, characterId: presenterA.id }).where(eq(schema.projects.id, projectId)).run();

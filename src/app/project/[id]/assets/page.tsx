@@ -810,15 +810,15 @@ function AssetsPageContent() {
           : lastFrameOverride ??
             // demo-type shots skip auto-chaining (their ending IS the content); explicit override still chains
             (chainByDefault(asset?.type) && (!tidewe || sameTideweScene(asset, nextAsset)) ? nextChainKeyframe(assets, shotId) : undefined);
-      // tail mode: the previous shot's REAL last frame (extracted server-side after its save)
-      // becomes this shot's first frame — pixel-continuous seam; falls back to own keyframe
+      // TIDEWE requires a saved keyframe from this shot. An extracted previous tail
+      // is neither its presenter identity frame nor an allowed TIDEWE reference.
+      // Other styles can use the previous real tail for pixel-continuous seams.
       let tailFirstFrame: string | undefined;
-      if (chainMode === "tail" && !firstFrameOverride && previousAsset
-        && (!tidewe || sameTideweScene(previousAsset, asset))) {
+      if (!tidewe && chainMode === "tail" && !firstFrameOverride && previousAsset) {
         tailFirstFrame = previousAsset.lastFrameUrl ?? lastFrameByShot.current.get(previousAsset.shotId);
       }
       const effectiveFirstFrame = tailFirstFrame ?? firstFrame;
-      const previousTail = (!tidewe || sameTideweScene(previousAsset, asset))
+      const previousTail = !tidewe
         ? previousAsset?.lastFrameUrl ?? (previousAsset ? lastFrameByShot.current.get(previousAsset.shotId) : undefined)
         : undefined;
       const characterReference = tidewe
@@ -1278,7 +1278,7 @@ function AssetsPageContent() {
         // tail mode: sequential continuation — the previous shot's real tail frame (captured at
         // save time in this very loop) beats the shot's own keyframe as the first frame
         const previous = assets[i - 1];
-        const tailFrame = chainMode === "tail" && previous && (!tidewe || sameTideweScene(previous, row))
+        const tailFrame = !tidewe && chainMode === "tail" && previous
           ? previous.lastFrameUrl ?? lastFrameByShot.current.get(previous.shotId) : undefined;
         const firstFrame = tailFrame ?? staticFrameOf(row);
         if (!firstFrame) continue;

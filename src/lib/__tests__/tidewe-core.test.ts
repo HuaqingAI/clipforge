@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTideweOutdoorProfile, sanitizeCreativeProfile, validateCreativeProfileInput, checkCreativeProfileContext, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { normalizeProductFacts, productFactsFromDescription, claimableFacts } from "@/lib/tidewe/facts";
-import { assertTideweCopyClaims, assertTideweScript, mapTideweCopySpans, productFactsHash } from "@/lib/tidewe/validation";
+import { assertTideweCopyClaims, assertTideweImportedCopy, assertTideweScript, mapTideweCopySpans, productFactsHash } from "@/lib/tidewe/validation";
 import { generateTideweScripts, type TideweCompletion } from "@/lib/tidewe/generator";
 import { buildBatchPrompt } from "@/lib/script-engine/prompts";
 import type { ScriptInput } from "@/lib/script-engine/generator";
@@ -87,12 +87,58 @@ describe("TIDEWE core contracts", () => {
     script.shots[0].voiceover += " Buy it.";
     expect(() => assertTideweScript(script)).toThrow(/changed frozen copy/);
   });
-  it("never rewrites imported copy and rejects a planner that adds words", async () => {
-    const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify({ copies: [{ ...copyReply.copies[0], text: "Different copy." }] }));
-    await expect(generateTideweScripts({ ...input, copyText: copy }, complete)).rejects.toThrow(/must not be rewritten/);
+  it("rejects a planner that adds words to frozen AI copy", async () => {
     const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: [shot(copy + " Buy it.")] }] }];
     const bad: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     await expect(generateTideweScripts(input, bad)).rejects.toThrow(/rewrote/);
+  });
+  it("owns imported narration on the server, preserving paragraphs, quotes and UTF-16 spans without AI style rewriting", async () => {
+    const first = "“I’ve worn this for 3 seasons,” I tell them. 🌲";
+    const second = "Wait.  Wait.\r\nBuy now if it fits.";
+    const original = `${first}\r\n\r\n${second}`;
+    const profile = createTideweOutdoorProfile({ presenter: { id: "chosen", name: "Staff creator", appearance: "An adult in a cap", referenceImages: [] } });
+    // Annotation needs no English text; even an unexpected rewritten text field is ignored.
+    const annotation = { ...copyReply.copies[0], text: "AI tried to replace the staff's script." };
+    const planned = [first, second].map(segment => ({ ...shot(segment), personVisible: true, description: "{{PRESENTER}}面向镜头自然讲述，嘴部清晰可见。" }));
+    const responses = [{ copies: [annotation] }, { scripts: [{ copyIndex: 0, shots: planned }] }];
+    const calls = vi.fn();
+    const complete: TideweCompletion = async (system, prompt, parse) => { calls(system, prompt); return parse(JSON.stringify(responses.shift())); };
+    const [script] = await generateTideweScripts({ ...input, creativeProfile: profile, copyText: original, count: 3 }, complete);
+    expect(calls).toHaveBeenCalledTimes(2);
+    const firstPrompt = JSON.parse(calls.mock.calls[0][1]);
+    expect(firstPrompt.frozenImportedCopy).toBe(original);
+    expect(firstPrompt.outputFormat.copies[0]).not.toHaveProperty("text");
+    expect(firstPrompt).not.toHaveProperty("styleExamples");
+    expect(calls.mock.calls[0][0]).toContain("not a draft to rewrite");
+    expect(JSON.parse(calls.mock.calls[1][1]).copies[0]).toMatchObject({ source: "user_provided", text: original });
+    expect(script.copyDocument).toMatchObject({ source: "user_provided", text: original, exampleIds: [], claimedFactIds: [] });
+    expect(script.copyDocument?.factsSnapshot).toEqual(facts);
+    expect(script.shots.map(s => s.voiceover)).toEqual([first, second]);
+    expect(script.shots.map(s => s.tidewe?.copySpan)).toEqual([{ start: 0, end: first.length }, { start: first.length + 4, end: original.length }]);
+    expect(script.shots[0].tidewe?.presenter).toEqual(profile.presenter);
+    expect(() => assertTideweScript(script, profile.presenter)).not.toThrow();
+    // Historical/default AI copy still uses AI factual/style gates; source is not a global bypass.
+    delete script.copyDocument!.source;
+    expect(() => assertTideweScript(script, profile.presenter)).toThrow(/urgency|testimonials|numeric/);
+  });
+  it("annotates imported text without requiring an English reply and rejects unsupported fact citations before planning", async () => {
+    const annotation = Object.fromEntries(Object.entries(copyReply.copies[0]).filter(([key]) => key !== "text"));
+    const responses = [{ copies: [annotation] }, { scripts: [{ copyIndex: 0, shots: [shot(copy)] }] }];
+    const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
+    expect((await generateTideweScripts({ ...input, copyText: copy }, complete))[0].copyDocument).toMatchObject({ source: "user_provided", text: copy });
+    const invalidCalls = vi.fn();
+    const bad: TideweCompletion = async (_system, _prompt, parse) => {
+      invalidCalls();
+      return parse(JSON.stringify({ copies: [{ ...annotation, claimedFactIds: ["invented-evidence"] }] }));
+    };
+    await expect(generateTideweScripts({ ...input, copyText: copy }, bad)).rejects.toThrow(/unknown, inferred or conflicting/);
+    expect(invalidCalls).toHaveBeenCalledTimes(1);
+  });
+  it.each(["", "纯中文口播文案", "English copy with 中文注释", "1234", "a".repeat(12001)])("rejects invalid imported copy before annotation: %s", async invalid => {
+    const complete = vi.fn();
+    expect(() => assertTideweImportedCopy(invalid)).toThrow();
+    await expect(generateTideweScripts({ ...input, copyText: invalid }, complete)).rejects.toMatchObject({ code: "TIDEWE_IMPORTED_COPY_INVALID", status: 400 });
+    expect(complete).not.toHaveBeenCalled();
   });
   it.each([false, true])("binds a frozen selected presenter into the planner and generated shots, image-only=%s", async (imageOnly) => {
     const library = { id: "chosen", name: "Selected creator", appearance: imageOnly ? "" : "An adult with a green hat", referenceImages: ["/api/files/selected.png"] };

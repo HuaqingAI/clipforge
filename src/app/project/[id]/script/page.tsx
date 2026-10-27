@@ -25,8 +25,10 @@ import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
 import { ProjectHeader } from "@/components/project-header";
 import { ScriptHistoryDialog } from "@/components/script-history-dialog";
 import { TideweCopyEditor } from "@/components/tidewe-copy-editor";
+import { TideweCopyInput, type TideweCopySource } from "@/components/tidewe-copy-input";
 import { TideweProjectSettings } from "@/components/tidewe-project-settings";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
+import { tideweCopyInputError } from "@/lib/tidewe/copy-input";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 import {
   createPremiumProductCgProfile,
@@ -159,6 +161,9 @@ export default function ScriptPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [genError, setGenError] = useState("");
+  const [tideweCopySource, setTideweCopySource] = useState<TideweCopySource>("ai");
+  const [tideweCopyText, setTideweCopyText] = useState("");
+  const tideweCopyDraftTouched = useRef(false);
   const { llm } = useSettingsStore();
   // beginner/director split: simple mode swaps the 3-column editor for a read-and-go card
   const uiMode = useSettingsStore((st) => st.uiMode);
@@ -178,6 +183,9 @@ export default function ScriptPage() {
     setHistoryOpen(false);
     setDeleteTarget(null);
     setDeleteError("");
+    setTideweCopySource("ai");
+    setTideweCopyText("");
+    tideweCopyDraftTouched.current = false;
     return () => {
       generationAbort.current?.abort();
       generationAbort.current = null;
@@ -192,6 +200,12 @@ export default function ScriptPage() {
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
   const handleGenerate = async () => {
     if (!projectMeta || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    const manualTideweCopy = projectMeta.creativeProfile.creationType === "tidewe_outdoor" && tideweCopySource === "manual";
+    const copyError = manualTideweCopy ? tideweCopyInputError(tideweCopyText) : undefined;
+    if (copyError) {
+      setGenError(tt(copyError));
+      return;
+    }
     if (!llm.apiKey) {
       setGenError(t("errorNoLlm"));
       return;
@@ -215,6 +229,7 @@ export default function ScriptPage() {
         : {
             projectId: id,
             ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: projectMeta.creativeConfigRevision, ...(scripts[selectedScript]?.scriptHash && { sourceScriptId: scripts[selectedScript].id, expectedScriptHash: scripts[selectedScript].scriptHash }) }),
+            ...(manualTideweCopy && { copyText: tideweCopyText, count: 1 }),
             productName: projectMeta.productName,
             category: projectMeta.category,
             productDescription: projectMeta.description,
@@ -350,6 +365,11 @@ export default function ScriptPage() {
           // default to the script marked as selected
           const selIdx = dbScripts.findIndex((s) => s.selected);
           setSelectedScript(selIdx >= 0 ? selIdx : 0);
+          const selected = dbScripts[selIdx >= 0 ? selIdx : 0];
+          if (!tideweCopyDraftTouched.current && selected.styleType === "tidewe_outdoor" && selected.copyDocument?.source === "user_provided") {
+            setTideweCopySource("manual");
+            setTideweCopyText(selected.copyDocument.text);
+          }
         } else {
           // no real scripts: stay empty so the render layer shows the "generate" empty state
           // (fixes issue #3: old logic fell back to the Debao demo data, so users opening their own
@@ -780,12 +800,30 @@ export default function ScriptPage() {
       if (!options.length) throw new Error(t("errorReloadScripts"));
       setScripts(options.map((row) => ({ id: row.id, title: row.title ?? t("untitledScript"), styleType: row.styleType, totalDuration: row.totalDuration ?? 0, shots: row.shots ?? [], copyDocument: row.copyDocument, scriptHash: row.scriptHash, creativeProfileSnapshot: row.creativeProfileSnapshot })));
       setSelectedScript(Math.max(0, options.findIndex((row) => row.selected)));
+      tideweCopyDraftTouched.current = true;
+      setTideweCopySource("manual");
+      setTideweCopyText(copyText);
       setEditStatus("saved");
     } catch (cause) { setEditStatus("failed"); throw cause; }
     finally { if (generationAbort.current === controller) { generationAbort.current = null; generationInFlight.current = false; } }
   };
 
   const scriptActionsBusy = isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
+  const manualTideweCopy = isTideweProject && tideweCopySource === "manual";
+  const generationDisabled = scriptActionsBusy || creativeConfigSaving || autoFinishing || Boolean(manualTideweCopy && tideweCopyInputError(tideweCopyText));
+  const tideweGenerationInput = isTideweProject ? (
+    <Card className="glass-card mb-5 w-full text-left">
+      <CardContent className="space-y-4 p-5">
+        <TideweCopyInput id="tidewe-custom-copy-text" source={tideweCopySource} text={tideweCopyText} onSourceChange={(source) => { tideweCopyDraftTouched.current = true; setTideweCopySource(source); }} onTextChange={(text) => { tideweCopyDraftTouched.current = true; setTideweCopyText(text); }} disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} />
+        {scripts.length > 0 && <div className="flex justify-end">
+          <Button variant="outline" size="sm" disabled={generationDisabled} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
+            {isGenerating ? <LuLoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" /> : <LuWand className="mr-1 h-3.5 w-3.5" />}
+            {manualTideweCopy ? tt(isGenerating ? "copyInputGenerating" : "copyInputGenerate") : t(isGenerating ? "regenerating" : "regenerate")}
+          </Button>
+        </div>}
+      </CardContent>
+    </Card>
+  ) : null;
   const historyButton = (
     <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={() => setHistoryOpen(true)}>
       <LuHistory className="mr-1 h-3.5 w-3.5" />{t("historyButton")}
@@ -881,8 +919,9 @@ export default function ScriptPage() {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
-        <div className="mx-auto max-w-md flex flex-col items-center justify-center py-28 px-6 text-center">
+        <div className={`mx-auto ${isTideweProject ? "max-w-3xl" : "max-w-md"} flex flex-col items-center justify-center py-28 px-6 text-center`}>
           <div className="w-full text-left">{creativeProfileSummary}</div>
+          {tideweGenerationInput}
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/40 mb-5">
             <LuWand className="w-8 h-8 text-muted-foreground" />
           </div>
@@ -900,16 +939,16 @@ export default function ScriptPage() {
             </div>
           )}
           <div className="flex flex-wrap items-center justify-center gap-3">
-            <Button onClick={handleGenerate} disabled={scriptActionsBusy || creativeConfigSaving} aria-busy={isGenerating} className="brand-gradient text-white">
+            <Button onClick={handleGenerate} disabled={generationDisabled} aria-busy={isGenerating} className="brand-gradient text-white">
               {isGenerating ? (
                 <>
                   <LuLoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                  {tc("generating")}
+                  {manualTideweCopy ? tt("copyInputGenerating") : tc("generating")}
                 </>
               ) : (
                 <>
                   <LuWand className="w-4 h-4 mr-2" />
-                  {t("generateScript")}
+                  {manualTideweCopy ? tt("copyInputGenerate") : t("generateScript")}
                 </>
               )}
             </Button>
@@ -957,6 +996,7 @@ export default function ScriptPage() {
       {headerBar}
       <main className="mx-auto max-w-7xl px-6 py-8">
         {creativeProfileSummary}
+        {tideweGenerationInput}
         {isTideweProject && currentScript?.copyDocument && <TideweCopyEditor key={currentScript.id} document={currentScript.copyDocument} busy={scriptActionsBusy || creativeConfigSaving} onSave={saveTideweCopy} />}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
@@ -1035,10 +1075,10 @@ export default function ScriptPage() {
               </div>
               {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
               <div className="flex flex-wrap items-center gap-3">
-                <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
+                {!isTideweProject && <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
                   {isGenerating && <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" />}
                   {t(isGenerating ? "regenerating" : "regenerate")}
-                </Button>
+                </Button>}
                 {historyButton}
                 <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-destructive" disabled={scriptActionsBusy || autoFinishing} onClick={() => { setDeleteTarget(currentScript); setDeleteError(""); }}>
                   <LuTrash2 className="mr-1 h-3.5 w-3.5" />{t("deleteScript")}
@@ -1066,10 +1106,10 @@ export default function ScriptPage() {
                   <LuBookmarkPlus className="w-3.5 h-3.5 mr-1" />
                   {t("saveAsTemplate")}
                 </Button>
-                <Button variant="outline" size="sm" disabled={scriptActionsBusy} aria-busy={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
+                {!isTideweProject && <Button variant="outline" size="sm" disabled={scriptActionsBusy} aria-busy={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
                   {isGenerating ? <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" /> : <LuWand className="w-3.5 h-3.5 mr-1" />}
                   {t(isGenerating ? "regenerating" : "regenerate")}
-                </Button>
+                </Button>}
                 {historyButton}
               </div>
             </div>
@@ -1539,12 +1579,13 @@ export default function ScriptPage() {
                 <Button
                   size="sm"
                   className="brand-gradient text-white"
+                  disabled={generationDisabled}
                   onClick={() => {
                     setRegenConfirmOpen(false);
                     handleGenerate();
                   }}
                 >
-                  {t("regenConfirmOk")}
+                  {manualTideweCopy ? tt("copyInputGenerate") : t("regenConfirmOk")}
                 </Button>
               </div>
             </CardContent>

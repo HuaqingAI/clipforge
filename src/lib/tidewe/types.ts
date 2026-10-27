@@ -32,6 +32,8 @@ export interface ProductFacts {
 export interface TideweCopyDocument {
   version: 1;
   language: "en-US";
+  /** Missing on historical AI copy. User prose is frozen, never treated as product evidence. */
+  source?: "ai_generated" | "user_provided";
   text: string;
   translation: string;
   angle: string;

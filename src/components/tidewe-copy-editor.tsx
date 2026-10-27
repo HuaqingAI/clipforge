@@ -17,7 +17,10 @@ export function TideweCopyEditor({ document, busy, onSave }: {
   const [error, setError] = useState("");
   return <section aria-label={t("copyTitle")} className="mb-5 rounded-xl border border-border/50 bg-card p-5">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-      <h2 className="text-sm font-semibold">{t("copyTitle")}</h2>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold">{t("copyTitle")}</h2>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{t(document.source === "user_provided" ? "copySourceUserBadge" : "copySourceAiBadge")}</span>
+      </div>
       {!editing && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setDraft(document.text); setError(""); setEditing(true); }}>{t("editCopy")}</Button>}
     </div>
     {editing ? <div className="space-y-3">

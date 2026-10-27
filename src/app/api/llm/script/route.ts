@@ -25,7 +25,7 @@ import {
 } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
-import { assertTideweScript } from "@/lib/tidewe/validation";
+import { assertTideweImportedCopy, assertTideweScript } from "@/lib/tidewe/validation";
 import { analyzeTideweProductImages } from "@/lib/tidewe/image-analysis";
 
 /** Allowed enum values for the styleType column in the scripts table */
@@ -279,7 +279,12 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       if (!requested.profile || !isTideweOutdoorProfile(requested.profile)) return NextResponse.json({ error: "The requested profile does not match the project.", code: "CREATIVE_PROFILE_MISMATCH" }, { status: 400 });
     }
     if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1 || body.count > 3)) return apiError(req, "候选数量只能为1到3", "count must be between 1 and 3", 400);
-    if (body.copyText !== undefined && (typeof body.copyText !== "string" || body.copyText.trim().length < 2 || body.copyText.length > 12000)) return apiError(req, "请提供有效的完整英文文案", "Provide complete English copy (2–12000 characters)", 400);
+    if (body.copyText !== undefined) {
+      try { assertTideweImportedCopy(body.copyText); }
+      catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "请输入完整英文口播文案。", code: "TIDEWE_IMPORTED_COPY_INVALID", requestId: body.requestId }, { status: 400 });
+      }
+    }
     const selected = existing.find((row) => row.selected);
     originalSelection = selected ? { id: selected.id } : undefined;
     if (body.sourceScriptId !== undefined || body.expectedScriptHash !== undefined) {

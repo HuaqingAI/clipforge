@@ -8,6 +8,11 @@ export class TideweValidationError extends Error {
   readonly code = "TIDEWE_VALIDATION_FAILED";
   constructor(message: string) { super(message); this.name = "TideweValidationError"; }
 }
+export class TideweImportedCopyError extends Error {
+  readonly code = "TIDEWE_IMPORTED_COPY_INVALID";
+  readonly status = 400;
+  constructor(message: string) { super(message); this.name = "TideweImportedCopyError"; }
+}
 function fail(message: string): never { throw new TideweValidationError(message); }
 
 const PROHIBITED_VISUAL_TERMS = "热成像|发光热区|透视剖面|独立电池|thermal imaging|glowing heat|standalone battery";
@@ -48,6 +53,27 @@ export function englishWordCount(text: string): number {
   return text.match(/[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*/g)?.length ?? 0;
 }
 
+/** Validate before vision/annotation calls; keep punctuation, paragraphs and repeated prose intact. */
+export function assertTideweImportedCopy(text: unknown): asserts text is string {
+  if (typeof text !== "string" || text.trim().length < 2 || text.length > 12000) {
+    throw new TideweImportedCopyError("请输入完整英文口播文案（2–12000 个字符）。");
+  }
+  if (!/[A-Za-z]/.test(text) || /[\u3400-\u9fff]/u.test(text)) {
+    throw new TideweImportedCopyError("请仅粘贴完整英文口播正文，中文译文请勿放入此处。");
+  }
+}
+
+function assertTideweFactCitations(facts: ProductFacts, claimedIds: string[]): void {
+  if (!Array.isArray(claimedIds) || claimedIds.some(id => typeof id !== "string")) fail("Copy fact citations must be an array of fact IDs");
+  const ids = new Set(claimableFacts(facts).map(f => f.id));
+  if (claimedIds.some(id => !ids.has(id))) fail("Copy references unknown, inferred or conflicting product facts");
+}
+
+export function assertTideweImportedCopyClaims(text: string, facts: ProductFacts, claimedIds: string[]): void {
+  assertTideweImportedCopy(text);
+  assertTideweFactCitations(facts, claimedIds);
+}
+
 /** Reject deterministic factual/style violations; semantic claim grounding also happens in the compiler. */
 export function assertTideweCopyClaims(text: string, facts: ProductFacts, claimedIds: string[]): void {
   if (!text.trim() || text.length > 15000 || /[\u3400-\u9fff]/u.test(text)) fail("TIDEWE narration must be complete English copy");
@@ -55,8 +81,7 @@ export function assertTideweCopyClaims(text: string, facts: ProductFacts, claime
   if (/\b(?:buy now|limited time|hurry|selling out|guaranteed (?:success|kill|hunt)|completely silent|100% silent|lifetime warranty)\b/i.test(text)) fail("Remove unsupported urgency, absolute claims or guarantees");
   if (/\bI(?:'ve| have) (?:used|owned|worn)|\bfor (?:years|\d+ years)\b/i.test(text)) fail("Do not invent ownership or long-term testimonials");
   const available = claimableFacts(facts);
-  const ids = new Set(available.map(f => f.id));
-  if (claimedIds.some(id => !ids.has(id))) fail("Copy references unknown, inferred or conflicting product facts");
+  assertTideweFactCitations(facts, claimedIds);
   const evidence = available.filter(f => claimedIds.includes(f.id)).map(f => f.value).join(" ").toLowerCase();
   // Numeric specifications must occur in the explicitly cited current-product facts.
   for (const token of text.match(/\b\d+(?:[.,]\d+)?(?:°|%|g|kg|mAh|v|h)?/gi) ?? []) {
@@ -81,7 +106,13 @@ export function assertTideweScript(script: { shots?: Shot[] | null; copyDocument
   if (copy.factsHash !== productFactsHash(copy.factsSnapshot)) fail("TIDEWE fact snapshot hash does not match");
   if (!copy.translation?.trim()) fail("TIDEWE copy requires a Chinese review translation");
   if (!/[\u3400-\u9fff]/u.test(copy.translation)) fail("Review translation must be Chinese");
-  assertTideweCopyClaims(copy.text, copy.factsSnapshot, copy.claimedFactIds);
+  if (copy.source !== undefined && copy.source !== "ai_generated" && copy.source !== "user_provided") fail("Unsupported TIDEWE copy source");
+  if (copy.source === "user_provided") {
+    // Staff-written claims remain their prose; they never become confirmed product evidence.
+    assertTideweImportedCopyClaims(copy.text, copy.factsSnapshot, copy.claimedFactIds);
+  } else {
+    assertTideweCopyClaims(copy.text, copy.factsSnapshot, copy.claimedFactIds);
+  }
   const facts = new Set(claimableFacts(copy.factsSnapshot).map(f => f.id));
   const shots = script.shots;
   if (!shots?.length) fail("TIDEWE script requires semantic shots");
