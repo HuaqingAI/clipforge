@@ -193,7 +193,7 @@ describe("shared model-driven full-film interaction", () => {
   it("does not auto-select the first available Kling model when the configured one is missing", async () => {
     useSettingsStore.getState().setDefaultVideoModel('["kling-cli","image_to_video","missing-model"]');
     await mount();
-    expect(container.textContent).toContain("默认视频模型在当前账号不可用");
+    expect(container.textContent).toContain("设置中的默认视频模型不在当前账号目录中，请刷新目录后重新选择。");
     expect(button("预览整片计划")!.disabled).toBe(true);
     expect(api.kling.mock.calls.some(([url]) => url.endsWith("/preview"))).toBe(false);
   });

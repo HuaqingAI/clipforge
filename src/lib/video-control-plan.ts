@@ -104,14 +104,14 @@ function nativeAudioInstruction(input: { voiceover?: string; description?: strin
 }
 
 /**
- * Compile all available shot conditions into the strongest request that the selected
- * provider/model family can safely accept. Unsupported inputs are omitted before the
- * paid request and recorded as explicit degradation warnings.
+ * Compile shot conditions into the provider request. Kling retains requested conditions
+ * so the generated result can be evaluated without catalog capability assumptions.
  */
 export function buildVideoControlPlan(input: {
   provider: string;
   modelId: string;
   supportsAudio?: boolean;
+  generateAudio?: boolean;
   firstFrameUrl?: string;
   lastFrameUrl?: string;
   characterReferenceUrl?: string;
@@ -125,6 +125,7 @@ export function buildVideoControlPlan(input: {
   locale: "zh" | "en";
 }): VideoControlPlan {
   const capabilities = getVideoModelCapabilities(input.modelId, input.supportsAudio, input.provider);
+  const isKling = input.provider === "kling-cli";
   const optional: VideoReferenceInput[] = [
     ...(isNonEmpty(input.characterReferenceUrl) ? [{ url: input.characterReferenceUrl, role: "character" as const, mediaType: "image" as const, required: true }] : []),
     ...(isNonEmpty(input.productReferenceUrl) ? [{ url: input.productReferenceUrl, role: "product" as const, mediaType: "image" as const, required: true }] : []),
@@ -160,7 +161,9 @@ export function buildVideoControlPlan(input: {
   if (input.audioReferenceUrl && !canUseAudioReference) warnings.push("reference-audio-unsupported");
 
   let referenceInputs: VideoReferenceInput[] = [];
-  if (isReferenceMode) {
+  if (isKling) {
+    referenceInputs.push(...optional);
+  } else if (isReferenceMode) {
     if (isNonEmpty(input.firstFrameUrl)) {
       referenceInputs.push({ url: input.firstFrameUrl, role: "keyframe", mediaType: "image", required: true });
     }
@@ -181,11 +184,11 @@ export function buildVideoControlPlan(input: {
     return true;
   });
 
-  const nativeAudio = capabilities.nativeAudio === true;
+  const nativeAudio = input.generateAudio !== false && capabilities.nativeAudio === true;
   const voiceoverBound = nativeAudio && isNonEmpty(input.voiceover);
   const audioMode: VideoControlSummary["audioMode"] = nativeAudio ? "native" : isNonEmpty(input.voiceover) ? "post" : "none";
   const audioPrompt = nativeAudio ? nativeAudioInstruction(input) : undefined;
-  const promptSuffix = [referenceInstruction(referenceInputs, input.locale), audioPrompt].filter(Boolean).join(input.locale === "zh" ? "。" : " ");
+  const promptSuffix = [referenceInstruction(referenceInputs, input.locale, isKling && isNonEmpty(input.firstFrameUrl) ? 1 : 0), audioPrompt].filter(Boolean).join(input.locale === "zh" ? "。" : " ");
   const strategy: VideoControlSummary["strategy"] = isReferenceMode ? "reference-pack" : "keyframe";
   const referenceRoles = unique([
     ...(isNonEmpty(input.firstFrameUrl) ? ["keyframe" as const] : []),

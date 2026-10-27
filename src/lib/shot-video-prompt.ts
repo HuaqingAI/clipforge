@@ -52,6 +52,8 @@ export interface ShotVideoPromptInput {
   visualBible?: unknown;
   /** Project-level creative profile, frozen by the caller when available. */
   creativeProfile?: unknown;
+  /** On-camera visuals may receive their narration later when the model has no audio. */
+  audioMode?: "native" | "post";
   /** Compatibility policy for callers that have not loaded the project profile yet. */
   outputPolicy?: MotionPromptOutputPolicy;
   chainToNext?: boolean;
@@ -63,7 +65,7 @@ const PRODUCT_SHOT_TYPES = new Set(["product_reveal", "demo", "cta"]);
 /** Shared visual direction for single-shot and full-film generation. Audio is added by the caller. */
 export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: string; negativePrompt: string } {
   const shot = input.shot;
-  if (isTideweOutdoorProfile(input.creativeProfile)) return compileTideweVisualPrompt(shot ?? {}, "video", input.creativeProfile.speechMode, input.creativeProfile.presenter);
+  if (isTideweOutdoorProfile(input.creativeProfile)) return compileTideweVisualPrompt(shot ?? {}, "video", input.creativeProfile.speechMode, input.creativeProfile.presenter, input.audioMode);
   const settings = normalizeVideoPromptSettings(input.settings);
   const look = getLookPreset(settings.visualLook);
   const premiumProfile = isPremiumProductCgProfile(input.creativeProfile)

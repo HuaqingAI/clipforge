@@ -225,7 +225,7 @@ export async function POST(req: NextRequest) {
         prompt = reviewedPrompt.prompt;
         options.negativePrompt = compileTideweVisualPrompt(shot, "video", profile.speechMode, profile.presenter).negativePrompt;
         stripCgAudioControls(options);
-        options.audioEnabled = tideweNative;
+        options.audioEnabled = tideweNative && reviewedPrompt.controlPlan.audioMode === "native";
         if (tideweNative) {
           // The persisted plan owns the speaking budget. Browser rounding or a
           // forged shorter duration must not truncate the last English words.
@@ -321,11 +321,6 @@ export async function POST(req: NextRequest) {
       delete options.voiceover;
     }
     const provider = createProvider({ name: providerName, apiKey, baseUrl });
-    if (tideweNative) {
-      const models = await provider.listModels("video");
-      const nativeModel = models.find((candidate) => candidate.id === model && candidate.mediaType === "video");
-      if (nativeModel?.supportsAudio !== true) return NextResponse.json({ error: "所选模型没有已确认的原生音频能力，请更换支持英语真人口播的模型。", code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED" }, { status: 400 });
-    }
 
     const firstFrameUrl = await toRemoteUsableImage(imageUrl, { requireReadableLocal: Boolean(tidewePresenterImage || tideweProductVisible) });
     if ((tidewePresenterImage || tideweProductVisible) && imageUrl && !firstFrameUrl) return NextResponse.json({ error: "TIDEWE 当前关键帧不可用，请恢复或重新生成当前分镜图片。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });

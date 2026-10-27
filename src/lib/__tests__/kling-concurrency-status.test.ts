@@ -20,7 +20,7 @@ vi.mock("@/lib/db", async () => {
 import { db } from "@/lib/db";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { klingJobs } from "@/lib/kling/job-schema";
-import { getPublicKlingStatus } from "@/lib/kling/profiles";
+import { getProfile, getPublicKlingStatus, saveProfile } from "@/lib/kling/profiles";
 
 const first = randomUUID(), second = randomUUID(), other = randomUUID();
 function profile(id: string, principalKey = "same-account"): KlingProfile {
@@ -39,6 +39,17 @@ beforeEach(() => {
 afterAll(() => state.sqlite?.close());
 
 describe("Kling account capacity status", () => {
+  it("exposes cached models optimistically without persisting stale capability judgments", () => {
+    const cached = { selectionKey: '["kling-cli","text_to_video","legacy"]', provider: "kling-cli" as const, profileId: first, region: "global" as const, tool: "text_to_video" as const,
+      remoteModelId: "legacy", displayName: "Legacy", catalogRevision: "old", available: false, disabledReason: "old local capability assumption", parameters: [], inputSlots: [],
+      capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } };
+    saveProfile({ ...profile(first), catalogSnapshot: [cached] });
+    const status = getPublicKlingStatus(first);
+    expect(status.models[0]).toMatchObject({ available: true, capabilities: { image: true, tailFrame: true, multiImage: true, audio: true } });
+    expect(status.models[0]).not.toHaveProperty("disabledReason");
+    expect(status.profile?.catalogSnapshot).toEqual(status.models);
+    expect(getProfile(first).catalogSnapshot[0]).toEqual(cached);
+  });
   it("counts reservations and cloud jobs across projects and profiles of the same account", () => {
     job(first, { submissionState: "prepared", remoteState: "not_started" });
     job(second, { submissionState: "submitting", remoteState: "not_started" });

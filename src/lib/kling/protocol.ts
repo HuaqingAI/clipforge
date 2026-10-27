@@ -29,7 +29,6 @@ export function extractGenerationId(value: unknown): string | undefined {
 export function modelSelectionKey(tool: KlingTool, remoteModelId: string): string {
   return JSON.stringify(["kling-cli", tool, remoteModelId]);
 }
-const PARAMETERS = new Set(["duration", "duration_seconds", "aspect_ratio", "aspectRatio", "resolution", "mode", "quality", "sound", "audio", "enable_audio", "generate_audio", "native_audio", "negative_prompt", "negativePrompt", "seed", "cfg_scale", "camera_control"]);
 const RESERVED = new Set(["model", "prompt", "image", "tailImage", "poll", "quiet", "base-url", "task-trace-id"]);
 const scalar = (v: unknown): v is string | number | boolean => typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v));
 
@@ -48,7 +47,7 @@ function capabilityRevision(models: KlingVideoModelDescriptor[]): string {
     adapterVersion: KLING_ADAPTER_VERSION, models: capabilities })).digest("hex");
 }
 
-/** Only declared capabilities are exposed. Unknown required semantics disable submission. */
+/** Catalog fields map CLI arguments; all Kling capabilities remain available for users to evaluate. */
 export function parseCatalog(value: unknown, profileId: string): KlingVideoModelDescriptor[] {
   const body = unwrapKlingBody(value);
   const catalog = record(body.availableModels ?? body.available_models);
@@ -60,12 +59,10 @@ export function parseCatalog(value: unknown, profileId: string): KlingVideoModel
     for (const item of list) {
       const raw = record(item);
       if (typeof raw.model !== "string" || !raw.model.trim() || raw.model.length > 256 || /[\x00-\x1f]/.test(raw.model)) continue;
-      const problems: string[] = [];
       const parameters: KlingParameter[] = [];
       for (const arg of Array.isArray(raw.arguments) ? raw.arguments : []) {
         const a = record(arg); const name = typeof a.name === "string" ? a.name : "";
-        if (RESERVED.has(name)) { if (name !== "model" && name !== "prompt" && a.required === true) problems.push(`不支持的必填参数 ${name}`); continue; }
-        if (!PARAMETERS.has(name) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) { if (a.required === true) problems.push(`尚未适配必填参数 ${name || "(未知)"}`); continue; }
+        if (RESERVED.has(name) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) continue;
         const allowed = a.allowedValues ?? a.allowed_values;
         const values = Array.isArray(allowed) && allowed.length && allowed.every(scalar) ? allowed : undefined;
         const defaultValue = scalar(a.default) ? a.default : undefined;
@@ -73,8 +70,8 @@ export function parseCatalog(value: unknown, profileId: string): KlingVideoModel
         let type: KlingParameter["type"] = typeof sample === "boolean" ? "boolean" : typeof sample === "number" ? "number" : "string";
         if (a.type === "number" || a.type === "integer") type = "number";
         if (a.type === "boolean") type = "boolean";
-        if (a.type && !["string", "number", "integer", "boolean"].includes(String(a.type))) { if (a.required === true) problems.push(`不支持参数 ${name} 的类型`); continue; }
-        if (Array.isArray(allowed) && !values) { if (a.required === true) problems.push(`参数 ${name} 的可选值无法解析`); continue; }
+        if (a.type && !["string", "number", "integer", "boolean"].includes(String(a.type))) continue;
+        if (Array.isArray(allowed) && allowed.length && !values) continue;
         parameters.push({ name, required: a.required === true, type, ...(values ? { allowedValues: values } : {}), ...(defaultValue !== undefined ? { default: defaultValue } : {}), ...(typeof a.description === "string" ? { description: a.description.slice(0, 1000) } : {}) });
       }
       const inputSlots: KlingInputSlot[] = [];
@@ -84,18 +81,16 @@ export function parseCatalog(value: unknown, profileId: string): KlingVideoModel
         let role: KlingInputSlot["role"] | undefined;
         if (["image", "imageurl", "referenceimage", "reference", "firstimage", "firstframe", "startimage", "startframe"].includes(key)) role = "image";
         if (["tailimage", "tailframe", "lastimage", "lastframe", "endimage", "endframe"].includes(key)) role = "tailImage";
-        if (!role) { if (i.required === true) problems.push(`尚未适配必填输入 ${name || "(未知)"}`); continue; }
+        if (!role) continue;
         inputSlots.push({ name, required: i.required === true, role });
       }
-      // image_to_video itself explicitly accepts image; lack of slot metadata must not invent tail/multi-image support.
+      // Preserve the command's first-image field when catalog display metadata omits it.
       if (tool === "image_to_video" && !inputSlots.some((s) => s.role === "image")) inputSlots.unshift({ name: "image", required: true, role: "image" });
-      if (tool === "text_to_video" && inputSlots.some((s) => s.required)) problems.push("文生视频模型声明了暂不支持的必填图片输入");
       models.push({ selectionKey: modelSelectionKey(tool, raw.model), provider: "kling-cli", profileId, region: "global", tool,
         remoteModelId: raw.model, displayName: typeof raw.alias === "string" && raw.alias.trim() ? raw.alias : raw.model,
         ...(typeof raw.description === "string" ? { description: raw.description.slice(0, 2000) } : {}),
-        catalogRevision: "", available: problems.length === 0, ...(problems.length ? { disabledReason: problems.join("；") } : {}), parameters, inputSlots,
-        capabilities: { image: tool === "image_to_video", tailFrame: inputSlots.some((s) => s.role === "tailImage"), multiImage: inputSlots.filter((s) => s.role === "image").length > 1,
-          audio: parameters.some((p) => ["audio", "sound", "enable_audio", "generate_audio", "native_audio"].includes(p.name)) } });
+        catalogRevision: "", available: true, parameters, inputSlots,
+        capabilities: { image: true, tailFrame: true, multiImage: true, audio: true } });
     }
   }
   const revision = capabilityRevision(models);

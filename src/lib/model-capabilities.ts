@@ -126,6 +126,14 @@ function inferredModes(modelId: string, provider?: string): Pick<VideoModelCapab
 
 /** Normalize provider-specific video metadata into one UI-facing capability contract. */
 export function getVideoModelCapabilities(modelId: string, supportsAudio?: boolean, provider?: string): VideoModelCapabilities {
+  if (provider === "kling-cli") {
+    return {
+      confidence: "inferred", textToVideo: true, imageToVideo: true,
+      referenceImages: true, referenceVideo: true, referenceAudio: true,
+      lastFrame: true, nativeAudio: true, videoEdit: true, temporalRetake: true,
+      regionMask: true, multiKeyframes: true, performanceReference: true,
+    };
+  }
   const spec = getVideoParamSpec(modelId);
   const modes = inferredModes(modelId, provider);
   const references = referenceCapabilities(modelId, provider);
@@ -180,6 +188,7 @@ export function preflightVideoGeneration(input: {
   const spec = getVideoParamSpec(input.modelId);
   const adjustments: PreflightAdjustment[] = [];
   const warnings: VideoGenerationPreflight["warnings"] = [];
+  if (input.provider === "kling-cli") return { capabilities, adjustments, warnings };
 
   // Ark supports both modes separately, but forbids first/last frames alongside
   // reference conditioning. Product/presenter references take priority; the

@@ -91,7 +91,7 @@ function applyTideweComposeSnapshot(config: ComposeConfig, profile: TideweOutdoo
   const renderPreset = quality === "fast" || quality === "standard" || quality === "hd" ? quality : DEFAULT_RENDER_PRESET;
   return {
     ...config,
-    ttsEnabled: !isTideweNativeSpeech(profile),
+    ttsEnabled: true,
     voiceoverMode: isTideweNativeSpeech(profile) ? "auto" : "replace",
     freeVoice: resolveNarrationVoice(profile),
     subtitles: snapshot.subtitles !== false,
@@ -612,7 +612,7 @@ export default function VideoPage() {
           renderPreset: config.renderPreset,
           aspectRatio: config.aspectRatio,
           subtitles: premiumCg ? false : config.subtitles,
-          ...(tideweNativeSpeech && { nativeAudio: true, ttsEnabled: false }),
+          ...(tideweNativeSpeech && { nativeAudio: true, ttsEnabled: true }),
           ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
           ...(!premiumCg && config.productCard && { productCard: true }),
           ...(!premiumCg && config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
@@ -620,11 +620,11 @@ export default function VideoPage() {
           ...(!premiumCg && !config.voiceGround && { voiceGround: false }),
           // 开启配音时：已配付费 TTS 走付费；否则走免费 Edge keyless TTS（无需 Key），合成为每镜生成口播音轨
           ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
-          ...(!premiumCg && config.ttsEnabled && paidTtsReady && {
+          ...(!premiumCg && !tideweNativeSpeech && config.ttsEnabled && paidTtsReady && {
             // 解析后的完整配置（含平台、复用的 Key、默认 baseUrl/模型/音色、可选 GroupId）
             ttsConfig: resolveTTSConfig(tts, providers),
           }),
-          ...(!premiumCg && config.ttsEnabled && !paidTtsReady && {
+          ...(!premiumCg && config.ttsEnabled && (tideweNativeSpeech || !paidTtsReady) && {
             freeTts: { enabled: true, voice: config.freeVoice },
           }),
         }),

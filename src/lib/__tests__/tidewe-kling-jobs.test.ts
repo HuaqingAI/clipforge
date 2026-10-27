@@ -29,6 +29,7 @@ import { assets, projects, scripts, type Shot } from "@/lib/db/schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { klingJobs } from "@/lib/kling/job-schema";
 import { klingFilmRuns } from "@/lib/kling/film-schema";
+import { contentHash } from "@/lib/kling/inputs";
 import { createKlingJob, dispatchKlingJob, stopKlingJobRunner, createKlingFilmShotJob, dispatchKlingFilmShotJob } from "@/lib/kling/jobs";
 import { getKlingJob } from "@/lib/kling/repository";
 import { createCreativeProfileSnapshot, createTideweOutdoorProfile } from "@/lib/creative-profiles";
@@ -40,6 +41,7 @@ import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts, type
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { assetScopeForShot } from "@/lib/asset-context";
+import { KLING_AUDIO_PARAMETER_NAMES, klingSupportsNativeAudio } from "@/lib/kling/model-options";
 
 const profile = createTideweOutdoorProfile({ speechMode: "voiceover" });
 const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "hunting_chair", items: [] };
@@ -54,7 +56,8 @@ function request(overrides: Partial<KlingSubmitRequest> = {}): KlingSubmitReques
 }
 function reviewedRequest(overrides: Partial<KlingSubmitRequest> = {}, controls?: VideoPromptRequest["controlInputs"], generateAudio = false): KlingSubmitRequest {
   const raw = request(overrides);
-  const context: VideoPromptRequest = { scriptId: raw.scriptId, shotId: raw.shotId, provider: "kling-cli", model: raw.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio, ...(controls && { controlInputs: controls }) };
+  const selectedModel = state.profile!.catalogSnapshot.find((item) => item.selectionKey === raw.selectionKey)!;
+  const context: VideoPromptRequest = { scriptId: raw.scriptId, shotId: raw.shotId, provider: "kling-cli", model: raw.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio, controlInputs: { ...controls, supportsAudio: klingSupportsNativeAudio(selectedModel) } };
   const reviewed = previewProjectVideoPrompt(raw.projectId, context);
   return { ...raw, prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey } };
 }
@@ -104,13 +107,12 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     getDb().insert(assets).values({ id: "presenter-keyframe", projectId: "project-1", shotId: 1, type: "ai_generated", status: "done", selected: true, filePath: imageUrl, ...assetScopeForShot(script, presenterShot) }).run();
     return imageUrl;
   }
-  it("requires a current combined keyframe for a selected presenter on single-image Kling", async () => {
-    const { imageModel, shot: presenterShot } = selectedPresenterContext();
-    expect(() => reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl: "/api/files/project-1/product.png" }, { firstFrameUrl: "/api/files/project-1/product.png" })).toThrow(expect.objectContaining({ code: "TIDEWE_PRESENTER_KEYFRAME_REQUIRED" }));
-    const imageUrl = presenterKeyframe(presenterShot);
-    const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, expectedSelectedAssetId: "presenter-keyframe" }, { firstFrameUrl: imageUrl }));
+  it("passes product and presenter references despite a cached single-image capability", async () => {
+    const { imageModel } = selectedPresenterContext();
+    const imageUrl = "/api/files/project-1/product.png";
+    const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl }, { firstFrameUrl: imageUrl }));
     expect(job.data.prompt).toContain(presenter.name);
-    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), [{ role: "image", sourceUrl: imageUrl }]);
+    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), [{ role: "image", sourceUrl: imageUrl }, { role: "image", sourceUrl: presenter.referenceImages[0] }]);
     expect(state.cli).not.toHaveBeenCalled();
   });
   it("binds the actual frozen portrait to a multi-image Kling request", async () => {
@@ -134,11 +136,12 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(job.data.args[job.data.args.indexOf("--duration") + 1]).toBe("10");
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("rejects a spoken plan beyond the longest declared tier before preparing a paid job", async () => {
+  it("allows a spoken plan beyond the catalog duration tiers", async () => {
     useNativeSpeech();
     getDb().update(scripts).set({ shots: [{ ...shot, duration: 10.1 }] }).where(eq(scripts.id, "script-1")).run();
-    await expect(createKlingJob(reviewedRequest({}, undefined, true))).rejects.toMatchObject({ code: "TIDEWE_NATIVE_DURATION_UNSUPPORTED" });
-    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+    const job = await createKlingJob(reviewedRequest({}, undefined, true));
+    expect(Number(job.data.options.duration)).toBeGreaterThanOrEqual(10.1);
+    expect(state.prepare).toHaveBeenCalledOnce(); expect(state.cli).not.toHaveBeenCalled();
   });
   it("forces declared native audio on and preserves exactly reviewed English speech", async () => {
     useNativeSpeech();
@@ -151,14 +154,125 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(String(job.data.options.negative_prompt)).not.toContain("说话口型");
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("rejects native speech for silent models and models without a reliable audio switch", async () => {
+  it.each(["text_to_video", "image_to_video"] as const)("dispatches arbitrary Kling %s native speech without an invented audio switch", async (tool) => {
+    useNativeSpeech();
+    const selectedModel = tool === "image_to_video" ? productContext() : state.profile!.catalogSnapshot[0];
+    selectedModel.remoteModelId = "any-kling-model";
+    selectedModel.selectionKey = JSON.stringify(["kling-cli", tool, selectedModel.remoteModelId]);
+    // Cached descriptors created by the old parser incorrectly recorded no audio.
+    selectedModel.capabilities.audio = false;
+    selectedModel.parameters = [
+      { name: "duration", type: "number", required: false, allowedValues: [5, 10], default: 5 },
+      { name: "resolution", type: "string", required: false, allowedValues: ["720p", "1080p"], default: "720p" },
+      { name: "aspect_ratio", type: "string", required: false, allowedValues: ["9:16", "16:9"], default: "9:16" },
+    ];
+    const imageUrl = tool === "image_to_video" ? "/api/files/project-1/product.png" : undefined;
+    if (imageUrl) {
+      const inputPath = path.join(state.directory, "kling-v4-input.png"), bytes = Buffer.from("prepared image snapshot");
+      await fs.writeFile(inputPath, bytes);
+      state.prepare.mockResolvedValue([{ role: "image", sourceUrl: imageUrl, path: inputPath, hash: contentHash(bytes), size: bytes.length }]);
+    }
+    const raw = reviewedRequest({ selectionKey: selectedModel.selectionKey, mode: tool === "image_to_video" ? "image-to-video" : "text-to-video", ...(imageUrl && { imageUrl }), options: { generate_audio: true, audioEnabled: true } }, imageUrl ? { firstFrameUrl: imageUrl } : undefined, true);
+    const job = await createKlingJob(raw);
+    expect(job.data.prompt).toBe(raw.prompt);
+    expect(job.data.prompt).toContain("Generate native synchronized audio and video");
+    expect(job.data.prompt).toContain(text);
+    expect(job.data.prompt).not.toContain("Generate silent video");
+    expect(job.data.generationPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
+    for (const name of KLING_AUDIO_PARAMETER_NAMES) {
+      expect(job.data.options).not.toHaveProperty(name);
+      expect(job.data.args).not.toContain(`--${name}`);
+    }
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(getKlingJob(job.id).submissionState).toBe("acknowledged");
+    expect(state.cli).toHaveBeenCalledOnce();
+    const submittedArguments = state.cli.mock.calls[0][1] as string[];
+    expect(submittedArguments.at(-1)).toBe(raw.prompt);
+    for (const name of KLING_AUDIO_PARAMETER_NAMES) expect(submittedArguments).not.toContain(`--${name}`);
+  });
+  it.each(["silent", "no-audio-switch"] as const)("requests native speech despite a %s catalog descriptor", async (capability) => {
+    useNativeSpeech();
+    const selectedModel = state.profile!.catalogSnapshot[0];
+    if (capability === "silent") selectedModel.capabilities.audio = false;
+    else selectedModel.parameters = selectedModel.parameters.filter((parameter) => parameter.name !== "generate_audio");
+    const raw = reviewedRequest({ options: { generate_audio: true, enable_audio: true, audioEnabled: true } }, undefined, true);
+    const job = await createKlingJob(raw);
+    expect(job.data.prompt).toBe(raw.prompt);
+    expect(job.data.prompt).toContain(text);
+    expect(job.data.prompt).toContain("Generate native synchronized audio and video");
+    expect(job.data.generationPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
+    expect(job.data.options).not.toHaveProperty("enable_audio");
+    expect(job.data.options).not.toHaveProperty("audioEnabled");
+    if (capability === "silent") expect(job.data.options.generate_audio).toBe(true);
+    else {
+      expect(job.data.options).not.toHaveProperty("generate_audio");
+      expect(job.data.args).not.toContain("--generate_audio");
+    }
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id).submissionState).toBe("acknowledged");
+  });
+  it("keeps an explicitly reviewed post narration plan on an audio-capable model", async () => {
+    useNativeSpeech();
+    const raw = reviewedRequest({ options: { generate_audio: true } }, undefined, false);
+    const job = await createKlingJob(raw);
+    expect(job.data.prompt).toBe(raw.prompt);
+    expect(job.data.options.generate_audio).toBe(false);
+    expect(job.data.generationPlan).toMatchObject({ audioMode: "post", voiceoverBound: false });
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+  it("dispatches native speech with absent duration metadata and an unusable audio-disable default", async () => {
+    useNativeSpeech();
+    const selected = state.profile!.catalogSnapshot[0];
+    selected.available = false;
+    selected.capabilities.audio = false;
+    selected.parameters = [
+      { name: "audio", type: "boolean", required: true, allowedValues: [false], default: false },
+      { name: "resolution", type: "string", required: false, default: "720p" },
+    ];
+    const job = await createKlingJob(reviewedRequest({}, undefined, true));
+    expect(job.data.generationPlan?.audioMode).toBe("native");
+    expect(job.data.prompt).toContain(text);
+    expect(job.data.options).toEqual({ resolution: "720p" });
+    expect(job.data.args).not.toContain("--audio");
+    expect(job.data.args).not.toContain("--duration");
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id).submissionState).toBe("acknowledged");
+  });
+  it("requests a covering duration without downgrading cached audio=false to silent", async () => {
     useNativeSpeech();
     state.profile!.catalogSnapshot[0].capabilities.audio = false;
-    await expect(createKlingJob(reviewedRequest({}, undefined, true))).rejects.toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED", status: 422 });
-    state.profile!.catalogSnapshot[0].capabilities.audio = true;
-    state.profile!.catalogSnapshot[0].parameters = [];
-    await expect(createKlingJob(reviewedRequest({}, undefined, true))).rejects.toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED", status: 422 });
-    expect(state.prepare).not.toHaveBeenCalled();
+    getDb().update(scripts).set({ shots: [{ ...shot, duration: 5.4 }] }).where(eq(scripts.id, "script-1")).run();
+    const job = await createKlingJob(reviewedRequest({ options: { duration: 5 } }, undefined, true));
+    expect(job.data.options.duration).toBe(10);
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+  it("enables a declared audio flag despite a cached false audio capability", async () => {
+    useNativeSpeech();
+    const selected = state.profile!.catalogSnapshot[0];
+    selected.capabilities.audio = false;
+    selected.parameters[0] = { name: "generate_audio", type: "boolean", required: true, allowedValues: [true], default: true };
+    const job = await createKlingJob(reviewedRequest({ options: { generate_audio: true } }, undefined, true));
+    expect(job.data.options.generate_audio).toBe(true);
+    expect(job.data.args).toContain("--generate_audio");
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+  it("preserves reviewed native speech when only the cached audio capability changes", async () => {
+    useNativeSpeech();
+    const raw = reviewedRequest({}, undefined, true);
+    state.profile!.catalogSnapshot[0].capabilities.audio = false;
+    const job = await createKlingJob(raw);
+    expect(job.data.prompt).toBe(raw.prompt);
+    expect(job.data.generationPlan?.audioMode).toBe("native");
     expect(state.cli).not.toHaveBeenCalled();
   });
   it("does not dispatch native speech after recovered parameters mute its audio", async () => {
@@ -198,12 +312,13 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(job.data.prompt).toBe(expected.prompt);
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("rejects models whose native audio cannot be disabled", async () => {
+  it("allows narration projects without a declared audio-disable switch", async () => {
     state.profile!.catalogSnapshot[0].parameters = [];
-    await expect(createKlingJob(reviewedRequest())).rejects.toMatchObject({ code: "CREATIVE_POLICY_UNSUPPORTED", status: 422 });
-    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+    const job = await createKlingJob(reviewedRequest());
+    expect(job.data.options).toEqual({});
+    expect(state.prepare).toHaveBeenCalledOnce(); expect(state.cli).not.toHaveBeenCalled();
   });
-  it("requires image-to-video for a visible product shot", async () => {
+  it("requires an actual product reference for a visible product shot", async () => {
     productContext();
     await expect(createKlingJob(reviewedRequest())).rejects.toMatchObject({ code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED", status: 422 });
     expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();

@@ -51,6 +51,7 @@ beforeAll(async () => {
   const exec = promisify(execFile);
   await exec(ffmpegBin(), ["-y", "-f", "lavfi", "-i", "color=c=green:s=64x64:r=10:d=5", "-f", "lavfi", "-i", "sine=frequency=300:duration=5", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(directory, "uploads", "tidewe-project", "ambient.mp4")]);
   await exec(ffmpegBin(), ["-y", "-i", join(directory, "uploads", "tidewe-project", "ambient.mp4"), "-c:v", "copy", "-an", join(directory, "uploads", "tidewe-project", "silent.mp4")]);
+  await exec(ffmpegBin(), ["-y", "-i", join(directory, "uploads", "tidewe-project", "silent.mp4"), "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-c:v", "copy", "-c:a", "aac", "-shortest", join(directory, "uploads", "tidewe-project", "muted.mp4")]);
   for (const [name, duration] of [["short", 2], ["long", 6]] as const) await exec(ffmpegBin(), ["-y", "-f", "lavfi", "-i", `sine=frequency=500:duration=${duration}`, join(directory, `${name}.wav`)]);
   audio = await readFile(join(directory, "short.wav"));
   longAudio = await readFile(join(directory, "long.wav"));
@@ -68,7 +69,7 @@ async function request(body: Record<string, unknown> = {}) {
   return POST(new NextRequest("http://localhost/api/project/tidewe-project/compose", { method: "POST", body: JSON.stringify(body) }), { params: Promise.resolve({ id: "tidewe-project" }) });
 }
 async function completed(id: string) {
-  await vi.waitFor(() => expect(db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()?.status).not.toBe("composing"));
+  await vi.waitFor(() => expect(db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()?.status).not.toBe("composing"), { timeout: 10_000 });
   return db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()!;
 }
 
@@ -120,6 +121,11 @@ function nativeProject(partial: Partial<schema.Shot> = {}) {
   db.update(schema.assets).set(assetScopeForShot(updated, nativeShot)).run();
 }
 
+const postNarrationPlan = {
+  version: 1, strategy: "keyframe", mode: "image-to-video", referenceRoles: ["keyframe"], referenceCount: 1,
+  audioMode: "post", voiceoverBound: false, warnings: [],
+} as const;
+
 describe("TIDEWE native on-camera speech composition", () => {
   it("preserves the full source recording and lips without generating a second voice", async () => {
     nativeProject({ duration: 2, transition: "ffmpeg_fade" });
@@ -140,27 +146,107 @@ describe("TIDEWE native on-camera speech composition", () => {
       audioTracks: [{ id: "A2", role: "native" }] });
   });
 
-  it("fails a spoken shot with no source audio instead of silently generating TTS", async () => {
+  it.each(["silent.mp4", "muted.mp4"])("automatically narrates %s despite legacy native-only compose flags", async fileName => {
     nativeProject();
-    db.update(schema.assets).set({ filePath: "/api/files/tidewe-project/silent.mp4" }).run();
-    const response = await request();
+    db.update(schema.assets).set({ filePath: `/api/files/tidewe-project/${fileName}` }).run();
+    const response = await request({ nativeAudio: true, ttsEnabled: false, freeTts: { enabled: false } });
     expect(response.status).toBe(202);
     const row = await completed((await response.json()).compositionId);
+    expect(row).toMatchObject({ status: "done", ttsEnabled: true });
+    expect(state.tts).toHaveBeenCalledExactlyOnceWith(text, { voice: "en-US-GuyNeural", rate: undefined });
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips[0]).toMatchObject({ hasAudio: false, strictSourceDuration: true, sourceDuration: 5, transition: "direct_concat" });
+    expect(config.clips[0].audioPath).toBeTruthy();
+    expect(config.clips[0].preserveNativeSpeech).toBeUndefined();
+    expect(config.clips[0].duration).toBeGreaterThan(2);
+    expect(config.clips[0].duration).toBeLessThan(5);
+  });
+
+  it("keeps duration validation for silent footage with narration longer than the source", async () => {
+    nativeProject();
+    db.update(schema.assets).set({ filePath: "/api/files/tidewe-project/silent.mp4" }).run();
+    state.tts.mockResolvedValue({ audio: longAudio, words: [] });
+    const response = await request();
+    const row = await completed((await response.json()).compositionId);
     expect(row.status).toBe("failed");
-    expect(await readCompositionError("tidewe-project", row.id)).toContain("原生音轨");
-    expect(state.tts).not.toHaveBeenCalled();
+    expect(await readCompositionError("tidewe-project", row.id)).toContain("视频可用时长");
+    expect(state.tts).toHaveBeenCalledOnce();
     expect(state.render).not.toHaveBeenCalled();
+  });
+
+  it("adds English narration when a post-narration model returns audible ambience", async () => {
+    nativeProject();
+    db.update(schema.assets).set({ generationPlan: { ...postNarrationPlan, referenceRoles: ["keyframe"], warnings: [] } }).run();
+    const response = await request();
+    expect(response.status).toBe(202);
+    expect(await completed((await response.json()).compositionId)).toMatchObject({ status: "done", ttsEnabled: true });
+    expect(state.tts).toHaveBeenCalledExactlyOnceWith(text, { voice: "en-US-GuyNeural", rate: undefined });
+    const clip = (state.render.mock.calls[0][0] as ComposeConfig).clips[0];
+    expect(clip).toMatchObject({ hasAudio: false, sourceDuration: 5 });
+    expect(clip.audioPath).toBeTruthy();
+    expect(clip.preserveNativeSpeech).toBeUndefined();
+  });
+
+  it.each([true, false])("uses the pinned take's narration plan rather than the selected take's: post selected=%s", async selectedPost => {
+    nativeProject();
+    const plan = { ...postNarrationPlan, referenceRoles: ["keyframe" as const], warnings: [] };
+    db.update(schema.assets).set({ generationPlan: selectedPost ? plan : null }).run();
+    const selected = db.select().from(schema.scripts).get()!;
+    db.insert(schema.assets).values({ id: "pinned-take", projectId: "tidewe-project", shotId: 1, selected: false,
+      status: "done", type: "ai_generated", filePath: "/api/files/tidewe-project/ambient.mp4",
+      generationPlan: selectedPost ? null : plan, ...assetScopeForShot(selected, shot) }).run();
+    const response = await request({ shotAssetSelections: [{ shotId: 1, assetId: "pinned-take" }] });
+    expect(response.status).toBe(202);
+    expect((await completed((await response.json()).compositionId)).status).toBe("done");
+    const clip = (state.render.mock.calls[0][0] as ComposeConfig).clips[0];
+    if (selectedPost) {
+      expect(state.tts).not.toHaveBeenCalled();
+      expect(clip).toMatchObject({ hasAudio: true, preserveNativeSpeech: true, duration: 5 });
+      expect(clip.audioPath).toBeUndefined();
+    } else {
+      expect(state.tts).toHaveBeenCalledOnce();
+      expect(clip.hasAudio).toBe(false);
+      expect(clip.audioPath).toBeTruthy();
+      expect(clip.preserveNativeSpeech).toBeUndefined();
+    }
   });
 
   it.each([
     { ttsEnabled: true }, { freeTts: { enabled: true } }, { ttsConfig: { voice: "en-US-GuyNeural" } },
     { voiceoverMode: "replace" }, { voiceoverMode: "mix" },
-  ])("rejects an attempt to add or replace native speech: %j", async body => {
+  ])("accepts narration fallback settings while preserving audible native speech: %j", async body => {
     nativeProject();
     const response = await request(body);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_POLICY" });
+    expect(response.status).toBe(202);
+    expect((await completed((await response.json()).compositionId)).status).toBe("done");
     expect(state.tts).not.toHaveBeenCalled();
-    expect(state.render).not.toHaveBeenCalled();
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips[0]).toMatchObject({ hasAudio: true, preserveNativeSpeech: true, duration: 5 });
+    expect(config.clips[0].audioPath).toBeUndefined();
+  });
+
+  it("adds narration only to silent shots in a mixed native and silent sequence", async () => {
+    const nativeProfile = createTideweOutdoorProfile({ speechMode: "on_camera" });
+    const split = text.indexOf(" Have") + 1;
+    const shots: schema.Shot[] = [
+      { ...shot, voiceover: text.slice(0, split).trim(), tidewe: { ...shot.tidewe!, copySpan: { start: 0, end: split } } },
+      { ...shot, shotId: 2, voiceover: text.slice(split).trim(), tidewe: { ...shot.tidewe!, copySpan: { start: split, end: text.length } } },
+    ];
+    db.update(schema.projects).set({ creativeProfile: nativeProfile }).run();
+    const updated = db.update(schema.scripts).set({ shots, creativeProfileSnapshot: createCreativeProfileSnapshot(nativeProfile, 1) }).returning().get()!;
+    db.update(schema.assets).set(assetScopeForShot(updated, shots[0])).run();
+    db.insert(schema.assets).values({ id: "silent-take", projectId: "tidewe-project", shotId: 2, selected: true, status: "done", type: "ai_generated", filePath: "/api/files/tidewe-project/silent.mp4", ...assetScopeForShot(updated, shots[1]) }).run();
+    const response = await request({ ttsEnabled: false, nativeAudio: true });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row).toMatchObject({ status: "done", ttsEnabled: true });
+    expect(state.tts).toHaveBeenCalledExactlyOnceWith(shots[1].voiceover, { voice: "en-US-GuyNeural", rate: undefined });
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips).toHaveLength(2);
+    expect(config.clips[0]).toMatchObject({ hasAudio: true, preserveNativeSpeech: true, duration: 5, sourceDuration: 5 });
+    expect(config.clips[0].audioPath).toBeUndefined();
+    expect(config.clips[1]).toMatchObject({ hasAudio: false, sourceDuration: 5 });
+    expect(config.clips[1].audioPath).toBeTruthy();
+    expect(config.clips[1].preserveNativeSpeech).toBeUndefined();
   });
 });

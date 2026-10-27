@@ -1,5 +1,6 @@
 import type { AIProvider, ImageOptions, ImageResult, MediaType, Model, ProviderConfig, TaskStatus, VideoOptions, VideoResult } from "./types";
 import { ProviderError } from "./base";
+import { klingSupportsNativeAudio } from "@/lib/kling/model-options";
 
 /** Catalog-only adapter. All billable commands must enter the durable Kling job service. */
 export class KlingCliProvider implements AIProvider {
@@ -39,8 +40,8 @@ export class KlingCliProvider implements AIProvider {
       name: `${descriptor.displayName} · ${descriptor.tool === "image_to_video" ? "图生视频" : "文生视频"}`,
       description: descriptor.description,
       modes: [descriptor.tool === "image_to_video" ? "image-to-video" : "text-to-video"],
-      mediaType: "video", provider: this.name, supportsAudio: descriptor.capabilities.audio,
-      extra: { ...descriptor },
+      mediaType: "video", provider: this.name, supportsAudio: klingSupportsNativeAudio(descriptor),
+      extra: { ...descriptor, available: true, disabledReason: undefined, capabilities: { image: true, tailFrame: true, multiImage: true, audio: true } },
     }));
   }
 }

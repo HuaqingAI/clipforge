@@ -99,6 +99,14 @@ describe("durable Kling film runner", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
+  it("starts and dispatches despite a stale local unsupported-model flag", async () => {
+    state.profile!.catalogSnapshot = [{ ...model, available: false, disabledReason: "capability not confirmed" }];
+    await start();
+    await runKlingFilmTick();
+    expect(state.dispatch).toHaveBeenCalledTimes(2);
+    expect(getKlingFilm("film").status).toBe("running");
+  });
+
   it("overlaps independent cloud jobs and composes only after every original job has imported", async () => {
     vi.stubEnv("APP_MIGRATIONS_DIR", "standalone-migrations");
     await start(); await runKlingFilmTick(); await runKlingFilmTick();

@@ -34,22 +34,15 @@ export function silentBatchMotionOptions(options: Record<string, unknown>): Reco
 
 export function prepareBatchMotionKling(draft: BatchMotionDraft, model: KlingVideoModelDescriptor) {
   const parameters = model.parameters.filter((parameter) => !compositionOrAudioOption.test(parameter.name) || KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
-  const mapped = klingModelOptions({ ...model, parameters }, { ...silentBatchMotionOptions(draft.klingParameters), ...(draft.negativePrompt !== undefined && { negativePrompt: draft.negativePrompt }) });
+  const mapped = klingModelOptions({ ...model, parameters }, {
+    ...silentBatchMotionOptions(draft.klingParameters),
+    audioEnabled: draft.promptContext?.generateAudio === true,
+    ...(draft.negativePrompt !== undefined && { negativePrompt: draft.negativePrompt }),
+  });
   const prompt = draft.prompt;
-  const imageSlots = model.inputSlots.filter((slot) => slot.role === "image");
-  const imageChoices = [...new Set([draft.firstFrameUrl, ...draft.referenceImages.filter((url) => url !== draft.lastFrameUrl)].filter(Boolean))];
-  const images: string[] = [];
-  let imageIndex = 0;
-  for (const slot of imageSlots) {
-    if (slot.required || imageIndex === 0) images.push(imageChoices[imageIndex++] ?? "");
-  }
-  const tail = model.inputSlots.find((slot) => slot.role === "tailImage");
-  const missingParameter = model.parameters.find((parameter) => parameter.required && (mapped.options[parameter.name] === undefined || mapped.options[parameter.name] === ""));
-  const error = !draft.firstFrameUrl || !imageSlots.length || images.some((url) => !url)
-    ? "当前模型所需的输入图片不完整"
-    : tail?.required && !draft.lastFrameUrl ? "当前模型需要尾帧，请先设置该分镜的尾帧"
-      : missingParameter ? `当前模型缺少必填参数 ${missingParameter.name}`
-        : mapped.unsupportedSettings.length ? "当前模型不支持所选生成参数"
-          : validateVideoPrompt(prompt).map((issue) => issue.message).join(" ");
-  return { prompt, images, lastImageUrl: tail ? draft.lastFrameUrl : undefined, options: mapped.options, warnings: mapped.warnings, error };
+  const images = [...new Set([draft.firstFrameUrl, ...draft.referenceImages.filter((url) => url !== draft.lastFrameUrl)].filter(Boolean))];
+  const error = !draft.firstFrameUrl
+    ? "请先选择当前分镜的图片"
+    : validateVideoPrompt(prompt).map((issue) => issue.message).join(" ");
+  return { prompt, images, lastImageUrl: draft.lastFrameUrl, options: mapped.options, warnings: mapped.warnings, error };
 }

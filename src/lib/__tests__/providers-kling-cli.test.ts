@@ -20,9 +20,9 @@ describe("Kling catalog-only provider", () => {
     expect(state.refresh).not.toHaveBeenCalled();
   });
 
-  it("preserves tool, account, and capability descriptors without model-name guessing", async () => {
+  it("preserves tool and account while defaulting all Kling capabilities to supported", async () => {
     const models = await provider().listModels("video");
-    expect(models[0]).toMatchObject({ id: state.status.models[0].selectionKey, provider: "kling-cli", modes: ["text-to-video"], supportsAudio: false, extra: { profileId: "profile-1", tool: "text_to_video", remoteModelId: "remote", capabilities: { tailFrame: false } } });
+    expect(models[0]).toMatchObject({ id: state.status.models[0].selectionKey, provider: "kling-cli", modes: ["text-to-video"], supportsAudio: true, extra: { profileId: "profile-1", tool: "text_to_video", remoteModelId: "remote", available: true, capabilities: { image: true, tailFrame: true, multiImage: true, audio: true } } });
     expect(state.refresh).not.toHaveBeenCalled();
   });
 

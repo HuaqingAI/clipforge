@@ -149,13 +149,16 @@ describe("Kling frozen local film composition", () => {
     expect(config.clips[0].preserveNativeSpeech).toBeUndefined();
   });
 
-  it("fails native TIDEWE dialogue without a source audio track", async () => {
+  it("automatically adds the approved English narration to native TIDEWE clips without an audio track", async () => {
     tideweRun("on_camera");
     state.sourceAudio = false;
-    await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_NATIVE_AUDIO_MISSING" });
-    expect(state.tts).not.toHaveBeenCalled();
-    expect(state.compose).not.toHaveBeenCalled();
-    expect(await readCompositionError("project-1", "composition-1")).toContain("不能用 TTS 代替真人口播");
+    await composeKlingFilm("run-1");
+    expect(state.tts).toHaveBeenCalledWith(baseShot.voiceover, { voice: "en-US-GuyNeural", rate: "+0%" });
+    const config = state.compose.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips[0]).toMatchObject({ hasAudio: false, duration: 5, strictSourceDuration: true });
+    expect(config.clips[0].audioPath).toMatch(/\.mp3$/);
+    expect(config.clips[0].preserveNativeSpeech).toBeUndefined();
+    expect(getDb().select().from(compositions).get()).toMatchObject({ ttsEnabled: true, status: "done" });
   });
 
   it.each(["edge-tts", "edge-tts-mix"] as const)("rejects a native TIDEWE plan changed to %s", async audioStrategy => {
@@ -259,10 +262,12 @@ describe("Kling frozen local film composition", () => {
     expect(state.compose).not.toHaveBeenCalled();
   });
 
-  it("does not silently compose missing native dialogue audio", async () => {
+  it("adds narration to silent native dialogue clips while retaining the frozen plan", async () => {
     state.sourceAudio = false;
-    await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_NATIVE_AUDIO_MISSING" });
-    expect(state.compose).not.toHaveBeenCalled(); expect(state.tts).not.toHaveBeenCalled();
+    await composeKlingFilm("run-1");
+    expect(state.tts).toHaveBeenCalledWith(baseShot.voiceover, { voice: "zh-CN-XiaoxiaoNeural", rate: "+0%" });
+    expect(getRun().data.output.audioStrategy).toBe("native");
+    expect((state.compose.mock.calls[0][0] as ComposeConfig).clips[0]).toMatchObject({ hasAudio: false, duration: 5 });
   });
 
   it("generates explicit free narration and word-timed captions while disabling source audio", async () => {

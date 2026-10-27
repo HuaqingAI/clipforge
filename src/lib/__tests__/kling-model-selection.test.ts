@@ -46,13 +46,19 @@ describe("account-owned Kling model selection", () => {
     expect(target).toBeNull();
   });
 
-  it("refuses an explicitly unavailable descriptor even while another platform is ready", async () => {
+  it("keeps the chosen Kling model despite a stale unsupported flag instead of switching platforms", async () => {
     const key = JSON.stringify(["kling-cli", "image_to_video", "disabled-model"]);
     guardedFetch.mockResolvedValue(Response.json({ models: [
       { id: key, provider: "kling-cli", name: "Disabled", extra: { available: false, disabledReason: "Account cannot submit this model" } },
       { id: "ark-model", provider: "volcengine", name: "Ark" },
     ] }));
     const target = await resolveDefaultModelTarget({ "kling-cli": { enabled: true }, volcengine: { enabled: true, apiKey: "test-key" } }, key, [], "video");
+    expect(target).toMatchObject({ provider: "kling-cli", model: key, apiKey: "", selectionKey: key });
+  });
+
+  it("still respects unavailable descriptors from other providers", async () => {
+    guardedFetch.mockResolvedValue(Response.json({ models: [{ id: "ark-model", provider: "volcengine", name: "Ark", extra: { available: false } }] }));
+    const target = await resolveDefaultModelTarget({ "kling-cli": { enabled: true }, volcengine: { enabled: true, apiKey: "test-key" } }, "ark-model", [], "video");
     expect(target).toBeNull();
   });
 });

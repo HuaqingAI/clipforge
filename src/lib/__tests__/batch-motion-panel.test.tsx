@@ -63,8 +63,8 @@ describe("batch shot animation", () => {
     expect(videoRequests()).toHaveLength(0);
     await confirmAndSubmit();
     expect(videoRequests()).toHaveLength(1);
-    expect(videoRequests()[0]).toMatchObject({ shotId: 2, imageUrl: "/frame-2.png", expectedSelectedAssetId: "asset-2", executionScope: "single-shot", selectionKey: model.selectionKey, options: { duration: 10, enable_audio: "false" } });
-    expect(videoRequests()[0].referenceImageUrls).toBeUndefined();
+    expect(videoRequests()[0]).toMatchObject({ shotId: 2, imageUrl: "/frame-2.png", expectedSelectedAssetId: "asset-2", executionScope: "single-shot", selectionKey: model.selectionKey, options: { duration: 6, enable_audio: "false" } });
+    expect(videoRequests()[0].referenceImageUrls).toEqual(["/product.png"]);
     expect(videoRequests()[0].options).not.toHaveProperty("voiceover");
     expect(videoRequests()[0].prompt).toBe(shots[1].draft!.prompt);
     expect(videoRequests()[0].promptContext).toEqual(shots[1].draft!.promptContext);
@@ -151,11 +151,19 @@ describe("batch shot animation", () => {
     { concurrency: undefined },
     { profile: { ...readyProfile, authState: "logged_out" } },
     { models: [{ ...model, profileId: "other-account" }] },
-    { models: [{ ...model, tool: "text_to_video", capabilities: { ...model.capabilities, image: false } }] },
-  ])("blocks unavailable capacity, unauthenticated accounts and incompatible exact models: %j", async (overrides) => {
+  ])("blocks unavailable capacity, unauthenticated accounts and a different account's models: %j", async (overrides) => {
     api.request.mockResolvedValue(json(status(overrides))); await mount();
     await act(async () => checkbox("确认批量生成费用").click());
     expect(button("确认提交").disabled).toBe(true); expect(videoRequests()).toHaveLength(0);
+  });
+
+  it("submits batch frames and references to any selected Kling tool despite unsupported metadata", async () => {
+    api.request.mockImplementation((url: string, init?: RequestInit) => Promise.resolve(url === "/api/ai/video" ? json({ jobId: `job-${JSON.parse(String(init?.body)).shotId}` }, 202) : json(status({ models: [{ ...model, available: false, tool: "text_to_video", inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } }] }))));
+    await mount();
+    await confirmAndSubmit();
+    expect(videoRequests()).toHaveLength(2);
+    expect(videoRequests()[0]).toMatchObject({ mode: "text-to-video", imageUrl: "/frame-1.png", referenceImageUrls: ["/product.png"] });
+    expect(container.textContent).not.toContain("图生视频模型");
   });
 
   it("never uses the cached model following a failed catalog refresh", async () => {
@@ -229,14 +237,25 @@ describe("batch request preparation", () => {
   it("drops sound and composition fields and disables declared native audio", () => {
     expect(silentBatchMotionOptions({ duration: 6, audioEnabled: true, voiceover: "hi", audioPrompt: "hello", audioUrl: "/voice", tts: true, subtitles: true, captions: true, music: "song" })).toEqual({ duration: 6, audioEnabled: false });
     const prepared = prepareBatchMotionKling(shots[0].draft!, model);
-    expect(prepared.options).toEqual({ duration: 10, enable_audio: "false" });
-    expect(prepared.images).toEqual(["/frame-1.png"]);
+    expect(prepared.options).toEqual({ duration: 6, enable_audio: "false" });
+    expect(prepared.images).toEqual(["/frame-1.png", "/product.png"]);
   });
 
-  it("maps first frame, required extra references and tail into the exact model inputs", () => {
+  it("passes all selected references and tail without declaring unsupported inputs from model metadata", () => {
     const multi = { ...model, inputSlots: [{ name: "image", required: true, role: "image" as const }, { name: "reference", required: true, role: "image" as const }, { name: "tail", required: true, role: "tailImage" as const }] };
     const draft = { ...shots[0].draft!, lastFrameUrl: "/tail.png", referenceImages: ["/product.png", "/unused.png"] };
-    expect(prepareBatchMotionKling(draft, multi)).toMatchObject({ images: ["/frame-1.png", "/product.png"], lastImageUrl: "/tail.png", error: "" });
-    expect(prepareBatchMotionKling({ ...draft, lastFrameUrl: undefined }, multi).error).toContain("需要尾帧");
+    expect(prepareBatchMotionKling(draft, multi)).toMatchObject({ images: ["/frame-1.png", "/product.png", "/unused.png"], lastImageUrl: "/tail.png", error: "" });
+    expect(prepareBatchMotionKling({ ...draft, lastFrameUrl: undefined }, multi).error).toBe("");
+    expect(prepareBatchMotionKling(draft, { ...multi, inputSlots: [], parameters: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } })).toMatchObject({ images: ["/frame-1.png", "/product.png", "/unused.png"], lastImageUrl: "/tail.png", error: "" });
+  });
+
+  it("keeps reviewed native speech enabled in batch requests and preserves the exact prompt", () => {
+    const draft = shots[0].draft!;
+    draft.promptContext!.generateAudio = true;
+    draft.prompt = "Approved exact English spoken text with synchronized native audio.";
+    const prepared = prepareBatchMotionKling(draft, model);
+    expect(prepared.prompt).toBe(draft.prompt);
+    expect(prepared.options).toMatchObject({ enable_audio: "true" });
+    expect(prepareBatchMotionKling(draft, { ...model, parameters: [] })).toMatchObject({ prompt: draft.prompt, options: {}, error: "" });
   });
 });

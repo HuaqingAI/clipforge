@@ -87,6 +87,16 @@ function useTidewe(speechMode: "on_camera" | "voiceover" = "voiceover", presente
 }
 
 describe("authoritative TIDEWE video preview and dispatch", () => {
+  it.each(["kling-video-v2", "kling-video-v4_0", "future-model"])("preserves on-camera Kling speech and the frozen presenter despite false capabilities for %s", async (model) => {
+    const { shot } = useTidewe("on_camera", { id: "host", name: "Host", appearance: "Short brown hair", referenceImages: ["/api/files/host.png"] });
+    const { response, value } = await getPreview(input({ provider: "kling-cli", model, batch: true, generateAudio: true, controlInputs: { supportsAudio: false, firstFrameUrl: "/api/files/product.png" } }));
+    expect(response.status).toBe(200);
+    expect(value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true, warnings: [] });
+    expect(value.controlPlan.referenceInputs).toContainEqual(expect.objectContaining({ role: "character", url: "/api/files/host.png" }));
+    expect(value.prompt).toContain(shot.voiceover);
+    expect(value.prompt).not.toContain("Do not generate an audio track");
+  });
+
   const presenter: TidewePresenterSnapshot = { id: "selected-host", name: "Selected host", appearance: "棕色短发", referenceImages: ["/api/files/selected-host.png"] };
   it("binds the frozen presenter in preview and sends the actual portrait to reference-capable video generation", async () => {
     useTidewe("voiceover", presenter);
@@ -140,28 +150,37 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     state.provider.mockReturnValue({ generateVideo: state.generate, listModels });
     const result = await submit(value, request, { options: { duration: 5, minimumDuration: 1, audioEnabled: false, voiceover: "Unapproved replacement", extra: { generate_audio: false } } });
     expect(result.status).toBe(200);
-    expect(listModels).toHaveBeenCalledWith("video");
+    expect(listModels).not.toHaveBeenCalled();
     expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ prompt: value.prompt, audioEnabled: true, duration: 6, minimumDuration: 5.4 }));
     const generated = state.generate.mock.calls[0][0];
     expect(generated.voiceover).toBeUndefined();
     expect(generated.extra).toBeUndefined();
   });
-  it("rejects native mute requests and a forged audio capability before any paid generation", async () => {
-    useTidewe("on_camera");
-    const muted = await getPreview(input());
-    expect(muted.response.status).toBe(400);
-    expect(muted.value).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_REQUIRED" });
-    const request = input({ generateAudio: true });
-    const { value } = await getPreview(request);
-    state.provider.mockReturnValue({ generateVideo: state.generate, listModels: vi.fn().mockResolvedValue([{ id: request.model, mediaType: "video", supportsAudio: false }]) });
-    const response = await submit(value, request, { options: { audioEnabled: true } });
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED" });
-    state.provider.mockReturnValue({ generateVideo: state.generate, listModels: vi.fn().mockResolvedValue([]) });
-    const unknown = await submit(value, request);
-    expect(unknown.status).toBe(400);
-    expect(await unknown.json()).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED" });
-    expect(state.generate).not.toHaveBeenCalled();
+  it.each([
+    { reason: "native audio is disabled", model: "bytedance/seedance-2.5/image-to-video", generateAudio: false },
+    { reason: "the known Hailuo model has no native audio", model: "minimax/hailuo-2.3/i2v-standard", generateAudio: true },
+    { reason: "a custom model has no verified audio capability", model: "custom/unverified-image-to-video", generateAudio: true },
+  ])("generates reviewed silent on-camera footage for later narration when $reason", async ({ model, generateAudio }) => {
+    const { shot } = useTidewe("on_camera");
+    const request = input({ model, generateAudio, controlInputs: { firstFrameUrl: "/api/files/product.png", supportsAudio: true, audioReferenceUrl: "https://example.test/forged-voice.mp3" } });
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.controlPlan).toMatchObject({ audioMode: "post", voiceoverBound: false });
+    expect(value.controlPlan.referenceInputs.every((reference) => reference.mediaType === "image")).toBe(true);
+    expect(value.prompt).toContain(JSON.stringify(shot.voiceover));
+    expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
+    expect(value.prompt).toContain("match the English phonemes");
+    expect(value.prompt).toContain("Do not generate an audio track");
+    expect(value.prompt).toContain("narration will be added automatically during composition");
+    expect(value.prompt).not.toContain("Generate native synchronized audio and video");
+    const listModels = vi.fn().mockRejectedValue(new Error("No catalog is required for silent generation"));
+    state.provider.mockReturnValue({ generateVideo: state.generate, listModels });
+    const result = await submit(value, request, { options: { audioEnabled: true, voiceover: "Unapproved replacement", audioPrompt: "Speak now", extra: { generate_audio: true } }, referenceAudioUrls: ["https://example.test/forged-voice.mp3"] });
+    expect(result.status).toBe(200);
+    expect(listModels).not.toHaveBeenCalled();
+    expect(state.generate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ prompt: value.prompt, audioEnabled: false }));
+    const generated = state.generate.mock.calls[0][0];
+    for (const key of ["voiceover", "audioPrompt", "extra", "referenceAudioUrls"]) expect(generated[key]).toBeUndefined();
   });
   it("keeps saved outdoor descriptions and reference labels while ignoring legacy sales controls", async () => {
     const { shot } = useTidewe();
@@ -306,7 +325,8 @@ describe("authoritative dynamic prompt preview", () => {
     const silent = await getPreview(input({ generateAudio: false }));
     const kling = await getPreview(input({ provider: "kling-cli", model: '["kling-cli","image_to_video","fixture"]', generateAudio: true }));
     expect(silent.value.prompt).toBe(compilePremiumCgVideoPrompt(cgShot, profile).prompt);
-    expect(kling.value.prompt).toBe(silent.value.prompt);
+    expect(kling.value.prompt).toContain(approvedNarration);
+    expect(kling.value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
   });
 
   it("preserves saved sales exclusions before backend negative policy in preview and submission", async () => {

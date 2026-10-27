@@ -69,6 +69,27 @@ describe("TIDEWE downstream visual and narration policy", () => {
     expect(() => resolveNarrationVoice(profile, "zh-CN-XiaoxiaoNeural")).toThrow("英语音色");
     expect(resolveNarrationVoice(undefined)).toBe("zh-CN-XiaoxiaoNeural");
   });
+  it("keeps exact visible on-camera articulation when narration will be added in composition", () => {
+    const nativeProfile = createTideweOutdoorProfile();
+    const exact = "I'd check the fit first. Don't rush it.";
+    const presenterShot = { ...shot, voiceover: exact };
+    const compiled = compileTideweVisualPrompt(presenterShot, "video", "on_camera", undefined, "post");
+    const video = buildShotVideoPrompt({ shot: presenterShot, ordinal: 0, creativeProfile: nativeProfile, audioMode: "post" });
+    expect(video).toEqual(compiled);
+    expect(video.prompt).toContain(JSON.stringify(exact));
+    expect(video.prompt.split(exact)).toHaveLength(2);
+    expect(video.prompt).toContain("嘴部清晰可见");
+    expect(video.prompt).toContain("must visibly articulate");
+    expect(video.prompt).toContain("match the English phonemes");
+    expect(video.prompt).toContain("Do not generate an audio track");
+    expect(video.prompt).toContain("narration will be added automatically during composition");
+    expect(video.prompt).not.toContain("Generate native synchronized audio and video");
+    expect(video.prompt).not.toContain("不生成说话口型");
+    expect(video.negativePrompt).not.toMatch(/(?:^|、)说话口型(?:、|$)/);
+    const withoutSpeech = compileTideweVisualPrompt({ ...shot, voiceover: "" }, "video", "on_camera", undefined, "post");
+    expect(withoutSpeech.prompt).toContain("仅生成静音视觉素材");
+    expect(withoutSpeech.prompt).not.toContain("Exact spoken text");
+  });
   it("keeps outdoor environment shots free of narration and inherited indoor sales direction", () => {
     const result = buildShotVideoPrompt({ shot, ordinal: 0, creativeProfile: profile, creativeIntent: { subject: "卧室主播卖货" } });
     expect(result.prompt).toContain("清晨林缘");

@@ -5,6 +5,7 @@ import VideoPage from "@/app/project/[id]/video/page";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { AD_TEMPLATES, adTemplateStorageKey, adTemplateAppliedKey } from "@/lib/ad-templates";
 
+const settingsState = vi.hoisted(() => ({ paidTts: false }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "project-1" }) }));
 vi.mock("@/lib/i18n", () => ({ useT: () => (key: string) => key, useLocale: () => "zh" }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
@@ -12,7 +13,7 @@ vi.mock("@/components/free-voice-preview", () => ({ FreeVoicePreview: () => null
 vi.mock("@/lib/stores/settings-store", () => ({
   useSettingsStore: () => ({
     defaultResolution: "1080p", defaultAspectRatio: "9:16", providers: {},
-    tts: { enabled: false, provider: "openai", apiKey: "", baseUrl: "", model: "", voice: "" },
+    tts: { enabled: settingsState.paidTts, provider: "openai", apiKey: settingsState.paidTts ? "test-key" : "", baseUrl: "", model: "", voice: settingsState.paidTts ? "zh-CN-XiaoxiaoNeural" : "" },
   }),
 }));
 
@@ -39,6 +40,7 @@ function expectNoFreeBgm(body: object) {
 async function mount() { await act(async () => root.render(<VideoPage />)); }
 
 beforeEach(() => {
+  settingsState.paidTts = false;
   localStorage.clear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetchMock);
@@ -87,7 +89,8 @@ describe("composition voiceover modes", () => {
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).toMatchObject({ subtitles: true, captionPreset: "minimal" });
   });
-  it("keeps on-camera TIDEWE speech as native audio without TTS controls or a duplicate narration request", async () => {
+  it.each([false, true])("requests English fallback and prefers native audio even with paid TTS configured: %s", async paidTts => {
+    settingsState.paidTts = paidTts;
     const normalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1"
       ? Promise.resolve(Response.json({ name: "TIDEWE", creativeProfile: createTideweOutdoorProfile() }))
@@ -99,8 +102,8 @@ describe("composition voiceover modes", () => {
     expect(container.textContent).not.toContain("ttsFreeBadge");
     await click(button("composeStart"));
     const body = composeBodies().at(-1);
-    expect(body).toMatchObject({ nativeAudio: true, ttsEnabled: false, subtitles: true });
-    for (const field of ["freeTts", "ttsConfig", "voiceoverMode"]) expect(body).not.toHaveProperty(field);
+    expect(body).toMatchObject({ nativeAudio: true, ttsEnabled: true, subtitles: true, freeTts: { enabled: true, voice: "en-US-GuyNeural" } });
+    for (const field of ["ttsConfig", "voiceoverMode"]) expect(body).not.toHaveProperty(field);
   });
   it("starts with both modes off and keeps switches mutually exclusive", async () => {
     await mount();

@@ -5,6 +5,7 @@ import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingSubmissionState, KlingRemoteState, KlingImportState, KlingCliDiagnostics } from "./job-types";
 import type { Shot } from "@/lib/db/schema";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
+import type { VideoControlSummary } from "@/lib/video-control-plan";
 
 export interface KlingInputSnapshot {
   role: "image" | "tailImage";
@@ -26,6 +27,8 @@ export interface KlingJobData {
   /** Server-owned validation version and source shot; optional for older persisted jobs. */
   videoPromptAudit?: { version: number; sourceShot: Shot };
   promptContext?: VideoPromptContext;
+  /** Frozen audio intent follows the imported clip even when it has incidental ambience. */
+  generationPlan?: VideoControlSummary;
   options: Record<string, string | number | boolean>;
   inputs: KlingInputSnapshot[];
   args: string[];

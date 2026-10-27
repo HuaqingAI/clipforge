@@ -94,28 +94,28 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
   const premiumCg = isPremiumProductCgProfile(profile);
   const tidewe = isTideweOutdoorProfile(profile);
   const tideweNative = isTideweNativeSpeech(profile);
+  // Kling always attempts the requested audio; catalog metadata does not downgrade it.
+  const tideweGenerateAudio = tideweNative && request.generateAudio !== false && (request.provider === "kling-cli"
+    ? true
+    : getVideoModelCapabilities(request.model, undefined, request.provider).nativeAudio === true);
   const frozenPresenter = tidewe && (shot.tidewe?.personVisible !== false || (tideweNative && shot.voiceover?.trim())) ? tidewePresenterReference(profile) : undefined;
   if (tidewe) {
     try { assertTideweScript(script, profile.presenter ?? null); }
     catch (error) { throw new VideoPromptError("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 原文覆盖无效。", 409); }
     if (request.controlInputs?.characterReferenceUrl && request.controlInputs.characterReferenceUrl !== frozenPresenter) throw new VideoPromptError("TIDEWE_PRESENTER_REFERENCE_INVALID", "TIDEWE 主播已随脚本冻结，请使用当前主播参考，或回到脚本设置更换并重新规划。");
-    if (tideweNative) {
-      if (request.generateAudio === false) throw new VideoPromptError("TIDEWE_NATIVE_AUDIO_REQUIRED", "TIDEWE 真人口播必须开启原生音频，不能静音或改用后期配音。");
-      // Do not accept a browser's capability flag as proof. Unknown/custom models
-      // are checked against the provider's exact catalog before paid submission.
-      if (request.provider !== "kling-cli" && getVideoModelCapabilities(request.model, undefined, request.provider).nativeAudio === false) throw new VideoPromptError("TIDEWE_NATIVE_AUDIO_UNSUPPORTED", "当前模型不支持原生音频，请选择支持英语真人口播的模型。");
-    } else if (request.generateAudio === true) throw new VideoPromptError("TIDEWE_VISUAL_AUDIO_FORBIDDEN", "此 TIDEWE 项目使用画外旁白，分镜保持静音并在合成时添加英语配音。");
+    if (!tideweNative && request.generateAudio === true) throw new VideoPromptError("TIDEWE_VISUAL_AUDIO_FORBIDDEN", "此 TIDEWE 项目使用画外旁白，分镜保持静音并在合成时添加英语配音。");
   }
   // Prompt templates use Chinese regardless of the UI language. Product facts remain verbatim.
   const locale = "zh" as const;
-  const silent = tidewe ? !tideweNative : request.batch || request.generateAudio === false || (premiumCg && profile.narrationMode === "none");
+  const silent = tidewe ? !tideweGenerateAudio : request.batch || request.generateAudio === false || (premiumCg && profile.narrationMode === "none");
   const controlPlan = buildVideoControlPlan({
     ...request.controlInputs,
     ...(tidewe ? { characterReferenceUrl: frozenPresenter, motionReferenceUrl: undefined, audioReferenceUrl: undefined } : {}),
     provider: request.provider,
     modelId: request.model,
-    supportsAudio: tideweNative ? true : silent || request.provider === "kling-cli" ? false : request.controlInputs?.supportsAudio,
-    voiceover: silent ? "" : shot.narration?.trim() || shot.voiceover?.trim(),
+    supportsAudio: tideweNative ? tideweGenerateAudio : silent ? false : request.controlInputs?.supportsAudio,
+    generateAudio: !silent,
+    voiceover: silent && !tideweNative ? "" : shot.narration?.trim() || shot.voiceover?.trim(),
     speakerVisible: tideweNative || (!silent && !premiumCg && Boolean(shot.characterId)),
     description: shot.description,
     locale,
@@ -129,10 +129,9 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
   let compiled: { prompt: string; negativePrompt: string };
   if (premiumCg) {
     if (lintCreativeProfileShot(profile, shot).length) throw new VideoPromptError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 镜头不符合画面文字或旁白策略。");
-    // The server owns the complete CG text. Keep silent/Kling footage exactly on the
-    // existing visual template; approved native narration must be visible in the review.
+    // Approved native narration must be visible in the server-owned review.
     compiled = compilePremiumCgVideoPrompt(shot, profile);
-    if (!silent && request.provider !== "kling-cli" && controlPlan.audioMode === "native") {
+    if (!silent && controlPlan.audioMode === "native") {
       const approvedNarration = shot.narration?.trim() || shot.voiceover?.trim();
       if (!approvedNarration) throw new VideoPromptError("PREMIUM_CG_NARRATION_REQUIRED", "当前脚本没有可用的克制旁白。");
       if (controlPlan.audioPrompt) compiled.prompt += `\n${controlPlan.audioPrompt}`;
@@ -147,6 +146,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
       creativeIntent: project.creativeIntent,
       visualBible: project.visualBible,
       creativeProfile: profile,
+      audioMode: tideweGenerateAudio ? "native" : "post",
       locale,
     });
     if (!tidewe) {
@@ -159,8 +159,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     // labels, without appending a second spoken-copy instruction from the generic plan.
     const controlSuffix = tideweNative && controlPlan.audioPrompt ? controlPlan.promptSuffix.replace(controlPlan.audioPrompt, "").trim().replace(/。$/, "") : controlPlan.promptSuffix;
     if (controlSuffix) compiled.prompt = joinVideoPromptParts([compiled.prompt, controlSuffix], locale, "\n");
-    compiled.prompt = withVideoAudioMode(compiled.prompt, tidewe ? tideweNative ? "native" : "silent" : request.provider === "kling-cli"
-      ? request.generateAudio && !request.batch ? "native" : "silent"
+    compiled.prompt = withVideoAudioMode(compiled.prompt, tidewe ? tideweGenerateAudio ? "native" : "silent"
       : silent ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
     if (!tidewe) {
       const conflict = checkPromptConsistency(compiled.prompt, sanitizeVisualBible(project.visualBible)).find((issue) => issue.severity === "fail");

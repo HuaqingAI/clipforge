@@ -315,6 +315,35 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(submissions()).toHaveLength(1);
     expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ options: { duration: 6, audioEnabled: true, voiceover: planned.voiceover, audioPrompt: serverAudioPrompt } });
   });
+  it.each([false, true])("generates TIDEWE visuals with post narration for a silent model, batch=%s", async (batchMode) => {
+    configureTideweAssets({ savedFrame: true });
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: false } : model);
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === videoPromptUrl) {
+        const request = JSON.parse(init!.body as string) as VideoPromptRequest;
+        const preview = promptPreview(request);
+        return Promise.resolve(Response.json({ ...preview, controlPlan: { ...preview.controlPlan, audioMode: "post", voiceoverBound: false } }));
+      }
+      return normal(url, init);
+    });
+    await mount(ark);
+    if (batchMode) {
+      await click("batchMotionButton");
+      await act(async () => (container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).click());
+    } else {
+      await click("btnConvertMotion");
+      await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+      await click("确认生成此镜头");
+    }
+    expect(submissions()).toHaveLength(1);
+    const generated = JSON.parse(submissions()[0][1].body);
+    expect(generated).toMatchObject({ prompt: serverPrompt(), controlPlan: { audioMode: "post" }, options: { audioEnabled: false } });
+    expect(generated.options.voiceover).toBeUndefined();
+    expect(generated.options.audioPrompt).toBeUndefined();
+    const saved = fetchMock.mock.calls.find(([url, init]) => url.endsWith("/assets") && init?.method === "POST");
+    expect(JSON.parse(saved![1].body)).toMatchObject({ generationPlan: { audioMode: "post" } });
+  });
   it("saves an image against its source script hash before showing the adopted result", async () => {
     configureTideweAssets();
     await mount(ark);
@@ -1127,17 +1156,56 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(request.options.voiceover).toBeUndefined();
   });
 
-  it("leaves native Kling audio directions to its own sound selector instead of leaking the scripted voiceover", async () => {
+  it.each([
+    { locked: false, batchMode: false }, { locked: true, batchMode: false },
+    { locked: false, batchMode: true }, { locked: true, batchMode: true },
+  ])("sends only reviewed Kling references with product lock=$locked and batch=$batchMode", async ({ locked, batchMode }) => {
+    useSettingsStore.setState({ uiMode: "pro" });
+    const characterUrl = "/api/files/host.png";
+    const productUrls = ["/api/files/product.jpg", "/api/files/product-side.jpg"];
+    useCharacterStore.setState({ characters: [{ id: "host", name: "Host", appearance: "Adult presenter", referenceImages: [characterUrl] }] });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/project/project") return Promise.resolve(Response.json({ name: "Product", productImages: productUrls }));
+      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", characterId: "host", duration: 5, description: "Product rotates.", camera: "Slow dolly in", visualSource: "ai_generate", transition: "direct_concat" }] }]));
+      if (url === videoPromptUrl) {
+        const request = JSON.parse(init!.body as string) as VideoPromptRequest;
+        const referenceInputs = [
+          ...(request.controlInputs?.characterReferenceUrl ? [{ url: request.controlInputs.characterReferenceUrl, role: "character" as const, mediaType: "image" as const, required: true }] : []),
+          ...(request.controlInputs?.productReferenceUrl ? productUrls.map((url) => ({ url, role: "product" as const, mediaType: "image" as const, required: true })) : []),
+        ];
+        const value = promptPreview(request);
+        value.controlPlan.referenceInputs = referenceInputs;
+        value.controlPlan.referenceCount = 1 + referenceInputs.length;
+        return Promise.resolve(Response.json(value));
+      }
+      return normalFetch(url, init);
+    });
+    await mount(kling.selectionKey);
+    if (!locked) await click("productSafe");
+    await click(batchMode ? "batchMotionButton" : "btnConvertMotion");
+    expect(previewRequests()[0].controlInputs?.productReferenceUrl).toBe(locked ? productUrls[0] : undefined);
+    const expectedReferences = [characterUrl, ...(locked ? productUrls : [])];
+    if (batchMode) {
+      expect(batch.props!.shots[0].draft?.referenceImages).toEqual(expectedReferences);
+    } else {
+      await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+      await click("确认生成此镜头");
+      expect(JSON.parse(submissions()[0][1].body).referenceImageUrls).toEqual(expectedReferences);
+    }
+  });
+
+  it("requests native Kling audio from the backend despite false catalog capability", async () => {
     const originalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? Promise.resolve(Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, description: "商品保持静止", camera: "固定镜头", voiceover: "不应自动注入的Kling台词", visualSource: "ai_generate", transition: "direct_concat" }] }]))
       : originalFetch(url, init));
-    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: false } : model);
     await mount(kling.selectionKey);
     await click("btnConvertMotion");
     const prompt = (container.querySelector('[aria-label="Kling 视频提示词"]') as HTMLTextAreaElement).value;
     expect(prompt).toBe(serverPrompt());
-    expect(previewRequests()[0]).toMatchObject({ provider: "kling-cli", generateAudio: false, controlInputs: { supportsAudio: false } });
+    expect(previewRequests()[0]).toMatchObject({ provider: "kling-cli", generateAudio: true, controlInputs: { supportsAudio: true } });
     expect(submissions()).toHaveLength(0);
   });
 

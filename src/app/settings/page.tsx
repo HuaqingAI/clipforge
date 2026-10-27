@@ -325,7 +325,7 @@ export default function SettingsPage() {
   // choice here, so catalog refreshes and provider-mode changes cannot change the billed model.
   const imageIds = imageModelOptions.map((m) => m.id).join(",");
   const selectedVideoModel = videoModelOptions.find((model) => model.id === defaultVideoModel);
-  const videoSelectionUnavailable = Boolean(defaultVideoModel && !modelsLoading && (!selectedVideoModel || selectedVideoModel.extra?.available === false));
+  const videoSelectionUnavailable = Boolean(defaultVideoModel && !modelsLoading && (!selectedVideoModel || (selectedVideoModel.provider !== "kling-cli" && selectedVideoModel.extra?.available === false)));
   useEffect(() => {
     if (imageModelOptions.length && !defaultImageModel) {
       setDefaultImageModel(imageModelOptions[0].id);
@@ -952,7 +952,7 @@ export default function SettingsPage() {
                         </SelectTrigger>
                         <SelectContent>
                           {videoModelOptions.map((m) => (
-                            <SelectItem key={m.id} value={m.id} disabled={m.extra?.available === false}>
+                            <SelectItem key={m.id} value={m.id} disabled={m.provider !== "kling-cli" && m.extra?.available === false}>
                               {m.name}{m.custom ? t("customModelSuffix") : ""}
                             </SelectItem>
                           ))}

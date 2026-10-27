@@ -29,6 +29,7 @@ import { assetScopeForShot } from "@/lib/asset-context";
 import { contentHash } from "@/lib/kling/inputs";
 import { klingFilmRuns } from "@/lib/kling/film-schema";
 import { klingJobs } from "@/lib/kling/job-schema";
+import { klingProfiles } from "@/lib/kling/profile-schema";
 import { getKlingFilm, getKlingFilmShots, patchKlingFilmShot } from "@/lib/kling/film-repository";
 import { previewKlingFilm, assertKlingFilmContext, verifyKlingFilmFiles, buildFilmShotJobRequest } from "@/lib/kling/film-plan";
 import { LEGACY_SILENT_PROMPT_SUFFIX, VIDEO_AUDIO_DIRECTIONS, withVideoAudioMode } from "@/lib/video-audio";
@@ -67,6 +68,7 @@ beforeEach(async () => {
   await fs.mkdir(path.join(state.directory, "uploads"), { recursive: true }); await fs.mkdir(path.join(state.directory, "output"), { recursive: true });
   const now = Date.now();
   state.profile = { id: "profile-1", label: "test", region: "global", cliPackage: "@klingai/cli-global", cliVersion: "0.2.0", adapterVersion: "1", nodePath: process.execPath, packagePath: "/fixture", cliEntry: "/fixture/dist/cli.js", homePath: path.join(state.directory, "home"), endpoint: "https://kling.ai/mcp", environmentState: "ready", authState: "authenticated", authRevision: 1, principalKey: '["global","user-1"]', accountSummary: { id: "user-1" }, catalogSnapshot: [structuredClone(model)], catalogRevision: "catalog-1", catalogCheckedAt: now, createdAt: now, updatedAt: now };
+  getDb().insert(klingProfiles).values({ id: state.profile.id, data: state.profile }).onConflictDoUpdate({ target: klingProfiles.id, set: { data: state.profile } }).run();
   getDb().insert(projects).values({ id: "project-1", name: "Fixture project" }).run();
   getDb().insert(scripts).values({ id: "script-1", projectId: "project-1", styleType: "scene", shots: [shot], selected: true }).run();
   state.refresh.mockImplementation(async () => structuredClone(state.profile));
@@ -103,18 +105,16 @@ describe("TIDEWE frozen film planning", () => {
     const missing = await previewKlingFilm(request());
     expect(missing.missingKeyframes).toEqual([tideweShot.shotId]);
     expect(getKlingFilmShots(missing.runId)[0].data.inputs).toEqual([]);
+    await fs.writeFile(path.join(state.directory, "uploads", "presenter.png"), png);
     await asset("presenter-frame.png", assetScopeForShot(currentScript(), tideweShot));
     const ready = await previewKlingFilm(request());
     expect(ready.missingKeyframes).toEqual([]);
     const planned = getKlingFilmShots(ready.runId)[0];
-    expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/presenter-frame.png"]);
+    expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/presenter-frame.png", "/api/files/presenter.png"]);
     expect(planned.data.prompt).toContain(presenter.name);
   });
-  it("freezes actual presenter reference bytes as an additional Kling image when supported", async () => {
+  it("freezes presenter reference bytes regardless of missing multi-image capability declarations", async () => {
     useImageModel();
-    const descriptor = state.profile!.catalogSnapshot[0];
-    descriptor.capabilities.multiImage = true;
-    descriptor.inputSlots.push({ name: "image2", role: "image", required: false });
     const { shot: tideweShot } = useTidewe(true, "voiceover", presenter);
     await fs.writeFile(path.join(state.directory, "uploads", "presenter.png"), png);
     await asset("presenter-frame.png", assetScopeForShot(currentScript(), tideweShot));
@@ -139,16 +139,76 @@ describe("TIDEWE frozen film planning", () => {
     expect(buildFilmShotJobRequest(getKlingFilm(view.runId), planned).prompt).toBe(planned.data.prompt);
     await expect(previewKlingFilm(request({ output: { audioStrategy: "edge-tts" } }))).rejects.toMatchObject({ code: "TIDEWE_OUTPUT_POLICY" });
   });
-  it("rejects a native TIDEWE film on a model without confirmed audio support", async () => {
+  it("freezes native TIDEWE speech for Kling 4.0 without requiring an audio toggle", async () => {
     useImageModel();
-    useTidewe(true, "on_camera");
-    await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "KLING_FILM_AUDIO_UNSUPPORTED" });
-    expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.remoteModelId = "kling-video-v4_0";
+    const { shot } = useTidewe(true, "on_camera");
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    const child = buildFilmShotJobRequest(getKlingFilm(view.runId), planned);
+    expect(view.output.audioStrategy).toBe("native");
+    expect(planned.data.options).toEqual({ duration: 5 });
+    expect(child.options).toEqual({ duration: 5 });
+    expect(child.prompt).toContain(shot.voiceover);
+    expect(child.prompt).not.toMatch(/无人声说话|no speech|全程静音|entire video silent/i);
   });
-  it("requires an image model for product shots before making a billable film plan", async () => {
-    useTidewe();
-    await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" });
-    expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
+  it("requests native TIDEWE speech on any model without an audio capability declaration", async () => {
+    useImageModel();
+    const { shot } = useTidewe(true, "on_camera");
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    expect(view.output.audioStrategy).toBe("native");
+    expect(planned.data.prompt).toContain(shot.voiceover);
+    expect(planned.data.options).toEqual({ duration: 5 });
+  });
+  it("passes product references to text-to-video tools without a local capability rejection", async () => {
+    const { shot } = useTidewe();
+    setShots([{ ...shot, visualSource: "ai_generate" }]);
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/frame.png"]);
+    expect(buildFilmShotJobRequest(getKlingFilm(view.runId), planned)).toMatchObject({ mode: "text-to-video", imageUrl: "/api/files/frame.png" });
+  });
+  it.each(["voiceover", "on_camera"] as const)("freezes text-tool product and presenter references identically to the %s child job", async (speechMode) => {
+    const { shot } = useTidewe(true, speechMode, presenter);
+    setShots([{ ...shot, visualSource: "ai_generate" }]);
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    await fs.writeFile(path.join(state.directory, "uploads", "presenter.png"), Buffer.concat([png, Buffer.from("presenter")]));
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    const child = buildFilmShotJobRequest(getKlingFilm(view.runId), planned);
+    const expectedInputHashes = planned.data.inputs.map(({ role, hash }) => ({ role, hash }));
+    expect(view.missingKeyframes).toEqual([]);
+    expect(child).toMatchObject({ mode: "text-to-video", imageUrl: "/api/files/frame.png", referenceImageUrls: ["/api/files/presenter.png"] });
+    const { createKlingFilmShotJob } = await import("@/lib/kling/jobs");
+    const job = await createKlingFilmShotJob(child, { filmRunId: view.runId, filmShotId: planned.id, authorizationEpoch: 1, expectedInputHashes });
+    expect(job.data.inputs.map(({ role, hash }) => ({ role, hash }))).toEqual(expectedInputHashes);
+    expect(job.data.options).toEqual(planned.data.options);
+  });
+  it("freezes the same native speech duration and usable audio alias as the paid child", async () => {
+    const { shot } = useTidewe(true, "on_camera");
+    setShots([{ ...shot, duration: 8 }]);
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.parameters.push(
+      { name: "audio", type: "string", required: false, allowedValues: ["provider_default"], default: "provider_default" },
+      { name: "generate_audio", type: "boolean", required: false, default: false },
+    );
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request({ options: { duration: 5 } }));
+    const planned = getKlingFilmShots(view.runId)[0];
+    expect(planned.data.generationDuration).toBe(10);
+    expect(planned.data.options).toEqual({ duration: 10, generate_audio: true });
+    const { createKlingFilmShotJob } = await import("@/lib/kling/jobs");
+    const child = await createKlingFilmShotJob(buildFilmShotJobRequest(getKlingFilm(view.runId), planned), {
+      filmRunId: view.runId, filmShotId: planned.id, authorizationEpoch: 1,
+      expectedInputHashes: planned.data.inputs.map(({ role, hash }) => ({ role, hash })),
+    });
+    expect(child.data.options).toEqual(planned.data.options);
+    expect(child.data.args).toContain("10");
   });
   it("freezes the full English copy and a silent visual prompt with the shared English voice", async () => {
     useImageModel();
@@ -175,6 +235,23 @@ describe("TIDEWE frozen film planning", () => {
 });
 
 describe("Kling frozen film planning", () => {
+  it.each(["product_image", "ai_generate"] as const)("freezes the same product reference as a text-tool CG child with visualSource=%s", async (visualSource) => {
+    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    const cgShot: Shot = { ...shot, type: "product_reveal", visualSource, voiceover: "", visualIntent: "Observe the approved product silhouette.", camera: "One restrained forward camera move." };
+    getDb().update(projects).set({ productImages: ["/api/files/frame.png"], creativeProfile: profile, creativeConfigRevision: 1 }).run();
+    getDb().update(scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    const requestChild = buildFilmShotJobRequest(getKlingFilm(view.runId), planned);
+    const expectedInputHashes = planned.data.inputs.map(({ role, hash }) => ({ role, hash }));
+    expect(requestChild).toMatchObject({ mode: "text-to-video", imageUrl: "/api/files/frame.png" });
+    const { createKlingFilmShotJob } = await import("@/lib/kling/jobs");
+    const child = await createKlingFilmShotJob(requestChild, { filmRunId: view.runId, filmShotId: planned.id, authorizationEpoch: 1, expectedInputHashes });
+    expect(child.data.inputs.map(({ role, hash }) => ({ role, hash }))).toEqual(expectedInputHashes);
+    expect(child.data.options).toEqual(planned.data.options);
+  });
+
   it("shows the exact paid backend CG template in the full-film plan", async () => {
     useImageModel();
     const profile = createPremiumProductCgProfile({ narrationMode: "none" });
@@ -371,27 +448,69 @@ describe("Kling frozen film planning", () => {
     expect(getKlingFilmShots(view.runId)[0].data.inputs).toEqual([]);
     expect(() => buildFilmShotJobRequest(getKlingFilm(view.runId), getKlingFilmShots(view.runId)[0])).toThrow();
   });
-  it("rejects unknown duration bounds and an explicitly too short duration", async () => {
+  it("passes requested durations without rejecting absent bounds or short catalog tiers", async () => {
     setShots([{ ...shot, duration: 7 }]);
-    await expect(previewKlingFilm(request({ options: { duration: 5 } }))).rejects.toMatchObject({ code: "KLING_FILM_DURATION_UNSUPPORTED" });
+    const explicit = await previewKlingFilm(request({ options: { duration: 5 } }));
+    expect(getKlingFilmShots(explicit.runId)[0].data.options).toEqual({ duration: 5 });
     state.profile!.catalogSnapshot[0].parameters = [{ name: "duration", type: "number", required: true }];
-    await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "KLING_FILM_DURATION_UNSUPPORTED" });
-    expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
+    const unbounded = await previewKlingFilm(request());
+    expect(getKlingFilmShots(unbounded.runId)[0].data.options).toEqual({ duration: 7 });
+    state.profile!.catalogSnapshot[0].parameters[0].allowedValues = [5];
+    const staleTiers = await previewKlingFilm(request());
+    expect(getKlingFilmShots(staleTiers.runId)[0].data.options).toEqual({ duration: 7 });
+    state.profile!.catalogSnapshot[0].parameters = [];
+    const noSwitch = await previewKlingFilm(request());
+    expect(getKlingFilmShots(noSwitch.runId)[0].data).toMatchObject({ generationDuration: 7, options: {} });
   });
   it("accepts only a declared duration alias and detects contradictory aliases", async () => {
     state.profile!.catalogSnapshot[0].parameters[0].name = "duration_seconds";
     const view = await previewKlingFilm(request({ options: { duration: 10 } }));
     expect(getKlingFilmShots(view.runId)[0].data.options).toEqual({ duration_seconds: 10 });
-    await expect(previewKlingFilm(request({ options: { duration: 5, duration_seconds: 10 } }))).rejects.toMatchObject({ code: "KLING_FILM_DURATION_UNSUPPORTED" });
+    await expect(previewKlingFilm(request({ options: { duration: 5, duration_seconds: 10 } }))).rejects.toMatchObject({ code: "KLING_FILM_INPUT_INVALID" });
   });
-  it("rejects unsupported native audio and enables a declared audio flag with exact dialogue", async () => {
-    await expect(previewKlingFilm(request({ output: { audioStrategy: "native" } }))).rejects.toMatchObject({ code: "KLING_FILM_AUDIO_UNSUPPORTED" });
+  it("defaults native audio to supported and uses a declared audio flag with exact dialogue", async () => {
+    const implicit = await previewKlingFilm(request({ output: { audioStrategy: "native" } }));
+    expect(getKlingFilmShots(implicit.runId)[0].data.prompt).toContain(JSON.stringify(shot.voiceover));
+    expect(getKlingFilmShots(implicit.runId)[0].data.options).toEqual({ duration: 5 });
     const descriptor = state.profile!.catalogSnapshot[0]; descriptor.capabilities.audio = true;
-    await expect(previewKlingFilm(request({ output: { audioStrategy: "native" } }))).rejects.toMatchObject({ code: "KLING_FILM_AUDIO_UNSUPPORTED" });
     descriptor.parameters.push({ name: "sound", type: "string", required: false, allowedValues: ["on", "off"], default: "off" });
     const view = await previewKlingFilm(request({ output: { audioStrategy: "native" } })); const planned = getKlingFilmShots(view.runId)[0];
     expect(planned.data.options.sound).toBe("on"); expect(planned.data.prompt).toContain(JSON.stringify(shot.voiceover));
     const muted = await previewKlingFilm(request()); expect(getKlingFilmShots(muted.runId)[0].data.options.sound).toBe("off");
+  });
+  it("ignores stale unavailable and required-input declarations without inventing audio switches", async () => {
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.remoteModelId = "future-kling-model";
+    descriptor.available = false;
+    descriptor.disabledReason = "unconfirmed capabilities";
+    descriptor.inputSlots = [
+      { name: "image", role: "image", required: true },
+      { name: "image2", role: "image", required: true },
+      { name: "tailImage", role: "tailImage", required: true },
+    ];
+    descriptor.parameters.push({ name: "audio", type: "string", required: true, allowedValues: ["off"], default: "off" });
+    const view = await previewKlingFilm(request({ output: { audioStrategy: "native" } }));
+    const planned = getKlingFilmShots(view.runId)[0];
+    const child = buildFilmShotJobRequest(getKlingFilm(view.runId), planned);
+    expect(planned.data.options).toEqual({ duration: 5 });
+    expect(child.options).toEqual({ duration: 5 });
+    expect(child.prompt).toContain(JSON.stringify(shot.voiceover));
+    expect(view.warnings).toEqual([]);
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+  });
+  it.each(["text_to_video", "image_to_video"] as const)("preserves exact speech for default Kling 4.0 native audio in %s plans", async (tool) => {
+    if (tool === "image_to_video") { useImageModel(); await asset(); }
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.remoteModelId = "kling-video-v4_0";
+    const view = await previewKlingFilm(request({ output: { audioStrategy: "native" } }));
+    const planned = getKlingFilmShots(view.runId)[0];
+    const child = buildFilmShotJobRequest(getKlingFilm(view.runId), planned);
+    expect(planned.data.options).toEqual({ duration: 5 });
+    expect(child.options).toEqual({ duration: 5 });
+    expect(child.prompt).toContain(`原生音频必须逐字说出以下台词，不改写、不增添：${JSON.stringify(shot.voiceover)}`);
+    expect(child.prompt).toContain(VIDEO_AUDIO_DIRECTIONS.native.zh);
+    expect(child.prompt).not.toMatch(/无人声说话|no speech|全程静音|entire video silent/i);
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
   });
   it.each(["enable_audio", "audio"])("freezes mix mode and controls the declared %s flag through the sound strategy", async (name) => {
     const descriptor = state.profile!.catalogSnapshot[0];
@@ -492,10 +611,11 @@ describe("Kling frozen film planning", () => {
     const short = await previewKlingFilm(request()); expect(short.billableShotCount).toBe(1); expect(short.warnings).toHaveLength(1);
     const forced = await previewKlingFilm(request({ reuseExistingVideos: false })); expect(forced.billableShotCount).toBe(1); expect(state.probe).toHaveBeenCalledTimes(1);
   });
-  it("does not reuse a silent video for native spoken dialogue", async () => {
+  it("reuses silent videos without blocking native dialogue plans before composition fallback", async () => {
     await asset("video.mp4", { type: "ai_generated" }); const descriptor = state.profile!.catalogSnapshot[0]; descriptor.capabilities.audio = true;
     state.probe.mockResolvedValueOnce({ duration: 5, width: 1280, height: 720, hasAudio: false });
-    await expect(previewKlingFilm(request({ output: { audioStrategy: "native" } }))).rejects.toMatchObject({ code: "KLING_FILM_AUDIO_UNSUPPORTED" });
+    const view = await previewKlingFilm(request({ output: { audioStrategy: "native" } }));
+    expect(view).toMatchObject({ readyShots: 1, billableShotCount: 0, output: { audioStrategy: "native" } });
   });
   it("never treats a Kling output thumbnail as an original keyframe", async () => {
     useImageModel(); await asset("video.mp4", { type: "ai_generated", provider: "kling-cli", thumbnailPath: "/api/files/frame.png" });

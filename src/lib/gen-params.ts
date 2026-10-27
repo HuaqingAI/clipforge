@@ -217,7 +217,7 @@ export async function resolveDefaultModelTarget(
     const data = await res.json();
     const merged = mergeCustomModels(data.models ?? [], customModels, mediaType, new Set(enabled.map((e) => e.name)));
     const model = merged.find((m) => m.id === defaultModel);
-    if (!model || model.extra?.available === false) return null;
+    if (!model || (model.provider !== "kling-cli" && model.extra?.available === false)) return null;
     const prov = enabled.find((e) => e.name === model.provider);
     if (!prov) return null;
     return {

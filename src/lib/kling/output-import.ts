@@ -69,6 +69,7 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
       sourceKeyframeUrl: current.data.sourceKeyframeUrl,
       sourceScriptId: job.scriptId, sourceRevision: job.data.scriptRevision, sourceShotKey: job.data.shotKey,
       provider: "kling-cli", model: job.data.model.remoteModelId, prompt: job.data.prompt,
+      ...(job.data.generationPlan ? { generationPlan: job.data.generationPlan } : {}),
       selected, status: "done",
     }).run();
     tx.update(klingJobOutputs).set({

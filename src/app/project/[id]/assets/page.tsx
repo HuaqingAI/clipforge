@@ -262,7 +262,7 @@ function AssetsPageContent() {
     const resolve = (type: "image" | "video", modelId: string) => {
       const model = mergeCustomModels(catalog.models.filter((item) => item.mediaType === type), customModels, type, names).find((item) => item.id === modelId);
       const provider = model && enabled.find((item) => item.name === model.provider);
-      return model && model.extra?.available !== false && provider ? { provider: provider.name, model: modelId, apiKey: provider.apiKey ?? "", baseUrl: provider.baseUrl, supportsAudio: model.supportsAudio, profileId: provider.profileId } : null;
+      return model && (model.provider === "kling-cli" || model.extra?.available !== false) && provider ? { provider: provider.name, model: modelId, apiKey: provider.apiKey ?? "", baseUrl: provider.baseUrl, supportsAudio: model.provider === "kling-cli" ? true : model.supportsAudio, profileId: provider.profileId } : null;
     };
     return [resolve("image", defaultImageModel), resolve("video", defaultVideoModel)];
   }, [providers, customModels, defaultImageModel, defaultVideoModel, catalog.models]);
@@ -805,7 +805,7 @@ function AssetsPageContent() {
       const previousAsset = assetIndex > 0 ? assets[assetIndex - 1] : undefined;
       const nextAsset = assets[assetIndex + 1];
       const chainFrame =
-        chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
+        chainMode !== "pin" || lastFrameOverride === null || (videoModelTarget.provider !== "kling-cli" && !modelSupportsLastFrame(videoModelTarget.model))
           ? undefined
           : lastFrameOverride ??
             // demo-type shots skip auto-chaining (their ending IS the content); explicit override still chains
@@ -841,9 +841,9 @@ function AssetsPageContent() {
         settings: { visualLook, motionIntensity, motionRealism },
         ...(videoParams.negativePrompt && { negativePrompt: videoParams.negativePrompt }),
         chainToNext: !!chainFrame, locale, batch, retake,
-        generateAudio: tideweNative || (videoModelTarget.provider !== "kling-cli" && !tidewe && !batch && !premiumCgVisualOnly && videoParams.audioEnabled !== false),
+        generateAudio: tideweNative || (!tidewe && !batch && !premiumCgVisualOnly && videoParams.audioEnabled !== false),
         controlInputs: {
-          supportsAudio: tideweNative ? videoModelTarget.supportsAudio : tidewe || batch || premiumCgVisualOnly || videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
+          supportsAudio: tideweNative ? videoModelTarget.supportsAudio : tidewe || batch || premiumCgVisualOnly || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
           firstFrameUrl: effectiveFirstFrame, lastFrameUrl: chainFrame,
           characterReferenceUrl: premiumCg ? undefined : characterReference,
           productReferenceUrl: productReference,
@@ -870,7 +870,7 @@ function AssetsPageContent() {
       if (asset?.duration) {
         videoOptions.duration = Math.min(15, Math.max(4, tideweNative ? Math.ceil(asset.duration) : Math.round(asset.duration)));
       }
-      if ((tidewe && !tideweNative) || (batch && !tideweNative) || premiumCgVisualOnly) {
+      if ((tidewe && controlPlan.audioMode !== "native") || (batch && !tideweNative) || premiumCgVisualOnly) {
         // Keep the browser-side confirmation honest. The route derives the same policy from the
         // persisted project profile and remains authoritative if a request is forged.
         videoOptions.audioEnabled = false;
@@ -880,7 +880,7 @@ function AssetsPageContent() {
         delete videoOptions.audioReferenceUrl;
         delete videoOptions.tts;
         delete videoOptions.ttsEnabled;
-      } else if (tideweNative || controlPlan.audioMode === "native") {
+      } else if (controlPlan.audioMode === "native") {
         videoOptions.audioEnabled = true;
         delete videoOptions.audioUrl;
         delete videoOptions.audioReferenceUrl;
@@ -956,7 +956,7 @@ function AssetsPageContent() {
             profileId: videoModelTarget.profileId, prompt: finalPrompt,
             promptContext: preview.promptContext, negativePrompt: preview.negativePrompt,
             firstFrameUrl: effectiveFirstFrame, lastFrameUrl: controlPlan.lastFrameUrl,
-            referenceImages: [...new Set([...referenceImageUrls, ...productImages, ...(!premiumCg && characterReference ? [characterReference] : [])])],
+            referenceImages: [...new Set(referenceImageUrls)],
             apiImages: [
               ...(controlPlan.firstFrameUrl ? [{ label: "首帧", url: controlPlan.firstFrameUrl }] : []),
               ...(controlPlan.lastFrameUrl ? [{ label: "尾帧", url: controlPlan.lastFrameUrl }] : []),
@@ -1621,7 +1621,7 @@ function AssetsPageContent() {
               ))}
             </div>
           )}
-          {videoModelTarget && !isKlingDefault && modelSupportsLastFrame(videoModelTarget.model) && (
+          {videoModelTarget && (isKlingDefault || modelSupportsLastFrame(videoModelTarget.model)) && (
             <div
               className="flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1 h-8"
               title={t("chainModeTip")}

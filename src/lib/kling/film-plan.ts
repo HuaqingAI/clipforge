@@ -37,12 +37,13 @@ import { downloadPublicFile } from "./download";
 import { klingFilmRuns, klingFilmShots, type KlingFilmRun, type KlingFilmShot, type KlingFilmShotData } from "./film-schema";
 import { getKlingFilm, getKlingFilmShots, klingFilmView } from "./film-repository";
 import { klingJobs, klingJobOutputs } from "./job-schema";
-import { KLING_AUDIO_PARAMETER_NAMES, klingModelOptions } from "./model-options";
+import { KLING_AUDIO_PARAMETER_NAMES, klingAudioParameterValue, klingModelOptions } from "./model-options";
 import { isKlingRuntimeEnabled } from "./runtime";
 import type { KlingFilmOutputSettings, KlingFilmView } from "./film-types";
-import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
+import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingSubmitRequest } from "./job-types";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
+import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const VIDEO = /\.(?:mp4|webm|mov|m4v|mkv)(?:$|[?#])/i;
@@ -99,13 +100,6 @@ function outputSettings(raw: unknown, creativeProfile?: ProjectCreativeProfile):
     narrationMode: creativeProfile.narrationMode,
   };
 }
-function audioValue(parameter: KlingParameter, enabled: boolean): string | number | boolean {
-  const choices = parameter.allowedValues ?? (parameter.type === "boolean" ? [true, false] : parameter.default !== undefined ? [parameter.default] : []);
-  const wanted = new Set(enabled ? ["true", "on", "yes", "1", "enabled", "enable"] : ["false", "off", "no", "0", "disabled", "disable"]);
-  const value = choices.find((choice) => wanted.has(String(choice).toLowerCase()));
-  if (value === undefined) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", `当前模型未明确声明${enabled ? "开启" : "关闭"}原生音频的参数值，请更换音频策略或模型。`);
-  return value;
-}
 function generationOptions(
   model: KlingVideoModelDescriptor,
   raw: Record<string, unknown>,
@@ -113,30 +107,32 @@ function generationOptions(
   seconds: number,
   negativePrompt: string,
   premiumCg = false,
+  minimumDuration?: number,
 ): { options: Record<string, string | number | boolean>; duration: number } {
   const duration = model.parameters.find((item) => DURATION_NAMES.includes(item.name));
-  if (!duration) throw fail("KLING_FILM_DURATION_UNSUPPORTED", "当前模型没有可核验的视频时长声明，不能自动编排整片。");
   const source = { ...raw };
   if (premiumCg) {
     delete source.negative_prompt;
     delete source.negativePrompt;
   }
   const explicitValues = DURATION_NAMES.map((name) => raw[name]).filter((value) => value !== undefined && value !== "");
-  if (new Set(explicitValues.map(String)).size > 1) throw fail("KLING_FILM_DURATION_UNSUPPORTED", "同一镜头不能设置相互冲突的时长参数。");
+  if (new Set(explicitValues.map(String)).size > 1) throw fail("KLING_FILM_INPUT_INVALID", "同一镜头不能设置相互冲突的时长参数。");
   const explicit = explicitValues[0];
-  const declared = duration.allowedValues?.length ? duration.allowedValues : duration.default !== undefined ? [duration.default] : [];
+  const declared = duration?.allowedValues?.length ? duration.allowedValues : duration?.default !== undefined ? [duration.default] : [];
   const candidates = declared.map((value) => ({ value, seconds: Number(value) })).filter((item) => Number.isFinite(item.seconds) && item.seconds > 0 && item.seconds >= seconds).sort((a, b) => a.seconds - b.seconds);
-  let chosen = explicit !== undefined ? declared.find((value) => String(value) === String(explicit)) : candidates[0]?.value;
-  if (chosen === undefined || !Number.isFinite(Number(chosen)) || Number(chosen) < seconds) throw fail("KLING_FILM_DURATION_UNSUPPORTED", `模型已声明的时长不能覆盖 ${seconds} 秒镜头，已阻止截短或猜测时长。`);
-  if (duration.type === "number") chosen = Number(chosen);
+  let chosen = explicit ?? candidates[0]?.value ?? seconds;
+  if (!Number.isFinite(Number(chosen)) || Number(chosen) <= 0) throw fail("KLING_FILM_INPUT_INVALID", "镜头生成时长必须为正数。");
+  if (duration?.type === "number") chosen = Number(chosen);
+  else if (duration?.type === "string") chosen = String(chosen);
   for (const name of DURATION_NAMES) delete source[name];
-  source[duration.name] = chosen;
+  if (duration) source[duration.name] = chosen;
   const aspect = model.parameters.find((item) => ASPECT_NAMES.includes(item.name));
   if (aspect && !ASPECT_NAMES.some((name) => source[name] !== undefined)) source[aspect.name] = output.aspectRatio;
-  const audio = model.parameters.find((item) => AUDIO_NAMES.includes(item.name));
   const nativeAudio = output.audioStrategy !== "edge-tts" && output.narrationMode !== "none";
-  if (audio) { for (const name of AUDIO_NAMES) delete source[name]; source[audio.name] = audioValue(audio, nativeAudio); }
-  else if (output.audioStrategy === "native") throw fail("KLING_FILM_AUDIO_UNSUPPORTED", "当前模型没有已适配的原生音频参数，请使用后期免费配音。");
+  const audio = model.parameters.find((item) => AUDIO_NAMES.includes(item.name) && klingAudioParameterValue(item, nativeAudio) !== undefined);
+  for (const name of AUDIO_NAMES) delete source[name];
+  const audioValue = audio && klingAudioParameterValue(audio, nativeAudio);
+  if (audio && audioValue !== undefined) source[audio.name] = audioValue;
   const negativeParameter = model.parameters.find((parameter) => ["negative_prompt", "negativePrompt"].includes(parameter.name));
   if (negativePrompt && negativeParameter) {
     const existing = premiumCg
@@ -145,11 +141,12 @@ function generationOptions(
     if (existing.some((value) => typeof value !== "string")) throw fail("KLING_FILM_INPUT_INVALID", "负面提示词必须是文本。");
     if (new Set(existing).size > 1) throw fail("KLING_FILM_INPUT_INVALID", "同一镜头不能设置相互冲突的负面提示词。");
     const mapped = klingModelOptions({ ...model, parameters: [negativeParameter] }, { negativePrompt: [...existing.slice(0, 1), negativePrompt].join(", ") });
-    if (mapped.unsupportedSettings.length) throw fail("KLING_FILM_PROMPT_INVALID", "当前模型不支持项目的负面提示词设置。");
     delete source.negative_prompt; delete source.negativePrompt;
     Object.assign(source, mapped.options);
   }
-  return { options: normalizeVideoParameters(model, source), duration: Number(chosen) };
+  const options = normalizeVideoParameters(model, source, minimumDuration);
+  const normalizedDuration = duration ? Number(options[duration.name]) : Math.max(Number(chosen), minimumDuration ?? 0);
+  return { options, duration: normalizedDuration };
 }
 function projectPromptRevision(project: typeof projects.$inferSelect): string {
   return contentHash({
@@ -205,8 +202,7 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
   if (!profile.catalogCheckedAt || Date.now() - profile.catalogCheckedAt > 300_000) profile = await refreshProfile(profile.id, undefined, { credits: false });
   if (profile.authState !== "authenticated" || !profile.principalKey) throw new KlingError("KLING_LOGIN_REQUIRED", "请先登录并核验 Kling 原账号。", 401);
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === body.selectionKey);
-  if (!model?.available) throw fail("KLING_MODEL_UNAVAILABLE", model?.disabledReason ?? "当前账号没有选择的可用视频模型。");
-  if (model.inputSlots.filter((slot) => slot.required && slot.role === "image").length > 1 || model.inputSlots.some((slot) => slot.required && slot.role === "tailImage")) throw fail("KLING_FILM_MODEL_UNSUPPORTED", "当前整片编排只使用每镜头一张关键帧，此模型要求其他必填图片输入。");
+  if (!model) throw fail("KLING_MODEL_UNAVAILABLE", "当前账号没有选择的视频模型，请刷新模型列表。");
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, body.projectId as string)).get();
   if (!project) throw fail("KLING_PROJECT_NOT_FOUND", "项目不存在。");
@@ -229,13 +225,8 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
     try { assertTideweScript(script, creativeProfile.presenter ?? null); }
     catch (error) { throw fail("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 原文覆盖无效"); }
     if (!project.productImages?.length && shots.some((shot) => shot.tidewe?.productVisible)) throw fail("TIDEWE_PRODUCT_REFERENCE_REQUIRED", "TIDEWE 产品镜需要当前商品参考图。");
-    if (shots.some((shot) => shot.tidewe?.productVisible) && model.tool !== "image_to_video") throw fail("TIDEWE_PRODUCT_REFERENCE_REQUIRED", "TIDEWE 产品镜须选择支持商品关键帧的图生视频模型。");
-    if (tidewePresenterReference(creativeProfile) && shots.some((shot) => shot.tidewe?.personVisible !== false || (creativeProfile.speechMode === "on_camera" && shot.voiceover?.trim())) && model.tool !== "image_to_video") throw fail("TIDEWE_PRESENTER_KEYFRAME_REQUIRED", "所选主播需要当前分镜关键帧或人物参考，请选择图生视频模型。");
   }
   if (isPremiumProductCgProfile(creativeProfile)) {
-    if (model.tool !== "image_to_video") {
-      throw fail("CREATIVE_POLICY_UNSUPPORTED", "高端产品 CG 整片仅支持已验证的图生视频模型。");
-    }
     if (!Array.isArray(project.productImages) || !project.productImages.some((image) => typeof image === "string" && image.trim())) {
       throw fail("PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED", "高端产品 CG 整片需要至少一张已保存的产品参考图。");
     }
@@ -243,7 +234,6 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
     if (issues.length) throw fail("CREATIVE_POLICY_VIOLATION", "高端产品 CG 脚本包含画面文字、营销图形或不符合旁白策略的内容，请修改脚本后重试。");
   }
   const output = outputSettings(body.output, creativeProfile);
-  if (output.audioStrategy === "native" && !model.capabilities.audio) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", "当前模型未声明原生音频能力，请选择支持原生音频的模型。");
   if (!shots.length || shots.length > MAX_SHOTS || new Set(shots.map((shot) => shot.shotId)).size !== shots.length || shots.some((shot) => !Number.isSafeInteger(shot.shotId) || shot.shotId < 0 || !Number.isFinite(shot.duration) || shot.duration <= 0) || shots.reduce((sum, shot) => sum + shot.duration, 0) > MAX_SECONDS) throw fail("KLING_FILM_LIMIT_EXCEEDED", "整片需要 1–50 个有效镜头，总时长不能超过 600 秒。");
   const scopedSelectedAssets = filterAssetsForScript(
     db.select().from(assets).where(and(eq(assets.projectId, project.id), eq(assets.selected, true))).all(),
@@ -271,11 +261,9 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
       try {
         const file = await localMediaPath(asset.filePath), before = await fileHash(file), metadata = await probeMedia(file);
         if (!Number.isFinite(metadata.duration) || metadata.duration + 0.1 < shot.duration || !Number.isFinite(metadata.width) || !Number.isFinite(metadata.height) || metadata.width <= 0 || metadata.height <= 0 || await fileHash(file) !== before) throw new Error("Invalid video");
-        if (output.audioStrategy === "native" && shot.voiceover?.trim() && !metadata.hasAudio) throw fail("KLING_FILM_AUDIO_UNSUPPORTED", `镜头 ${shot.shotId} 的已有视频没有音轨，不能满足本次原生对白设置。`);
         Object.assign(data, { source: "reuse", sourceFileHash: before, sourceFilePath: file, videoUrl: asset.filePath }); assetId = asset.id;
         if (output.audioStrategy !== "edge-tts" && Math.abs(metadata.duration - shot.duration) > 0.1) warnings.push(`镜头 ${shot.shotId} 复用视频的实际时长为 ${Number(metadata.duration.toFixed(2))} 秒；${output.audioStrategy === "native" ? "原声音" : "叠加配音"}策略将保留完整视频和音轨，不截为脚本的 ${shot.duration} 秒。`);
       } catch (error) {
-        if (error instanceof KlingError && error.code === "KLING_FILM_AUDIO_UNSUPPORTED") throw error;
         if ((error as NodeJS.ErrnoException).code === "ENOENT" && /ffprobe|spawn/i.test(error instanceof Error ? error.message : "")) throw fail("KLING_MEDIA_TOOL_UNAVAILABLE", "FFprobe 不可用，请先配置本机媒体工具。");
         warnings.push(`镜头 ${shot.shotId} 的已有视频不能安全复用，本次计划将重新生成。`);
       }
@@ -288,15 +276,26 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
         shot.duration,
         direction.negativePrompt,
         isPremiumProductCgProfile(creativeProfile) || tidewe,
+        isTideweNativeSpeech(creativeProfile) && output.audioStrategy === "native" ? shot.duration : undefined,
       );
       data.options = generated.options; data.generationDuration = generated.duration; generatedSeconds += generated.duration;
-      if (model.tool === "image_to_video") {
-        data.keyframeUrl = keyframe(asset, shot, project.productImages);
-        if (presenterReference && (!asset || project.productImages?.includes(data.keyframeUrl ?? ""))) data.keyframeUrl = undefined;
-        data.missingKeyframe = !data.keyframeUrl;
+      data.keyframeUrl = keyframe(asset, shot, project.productImages);
+      if (model.tool === "text_to_video" && isPremiumProductCgProfile(creativeProfile)) {
+        const references = resolvePremiumCgVideoReferences({ productImages: project.productImages, selectedAssets, shotIds: shots.map((item) => item.shotId), shotId: shot.shotId });
+        if (!references.ok) throw fail(references.code, "高端产品 CG 需要当前项目已保存的产品参考图或关键帧。");
+        data.keyframeUrl = references.imageUrl;
+      }
+      // Text-to-video can receive the approved product and presenter references
+      // directly, even when this shot has no separately saved keyframe yet.
+      if (model.tool === "text_to_video" && tidewe && shot.tidewe?.productVisible && !data.keyframeUrl) data.keyframeUrl = project.productImages?.[0];
+      if (model.tool === "image_to_video" || data.keyframeUrl || presenterReference) {
+        if (model.tool === "image_to_video" && presenterReference && (!asset || project.productImages?.includes(data.keyframeUrl ?? ""))) data.keyframeUrl = undefined;
+        data.missingKeyframe = model.tool === "image_to_video" && !data.keyframeUrl;
         if (data.keyframeUrl) {
-          const presenterInput = presenterReference && presenterReference !== data.keyframeUrl && model.capabilities.multiImage && model.inputSlots.filter((slot) => slot.role === "image").length > 1 ? [{ role: "image" as const, sourceUrl: presenterReference }] : [];
+          const presenterInput = presenterReference && presenterReference !== data.keyframeUrl ? [{ role: "image" as const, sourceUrl: presenterReference }] : [];
           data.inputs = await prepareKlingInputs(`film-${runId}-${ordinal}`, model, [{ role: "image", sourceUrl: data.keyframeUrl }, ...presenterInput]);
+        } else if (presenterReference && model.tool === "text_to_video") {
+          data.inputs = await prepareKlingInputs(`film-${runId}-${ordinal}`, model, [{ role: "image", sourceUrl: presenterReference }]);
         }
       }
       if (!data.missingKeyframe) buildKlingVideoArguments(model, data.prompt, data.options, data.inputs, `film-${runId}-${ordinal}`);
@@ -306,7 +305,7 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
     }
     planned.push({ id: randomUUID(), runId, shotId: shot.shotId, ordinal, status: data.source === "reuse" ? "ready" : "waiting", jobId: null, assetId, data, updatedAt: now });
   }
-  if (generatedSeconds > MAX_SECONDS) throw fail("KLING_FILM_LIMIT_EXCEEDED", "按模型支持时长计算，本批付费生成总时长超过 600 秒，请拆分脚本。");
+  if (generatedSeconds > MAX_SECONDS) throw fail("KLING_FILM_LIMIT_EXCEEDED", "本批计划付费生成总时长超过 600 秒，请拆分脚本。");
   const snapshot = { shots: structuredClone(shots), ...(script.characters ? { characters: structuredClone(script.characters) } : {}), ...(tidewe ? { copyDocument: structuredClone(script.copyDocument) } : {}) };
   const revision = scriptRevision(script);
   const projectRevision = projectPromptRevision(project);

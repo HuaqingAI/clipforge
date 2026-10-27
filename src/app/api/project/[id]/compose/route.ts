@@ -293,10 +293,6 @@ export async function POST(
       if (body.productCard === true || body.ctaEnabled === true || (typeof body.ctaText === "string" && body.ctaText.trim())) {
         return NextResponse.json({ error: "TIDEWE 使用文案中的自然推荐，不叠加默认购买条或商品卡。", code: "TIDEWE_OUTPUT_POLICY" }, { status: 400 });
       }
-      if (tideweNative && (body.ttsEnabled === true || body.freeTts?.enabled === true || body.ttsConfig
-        || body.voiceoverMode === "replace" || body.voiceoverMode === "mix")) {
-        return NextResponse.json({ error: "TIDEWE 真人口播保留视频中的原生英语声音，不能再添加或替换 TTS 配音。", code: "TIDEWE_NATIVE_AUDIO_POLICY" }, { status: 400 });
-      }
     }
     const premiumProfile = activeProfile?.creationType === "premium_product_cg" ? activeProfile : undefined;
     const premiumCg = Boolean(premiumProfile)
@@ -427,11 +423,15 @@ export async function POST(
       ? filterTrustedPremiumCgAssets(scopedAssetRows, id, selected)
       : scopedAssetRows;
     const assetByShot = new Map<number, string>();
+    const assetAudioModeByShot = new Map<number, string>();
     for (const a of assetRows) {
       if (tidewe && a.selected && a.type === "stock_footage" && shots.find((shot) => shot.shotId === a.shotId)?.tidewe?.productVisible !== false) {
         return NextResponse.json({ error: `镜头 ${a.shotId} 是产品镜，不能使用相似库存装备冒充商品。`, code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 409 });
       }
-      if (a.selected && a.status === "done" && a.filePath && !assetByShot.has(a.shotId)) assetByShot.set(a.shotId, a.filePath);
+      if (a.selected && a.status === "done" && a.filePath && !assetByShot.has(a.shotId)) {
+        assetByShot.set(a.shotId, a.filePath);
+        if (a.generationPlan?.audioMode) assetAudioModeByShot.set(a.shotId, a.generationPlan.audioMode);
+      }
     }
     // Pin each requested take before starting background work. null pins product-image fallback.
     // A missing/deleted take must
@@ -452,6 +452,7 @@ export async function POST(
         seenShots.add(item.shotId);
         if (item.assetId === null) {
           assetByShot.delete(item.shotId);
+          assetAudioModeByShot.delete(item.shotId);
           continue;
         }
         pinnedShotIds.add(item.shotId);
@@ -472,29 +473,32 @@ export async function POST(
           return NextResponse.json({ error: `镜头 ${item.shotId} 选择的素材已失效，请刷新后重新选择` }, { status: 409 });
         }
         assetByShot.set(item.shotId, asset.filePath);
+        assetAudioModeByShot.set(item.shotId, asset.generationPlan?.audioMode ?? "");
       }
     }
 
     // 可选 TTS 配音配置（前端从设置带入）
     const ttsConfig: TTSConfig | undefined =
-      !premiumCg && !tideweNative && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
+      !premiumCg && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
         ? body.ttsConfig
         : undefined;
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
-    const freeTts = premiumCg || tideweNative ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
+    const freeTts = premiumCg ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
     // Restrained CG narration is a controlled post-production voice track. It
     // uses the keyless Edge voice without exposing provider/voice switches to
     // the request, and always replaces model-native speech when present.
     const usePremiumRestrainedTts = Boolean(premiumProfile && narrationMode === "restrained");
-    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && !tideweNative && !ttsConfig && (tidewe || freeTts?.enabled === true));
+    // TIDEWE always has an English narration fallback, including older native-only
+    // snapshots. Whether it is needed is decided from each clip's audible audio.
+    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && !ttsConfig && (tidewe || freeTts?.enabled === true));
     // Both extra switches are off in auto mode: audible source audio takes priority.
     const voiceoverMode = usePremiumRestrainedTts || (tidewe && !tideweNative)
       ? "replace"
-      : !premiumCg && (body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
+      : !premiumCg && !tideweNative && (body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
         ? body.voiceoverMode
         : "auto";
     let freeVoice: string;
-    try { freeVoice = tideweNative ? "en-US-GuyNeural" : resolveNarrationVoice(activeProfile, freeTts?.voice); }
+    try { freeVoice = resolveNarrationVoice(activeProfile, freeTts?.voice); }
     catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "英语音色无效", code: "TIDEWE_VOICE_INVALID" }, { status: 400 }); }
     if (tidewe && ttsConfig && /^(?:zh|ja|ko)-/i.test(ttsConfig.voice)) {
       return NextResponse.json({ error: "TIDEWE 英文口播不能使用此非英语音色。", code: "TIDEWE_VOICE_INVALID" }, { status: 400 });
@@ -679,11 +683,11 @@ export async function POST(
         }
       }
       const nativeAudio = isVideo ? await videoHasAudio(local) : false;
-      if (tideweNative && shot.voiceover?.trim() && (!isVideo || !nativeAudio)) {
-        throw new Error(`镜头 ${shot.shotId} 有英语口播，但素材缺少可听见的原生音轨。请重新生成或上传带原生英语声音的视频，不能用 TTS 或静态图片代替。`);
-      }
+      // A model planned for post narration may still return ambience or music.
+      // Its audible track cannot stand in for the canonical spoken copy.
+      const needsPostNarration = tideweNative && assetAudioModeByShot.get(shot.shotId) === "post";
       const vo =
-        !tideweNative && shot.voiceover && (!nativeAudio || voiceoverMode !== "auto")
+        shot.voiceover && (needsPostNarration || !nativeAudio || voiceoverMode !== "auto")
           ? await buildVoiceover(shot.shotId, shot.voiceover, shot.characterId ? characterVoices.get(shot.characterId) : undefined, shot.type)
           : undefined;
       const audioPath = vo?.file;
@@ -705,7 +709,7 @@ export async function POST(
       // silent video clips also get probed: the composer speed-fits a moderately-too-long clip into
       // its slot (preserving a keyframe-chained ending) and needs the real source length for that
       let sourceDuration: number | undefined;
-      if (tideweNative && isVideo) {
+      if (tideweNative && isVideo && keepNativeAudio) {
         sourceDuration = await probeDuration(local);
         duration = sourceDuration;
       } else if (audioPath) {
@@ -739,7 +743,7 @@ export async function POST(
         ...(audioPath && { audioPath }),
         ...(audioPath && keepNativeAudio && { mixNativeAudio: true }),
         ...(tidewe && isVideo ? { strictSourceDuration: true } : {}),
-        ...(tideweNative && shot.voiceover?.trim() ? { preserveNativeSpeech: true } : {}),
+        ...(tideweNative && keepNativeAudio && shot.voiceover?.trim() ? { preserveNativeSpeech: true } : {}),
       };
       if (tidewe && isVideo) assertTideweMediaDuration(shot.shotId, duration, sourceDuration ?? await probeDuration(local));
       rendered.push({ shot, clip, duration, voiceSec, ...(vo?.words ? { words: vo.words } : {}) });
@@ -914,7 +918,7 @@ export async function POST(
         // Keep explicit BGM provenance available to export credits and the release gate.
         await db
           .update(compositions)
-          .set({ outputPath, status: "done", ...(thumbnailPath && { thumbnailPath }), ...(bgmLocal && { bgmPath: bgmLocal }) })
+          .set({ outputPath, status: "done", ...(tideweNative ? { ttsEnabled: clips.some((clip) => Boolean(clip.audioPath)) } : {}), ...(thumbnailPath && { thumbnailPath }), ...(bgmLocal && { bgmPath: bgmLocal }) })
           .where(eq(compositions.id, comp.id));
         await db.update(projects).set({ status: "done", updatedAt: new Date() }).where(eq(projects.id, id));
       } catch (e) {

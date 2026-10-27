@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { buildVideoControlPlan, sanitizeVideoControlSummary } from "@/lib/video-control-plan";
 
 describe("video control plan", () => {
+  it.each(["kling-video-v2", "kling-video-v4_0", "future-account-model"])("keeps every requested Kling reference and native speech for %s", (modelId) => {
+    const plan = buildVideoControlPlan({
+      provider: "kling-cli", modelId, supportsAudio: false,
+      firstFrameUrl: "https://e.com/key.png", lastFrameUrl: "https://e.com/end.png",
+      characterReferenceUrl: "https://e.com/person.png", productReferenceUrl: "https://e.com/product.png",
+      motionReferenceUrl: "https://e.com/motion.mp4", audioReferenceUrl: "https://e.com/voice.wav",
+      voiceover: "Try it on.", speakerVisible: true, locale: "en",
+    });
+    expect(plan).toMatchObject({
+      audioMode: "native", voiceoverBound: true, warnings: [],
+      firstFrameUrl: "https://e.com/key.png", lastFrameUrl: "https://e.com/end.png",
+      referenceRoles: ["keyframe", "end-frame", "character", "product", "motion", "audio"], referenceCount: 6,
+    });
+    expect(plan.referenceInputs.map((item) => item.role)).toEqual(["character", "product", "motion", "audio"]);
+    expect(plan.promptSuffix).toContain("Try it on.");
+    expect(plan.promptSuffix).toContain("@Image2=character identity");
+  });
+
+  it("honors an explicit silent Kling request while ignoring capability metadata", () => {
+    const plan = buildVideoControlPlan({ provider: "kling-cli", modelId: "future", supportsAudio: true, generateAudio: false, voiceover: "Narrate later.", locale: "en" });
+    expect(plan).toMatchObject({ audioMode: "post", voiceoverBound: false, warnings: [] });
+    expect(plan.audioPrompt).toBeUndefined();
+  });
+
   it("uses an Atlas reference sibling for a multi-subject pack", () => {
     const plan = buildVideoControlPlan({
       provider: "atlas-cloud",

@@ -73,6 +73,21 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initialSettings); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
 
 describe("Kling full-film orchestration UI", () => {
+  it("previews and starts the selected Kling model despite disabled capability metadata and omitted catalog-required options", async () => {
+    const originalRequest = api.request.getMockImplementation()!;
+    api.request.mockImplementation((url: string, options?: RequestInit) => url.includes("/status")
+      ? Promise.resolve(json({ loggedIn: true, models: [{ ...model, available: false, disabledReason: "Unsupported capability", parameters: [...model.parameters, { name: "custom", type: "string", required: true }] }] }))
+      : originalRequest(url, options));
+    await mount();
+    expect(button("预览整片计划")!.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Unsupported capability");
+    await click("预览整片计划");
+    await act(async () => checkbox("确认整片视频计费").click());
+    expect(button("确认生成整片")!.disabled).toBe(false);
+    await click("确认生成整片");
+    expect(api.request.mock.calls.filter(([url]) => url.endsWith("/films"))).toHaveLength(1);
+  });
+
   it.each([
     { speechMode: "on_camera", strategy: "native" },
     { speechMode: "voiceover", strategy: "edge-tts" },
@@ -187,7 +202,7 @@ describe("Kling full-film orchestration UI", () => {
 
   it("requires the exact configured default instead of selecting another available account model", async () => {
     await mount(undefined, undefined, '["kling-cli","image_to_video","missing-default"]');
-    expect(container.textContent).toContain("默认视频模型在当前账号不可用");
+    expect(container.textContent).toContain("默认视频模型不在当前账号目录中");
     expect(button("预览整片计划")!.disabled).toBe(true);
     expect(container.querySelector('[aria-label="整片模型"]')).toBeNull();
     expect(api.request.mock.calls.some(([url]) => url.endsWith("/preview") || url.endsWith("/films"))).toBe(false);
@@ -239,7 +254,7 @@ describe("Kling full-film orchestration UI", () => {
     const strategy = container.querySelector('[aria-label="整片声音策略"]') as HTMLSelectElement;
     expect(strategy.value).toBe("edge-tts");
     expect([...strategy.options].map((option) => option.textContent)).toEqual([
-      "免费 Edge 配音，替换镜头原声音", "免费 Edge 配音，叠加镜头原声音", "保留镜头原声音，不补配音",
+      "免费 Edge 配音，替换镜头原声音", "免费 Edge 配音，叠加镜头原声音", "优先保留原声音，无音轨时自动配音",
     ]);
     await select("整片声音策略", "edge-tts-mix");
     await select("整片配音音色", "zh-CN-YunxiNeural");
@@ -270,7 +285,7 @@ describe("Kling full-film orchestration UI", () => {
   it.each([
     ["edge-tts", "Edge 配音替换原声音"],
     ["edge-tts-mix", "Edge 配音叠加原声音"],
-    ["native", "仅保留镜头原声音"],
+    ["native", "优先保留原声音，无音轨时自动配音"],
   ] as const)("shows the saved %s audio strategy in the recovered plan summary", async (audioStrategy, summary) => {
     preview = { ...preview, status: "completed", output: { ...preview.output, audioStrategy } };
     await mount("film-1");

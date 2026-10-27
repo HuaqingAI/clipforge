@@ -39,7 +39,7 @@ const STARTUP_ERRORS: Record<string, { message: string; status: number }> = {
   KLING_CANCELLED: { message: "本地操作已在启动前取消，未提交视频生成。", status: 409 },
   KLING_INPUT_INVALID: { message: "生成输入校验失败，未提交视频生成。请检查提示词和图片。", status: 422 },
   KLING_INPUT_CHANGED: { message: "生成输入已变化，未提交视频生成。请重新确认图片和参数。", status: 409 },
-  KLING_CAPABILITY_UNSUPPORTED: { message: "当前模型不支持此生成参数或输入，未提交视频生成。请重新选择。", status: 422 },
+  KLING_CAPABILITY_UNSUPPORTED: { message: "Kling CLI 拒绝了本次参数或输入，未提交视频生成。请查看返回详情。", status: 422 },
   KLING_MEDIA_TOOL_UNAVAILABLE: { message: "本地媒体工具不可用，未提交视频生成。请检查工具配置。", status: 422 },
   KLING_CONTEXT_CHANGED: { message: "当前脚本或镜头已变化，未提交视频生成。请刷新后重新确认。", status: 409 },
   KLING_AUTH_REQUIRED: { message: AUTH_FAILURE, status: 401 },

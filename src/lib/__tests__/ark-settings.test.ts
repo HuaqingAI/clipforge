@@ -181,4 +181,21 @@ describe("Ark access mode settings", () => {
     expect(useSettingsStore.getState().defaultVideoModel).toBe("doubao-seedance-1-0-pro-250528");
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/video"))).toBe(false);
   });
+
+  it("keeps Kling models selectable without local unsupported-model warnings", async () => {
+    const key = JSON.stringify(["kling-cli", "text_to_video", "future-kling-model"]);
+    catalogState.extraModels = [{ id: key, name: "Future Kling model", provider: "kling-cli", mediaType: "video", modes: ["text-to-video"], extra: { available: false, disabledReason: "Capability not confirmed" } }];
+    useSettingsStore.setState({ defaultVideoModel: key });
+    window.history.replaceState(null, "", "/settings?tab=video");
+    await mount();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => (container.querySelector('[role="combobox"]') as HTMLButtonElement).click());
+    const option = [...document.querySelectorAll('[role="option"]')].find((item) => item.textContent === "Future Kling model") as HTMLElement;
+    expect(option).toBeTruthy();
+    expect(option.getAttribute("aria-disabled")).not.toBe("true");
+    expect(option.hasAttribute("data-disabled")).toBe(false);
+    await act(async () => option.focus());
+    await act(async () => option.click());
+    expect(useSettingsStore.getState().defaultVideoModel).toBe(key);
+  });
 });

@@ -22,7 +22,7 @@ function verifiedCatalog(status: KlingPublicStatus, profileId: string | undefine
   return Boolean(status.loggedIn && status.configured && profile && (!profileId || profile.id === profileId)
     && !profile.disabledAt && profile.environmentState === "ready" && profile.authState === "authenticated"
     && profile.principalKey && profile.catalogRevision && profile.catalogCheckedAt
-    && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision && model.available));
+    && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision));
 }
 
 export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, modelLabel, selectionKey, profileId, provider, shots, valid, onRefreshTasks, onSubmitted, onUncertain, onBusyChange }: {
@@ -113,8 +113,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
   const latestModelConfiguration = useRef(modelConfiguration);
   latestModelConfiguration.current = modelConfiguration;
   useEffect(() => { setConfirmed(false); }, [modelConfiguration, valid]);
-  const compatible = Boolean(model?.available && model.tool === "image_to_video" && model.capabilities.image);
-  const modelReady = !isKling || Boolean(status && verifiedCatalog(status, profileId, selectionKey) && compatible);
+  const modelReady = !isKling || Boolean(model && status && verifiedCatalog(status, profileId, selectionKey));
   const capacity = status?.concurrency;
   const remaining = capacity ? Math.max(0, Math.min(KLING_MAX_CONCURRENT_SHOTS, capacity.max) - capacity.active) : 0;
   const unresolved = rows.some((row) => row.state === "uncertain");
@@ -155,7 +154,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
             const clientRequestId = crypto.randomUUID();
             const request: KlingSubmitRequest = {
               provider: "kling-cli", profileId: model.profileId, clientRequestId, executionScope: "single-shot", projectId, scriptId,
-              shotId: row.asset.shotId, selectionKey: model.selectionKey, mode: "image-to-video", prompt: prepared.prompt, options: prepared.options,
+              shotId: row.asset.shotId, selectionKey: model.selectionKey, mode: model.tool === "image_to_video" ? "image-to-video" : "text-to-video", prompt: prepared.prompt, options: prepared.options,
               ...(draft.promptContext && { promptContext: draft.promptContext }),
               imageUrl: prepared.images[0], ...(prepared.images.length > 1 && { referenceImageUrls: prepared.images.slice(1) }),
               ...(prepared.lastImageUrl && { lastImageUrl: prepared.lastImageUrl }), expectedSelectedAssetId: row.asset.assetId ?? null,
@@ -202,7 +201,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
       {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {!valid && <p role="alert" className="text-sm text-amber-600">视频模型或生成设置已更改，请关闭后重新打开批量转动态。</p>}
-      {isKling && !loading && !modelReady && <p role="alert" className="text-sm text-amber-600">请在设置页登录当前 Kling 账号，并选择该账号可用的图生视频模型。</p>}
+      {isKling && !loading && !modelReady && <p role="alert" className="text-sm text-amber-600">请在设置页登录当前 Kling 账号，并选择该账号模型目录中的视频模型。</p>}
       {isKling && capacity && <p role="status" className="text-xs text-muted-foreground">当前账号生成名额：{capacity.active} / {Math.min(capacity.max, KLING_MAX_CONCURRENT_SHOTS)}，还可提交 {remaining} 个镜头。</p>}
       {isKling && !loading && !capacity && <p role="alert" className="text-sm text-amber-600">暂未取得账号生成名额，请等待状态刷新。</p>}
       {capacity?.blockedByUnknownSubmission && <p role="alert" className="text-sm text-amber-600">此账号有提交结果不明的任务，请先核对原任务再继续。</p>}

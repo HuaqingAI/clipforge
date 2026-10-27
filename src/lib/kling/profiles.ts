@@ -75,10 +75,15 @@ export async function detectProfile(id: string): Promise<KlingProfile> {
 export function getPublicKlingStatus(profileId?: string): KlingPublicStatus {
   const profiles = listProfiles(); const profile = profileId ? getProfile(profileId) : profiles.find((p) => !p.disabledAt) ?? profiles[0] ?? null;
   const latest = profile ? db.select().from(klingAuthSessions).where(eq(klingAuthSessions.profileId, profile.id)).orderBy(sql`json_extract(${klingAuthSessions.data}, '$.startedAt') desc`).get()?.data : undefined;
+  const models = profile?.catalogSnapshot.map((model) => {
+    const { disabledReason: _reason, ...descriptor } = model;
+    void _reason;
+    return { ...descriptor, available: true, capabilities: { image: true, tailFrame: true, multiImage: true, audio: true } };
+  }) ?? [];
   let publicProfile: KlingPublicStatus["profile"] = null;
-  if (profile) { const { homePath: _private, ...rest } = profile; void _private; publicProfile = rest; }
+  if (profile) { const { homePath: _private, ...rest } = profile; void _private; publicProfile = { ...rest, catalogSnapshot: models }; }
   const jobs = profile?.principalKey ? db.select().from(klingJobs).where(and(eq(klingJobs.principalKey, profile.principalKey), eq(klingJobs.region, profile.region))).all() : [];
   const concurrency = { active: jobs.filter(klingJobOccupiesGenerationSlot).length, max: KLING_MAX_CONCURRENT_SHOTS, blockedByUnknownSubmission: jobs.some(klingJobHasUnknownSubmission) };
   const defaultPackagePath = !profile ? getDefaultKlingPackagePath() : "";
-  return { profile: publicProfile, profiles: profiles.map((p) => ({ id: p.id, label: p.label, authState: p.authState, disabled: !!p.disabledAt, ...(p.accountSummary ? { accountSummary: p.accountSummary } : {}) })), configured: profile?.environmentState === "ready", loggedIn: profile?.authState === "authenticated", models: profile?.authState === "authenticated" ? profile.catalogSnapshot : [], concurrency, ...(latest ? { authSession: latest } : {}), ...(defaultPackagePath ? { installationDefaults: { nodePath: process.execPath, packagePath: defaultPackagePath } } : {}) };
+  return { profile: publicProfile, profiles: profiles.map((p) => ({ id: p.id, label: p.label, authState: p.authState, disabled: !!p.disabledAt, ...(p.accountSummary ? { accountSummary: p.accountSummary } : {}) })), configured: profile?.environmentState === "ready", loggedIn: profile?.authState === "authenticated", models: profile?.authState === "authenticated" ? models : [], concurrency, ...(latest ? { authSession: latest } : {}), ...(defaultPackagePath ? { installationDefaults: { nodePath: process.execPath, packagePath: defaultPackagePath } } : {}) };
 }

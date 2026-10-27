@@ -11,6 +11,7 @@ import { downloadPublicFile } from "./download";
 import type { KlingInputSnapshot } from "./job-schema";
 import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 import { validateVideoPrompt } from "@/lib/video-prompt";
+import { KLING_AUDIO_PARAMETER_NAMES, klingPostNarrationModel } from "./model-options";
 
 const execFileAsync = promisify(execFile);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -56,7 +57,7 @@ const ALIASES: Record<string, string[]> = {
   aspectRatio: ["aspectRatio", "aspect_ratio", "ratio"],
   resolution: ["resolution", "quality"],
   negativePrompt: ["negativePrompt", "negative_prompt"],
-  audioEnabled: ["audioEnabled", "audio_enabled", "generate_audio", "sound"],
+  audioEnabled: KLING_AUDIO_PARAMETER_NAMES,
   seed: ["seed"], fps: ["fps", "frame_rate"], guidanceScale: ["guidanceScale", "guidance_scale", "cfg_scale"],
   motionStrength: ["motionStrength", "motion_strength"],
 };
@@ -65,32 +66,30 @@ const RESERVED_ARGUMENTS = new Set(["model", "prompt", "image", "tailImage", "po
 export function normalizeVideoParameters(model: KlingVideoModelDescriptor, source: Record<string, unknown>, minimumDuration?: number): Record<string, string | number | boolean> {
   if (minimumDuration !== undefined) {
     const duration = model.parameters.find((parameter) => ALIASES.duration.includes(parameter.name));
-    if (!Number.isFinite(minimumDuration) || minimumDuration <= 0 || !duration) throw new KlingError("TIDEWE_NATIVE_DURATION_UNSUPPORTED", "当前模型没有可核验的时长参数，不能保证完整英语口播。", 422);
+    if (!Number.isFinite(minimumDuration) || minimumDuration <= 0) throw new KlingError("KLING_INPUT_INVALID", "口播镜头的生成时长无效。", 422);
     const explicit = ALIASES.duration.map((name) => source[name]).filter((value) => value !== undefined && value !== null && value !== "");
     if (new Set(explicit.map(String)).size > 1) throw new KlingError("KLING_INPUT_INVALID", "同一镜头不能设置相互冲突的时长参数。", 422);
-    const requested = Number(explicit[0] ?? duration.default ?? minimumDuration);
-    if (!Number.isFinite(requested) || requested <= 0) throw new KlingError("TIDEWE_NATIVE_DURATION_UNSUPPORTED", "口播镜头的生成时长无效。", 422);
+    const requested = Number(explicit[0] ?? duration?.default ?? minimumDuration);
+    if (!Number.isFinite(requested) || requested <= 0) throw new KlingError("KLING_INPUT_INVALID", "口播镜头的生成时长无效。", 422);
     const wanted = Math.max(requested, minimumDuration);
-    const declared = duration.allowedValues ?? (duration.type === "number" ? undefined : duration.default !== undefined ? [duration.default] : []);
+    const declared = duration?.allowedValues;
     const covering = declared
-      ? declared.filter((value) => Number.isFinite(Number(value)) && Number(value) >= wanted).sort((left, right) => Number(left) - Number(right))[0]
+      ? declared.filter((value) => Number.isFinite(Number(value)) && Number(value) >= wanted).sort((left, right) => Number(left) - Number(right))[0] ?? Math.ceil(wanted)
       : Math.ceil(wanted);
-    if (covering === undefined) throw new KlingError("TIDEWE_NATIVE_DURATION_UNSUPPORTED", `当前模型的时长档位无法覆盖 ${minimumDuration} 秒英语口播，请更换模型或重新规划镜头。`, 422);
     source = { ...source };
     for (const name of ALIASES.duration) delete source[name];
-    source[duration.name] = duration.type === "number" ? Number(covering) : covering;
+    if (duration) source[duration.name] = duration.type === "number" ? Number(covering) : duration.type === "string" ? String(covering) : covering;
   }
   const normalized: Record<string, string | number | boolean> = {};
   const validateValue = (parameter: KlingParameter, raw: unknown): string | number | boolean => {
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(parameter.name) || RESERVED_ARGUMENTS.has(parameter.name)) {
-      throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "当前模型声明了不支持的 CLI 参数", 422);
+      throw new KlingError("KLING_INPUT_INVALID", "CLI 参数名称无效", 422);
     }
     let value = raw;
     if (parameter.type === "number" && typeof value === "string" && value.trim()) value = Number(value);
     if (typeof value !== parameter.type || (typeof value === "number" && !Number.isFinite(value)) ||
-      !["string", "number", "boolean"].includes(typeof value) ||
-      (parameter.allowedValues && !parameter.allowedValues.includes(value as string | number | boolean))) {
-      throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "参数值不受当前模型支持：" + parameter.name, 422);
+      !["string", "number", "boolean"].includes(typeof value)) {
+      throw new KlingError("KLING_INPUT_INVALID", "参数类型无效：" + parameter.name, 422);
     }
     if (typeof value === "string" && (value.length > 4096 || value.startsWith("--") || value.includes("\0"))) {
       throw new KlingError("KLING_INPUT_INVALID", "参数内容过长或包含 CLI 无法解析的内容：" + parameter.name, 422);
@@ -100,9 +99,12 @@ export function normalizeVideoParameters(model: KlingVideoModelDescriptor, sourc
   for (const [key, raw] of Object.entries(source)) {
     if (raw === undefined || raw === null || raw === "") continue;
     const parameter = model.parameters.find((item) => item.name === key) ??
-      model.parameters.find((item) => ALIASES[key]?.includes(item.name));
+      model.parameters.find((item) => Object.values(ALIASES).some((names) => names.includes(key) && names.includes(item.name)));
     if (!parameter || parameter.name === "prompt" || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(parameter.name)) {
-      throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "当前模型不支持参数：" + key, 422);
+      // Desired UI settings without a declared CLI flag use provider defaults.
+      // Arbitrary or reserved flags still cannot enter the command vector.
+      if (!RESERVED_ARGUMENTS.has(key) && Object.values(ALIASES).some((names) => names.includes(key))) continue;
+      throw new KlingError("KLING_INPUT_INVALID", "参数没有对应的 CLI 字段：" + key, 422);
     }
     const value = validateValue(parameter, raw);
     if (parameter.name in normalized && normalized[parameter.name] !== value) throw new KlingError("KLING_INPUT_INVALID", "同一参数不能同时设置多个不同值：" + parameter.name, 422);
@@ -110,10 +112,12 @@ export function normalizeVideoParameters(model: KlingVideoModelDescriptor, sourc
   }
   for (const parameter of model.parameters) {
     if (parameter.name === "prompt") continue;
+    if (KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)) continue;
     if (!(parameter.name in normalized) && parameter.default !== undefined) normalized[parameter.name] = validateValue(parameter, parameter.default);
-    if (parameter.required && !(parameter.name in normalized)) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "缺少当前模型必填参数：" + parameter.name, 422);
   }
-  return normalized;
+  // Frozen requests must replay the same argument vector even when defaults are
+  // inserted or a speaking minimum rewrites a duration supplied in another order.
+  return Object.fromEntries(model.parameters.filter((parameter) => normalized[parameter.name] !== undefined).map((parameter) => [parameter.name, normalized[parameter.name]]));
 }
 
 async function safeLocalImage(source: string): Promise<string> {
@@ -136,26 +140,13 @@ async function safeLocalImage(source: string): Promise<string> {
   }
 }
 
-/** Validate roles and bytes before the CLI can upload anything. */
+/** Validate command roles and image bytes before the CLI can upload anything. */
 export async function prepareKlingInputs(jobId: string, model: KlingVideoModelDescriptor, refs: Array<{ role: "image" | "tailImage"; sourceUrl: string }>): Promise<KlingInputSnapshot[]> {
-  if (model.tool === "text_to_video" && refs.length) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "文生视频不能混入图片", 422);
   if (model.tool === "image_to_video" && !refs.length) throw new KlingError("KLING_INPUT_INVALID", "图生视频需要首帧图片", 422);
-  if (refs.some((ref) => ref.role === "tailImage") && !model.capabilities.tailFrame) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "当前模型未验证尾帧能力，请关闭首尾帧衔接", 422);
   const ordinary = refs.filter((ref) => ref.role === "image");
   const tails = refs.filter((ref) => ref.role === "tailImage");
-  if (refs.some((ref) => ref.role !== "image" && ref.role !== "tailImage") || (model.tool === "image_to_video" && ordinary.length === 0) || tails.length > 1) {
-    throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "图生视频必须有首帧，且最多使用一张尾帧图片", 422);
-  }
-  for (const role of ["image", "tailImage"] as const) {
-    const count = refs.filter((ref) => ref.role === role).length;
-    const slots = model.inputSlots.filter((slot) => slot.role === role);
-    if (count < slots.filter((slot) => slot.required).length || count > slots.length) {
-      throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "图片角色不符合当前模型的输入声明：" + role, 422);
-    }
-  }
-  if (ordinary.length > 1 && !model.capabilities.multiImage) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "当前模型不支持该多参考图组合", 422);
-  if (refs.length > Math.max(1, model.inputSlots.length) || model.inputSlots.filter((slot) => slot.required).length > refs.length) {
-    throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "图片数量不符合当前模型的输入声明", 422);
+  if (refs.some((ref) => ref.role !== "image" && ref.role !== "tailImage") || (refs.length > 0 && ordinary.length === 0) || tails.length > 1) {
+    throw new KlingError("KLING_INPUT_INVALID", "图生视频需要首帧，CLI 尾帧字段只能填写一张图片", 422);
   }
   const directory = join(getDataDir(), "integrations", "kling", "jobs", jobId, "inputs");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -198,14 +189,16 @@ export async function prepareKlingInputs(jobId: string, model: KlingVideoModelDe
   return snapshots;
 }
 
-export function buildKlingVideoArguments(model: KlingVideoModelDescriptor, prompt: string, options: Record<string, string | number | boolean>, inputs: KlingInputSnapshot[], jobId: string): string[] {
+export function buildKlingVideoArguments(model: KlingVideoModelDescriptor, prompt: string, options: Record<string, string | number | boolean>, inputs: KlingInputSnapshot[], jobId: string, postNarration = false): string[] {
   assertValidKlingPrompt(prompt);
   if (!model.remoteModelId.trim() || model.remoteModelId.length > 256 || model.remoteModelId.startsWith("--") || /[\x00-\x1f]/.test(model.remoteModelId)) {
     throw new KlingError("KLING_INPUT_INVALID", "模型 ID 无法安全传给当前 CLI", 422);
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(jobId)) throw new KlingError("KLING_INPUT_INVALID", "本地任务标识无效", 422);
-  const normalized = normalizeVideoParameters(model, options);
-  const args = [model.tool, "--model", model.remoteModelId, "--quiet", "--task-trace-id", jobId];
+  const normalized = normalizeVideoParameters(postNarration ? klingPostNarrationModel(model) : model, options);
+  // Only the image command uploads and forwards reference images in the CLI.
+  const command = inputs.length ? "image_to_video" : model.tool;
+  const args = [command, "--model", model.remoteModelId, "--quiet", "--task-trace-id", jobId];
   for (const input of inputs) args.push(input.role === "tailImage" ? "--tailImage" : "--image", input.path);
   for (const [key, value] of Object.entries(normalized)) args.push("--" + key, String(value));
   args.push(prompt);

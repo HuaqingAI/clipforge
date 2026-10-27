@@ -231,19 +231,17 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
         const native = run.data.output.audioStrategy === "native";
         const mix = run.data.output.audioStrategy === "edge-tts-mix";
         const narrationDisabled = run.data.output.narrationMode === "none";
-        if (native && stripPauseMarks(shot.data.shot.voiceover ?? "").trim() && !source.probe.hasAudio) {
-          throw failure("KLING_FILM_NATIVE_AUDIO_MISSING", tideweNative
-            ? `镜头 ${shot.shotId} 有英语口播但视频没有原生音轨，请重新生成或上传带原生英语声音的视频；不能用 TTS 代替真人口播。`
-            : `镜头 ${shot.shotId} 有台词但视频没有原生音轨，不能按原生音轨策略合成。请使用带音轨的素材，或创建使用免费配音的新计划。`);
-        }
-        const speech = native || narrationDisabled ? undefined : await narration(shot, resolveNarrationVoice(run.data.creativeProfile, run.data.output.voice), workDir);
+        const preserveNativeAudio = native && source.probe.hasAudio;
+        // Catalog metadata does not decide a model's abilities. Keep the returned audio;
+        // when the returned clip has no track, add the approved copy during composition.
+        const speech = preserveNativeAudio || narrationDisabled ? undefined : await narration(shot, resolveNarrationVoice(run.data.creativeProfile, run.data.output.voice), workDir);
         assertOwned();
-        const duration = native ? source.probe.duration : Math.max(shot.data.shot.duration, mix ? source.probe.duration : 0, speech ? speech.duration + 0.45 : 0);
+        const duration = preserveNativeAudio ? source.probe.duration : Math.max(native ? source.probe.duration : shot.data.shot.duration, mix ? source.probe.duration : 0, speech ? speech.duration + 0.45 : 0);
         if (tidewe) assertTideweMediaDuration(shot.shotId, duration, source.probe.duration);
         rendered.push({ shot, clip: { type: "video", filePath: source.path, sourceDuration: source.probe.duration, duration,
           transition: tideweNative ? "direct_concat" : shot.data.shot.transition, hasAudio: (native || mix) && source.probe.hasAudio,
           ...(tidewe ? { strictSourceDuration: true } : {}),
-          ...(tideweNative && stripPauseMarks(shot.data.shot.voiceover ?? "").trim() ? { preserveNativeSpeech: true } : {}),
+          ...(tideweNative && preserveNativeAudio && stripPauseMarks(shot.data.shot.voiceover ?? "").trim() ? { preserveNativeSpeech: true } : {}),
           ...(speech ? { audioPath: speech.path, ...(mix && source.probe.hasAudio ? { mixNativeAudio: true } : {}) } : {}) },
           voiceSec: speech?.duration, words: speech?.words });
       }
@@ -266,6 +264,7 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
         ...(timeline.overlays.length ? { overlays: timeline.overlays } : {}) };
       const audioRequired = rendered.some((item) => Boolean(item.clip.hasAudio || item.clip.audioPath));
       beforeRender();
+      db.update(compositions).set({ ttsEnabled: rendered.some((item) => Boolean(item.clip.audioPath)) }).where(eq(compositions.id, compositionId)).run();
       const temporary = await composeVideo(config);
       assertOwned();
       quality = outputQuality(await probeMedia(temporary), run, timeline.total, audioRequired);

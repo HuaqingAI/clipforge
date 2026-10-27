@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { extractGenerationId, extractPrincipal, modelSelectionKey, normalizeKlingTask, parseCatalog, parseCliJson } from "./protocol";
+import { KLING_AUDIO_PARAMETER_NAMES, klingHasDefaultNativeAudio, klingSupportsNativeAudio } from "./model-options";
 
 describe("Kling fixed-version protocol", () => {
   it("parses envelopes and diagnostic-surrounded JSON without inventing a response", () => {
@@ -20,15 +21,16 @@ describe("Kling fixed-version protocol", () => {
     expect(catalog).toHaveLength(2);
     expect(catalog[0].selectionKey).not.toBe(catalog[1].selectionKey);
     expect(catalog[0].parameters[0]).toMatchObject({ type: "number", allowedValues: [5, 10] });
-    expect(catalog[1].capabilities).toMatchObject({ image: true, tailFrame: true, multiImage: false });
+    expect(catalog[1].capabilities).toEqual({ image: true, tailFrame: true, multiImage: true, audio: true });
     expect(catalog[0].catalogRevision).toBe(catalog[1].catalogRevision);
     expect(JSON.parse(modelSelectionKey("text_to_video", "x:y"))).toEqual(["kling-cli", "text_to_video", "x:y"]);
   });
-  it("disables unknown required parameters and input meanings", () => {
+  it("retains safe new scalar parameters and keeps models available when input metadata is unfamiliar", () => {
     const [model] = parseCatalog({ availableModels: { image_to_video: [{ model: "m", arguments: [{ name: "future_arg", required: true }], inputs: [{ name: "audio_file", required: true }] }] } }, "p");
-    expect(model.available).toBe(false);
-    expect(model.disabledReason).toContain("future_arg");
-    expect(model.disabledReason).toContain("audio_file");
+    expect(model.available).toBe(true);
+    expect(model.disabledReason).toBeUndefined();
+    expect(model.parameters).toEqual([{ name: "future_arg", required: true, type: "string" }]);
+    expect(model.capabilities).toEqual({ image: true, tailFrame: true, multiImage: true, audio: true });
   });
   it("keeps capability revisions stable when catalog, parameter, value and image-slot ordering changes", () => {
     const duration = { name: "duration", required: true, type: "number", allowedValues: [5, 10], default: 5 };
@@ -67,14 +69,45 @@ describe("Kling fixed-version protocol", () => {
     expect(revision("text_to_video", "alpha", [])).not.toBe(original);
     expect(revision("image_to_video", "alpha", [{ name: "first_frame", required: true }, { name: "tail_image", required: true }])).not.toBe(original);
   });
-  it("does not infer audio or tail-frame capabilities from model names", () => {
+  it("defaults every capability on even when a model has no capability metadata", () => {
     const [model] = parseCatalog({ availableModels: { image_to_video: [{ model: "omni-tail-audio-pro" }] } }, "p");
-    expect(model.capabilities).toEqual({ image: true, tailFrame: false, multiImage: false, audio: false });
+    expect(model.capabilities).toEqual({ image: true, tailFrame: true, multiImage: true, audio: true });
+    expect(klingSupportsNativeAudio(model)).toBe(true);
   });
-  it("ignores optional unknown capabilities but rejects malformed required scalar arguments", () => {
+  it.each(["text_to_video", "image_to_video"] as const)("uses provider audio defaults without inventing a %s audio argument", (tool) => {
+    const [model] = parseCatalog({ availableModels: { [tool]: [{ model: "kling-video-v4_0", arguments: [
+      { name: "duration", type: "number", allowedValues: [5, 10], default: 5 },
+      { name: "resolution", allowedValues: ["720p", "1080p"], default: "720p" },
+      { name: "aspect_ratio", allowedValues: ["9:16", "16:9"], default: "9:16" },
+    ] }] } }, "p");
+    expect(model.available).toBe(true);
+    expect(model.capabilities.audio).toBe(true);
+    expect(model.parameters.some((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name))).toBe(false);
+    expect(klingHasDefaultNativeAudio(model)).toBe(true);
+    // Stored catalogs from before this correction carried an incorrect false value.
+    expect(klingSupportsNativeAudio({ ...model, capabilities: { ...model.capabilities, audio: false } })).toBe(true);
+  });
+  it.each(["kling-video-v1", "kling-video-v4_0-preview", "kling-video-v4_1", "future-model"])("allows native audio for %s without a model whitelist", (id) => {
+    const [model] = parseCatalog({ availableModels: { image_to_video: [{ model: id }] } }, "p");
+    expect(model.capabilities.audio).toBe(true);
+    expect(klingHasDefaultNativeAudio(model)).toBe(true);
+    expect(klingSupportsNativeAudio({ ...model, capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } })).toBe(true);
+  });
+  it.each(["audio_enabled", "audioEnabled"])("retains the declared %s audio switch", (name) => {
+    const [model] = parseCatalog({ availableModels: { image_to_video: [{ model: "m", arguments: [{ name, type: "boolean", default: false }] }] } }, "p");
+    expect(model.parameters).toContainEqual({ name, type: "boolean", required: false, default: false });
+    expect(model.capabilities.audio).toBe(true);
+    expect(klingSupportsNativeAudio(model)).toBe(true);
+  });
+  it("uses provider defaults when a declared audio switch has no enable value", () => {
+    const [model] = parseCatalog({ availableModels: { image_to_video: [{ model: "kling-video-v4_0", arguments: [{ name: "sound", allowedValues: ["off"], default: "off" }] }] } }, "p");
+    expect(klingHasDefaultNativeAudio(model)).toBe(true);
+    expect(klingSupportsNativeAudio(model)).toBe(true);
+  });
+  it("skips non-scalar catalog fields without disabling generation", () => {
     const [model] = parseCatalog({ availableModels: { text_to_video: [{ model: "m", arguments: [{ name: "future", required: false }, { name: "duration", required: true, type: "array", allowedValues: [[5]] }] }] } }, "p");
-    expect(model.available).toBe(false);
-    expect(model.parameters).toEqual([]);
+    expect(model.available).toBe(true);
+    expect(model.parameters).toEqual([{ name: "future", required: false, type: "string" }]);
   });
   it("binds explicit user IDs and refuses display text or generic request IDs", () => {
     expect(extractPrincipal({ body: { user_id: "u-1", nickname: "test" } })).toEqual({ principalKey: '["global","u-1"]', accountSummary: { id: "u-1", displayName: "test" } });

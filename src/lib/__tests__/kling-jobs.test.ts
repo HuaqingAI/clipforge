@@ -266,15 +266,22 @@ describe("Kling durable submission and recovery", () => {
     expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
     expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
   });
-  it.each(["unchecked", "unversioned", "empty", "unavailable"])("does not reserve during contention with an %s cached catalog", async (condition) => {
+  it.each(["unchecked", "unversioned", "empty"])("does not reserve during contention with an %s cached catalog", async (condition) => {
     state.profile!.catalogCheckedAt = condition === "unchecked" ? undefined : Date.now() - 400_000;
     if (condition === "unversioned") state.profile!.catalogRevision = undefined;
     if (condition === "empty") state.profile!.catalogSnapshot = [];
-    if (condition === "unavailable") state.profile!.catalogSnapshot[0].available = false;
     state.refresh.mockRejectedValueOnce(new KlingError("KLING_PROFILE_BUSY", "Another command owns this profile", 409));
     await expect(createKlingJob(request())).rejects.toMatchObject({ code: "KLING_PROFILE_BUSY" });
     expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
     expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+  });
+  it("reserves and dispatches a catalog model despite stale unavailable and false capability flags", async () => {
+    state.profile!.catalogSnapshot[0].available = false;
+    state.profile!.catalogSnapshot[0].disabledReason = "old inferred capability restriction";
+    const job = await createKlingJob(request());
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id).submissionState).toBe("acknowledged");
   });
   it.each(["auth", "principal"])("rereads the cached %s binding before reserving during contention", async (condition) => {
     state.profile!.catalogCheckedAt = Date.now() - 400_000;
@@ -901,6 +908,18 @@ describe("Kling output persistence and selection", () => {
     expect(rows[0]).toMatchObject({ selected: true, provider: "kling-cli", status: "done" });
     const view = klingJobView(getKlingJob(job.id)); expect(view.outputs[0].videoUrl).toMatch(/^\/api\/files\//); expect(JSON.stringify(view)).not.toContain("secret=one");
     expect(job.importState).toBe("completed");
+  });
+  it("preserves the reviewed post narration plan when the returned video contains ambient audio", async () => {
+    const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false };
+    const reviewed = previewProjectVideoPrompt("project-1", context);
+    const created = await createKlingJob(request({ prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey } }));
+    getDb().update(klingJobs).set({ data: { ...created.data, generationPlan: { ...reviewed.controlPlan, audioMode: "post", voiceoverBound: false } } }).where(eq(klingJobs.id, created.id)).run();
+    const job = await acknowledge(getKlingJob(created.id));
+    expect(job.data.generationPlan?.audioMode).toBe("post");
+    state.cli.mockResolvedValueOnce({ ...cliResult(), json: { ok: true, body: { status: "completed", works: [{ id: "work-post", url: "https://public.example.test/video.mp4" }] } } });
+    await queryKlingJob(job.id);
+    expect(getKlingOutputs(job.id)[0].data.hasAudio).toBe(true);
+    expect(getDb().select().from(assets).all()[0].generationPlan).toMatchObject({ audioMode: "post", voiceoverBound: false });
   });
   it("selects a completed unchanged shot when a sibling camera edit happened during generation", async () => {
     useMultipleShots(2);

@@ -43,9 +43,9 @@ const silentAudioDirection = `${VIDEO_AUDIO_DIRECTIONS.silent.en}.`;
 function serverPromptContext(generateAudio = false): VideoPromptContext {
   return { scriptId: "script", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio, contextKey: "server-context" };
 }
-async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; promptContext?: VideoPromptContext; negativePrompt?: string } = {}) {
+async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; promptContext?: VideoPromptContext; negativePrompt?: string; referenceImages?: string[]; lastFrameUrl?: string } = {}) {
   const preparedPrompt = overrides.preparedPrompt ?? `${originalPrompt}\n\n${silentAudioDirection}`;
-  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={preparedPrompt} promptContext={overrides.promptContext ?? serverPromptContext()} negativePrompt={overrides.negativePrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={[]} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
+  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={preparedPrompt} promptContext={overrides.promptContext ?? serverPromptContext()} negativePrompt={overrides.negativePrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={overrides.referenceImages ?? []} lastFrameUrl={overrides.lastFrameUrl} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
 }
 function confirmCheckbox() { return container.querySelector('input[type="checkbox"]') as HTMLInputElement; }
 function submitButton() { return Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("确认生成此镜头"))!; }
@@ -53,6 +53,26 @@ function promptTextarea() { return container.querySelector('[aria-label="Kling �
 
 
 describe("Kling single-shot UI", () => {
+  it("retains extra images and a tail frame despite false capability metadata and missing catalog slots", async () => {
+    await mountGenerator(model.selectionKey, undefined, { referenceImages: ["/api/files/person.jpg", "/api/files/product.jpg"], lastFrameUrl: "/api/files/end.jpg" });
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request).toMatchObject({ imageUrl: "/api/files/project/input.jpg", referenceImageUrls: ["/api/files/person.jpg", "/api/files/product.jpg"], lastImageUrl: "/api/files/end.jpg" });
+    expect(container.textContent).not.toContain("不支持");
+  });
+
+  it("does not block generation on catalog-required extra images, tails, or scalar options", async () => {
+    const staleModel = { ...model, parameters: [...model.parameters, { name: "motion", type: "number" as const, required: true }], inputSlots: [...model.inputSlots, { name: "extra", role: "image" as const, required: true }, { name: "tail", role: "tailImage" as const, required: true }] };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [staleModel] }) : json({ jobId: "job-1" }, 202)));
+    await mountGenerator();
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => submitButton().click());
+    expect(onSubmitted).toHaveBeenCalledWith("job-1");
+  });
+
   it("shows and submits the backend's multiline prompt verbatim without allowing browser edits", async () => {
     const preparedPrompt = ["Approved shot direction: 商品完整居中。", "运镜：固定镜头。", "光线：natural studio light.", "", "后端原文结尾。  "].join("\n");
     await mountGenerator(model.selectionKey, undefined, { preparedPrompt });
@@ -100,6 +120,61 @@ describe("Kling single-shot UI", () => {
     expect(request.prompt).toBe(preparedPrompt);
     expect(request.promptContext).toEqual(promptContext);
     expect(request.options).toEqual({ duration: 5, sound: true });
+  });
+
+  it("preserves Kling 4.0 native speech without requiring an audio toggle or trusting stale audio:false metadata", async () => {
+    const kling4 = { ...model, remoteModelId: "kling-video-v4_0", selectionKey: '["kling-cli","image_to_video","kling-video-v4_0"]', displayName: "Kling 4.0" };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [kling4] }) : json({ jobId: "job-1" }, 202)));
+    const promptContext = { ...serverPromptContext(true), model: kling4.selectionKey, controlInputs: { supportsAudio: true } };
+    const preparedPrompt = 'The presenter says "Try it on." with matching native English audio.';
+    await mountGenerator(kling4.selectionKey, { audioEnabled: true }, { promptContext, preparedPrompt });
+    expect(container.textContent).not.toContain("本次采用后期配音方案");
+    expect(container.textContent).not.toContain("不支持原生音频");
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request.prompt).toBe(preparedPrompt);
+    expect(request.promptContext).toEqual(promptContext);
+    expect(request.options).toEqual({ duration: 5 });
+  });
+
+  it.each([false, true])("allows requested native audio without capability notices for audio metadata %s", async (audio) => {
+    const silentModel = { ...model, capabilities: { ...model.capabilities, audio } };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [silentModel] }) : json({ jobId: "job-1" }, 202)));
+    const promptContext = serverPromptContext(true);
+    await mountGenerator(model.selectionKey, { audioEnabled: true }, { promptContext });
+    expect(container.textContent).not.toContain("未确认");
+    expect(container.textContent).not.toContain("不支持");
+    expect(container.textContent).not.toContain("后期配音");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request.promptContext).toEqual(promptContext);
+    expect(request.options).toEqual({ duration: 5 });
+    expect(onSubmitted).toHaveBeenCalledWith("job-1");
+  });
+
+  it("enables a declared audio flag despite stale false audio capability", async () => {
+    const silentModel = { ...model, parameters: [...model.parameters, { name: "sound", type: "boolean" as const, required: false, default: true }] };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [silentModel] }) : json({ jobId: "job-1" }, 202)));
+    await mountGenerator(model.selectionKey, undefined, { promptContext: serverPromptContext(true) });
+    await act(async () => confirmCheckbox().click());
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request.options.sound).toBe(true);
+  });
+  it("does not block a silent model on an unusable required audio switch", async () => {
+    const silentModel = { ...model, parameters: [...model.parameters, { name: "sound", type: "string" as const, required: true, allowedValues: ["auto"], default: "auto" }] };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [silentModel] }) : json({ jobId: "job-1" }, 202)));
+    await mountGenerator(model.selectionKey, undefined, { promptContext: serverPromptContext(true) });
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request.options).not.toHaveProperty("sound");
   });
 
   it.each([
@@ -491,27 +566,33 @@ describe("Kling single-shot UI", () => {
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(0);
   });
 
-  it("maps supported global video parameters to declared CLI fields and explains duration adaptation", async () => {
+  it("maps requested global parameters to CLI fields without capability-based duration adaptation", async () => {
     api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [{ ...model, parameters: [...model.parameters, { name: "aspect_ratio", type: "string", required: true, allowedValues: ["9:16", "16:9"], default: "16:9" }, { name: "resolution", type: "string", required: true, allowedValues: ["720p", "1080p"], default: "720p" }] }] }) : json({ jobId: "job-1" }, 202)));
     await mountGenerator(model.selectionKey, { duration: 7, aspectRatio: "9:16", resolution: "1080p", unknownFlag: "ignored" });
-    expect(container.textContent).toContain("时长（秒） 已按模型支持的值从 7 调整为 10");
+    expect(container.textContent).not.toContain("按模型支持的值");
     await act(async () => confirmCheckbox().click()); await act(async () => submitButton().click());
     const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
-    expect(request.options).toEqual({ duration: 10, aspect_ratio: "9:16", resolution: "1080p" });
+    expect(request.options).toEqual({ duration: 7, aspect_ratio: "9:16", resolution: "1080p" });
     expect(request.selectionKey).toBe(model.selectionKey);
   });
 
-  it("blocks a disabled default and a text-to-video default without switching tools", async () => {
+  it("allows a catalog-disabled default and a text-to-video default without switching tools", async () => {
     api.request.mockImplementation(() => Promise.resolve(json({ loggedIn: true, models: [{ ...model, available: false, disabledReason: "Unsupported capability" }] })));
     await mountGenerator();
-    expect(container.textContent).toContain("默认视频模型不可用");
-    expect(submitButton().disabled).toBe(true);
+    expect(container.textContent).not.toContain("默认视频模型不可用");
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
     const textModel = { ...model, selectionKey: '["kling-cli","text_to_video","text-model"]', tool: "text_to_video", inputSlots: [], capabilities: { ...model.capabilities, image: false } };
     api.request.mockImplementation(() => Promise.resolve(json({ loggedIn: true, models: [model, textModel] })));
     await mountGenerator(textModel.selectionKey);
     await act(async () => confirmCheckbox().click());
-    expect(container.textContent).toContain("转动态需要图生视频模型");
-    expect(submitButton().disabled).toBe(true);
+    expect(container.textContent).not.toContain("转动态需要图生视频模型");
+    expect(submitButton().disabled).toBe(false);
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [model, textModel] }) : json({ jobId: "job-1" }, 202)));
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request.mode).toBe("text-to-video");
+    expect(request.imageUrl).toBe("/api/files/project/input.jpg");
   });
 
   it("invalidates an acknowledged default when settings change while open", async () => {

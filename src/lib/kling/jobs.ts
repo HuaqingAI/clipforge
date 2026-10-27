@@ -35,10 +35,11 @@ import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
-import { KLING_AUDIO_PARAMETER_NAMES } from "./model-options";
+import { KLING_AUDIO_PARAMETER_NAMES, klingAudioParameterValue, klingPostNarrationModel } from "./model-options";
 import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
+import { buildVideoControlPlan, sanitizeVideoControlSummary } from "@/lib/video-control-plan";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
@@ -54,14 +55,14 @@ function disabledAudioValue(parameter: KlingParameter): string | number | boolea
   return parameter.type === "boolean" && !parameter.allowedValues ? false : undefined;
 }
 
-/** CG narration is composed from the approved script later; the image-to-video provider stays silent. */
+/** CG narration is composed from the approved script later; request silent visuals. */
 const PREMIUM_CG_NEGATIVE_PARAMETER_NAMES = ["negative_prompt", "negativePrompt"];
 
 function controlledSilentVideoOptions(
   model: KlingVideoModelDescriptor,
   raw: Record<string, unknown>,
   negativePrompt?: string,
-  policyLabel = "高端产品 CG",
+  minimumDuration?: number,
 ): Record<string, string | number | boolean> {
   const source = { ...raw };
   for (const key of KLING_AUDIO_PARAMETER_NAMES) delete source[key];
@@ -70,29 +71,23 @@ function controlledSilentVideoOptions(
   for (const key of PREMIUM_CG_NEGATIVE_PARAMETER_NAMES) delete source[key];
   const negative = model.parameters.find((parameter) => PREMIUM_CG_NEGATIVE_PARAMETER_NAMES.includes(parameter.name));
   if (negativePrompt && negative) source[negative.name] = negativePrompt;
-  const normalized = normalizeVideoParameters(model, source);
-  const audio = model.parameters.find((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
-  if (!audio) {
-    if (model.capabilities.audio) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", `当前 Kling 模型无法可靠关闭原生音频，不能用于${policyLabel}。`, 422);
-    return normalized;
+  const durationMinimum = minimumDuration !== undefined && model.parameters.some((parameter) => ["duration", "duration_seconds", "durationSeconds", "duration_sec"].includes(parameter.name)) ? minimumDuration : undefined;
+  const normalized = normalizeVideoParameters(klingPostNarrationModel(model), source, durationMinimum);
+  const audioParameters = model.parameters.filter((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
+  for (const audio of audioParameters) {
+    const disabled = disabledAudioValue(audio);
+    if (disabled !== undefined) normalized[audio.name] = disabled;
   }
-  const disabled = disabledAudioValue(audio);
-  if (disabled === undefined) throw new KlingError("CREATIVE_POLICY_UNSUPPORTED", `当前 Kling 模型未声明可关闭的音频参数，不能用于${policyLabel}。`, 422);
-  normalized[audio.name] = disabled;
   return normalized;
 }
 
-/** Native TIDEWE speech must reach a declared audio-capable model with audio enabled. */
+/** Request native speech on every Kling model; use a declared switch when available. */
 function controlledNativeVideoOptions(model: KlingVideoModelDescriptor, raw: Record<string, unknown>, negativePrompt: string, minimumDuration: number): Record<string, string | number | boolean> {
-  if (!model.capabilities.audio) throw new KlingError("TIDEWE_NATIVE_AUDIO_UNSUPPORTED", "当前 Kling 模型不支持原生音频，请选择支持英语真人口播的模型。", 422);
-  const audio = model.parameters.find((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name));
-  const enabled = new Set(["true", "on", "yes", "1", "enabled", "enable"]);
-  const choices = audio?.allowedValues ?? (audio?.type === "boolean" ? [true, false] : audio?.default !== undefined ? [audio.default] : []);
-  const value = choices.find((candidate) => enabled.has(String(candidate).toLowerCase()));
-  if (!audio || value === undefined) throw new KlingError("TIDEWE_NATIVE_AUDIO_UNSUPPORTED", "当前 Kling 模型没有已适配且可开启的原生音频参数，不能静音替代真人口播。", 422);
+  const audio = model.parameters.find((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name) && klingAudioParameterValue(parameter, true) !== undefined);
+  const value = audio && klingAudioParameterValue(audio, true);
   const source = { ...raw };
   for (const key of [...KLING_AUDIO_PARAMETER_NAMES, ...PREMIUM_CG_NEGATIVE_PARAMETER_NAMES]) delete source[key];
-  source[audio.name] = value;
+  if (audio && value !== undefined) source[audio.name] = value;
   const negative = model.parameters.find((parameter) => PREMIUM_CG_NEGATIVE_PARAMETER_NAMES.includes(parameter.name));
   if (negative) source[negative.name] = negativePrompt;
   return normalizeVideoParameters(model, source, minimumDuration);
@@ -104,8 +99,6 @@ function validateTideweVideoInputs(
   project: typeof projects.$inferSelect,
   script: typeof scripts.$inferSelect,
   shotId: number,
-  model: KlingVideoModelDescriptor,
-  mode: string,
   refs: KlingReferenceInput[],
 ): KlingReferenceInput[] {
   const profile = checkCreativeProfileContext(project, script).projectProfile;
@@ -115,10 +108,9 @@ function validateTideweVideoInputs(
   if (!shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前镜头已改变，请重新预览。", 409);
   const productVisible = shot.tidewe?.productVisible === true;
   const presenter = shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(profile) && shot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
-  if (productVisible && (model.tool !== "image_to_video" || mode !== "image-to-video" || !project.productImages?.length || !refs.some((ref) => ref.role === "image" && ref.sourceUrl !== presenter))) {
+  if (productVisible && (!project.productImages?.length || !refs.some((ref) => ref.role === "image" && ref.sourceUrl !== presenter))) {
     throw new KlingError("TIDEWE_PRODUCT_REFERENCE_REQUIRED", "TIDEWE 产品镜须使用当前商品参考图或已保存关键帧，通过图生视频生成。", 422);
   }
-  if ((model.tool === "image_to_video") !== (mode === "image-to-video")) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "生成模式与选择的模型工具不一致", 422);
   const currentAssets = filterAssetsForScript(getDb().select().from(assets).where(and(eq(assets.projectId, project.id), eq(assets.selected, true), eq(assets.status, "done"))).all(), script);
   const allowedImages = new Set([
     ...(presenter ? [presenter] : []),
@@ -128,13 +120,7 @@ function validateTideweVideoInputs(
   ]);
   if (refs.some((ref) => !allowedImages.has(ref.sourceUrl))) throw new KlingError("TIDEWE_PRODUCT_REFERENCE_INVALID", "TIDEWE 只能使用当前脚本已保存的关键帧及商品参考。", 422);
   if (!presenter) return refs;
-  if (model.tool !== "image_to_video") throw new KlingError("TIDEWE_PRESENTER_KEYFRAME_REQUIRED", "所选主播须通过当前分镜关键帧或人物参考生成，请选择图生视频模型。", 422);
-  const canUsePresenterReference = model.capabilities.multiImage && model.inputSlots.filter((slot) => slot.role === "image").length > 1;
-  if (canUsePresenterReference) return refs.some((ref) => ref.role === "image" && ref.sourceUrl === presenter) ? refs : [...refs, { role: "image", sourceUrl: presenter }];
-  const first = refs.find((ref) => ref.role === "image")?.sourceUrl;
-  const identityFrame = first && currentAssets.some((asset) => asset.shotId === shotId && asset.type !== "stock_footage" && [asset.filePath, asset.sourceKeyframeUrl, asset.thumbnailPath].includes(first));
-  if (!identityFrame) throw new KlingError("TIDEWE_PRESENTER_KEYFRAME_REQUIRED", "此 Kling 模型只支持首帧，请先生成包含已选主播的当前分镜关键帧，不能用商品图替代人物身份。", 422);
-  return refs;
+  return refs.some((ref) => ref.role === "image" && ref.sourceUrl === presenter) ? refs : [...refs, { role: "image", sourceUrl: presenter }];
 }
 
 function premiumCgReferenceInputs(
@@ -260,7 +246,7 @@ function requestPayload(raw: unknown): KlingSubmitRequest {
   if (body.options !== undefined && (!body.options || typeof body.options !== "object" || Array.isArray(body.options))) throw new KlingError("KLING_INPUT_INVALID", "视频参数必须是对象", 400);
   for (const key of ["imageUrl", "lastImageUrl"]) if (body[key] !== undefined && (typeof body[key] !== "string" || (body[key] as string).length > 28 * 1024 * 1024)) throw new KlingError("KLING_INPUT_INVALID", "图片地址无效", 400);
   if (body.referenceImageUrls !== undefined && (!Array.isArray(body.referenceImageUrls) || body.referenceImageUrls.length > 9 || body.referenceImageUrls.some((value) => typeof value !== "string" || value.length > 8192))) throw new KlingError("KLING_INPUT_INVALID", "参考图地址无效", 400);
-  if ((Array.isArray(body.referenceVideoUrls) && body.referenceVideoUrls.length) || (Array.isArray(body.referenceAudioUrls) && body.referenceAudioUrls.length)) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "首版尚未支持参考视频或参考音频", 422);
+  if ((Array.isArray(body.referenceVideoUrls) && body.referenceVideoUrls.length) || (Array.isArray(body.referenceAudioUrls) && body.referenceAudioUrls.length)) throw new KlingError("KLING_INPUT_INVALID", "当前 CLI 视频命令没有参考视频或参考音频的传参入口，请先移除这两类输入。", 422);
   return {
     provider: "kling-cli", executionScope: "single-shot", profileId: body.profileId as string, clientRequestId: body.clientRequestId as string,
     projectId: body.projectId as string, scriptId: body.scriptId as string, shotId: body.shotId as number, selectionKey: body.selectionKey,
@@ -303,14 +289,14 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
       const cached = getProfile(profile.id);
       if (cached.environmentState !== "ready" || cached.disabledAt || cached.authState !== "authenticated" ||
         !cached.principalKey || cached.principalKey !== profile.principalKey || cached.region !== profile.region ||
-        !cached.catalogCheckedAt || !cached.catalogRevision || !cached.catalogSnapshot.some((item) => item.selectionKey === request.selectionKey && item.available && item.catalogRevision === cached.catalogRevision)) throw error;
+        !cached.catalogCheckedAt || !cached.catalogRevision || !cached.catalogSnapshot.some((item) => item.selectionKey === request.selectionKey && item.catalogRevision === cached.catalogRevision)) throw error;
       // Persist only a reservation while another command holds the CLI lock. Dispatch must still
       // refresh identity and catalog under its own lock before claiming any paid generation.
       profile = cached;
     }
   }
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === request.selectionKey);
-  if (!model?.available) throw new KlingError("KLING_MODEL_UNAVAILABLE", model?.disabledReason ?? "当前账号没有此可用视频模型，请重新选择", 422);
+  if (!model) throw new KlingError("KLING_MODEL_UNAVAILABLE", "当前账号目录中没有此视频模型，请刷新模型目录", 422);
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, request.projectId)).get();
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
@@ -342,25 +328,31 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     ...(request.lastImageUrl ? [{ role: "tailImage" as const, sourceUrl: request.lastImageUrl }] : []),
   ];
   let options: Record<string, string | number | boolean>;
+  let generationPlan = reviewed ? sanitizeVideoControlSummary(reviewed.controlPlan) ?? undefined : undefined;
   if (premiumCg) {
     const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
     if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
-    if (model.tool !== "image_to_video") throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "高端产品 CG 仅支持已验证的图生视频模型。", 422);
     const compiled = compilePremiumCgVideoPrompt(shot, creativeContext.projectProfile);
     prompt = compiled.prompt;
-    mode = "image-to-video";
+    mode = model.tool === "image_to_video" ? "image-to-video" : "text-to-video";
     refs = premiumCgReferenceInputs(project, script, request.shotId);
     options = controlledSilentVideoOptions(model, request.options ?? {}, compiled.negativePrompt);
   } else if (tidewe) {
-    refs = validateTideweVideoInputs(project, script, request.shotId, model, mode, refs);
+    refs = validateTideweVideoInputs(project, script, request.shotId, refs);
     if (!film && !reviewed) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "TIDEWE 单镜视频须先预览并确认当前脚本的提示词。", 409);
     const profile = creativeContext.projectProfile;
-    const compiled = compileTideweVisualPrompt(shot, "video", isTideweOutdoorProfile(profile) ? profile.speechMode : "voiceover", isTideweOutdoorProfile(profile) ? profile.presenter : undefined);
+    const nativeSpeech = isTideweNativeSpeech(profile)
+      && (reviewed ? reviewed.controlPlan.audioMode === "native" : parent?.data.output.audioStrategy !== "edge-tts" && parent?.data.output.narrationMode !== "none");
+    const postNarration = isTideweNativeSpeech(profile) && !nativeSpeech;
+    const compiled = compileTideweVisualPrompt(shot, "video", isTideweOutdoorProfile(profile) ? profile.speechMode : "voiceover", isTideweOutdoorProfile(profile) ? profile.presenter : undefined, postNarration ? "post" : "native");
     if (film && prompt !== compiled.prompt) throw new KlingError("CREATIVE_POLICY_VIOLATION", "TIDEWE 整片镜头未使用当前脚本的服务端视觉提示词。", 422);
     prompt = reviewed?.prompt ?? compiled.prompt;
-    options = isTideweNativeSpeech(profile) ? controlledNativeVideoOptions(model, request.options ?? {}, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(model, request.options ?? {}, compiled.negativePrompt, "TIDEWE");
+    options = nativeSpeech ? controlledNativeVideoOptions(model, request.options ?? {}, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(model, request.options ?? {}, compiled.negativePrompt, postNarration ? shot.duration : undefined);
+    generationPlan = sanitizeVideoControlSummary(buildVideoControlPlan({
+      provider: "kling-cli", modelId: model.selectionKey, supportsAudio: true, generateAudio: nativeSpeech, voiceover: shot.voiceover, locale: "zh",
+      firstFrameUrl: refs.find((ref) => ref.role === "image")?.sourceUrl, lastFrameUrl: refs.find((ref) => ref.role === "tailImage")?.sourceUrl,
+    })) ?? undefined;
   } else {
-    if ((model.tool === "image_to_video") !== (mode === "image-to-video")) throw new KlingError("KLING_CAPABILITY_UNSUPPORTED", "生成模式与选择的模型工具不一致", 422);
     const source = { ...request.options };
     if (reviewed?.negativePrompt) {
       const parameter = model.parameters.find((item) => ["negative_prompt", "negativePrompt"].includes(item.name));
@@ -397,13 +389,14 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   const id = randomUUID();
   const inputs = await prepareKlingInputs(id, model, refs);
   if (film?.expectedInputHashes !== undefined && canonicalJson(inputs.map(({ role, hash }) => ({ role, hash }))) !== canonicalJson(film.expectedInputHashes)) throw new KlingError("KLING_INPUT_CHANGED", "整片参考图与已确认的输入快照不一致，已阻止生成。", 409);
-  const args = buildKlingVideoArguments(model, prompt, options, inputs, id);
+  const args = buildKlingVideoArguments(model, prompt, options, inputs, id, premiumCg || tidewe && generationPlan?.audioMode !== "native");
   const now = Date.now();
   const data: KlingJobData = {
     scriptRevision: scriptRevision(script), shotKey: shotKey(script.id, shot), expectedSelectedAssetId: eligible[0]?.id ?? null,
     payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script), ...(linkage ? { linkage } : {}) }),
     model, prompt, options, inputs, args, accountLabel: profile.accountSummary?.displayName ?? profile.accountSummary?.id,
     videoPromptAudit: { version: VIDEO_PROMPT_VERSION, sourceShot: structuredClone(shot) },
+    ...(generationPlan ? { generationPlan } : {}),
     ...(request.promptContext ? { promptContext: structuredClone(request.promptContext) } : {}),
     cliVersion: profile.cliVersion, adapterVersion: KLING_ADAPTER_VERSION,
     authorizedBootId: runtime.bootId, authorizedUntil: now + 120_000, authorizationEpoch: 1, billingAcknowledgedAt: now, queryAttempts: 0,
@@ -471,7 +464,7 @@ function acknowledge(jobId: string, generationId: string, method: "cli" | "recei
     const aiTaskId = row.data.aiTaskId ?? randomUUID();
     if (!row.data.aiTaskId) tx.insert(aiTasks).values({
       id: aiTaskId, projectId: row.projectId, shotId: row.shotId, provider: "kling-cli",
-      model: row.data.model.remoteModelId, mediaType: "video", mode: row.data.model.tool === "image_to_video" ? "image-to-video" : "text-to-video",
+      model: row.data.model.remoteModelId, mediaType: "video", mode: row.data.args[0] === "image_to_video" ? "image-to-video" : "text-to-video",
       prompt: row.data.prompt, taskId: generationId, status: "submitted",
     }).run();
     return tx.update(klingJobs).set({
@@ -511,7 +504,6 @@ function assertCurrentContext(job: KlingJob): void {
   if (isPremiumProductCgProfile(creativeContext.projectProfile)) {
     const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
     if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
-    if (job.data.model.tool !== "image_to_video") throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 必须使用图生视频模型，请重新创建任务。", 422);
     const compiled = compilePremiumCgVideoPrompt(shot, creativeContext.projectProfile);
     if (job.data.prompt !== compiled.prompt) {
       throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 未使用当前脚本的服务端提示词，请重新创建任务。", 422);
@@ -524,25 +516,30 @@ function assertCurrentContext(job: KlingJob): void {
     if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) {
       throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 未满足当前音频或提示词策略，请重新创建任务。", 422);
     }
-    const expectedArgs = buildKlingVideoArguments(job.data.model, compiled.prompt, expectedOptions, job.data.inputs, job.id);
+    const expectedArgs = buildKlingVideoArguments(job.data.model, compiled.prompt, expectedOptions, job.data.inputs, job.id, true);
     if (canonicalJson(expectedArgs) !== canonicalJson(job.data.args)) {
       throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 参数已失去服务端约束，请重新创建任务。", 422);
     }
   }
   if (isTideweOutdoorProfile(creativeContext.projectProfile)) {
     const refs = job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl }));
-    const bound = validateTideweVideoInputs(project, selected, job.shotId, job.data.model, job.data.model.tool === "image_to_video" ? "image-to-video" : "text-to-video", refs);
+    const bound = validateTideweVideoInputs(project, selected, job.shotId, refs);
     if (canonicalJson(bound) !== canonicalJson(refs)) throw new KlingError("TIDEWE_PRESENTER_REFERENCE_INVALID", "待提交镜头缺少脚本中冻结的主播参考，请重新准备关键帧或任务。", 422);
-    const compiled = compileTideweVisualPrompt(shot, "video", creativeContext.projectProfile.speechMode, creativeContext.projectProfile.presenter);
+    const nativeSpeech = isTideweNativeSpeech(creativeContext.projectProfile)
+      && (job.data.generationPlan ? job.data.generationPlan.audioMode === "native" : job.data.promptContext?.generateAudio !== false);
+    const postNarration = isTideweNativeSpeech(creativeContext.projectProfile) && !nativeSpeech;
+    const compiled = compileTideweVisualPrompt(shot, "video", creativeContext.projectProfile.speechMode, creativeContext.projectProfile.presenter, postNarration ? "post" : "native");
     if (!job.data.filmRunId && !job.data.promptContext) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 单镜缺少提示词预览，请重新创建任务。", 409);
     if (job.data.filmRunId && job.data.prompt !== compiled.prompt) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 整片镜头未使用当前脚本的服务端视觉提示词。", 422);
-    const expectedOptions = isTideweNativeSpeech(creativeContext.projectProfile) ? controlledNativeVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, "TIDEWE");
+    const expectedOptions = nativeSpeech ? controlledNativeVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, postNarration ? shot.duration : undefined);
     if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头未满足当前口播及视觉提示词策略，请重新创建任务。", 422);
-    const expectedArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, expectedOptions, job.data.inputs, job.id);
+    const expectedArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, expectedOptions, job.data.inputs, job.id, postNarration);
     if (canonicalJson(expectedArgs) !== canonicalJson(job.data.args)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头参数已失去服务端约束，请重新创建任务。", 422);
   }
   if (job.data.promptContext) {
-    const frozenArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, job.data.options, job.data.inputs, job.id);
+    const postNarration = isPremiumProductCgProfile(creativeContext.projectProfile) || isTideweOutdoorProfile(creativeContext.projectProfile)
+      && (job.data.generationPlan ? job.data.generationPlan.audioMode !== "native" : !isTideweNativeSpeech(creativeContext.projectProfile));
+    const frozenArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, job.data.options, job.data.inputs, job.id, postNarration);
     if (canonicalJson(frozenArgs) !== canonicalJson(job.data.args)) throw new KlingError("KLING_VIDEO_PROMPT_CONTEXT_CHANGED", "已确认的提示词与待提交参数不一致。", 409);
   }
   const scopedActive = filterAssetsForScript(
@@ -587,7 +584,7 @@ async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promi
       await withKlingLease(getProfile(job.profileId), async (lease) => {
         const profile = await checkedProfile(job, lease);
         const live = profile.catalogSnapshot.find((model) => model.selectionKey === job.data.model.selectionKey);
-        if (!live?.available || live.catalogRevision !== job.data.model.catalogRevision) {
+        if (!live || live.catalogRevision !== job.data.model.catalogRevision) {
           patchKlingJob(jobId, { needsConfirmation: true }, { error: { code: "KLING_CATALOG_CHANGED", message: "模型目录已变化，请重新确认本次提交", retryable: true } }); return;
         }
         for (const input of job.data.inputs) if (contentHash(await readFile(input.path)) !== input.hash) throw new KlingError("KLING_INPUT_CHANGED", "本次输入快照已变化，已阻止生成", 409);
@@ -759,7 +756,7 @@ async function continueUnderLease(jobId: string, raw: unknown): Promise<void> {
   const profile = await refreshProfile(job.profileId, undefined, { credits: false });
   if (profile.principalKey !== job.principalKey) throw new KlingError("KLING_ACCOUNT_MISMATCH", "请登录原账号", 409);
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === job.data.model.selectionKey);
-  if (!model?.available || contentHash({ ...model, catalogRevision: "" }) !== contentHash({ ...job.data.model, catalogRevision: "" })) throw new KlingError("KLING_MODEL_CHANGED", "模型能力已变化，请新建并确认正确参数；原任务尚未提交", 409);
+  if (!model || contentHash({ ...model, catalogRevision: "" }) !== contentHash({ ...job.data.model, catalogRevision: "" })) throw new KlingError("KLING_MODEL_CHANGED", "模型目录已变化，请新建并确认正确参数；原任务尚未提交", 409);
   assertCurrentContext(job);
   for (const input of job.data.inputs) if (contentHash(await readFile(input.path)) !== input.hash) throw new KlingError("KLING_INPUT_CHANGED", "原始输入快照已变化，不能继续提交。", 409);
   getDb().transaction((tx) => {

@@ -7,7 +7,7 @@ export const TIDEWE_VISUAL_NEGATIVE_PROMPT = "新增字幕、营销文字、价�
 type VisualShot = Partial<Pick<Shot, "description" | "visualIntent" | "camera" | "tidewe" | "voiceover">>;
 
 /** Bind native speech to the frozen copy, keeping historical offscreen narration explicit. */
-export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "video" = "video", speechMode: TideweOutdoorProfile["speechMode"] = "voiceover", presenter = shot.tidewe?.presenter): { prompt: string; negativePrompt: string } {
+export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "video" = "video", speechMode: TideweOutdoorProfile["speechMode"] = "voiceover", presenter = shot.tidewe?.presenter, audioMode: "native" | "post" = "native"): { prompt: string; negativePrompt: string } {
   const productVisible = shot.tidewe?.productVisible !== false;
   const native = speechMode === "on_camera";
   const spoken = native && Boolean(shot.voiceover?.trim());
@@ -33,9 +33,11 @@ export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "vid
       kind === "image"
         ? `画面是动作开始前可独立使用的关键帧。${spoken ? "口播人物正面或轻微侧脸、嘴部清楚可见，适合后续生成开口说话的视频。静态画面不绘制对白或字幕。" : ""}`
         : spoken
-          ? `Generate native synchronized audio and video. The visible adult presenter must speak the following exact US English script once, in order, with no added, omitted or paraphrased words. Their lips, jaw and mouth must move throughout the actual speech and match the English phonemes, syllables, pauses and timing as closely as possible; keep the speech audible and visibly articulated, with accurate lip timing. Start and finish the entire line within this clip, leave a brief natural pause at each end, and do not cut off the last word. Natural conversational delivery with a consistent voice; no music, extra dialogue or other speakers. Exact spoken text (JSON string): ${JSON.stringify(shot.voiceover!.trim())}`
+          ? audioMode === "post"
+            ? `Generate silent video for narration added in post. The visible adult presenter must visibly articulate the following exact US English script once, in order, with no added, omitted or paraphrased words. Their lips, jaw and mouth must move naturally and match the English phonemes, syllables, pauses and timing as closely as possible. Start and finish the entire line within this clip, leaving a brief natural pause at each end. Do not generate an audio track; the exact English narration will be added automatically during composition. Exact spoken text (JSON string): ${JSON.stringify(shot.voiceover!.trim())}`
+            : `Generate native synchronized audio and video. The visible adult presenter must speak the following exact US English script once, in order, with no added, omitted or paraphrased words. Their lips, jaw and mouth must move throughout the actual speech and match the English phonemes, syllables, pauses and timing as closely as possible; keep the speech audible and visibly articulated, with accurate lip timing. Start and finish the entire line within this clip, leave a brief natural pause at each end, and do not cut off the last word. Natural conversational delivery with a consistent voice; no music, extra dialogue or other speakers. Exact spoken text (JSON string): ${JSON.stringify(shot.voiceover!.trim())}`
           : native
-            ? "本镜没有口播文案：不编造对白或说话口型，无音乐；只保留轻微自然环境声和一个清晰真实动作。"
+            ? `本镜没有口播文案：不编造对白或说话口型，无音乐；${audioMode === "post" ? "仅生成静音视觉素材和一个清晰真实动作。" : "只保留轻微自然环境声和一个清晰真实动作。"}`
             : "人物演示与口播音轨分开，不生成说话口型或额外对白。英文画外旁白由后期统一添加。仅生成静音视觉素材，无对白、口播、音乐和音效；一个清晰动作由起点自然发展到终点，避免无目的转头和复杂动作。",
       !native && kind === "image" ? "人物演示与口播音轨分开，不生成说话口型或额外对白。英文画外旁白由后期统一添加。" : "",
       "不新增屏幕文字、字幕、营销字、价格、购买条或水印；只保留参考中真实产品已有标识。不生成热成像、发光热区、透视剖面、浸泡带电系统或无依据效果测试。首版不展示独立电池，尤其不得暗示 HJ006 随附电池。",

@@ -48,7 +48,7 @@ async function checkProfile(run: KlingFilmRun): Promise<void> {
   const profile = await refreshProfile(run.profileId, undefined, { credits: false });
   if (profile.disabledAt || profile.environmentState !== "ready" || profile.authState !== "authenticated" || profile.principalKey !== run.principalKey) throw new KlingError("KLING_ACCOUNT_MISMATCH", "请登录原 Kling 账号并检测 CLI 环境后恢复整片", 409);
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === run.data.model.selectionKey);
-  if (!model?.available || model.catalogRevision !== run.data.model.catalogRevision) throw new KlingError("KLING_CATALOG_CHANGED", "模型能力已变化，请保留已生成视频并重新预览整片计划", 409);
+  if (!model || model.catalogRevision !== run.data.model.catalogRevision) throw new KlingError("KLING_CATALOG_CHANGED", "模型目录已变化，请保留已生成视频并重新预览整片计划", 409);
 }
 function assertNoConflict(run: KlingFilmRun): void {
   const conflict = listKlingFilms().find((row) => row.id !== run.id && isKlingFilmUnresolved(row) && (row.projectId === run.projectId || row.principalKey === run.principalKey));
