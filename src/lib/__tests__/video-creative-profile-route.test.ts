@@ -132,23 +132,23 @@ describe("premium CG video generation profile context", () => {
     expect(db.select().from(schema.scripts).all().every((row) => !row.selected)).toBe(true);
   });
 
-  it("rejects a selected script whose frozen creative configuration is stale before provider setup", async () => {
+  it("uses the selected script's frozen policy despite a newer project configuration", async () => {
     const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+    const snapshot = createCreativeProfileSnapshot(profile, 1);
+    db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile({ narrationMode: "restrained" }) })
+      .where(eq(schema.projects.id, projectId)).run();
     db.update(schema.scripts)
-      .set({ creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) })
+      .set({ creativeProfileSnapshot: snapshot })
       .where(eq(schema.scripts.id, scriptId))
       .run();
 
     const response = await POST(request());
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      code: "CREATIVE_CONFIG_STALE",
-      projectRevision: 2,
-      scriptRevision: 1,
-    });
-    expect(state.createProvider).not.toHaveBeenCalled();
-    expect(state.generateVideo).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(state.createProvider).toHaveBeenCalledTimes(1);
+    expect(state.generateVideo).toHaveBeenCalledTimes(1);
+    expect(state.generateVideo.mock.calls[0][0]).toMatchObject({ audioEnabled: false });
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()?.creativeProfileSnapshot).toEqual(snapshot);
   });
 
   it("rejects a selected script whose frozen creative type no longer matches the project", async () => {

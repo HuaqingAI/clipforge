@@ -18,7 +18,7 @@ export const script: NamespaceMessages = {
     stylePremiumCg: "高端产品 CG",
     styleTidewe: "TIDEWE 风格",
     creativeTypeTitle: "创作类型",
-    creativeTypeDesc: "切换后会保存当前类型草稿，并恢复另一类型最近一次设置。",
+    creativeTypeDesc: "创作类型确定后不可修改，如需其他类型请新建项目。",
     creativeTypeSales: "短视频带货",
     creativeTypeCg: "高端产品 CG",
     creativeTypeCgActive: "当前使用 CG 创作档案",
@@ -26,7 +26,6 @@ export const script: NamespaceMessages = {
     creativeProfileVisualOnly: "纯视觉",
     creativeProfileRestrainedVoice: "克制旁白",
     creativeProfileNoText: "无新增画面文案",
-    creativeProfileSaveFailed: "创作类型保存失败，请刷新后重试",
     // 通用
     defaultProjectName: "带货项目",
     untitledScript: "未命名脚本",
@@ -147,6 +146,7 @@ export const script: NamespaceMessages = {
     editSaveFailed: "保存失败，请重试",
     selectionSaved: "已选用该方案",
     selectionFailed: "切换脚本方案失败，请重试",
+    selectionTypeMismatch: "该方案的创作类型与当前项目不一致，无法切换。",
     // 一键成片
     autoFinish: "免费快剪成片",
     autoFinishHint: "免费快剪：真实素材配画面 → 免费配音合成 → 直达成片，全程 ¥0",
@@ -223,7 +223,7 @@ export const script: NamespaceMessages = {
     stylePremiumCg: "Premium product CG",
     styleTidewe: "TIDEWE style",
     creativeTypeTitle: "Creation type",
-    creativeTypeDesc: "Your current draft is saved when you switch, and the other type's latest settings are restored.",
+    creativeTypeDesc: "The creation type is fixed. Create a new project to use a different type.",
     creativeTypeSales: "Short-video sales",
     creativeTypeCg: "Premium product CG",
     creativeTypeCgActive: "Premium CG profile active",
@@ -231,7 +231,6 @@ export const script: NamespaceMessages = {
     creativeProfileVisualOnly: "Visual only",
     creativeProfileRestrainedVoice: "Restrained narration",
     creativeProfileNoText: "No added on-screen copy",
-    creativeProfileSaveFailed: "Could not save the creation type. Refresh and try again.",
     // 通用
     defaultProjectName: "Commerce project",
     untitledScript: "Untitled script",
@@ -352,6 +351,7 @@ export const script: NamespaceMessages = {
     editSaveFailed: "Save failed, please retry",
     selectionSaved: "Variant selected",
     selectionFailed: "Could not select the script option. Please try again.",
+    selectionTypeMismatch: "This option's creation type differs from the project's type and cannot be selected.",
     // one-click auto-finish
     autoFinish: "Free quick cut",
     autoFinishHint: "Free quick cut: real stock footage → free voice-over & compose → straight to the finished video, $0 end to end",

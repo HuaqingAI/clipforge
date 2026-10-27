@@ -175,7 +175,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({
         error: profileContext.code === "CREATIVE_CONFIG_STALE"
           ? "脚本基于旧的创作设置生成，请重新生成脚本后再生成分镜。"
-          : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+          : "当前脚本与项目创作类型不匹配，请刷新后重新生成脚本。",
         code: profileContext.code,
         projectCreationType: profileContext.projectProfile.creationType,
         scriptCreationType: profileContext.scriptProfile.creationType,

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
 import { DELETE, GET, PATCH } from "@/app/api/project/[id]/scripts/route";
 
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
@@ -120,24 +120,25 @@ describe("DELETE project script", () => {
     expect(await refreshed.json()).toMatchObject([{ id: "archived-script", selected: false }]);
   });
 
-  it("skips stale alternatives when automatically selecting a replacement", async () => {
+  it("keeps earlier-configuration alternatives eligible when selecting a replacement", async () => {
     addScript("alternative-a-stale", {
       creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 1),
     });
     addScript("alternative-b-current");
     const response = await remove();
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ selectedScriptId: "alternative-b-current" });
-    expect(rows().find((row) => row.id === "alternative-a-stale")?.selected).toBe(false);
+    expect(await response.json()).toMatchObject({ selectedScriptId: "alternative-a-stale" });
+    expect(rows().find((row) => row.id === "alternative-a-stale")?.selected).toBe(true);
+    expect(rows().find((row) => row.id === "alternative-b-current")?.selected).toBe(false);
   });
 
-  it("does not activate a stale batch when no valid replacement remains", async () => {
+  it("activates the remaining same-type alternative regardless of its configuration counter", async () => {
     addScript("stale-alternative", {
       creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 1),
     });
     const response = await remove();
-    expect(await response.json()).toMatchObject({ selectedScriptId: null, scripts: [] });
-    expect(rows().every((row) => !row.selected)).toBe(true);
+    expect(await response.json()).toMatchObject({ selectedScriptId: "stale-alternative", scripts: [{ id: "stale-alternative", selected: true }] });
+    expect(rows().find((row) => row.id === "stale-alternative")?.creativeProfileSnapshot?.creativeConfigRevision).toBe(1);
   });
 
   it("preserves generated assets, clips, completed works and Kling audit records", async () => {
@@ -323,19 +324,19 @@ describe("script selection after concurrent deletion", () => {
     expect(rows().find((row) => row.id === "archived-script")?.selected).toBe(false);
   });
 
-  it("checks the current project configuration after acquiring the selection write lock", async () => {
+  it("checks the current project creation type after acquiring the selection write lock", async () => {
     addScript("alternative-a", {
       creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 0),
     });
     const transaction = db.transaction.bind(db);
     vi.spyOn(db, "transaction").mockImplementationOnce((callback, config) => {
-      db.update(schema.projects).set({ creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile(), creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
       return transaction(callback, config);
     });
 
     const response = await select("alternative-a");
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: "CREATIVE_CONFIG_STALE" });
+    expect(await response.json()).toMatchObject({ code: "CREATIVE_PROFILE_MISMATCH" });
     expect(rows().find((row) => row.id === scriptId)?.selected).toBe(true);
     expect(rows().find((row) => row.id === "alternative-a")?.selected).toBe(false);
   });

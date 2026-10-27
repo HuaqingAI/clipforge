@@ -37,6 +37,7 @@ import {
   type CreationType,
   type ProjectCreativeProfile,
   type ProjectCreativeProfileDrafts,
+  type CreativeProfileSnapshot,
 } from "@/lib/creative-profiles";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
@@ -56,6 +57,12 @@ const styleLabelKeys: Record<string, string> = {
   comparison: "styleComparison",
   story: "styleStory",
   premium_product_cg: "stylePremiumCg",
+  tidewe_outdoor: "styleTidewe",
+};
+
+const creationTypeLabelKeys: Record<CreationType, string> = {
+  short_video_sales: "creativeTypeSales",
+  premium_product_cg: "creativeTypeCg",
   tidewe_outdoor: "styleTidewe",
 };
 
@@ -133,14 +140,13 @@ export default function ScriptPage() {
   const router = useRouter();
   const [selectedScript, setSelectedScript] = useState(0);
   const [scripts, setScripts] = useState<
-    { id: string; title: string; styleType: string; totalDuration: number; shots: Shot[]; copyDocument?: TideweCopyDocument | null; scriptHash?: string }[]
+    { id: string; title: string; styleType: string; totalDuration: number; shots: Shot[]; copyDocument?: TideweCopyDocument | null; scriptHash?: string; creativeProfileSnapshot?: CreativeProfileSnapshot | null }[]
   >([]);
   const [loading, setLoading] = useState(true);
   const [projectName, setProjectName] = useState("");
   // project metadata: reused when re-generating the script from the empty state
   const [projectMeta, setProjectMeta] = useState<ProjectMeta | null>(null);
   const [creativeConfigSaving, setCreativeConfigSaving] = useState(false);
-  const [creativeConfigError, setCreativeConfigError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const generationInFlight = useRef(false);
   const generationAbort = useRef<AbortController | null>(null);
@@ -246,6 +252,7 @@ export default function ScriptPage() {
           shots: script.shots,
           copyDocument: script.copyDocument,
           scriptHash: script.scriptHash,
+          creativeProfileSnapshot: script.creativeProfileSnapshot,
         }))
       );
       const selectedIndex = currentOptions.findIndex((script) => script.selected);
@@ -288,6 +295,7 @@ export default function ScriptPage() {
         shots: script.shots ?? [],
         copyDocument: script.copyDocument,
         scriptHash: script.scriptHash,
+        creativeProfileSnapshot: script.creativeProfileSnapshot,
       })));
       const selectedIndex = options.findIndex((script) => script.selected);
       setSelectedScript(selectedIndex >= 0 ? selectedIndex : 0);
@@ -304,61 +312,6 @@ export default function ScriptPage() {
         deletionAbort.current = null;
         setIsDeleting(false);
       }
-    }
-  };
-
-  const switchCreationType = async (nextType: CreationType) => {
-    if (!projectMeta || projectMeta.contentType === "topic" || creativeConfigSaving) return;
-    if (projectMeta.creativeProfile.creationType === nextType) return;
-
-    const currentProfile = projectMeta.creativeProfile;
-    const drafts: ProjectCreativeProfileDrafts = {
-      ...projectMeta.creativeProfileDrafts,
-      [currentProfile.creationType]: currentProfile,
-    };
-    const nextProfile = nextType === "premium_product_cg"
-      ? drafts.premium_product_cg ?? createPremiumProductCgProfile()
-      : nextType === "tidewe_outdoor"
-        ? drafts.tidewe_outdoor ?? createTideweOutdoorProfile()
-        : drafts.short_video_sales ?? createShortVideoSalesProfile({ videoMode: projectMeta.videoMode });
-    const nextDrafts: ProjectCreativeProfileDrafts = {
-      ...drafts,
-      [nextType]: nextProfile,
-    };
-
-    setCreativeConfigSaving(true);
-    setCreativeConfigError("");
-    try {
-      const response = await fetch(`/api/project/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          creativeProfile: nextProfile,
-          creativeProfileDrafts: nextDrafts,
-          expectedCreativeConfigRevision: projectMeta.creativeConfigRevision,
-          videoMode: nextProfile.videoMode,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        if (data.code === "CREATIVE_CONFIG_CONFLICT") {
-          setProjectMeta((previous) => previous
-            ? projectMetaFromResponse({
-                ...previous,
-                creativeProfile: data.creativeProfile,
-                creativeProfileDrafts: data.creativeProfileDrafts,
-                creativeConfigRevision: data.creativeConfigRevision,
-              })
-            : previous
-          );
-        }
-        throw new Error(data.error || t("creativeProfileSaveFailed"));
-      }
-      setProjectMeta(projectMetaFromResponse(data));
-    } catch (error) {
-      setCreativeConfigError(friendlyError(error, locale));
-    } finally {
-      setCreativeConfigSaving(false);
     }
   };
 
@@ -391,6 +344,7 @@ export default function ScriptPage() {
               shots: s.shots ?? [],
               copyDocument: s.copyDocument,
               scriptHash: s.scriptHash,
+              creativeProfileSnapshot: s.creativeProfileSnapshot,
             }))
           );
           // default to the script marked as selected
@@ -480,13 +434,22 @@ export default function ScriptPage() {
     setSelectedScript(index);
     const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
-      const response = await fetch(`/api/project/${id}/scripts`, {
+      const response = await abortable(fetch(`/api/project/${id}/scripts`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ selectedScriptId: target.id }),
         signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(t("selectionFailed"));
+      }), controller.signal);
+      if (!response.ok) {
+        const data: unknown = await abortable(response.json().catch(() => null), controller.signal);
+        const errorKey = isRecord(data) && data.code === "CREATIVE_PROFILE_MISMATCH"
+          ? "selectionTypeMismatch"
+          : null;
+        const message = isRecord(data) && typeof data.error === "string" && data.error.trim()
+          ? data.error
+          : t("selectionFailed");
+        throw new Error(errorKey ? t(errorKey) : message);
+      }
       if (controller.signal.aborted) return;
       setSelectionTip(true);
       setTimeout(() => setSelectionTip(false), 1500);
@@ -536,6 +499,7 @@ export default function ScriptPage() {
         shots: script.shots ?? [],
         copyDocument: script.copyDocument,
         scriptHash: script.scriptHash,
+        creativeProfileSnapshot: script.creativeProfileSnapshot,
       })));
       setSelectedScript(options.findIndex((script) => script.selected));
       setSelectionError("");
@@ -814,7 +778,7 @@ export default function ScriptPage() {
       });
       const options = currentScriptOptions(rows);
       if (!options.length) throw new Error(t("errorReloadScripts"));
-      setScripts(options.map((row) => ({ id: row.id, title: row.title ?? t("untitledScript"), styleType: row.styleType, totalDuration: row.totalDuration ?? 0, shots: row.shots ?? [], copyDocument: row.copyDocument, scriptHash: row.scriptHash })));
+      setScripts(options.map((row) => ({ id: row.id, title: row.title ?? t("untitledScript"), styleType: row.styleType, totalDuration: row.totalDuration ?? 0, shots: row.shots ?? [], copyDocument: row.copyDocument, scriptHash: row.scriptHash, creativeProfileSnapshot: row.creativeProfileSnapshot })));
       setSelectedScript(Math.max(0, options.findIndex((row) => row.selected)));
       setEditStatus("saved");
     } catch (cause) { setEditStatus("failed"); throw cause; }
@@ -831,7 +795,7 @@ export default function ScriptPage() {
     <ScriptHistoryDialog key={id} projectId={id} busy={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClose={() => setHistoryOpen(false)} onRestore={restoreHistoricalScript} />
   ) : null;
   const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} />;
-  const creativeProfileSwitcher = projectMeta && projectMeta.contentType !== "topic" ? (
+  const creativeProfileSummary = projectMeta && projectMeta.contentType !== "topic" ? (
     <Card className="glass-card mb-5">
       <CardContent className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -839,28 +803,9 @@ export default function ScriptPage() {
             <p className="text-sm font-semibold">{t("creativeTypeTitle")}</p>
             <p className="mt-1 text-xs text-muted-foreground">{t("creativeTypeDesc")}</p>
           </div>
-          <div className="flex flex-wrap gap-2" role="group" aria-label={t("creativeTypeTitle")}>
-            {([
-              { value: "short_video_sales" as const, labelKey: "creativeTypeSales" },
-              { value: "premium_product_cg" as const, labelKey: "creativeTypeCg" },
-              { value: "tidewe_outdoor" as const, labelKey: "styleTidewe" },
-            ]).map((option) => {
-              const selected = projectMeta.creativeProfile.creationType === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={creativeConfigSaving || scriptActionsBusy || autoFinishing}
-                  onClick={() => void switchCreationType(option.value)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
-                    selected ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  {selected && "✓ "}{t(option.labelKey)}
-                </button>
-              );
-            })}
-          </div>
+          <Badge variant="outline" className="h-auto rounded-lg border-primary/50 bg-primary/10 px-3 py-2 text-primary">
+            {t(creationTypeLabelKeys[projectMeta.creativeProfile.creationType])}
+          </Badge>
         </div>
         {projectMeta.creativeProfile.creationType === "premium_product_cg" && (
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -900,7 +845,6 @@ export default function ScriptPage() {
             <p className="mt-2 text-xs text-muted-foreground">{t("productReferencesHint")}</p>
           </section>
         )}
-        {creativeConfigError && <p role="alert" className="mt-2 text-xs text-destructive">{creativeConfigError}</p>}
       </CardContent>
     </Card>
   ) : null;
@@ -938,7 +882,7 @@ export default function ScriptPage() {
       <div className="min-h-screen grid-bg">
         {headerBar}
         <div className="mx-auto max-w-md flex flex-col items-center justify-center py-28 px-6 text-center">
-          <div className="w-full text-left">{creativeProfileSwitcher}</div>
+          <div className="w-full text-left">{creativeProfileSummary}</div>
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/40 mb-5">
             <LuWand className="w-8 h-8 text-muted-foreground" />
           </div>
@@ -1012,7 +956,7 @@ export default function ScriptPage() {
     <div className="min-h-screen grid-bg">
       {headerBar}
       <main className="mx-auto max-w-7xl px-6 py-8">
-        {creativeProfileSwitcher}
+        {creativeProfileSummary}
         {isTideweProject && currentScript?.copyDocument && <TideweCopyEditor key={currentScript.id} document={currentScript.copyDocument} busy={scriptActionsBusy || creativeConfigSaving} onSave={saveTideweCopy} />}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}

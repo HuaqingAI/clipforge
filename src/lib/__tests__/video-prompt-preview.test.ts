@@ -338,6 +338,20 @@ describe("authoritative dynamic prompt preview", () => {
     expect(state.provider).not.toHaveBeenCalled();
   });
 
+  it.each(["configuration", "sibling-shot"])("keeps the reviewed shot usable after a %s revision edit", async (change) => {
+    const request = input();
+    const { value } = await getPreview(request);
+    if (change === "configuration") db.update(schema.projects).set({ creativeConfigRevision: 9 }).run();
+    else db.update(schema.scripts).set({ version: 9, shots: [shot, { ...shot, shotId: 2, camera: "另一个分镜的运镜" }] }).run();
+    const refreshed = await getPreview(request);
+    expect(refreshed.response.status).toBe(200);
+    expect(refreshed.value.contextKey).toBe(value.contextKey);
+    const result = await submit(value, request);
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledTimes(1);
+    expect(state.generate.mock.calls[0][0].prompt).toBe(value.prompt);
+  });
+
   it("rejects a changed persisted shot before any provider or paid task is created", async () => {
     const request = input();
     const { value } = await getPreview(request);

@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ScriptPage from "@/app/project/[id]/script/page";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
 
 const navigation = vi.hoisted(() => ({ projectId: "project-1" }));
 const historyDialog = vi.hoisted(() => ({
@@ -655,6 +655,81 @@ describe("script regeneration recovers without a page refresh", () => {
   });
 });
 
+describe("saved script configuration versions", () => {
+  const profile = createShortVideoSalesProfile();
+
+  function useSavedOptions(options: (ReturnType<typeof script> & {
+    creativeProfileSnapshot?: ReturnType<typeof createCreativeProfileSnapshot> | null;
+  })[]) {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === projectUrl) return Promise.resolve(Response.json({
+        name: "Product", productName: "Product", productImages: [],
+        creativeProfile: profile, creativeConfigRevision: 6,
+      }));
+      if (url === scriptsUrl && init?.method === "PATCH") {
+        // Selection preserves the alternative's frozen configuration.
+        return Promise.resolve(Response.json({ success: true, scriptRevision: 6, projectRevision: 6 }));
+      }
+      if (url === scriptsUrl) return Promise.resolve(Response.json(options));
+      return normalFetch(url, init);
+    });
+  }
+
+  it.each(["simple", "pro"] as const)("keeps an earlier frozen configuration usable on the %s page without a regeneration warning", async (mode) => {
+    useSavedOptions([{ ...oldScript, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 2) }]);
+    await mount(mode);
+
+    expect(container.textContent).not.toContain("scriptConfigStaleWarning");
+    expect(button("nextStepAssets").disabled).toBe(false);
+  });
+
+  it.each([
+    { mode: "simple", snapshot: "current" },
+    { mode: "pro", snapshot: "current" },
+    { mode: "simple", snapshot: "legacy" },
+    { mode: "pro", snapshot: "legacy" },
+  ] as const)("does not warn on the $mode page for a $snapshot script", async ({ mode, snapshot }) => {
+    useSavedOptions([{
+      ...oldScript,
+      creativeProfileSnapshot: snapshot === "current" ? createCreativeProfileSnapshot(profile, 6) : undefined,
+    }]);
+    await mount(mode);
+
+    expect(container.textContent).not.toContain("scriptConfigStaleWarning");
+  });
+
+  it("switches saved options with different snapshot versions without a regeneration warning", async () => {
+    const staleAlternative = {
+      ...script("alternative", "Stale alternative", false, 1),
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 2),
+    };
+    const currentAlternative = {
+      ...script("current-alternative", "Current alternative", false, 1),
+      creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 6),
+    };
+    useSavedOptions([
+      { ...oldScript, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 2) },
+      staleAlternative,
+      currentAlternative,
+    ]);
+    await mount();
+
+    const selectOption = async (title: string) => {
+      const remove = container.querySelector(`button[aria-label="deleteScript ${title}"]`)!;
+      await act(async () => (remove.closest(".cursor-pointer") as HTMLElement).click());
+    };
+    await selectOption(staleAlternative.title);
+    expect(container.textContent).toContain("Stale alternative details");
+    expect(container.textContent).not.toContain("scriptConfigStaleWarning");
+    expect(container.textContent).not.toContain("selectionFailed");
+
+    await selectOption(currentAlternative.title);
+    expect(container.textContent).toContain("Current alternative details");
+    expect(container.textContent).not.toContain("scriptConfigStaleWarning");
+  });
+});
+
 describe("script option deletion", () => {
   function deleteButton(title: string) {
     return container.querySelector(`button[aria-label="deleteScript ${title}"]`) as HTMLButtonElement;
@@ -679,6 +754,67 @@ describe("script option deletion", () => {
     expect(button("regenerate").disabled).toBe(false);
     expect(container.textContent).toContain(success ? "Alternative script details" : "Original script details");
     if (!success) expect(container.textContent).toContain("selectionFailed");
+  });
+
+  it.each([
+    { code: undefined, error: "该方案已被删除，请刷新后重试。", expected: "该方案已被删除，请刷新后重试。" },
+    { code: "CREATIVE_PROFILE_MISMATCH", error: "Incompatible creation type", expected: "selectionTypeMismatch" },
+    { code: undefined, error: null, expected: "selectionFailed" },
+  ])("explains a failed selection as $expected and rolls back the preview", async ({ code, error, expected }) => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    const alternative = script("alternative", "Alternative script", false, 1);
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === scriptsUrl && init?.method === "PATCH") {
+        return Promise.resolve(error === null
+          ? new Response("Invalid response body", { status: 500 })
+          : Response.json({ code, error }, { status: 409 }));
+      }
+      if (url === scriptsUrl) return Promise.resolve(Response.json([oldScript, alternative]));
+      return normalFetch(url, init);
+    });
+    await mount();
+    await act(async () => (deleteButton(alternative.title).closest(".cursor-pointer") as HTMLElement).click());
+
+    expect(container.textContent).toContain(expected);
+    expect(container.textContent).toContain("Original script details");
+    expect(container.textContent).not.toContain("Alternative script details");
+    expect(button("regenerate").disabled).toBe(false);
+    expect(deleteButton(oldScript.title).disabled).toBe(false);
+  });
+
+  it.each(["transport", "response body"] as const)("releases a stalled selection %s on timeout and ignores its late result", async (stage) => {
+    vi.useFakeTimers();
+    const normalFetch = fetchMock.getMockImplementation()!;
+    const alternative = script("alternative", "Alternative script", false, 1);
+    const pending = deferredResponse();
+    let resolveBody!: (value: unknown) => void;
+    let selectionSignal: AbortSignal | null | undefined;
+    const pendingBody = new Promise((resolve) => { resolveBody = resolve; });
+    const failure = Response.json({}, { status: 409 });
+    failure.json = () => pendingBody;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === scriptsUrl && init?.method === "PATCH") {
+        selectionSignal = init.signal;
+        return stage === "transport" ? pending.promise : Promise.resolve(failure);
+      }
+      if (url === scriptsUrl) return Promise.resolve(Response.json([oldScript, alternative]));
+      return normalFetch(url, init);
+    });
+    await mount();
+    await act(async () => (deleteButton(alternative.title).closest(".cursor-pointer") as HTMLElement).click());
+    expect(button("regenerate").disabled).toBe(true);
+    await advance(15_000);
+
+    expect(selectionSignal?.aborted).toBe(true);
+    expect(container.textContent).toContain("Original script details");
+    expect(button("regenerate").disabled).toBe(false);
+    expect(deleteButton(oldScript.title).disabled).toBe(false);
+    await act(async () => {
+      pending.resolve(Response.json({}));
+      resolveBody({ error: "Late diagnostic" });
+    });
+    expect(container.textContent).not.toContain("Alternative script details");
+    expect(container.textContent).not.toContain("Late diagnostic");
   });
 
   it("waits for a judge request before allowing deletion so its report cannot target another script", async () => {

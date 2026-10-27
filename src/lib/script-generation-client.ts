@@ -1,5 +1,6 @@
 import type { Shot } from "@/lib/db/schema";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
+import type { CreativeProfileSnapshot } from "@/lib/creative-profiles";
 
 export interface SavedScript {
   id: string;
@@ -11,6 +12,7 @@ export interface SavedScript {
   selected: boolean | null;
   copyDocument?: TideweCopyDocument | null;
   scriptHash?: string;
+  creativeProfileSnapshot?: CreativeProfileSnapshot | null;
   generationMetadata?: { requestId?: string } | null;
 }
 

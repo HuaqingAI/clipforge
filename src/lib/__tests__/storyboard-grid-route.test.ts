@@ -12,6 +12,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { probeMedia } from "@/lib/media-probe";
+import { assetMatchesScript, scriptRevision } from "@/lib/asset-context";
 import {
   createCreativeProfileSnapshot,
   createPremiumProductCgProfile,
@@ -681,15 +682,39 @@ describe("storyboard grid uploaded product references", () => {
     await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps late results detached from the current script revision", async () => {
+  it("keeps late grid results usable when the same script is edited during generation", async () => {
+    const before = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
     fetchMock.mockImplementationOnce(async () => {
       db.update(schema.scripts).set({ shots: originalShots.map((shot) => ({ ...shot, description: "Changed during provider generation" })) }).where(eq(schema.scripts.id, scriptId)).run();
       return Response.json({ data: [{ b64_json: gridBase64 }] });
     });
+    const result = await generate({ preserveExisting: true });
+    const rows = db.select().from(schema.assets).all();
+    const current = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const generated = rows.filter((row) => row.id !== "previous-take");
+    expect(rows.find((row) => row.id === "previous-take")?.selected).toBe(false);
+    expect(generated).toHaveLength(2);
+    expect(generated.every((row) => row.selected && assetMatchesScript(row, current))).toBe(true);
+    expect(generated.map((row) => row.filePath).sort()).toEqual(result.cells.map((cell) => cell.filePath).sort());
+    expect(generated.every((row) => row.sourceScriptId === scriptId && row.sourceRevision === scriptRevision(before))).toBe(true);
+    expect(current.shots?.every((shot) => shot.description === "Changed during provider generation")).toBe(true);
+    // Cache signatures still describe their original content, even though the assets remain usable.
+    await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps late results as alternatives when another script is selected during generation", async () => {
+    fetchMock.mockImplementationOnce(async () => {
+      db.update(schema.scripts).set({ selected: false }).where(eq(schema.scripts.id, scriptId)).run();
+      db.insert(schema.scripts).values({ id: "new-selected-script", projectId, styleType: "scene", selected: true, shots: originalShots }).run();
+      return Response.json({ data: [{ b64_json: gridBase64 }] });
+    });
     await generate({ preserveExisting: true });
     const rows = db.select().from(schema.assets).all();
+    const current = db.select().from(schema.scripts).where(eq(schema.scripts.selected, true)).get()!;
+    expect(current.id).toBe("new-selected-script");
     expect(rows.find((row) => row.id === "previous-take")?.selected).toBe(true);
-    expect(rows.filter((row) => row.id !== "previous-take").every((row) => !row.selected)).toBe(true);
+    expect(rows.filter((row) => row.id !== "previous-take")).toHaveLength(2);
+    expect(rows.filter((row) => row.id !== "previous-take").every((row) => !row.selected && row.sourceScriptId === scriptId && !assetMatchesScript(row, current))).toBe(true);
     await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

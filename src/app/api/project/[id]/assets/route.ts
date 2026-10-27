@@ -8,7 +8,7 @@ import { resolveUploadFilePath } from "@/lib/remote-image";
 import { existsSync } from "fs";
 import { AssetContextConflictError, persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
-import { assetScopeForShot, assetMatchesScript, filterAssetsForScript, scriptRevision } from "@/lib/asset-context";
+import { assetScopeForShot, assetMatchesScript, filterAssetsForScript } from "@/lib/asset-context";
 import { errText } from "@/lib/api-error";
 import {
   checkCreativeProfileContext,
@@ -130,17 +130,18 @@ export async function POST(
     const shot = script?.shots?.find((row) => row.shotId === shotId);
     const tidewe = isTideweOutdoorProfile(project.creativeProfile) || script?.styleType === "tidewe_outdoor" || script?.copyDocument != null;
     if (tidewe) {
-      if (typeof body.scriptId !== "string" || !body.scriptId.trim() || typeof body.expectedScriptHash !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedScriptHash)) {
-        return NextResponse.json({ error: "TIDEWE 保存素材必须携带生成开始时的 scriptId 与 expectedScriptHash。", code: "TIDEWE_ASSET_CONTEXT_REQUIRED" }, { status: 400 });
+      if (typeof body.scriptId !== "string" || !body.scriptId.trim()) {
+        return NextResponse.json({ error: "TIDEWE 保存素材必须携带生成开始时的 scriptId。", code: "TIDEWE_ASSET_CONTEXT_REQUIRED" }, { status: 400 });
       }
       const currentScript = resolveCurrentScript(scriptRows);
       const context = script ? checkCreativeProfileContext(project, script) : null;
-      if (!script || !shot || currentScript?.id !== script.id || scriptRevision(script) !== body.expectedScriptHash
+      if (!script || !shot || currentScript?.id !== script.id
         || !context?.ok) throw new AssetContextConflictError();
       try { assertTideweScript(script, isTideweOutdoorProfile(context.scriptProfile) ? context.scriptProfile.presenter ?? null : undefined); }
       catch { throw new AssetContextConflictError("The current TIDEWE script is invalid. Regenerate it before saving assets."); }
     }
     if (scriptRows.length && (!script || !shot)) return NextResponse.json({ error: "目标脚本或镜头已变化，请刷新素材页" }, { status: 409 });
+    if (script && resolveCurrentScript(scriptRows)?.id !== script.id) throw new AssetContextConflictError();
     const filePath = await persistAssetSource(id, sourceUrl, shotId);
 
     const typeMap: Record<string, "ai_generated" | "product_image" | "user_upload"> = {
@@ -172,7 +173,7 @@ export async function POST(
       prompt: body.prompt,
       generationPlan,
       ...(script && shot && { scope: assetScopeForShot(script, shot) }),
-      ...(tidewe && script && { expectedCurrentScript: { scriptId: script.id, scriptRevision: body.expectedScriptHash as string, creativeConfigRevision: project.creativeConfigRevision } }),
+      ...(script && { expectedCurrentScript: { scriptId: script.id } }),
       ...(thumbnailPath && { sourceKeyframeUrl: thumbnailPath }),
     }));
   } catch (error) {
@@ -198,50 +199,47 @@ export async function PATCH(
       return NextResponse.json({ error: "缺少有效的 assetId" }, { status: 400 });
     }
     const db = getDb();
-    const [target] = await db.select().from(assets).where(and(eq(assets.id, body.assetId), eq(assets.projectId, id))).limit(1);
-    if (!target || target.status !== "done") return NextResponse.json({ error: "素材不存在或尚未就绪" }, { status: 404 });
-    const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-    const selectedScripts = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
-    const selectedScript = resolveCurrentScript(selectedScripts);
-    if (isPremiumProductCgProject(project)) {
-      if (!selectedScript) {
-        return premiumCgConflict(
-          req,
-          PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-          "高端产品 CG 需要当前脚本和可验证来源的镜头素材。",
-          "Premium product CG requires a current script and a take with verifiable provenance.",
-        );
-      }
-      const context = checkCreativeProfileContext(project, selectedScript);
-      if (!context.ok) {
-        return NextResponse.json({
-          error: context.code === "CREATIVE_CONFIG_STALE"
-            ? "The script was created with an outdated creative configuration. Regenerate a current script before selecting an asset."
-            : "The script does not match the project's current creative type. Generate a current script before selecting an asset.",
-          code: context.code,
-          currentCreationType: context.projectProfile.creationType,
-          scriptCreationType: context.scriptProfile.creationType,
-          projectRevision: context.projectRevision,
-          scriptRevision: context.scriptRevision,
-        }, { status: 409 });
-      }
-      if (!hasTrustedPremiumCgAssetProvenance(target, id, selectedScript)) {
-        return premiumCgConflict(
-          req,
-          PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-          "高端产品 CG 只能采用由受控分镜或 Kling 流程生成且与当前脚本匹配的素材。",
-          "Premium product CG can only select a current-script take generated by the controlled storyboard or Kling flow.",
-        );
-      }
-    }
-    db.transaction((tx) => {
+    return db.transaction((tx) => {
+      const target = tx.select().from(assets).where(and(eq(assets.id, body.assetId as string), eq(assets.projectId, id))).get();
+      if (!target || target.status !== "done") return NextResponse.json({ error: "素材不存在或尚未就绪" }, { status: 404 });
+      const currentProject = tx.select().from(projects).where(eq(projects.id, id)).get();
+      if (!currentProject) return NextResponse.json({ error: "Project not found" }, { status: 404 });
       const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)).all();
       const script = resolveCurrentScript(scriptRows);
-      const currentProject = tx.select().from(projects).where(eq(projects.id, id)).get();
-      if (isTideweOutdoorProfile(currentProject?.creativeProfile) || script?.styleType === "tidewe_outdoor" || script?.copyDocument != null) {
-        const context = currentProject && script ? checkCreativeProfileContext(currentProject, script) : null;
-        if (!currentProject || !script || !context?.ok) throw new AssetContextConflictError();
+      if (isPremiumProductCgProject(currentProject)) {
+        if (!script) {
+          return premiumCgConflict(
+            req,
+            PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
+            "高端产品 CG 需要当前脚本和可验证来源的镜头素材。",
+            "Premium product CG requires a current script and a take with verifiable provenance.",
+          );
+        }
+        const context = checkCreativeProfileContext(currentProject, script);
+        if (!context.ok) {
+          return NextResponse.json({
+            error: context.code === "CREATIVE_CONFIG_STALE"
+              ? "The script was created with an outdated creative configuration. Regenerate a current script before selecting an asset."
+              : "The script does not match the project's current creative type. Generate a current script before selecting an asset.",
+            code: context.code,
+            currentCreationType: context.projectProfile.creationType,
+            scriptCreationType: context.scriptProfile.creationType,
+            projectRevision: context.projectRevision,
+            scriptRevision: context.scriptRevision,
+          }, { status: 409 });
+        }
+        if (!hasTrustedPremiumCgAssetProvenance(target, id, script)) {
+          return premiumCgConflict(
+            req,
+            PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
+            "高端产品 CG 只能采用由受控分镜或 Kling 流程生成且与当前脚本匹配的素材。",
+            "Premium product CG can only select a current-script take generated by the controlled storyboard or Kling flow.",
+          );
+        }
+      }
+      if (isTideweOutdoorProfile(currentProject.creativeProfile) || script?.styleType === "tidewe_outdoor" || script?.copyDocument != null) {
+        const context = script ? checkCreativeProfileContext(currentProject, script) : null;
+        if (!script || !context?.ok) throw new AssetContextConflictError();
         try { assertTideweScript(script, isTideweOutdoorProfile(context.scriptProfile) ? context.scriptProfile.presenter ?? null : undefined); }
         catch { throw new AssetContextConflictError("The current TIDEWE script is invalid. Regenerate it before selecting assets."); }
       }
@@ -249,8 +247,8 @@ export async function PATCH(
       const candidates = tx.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.shotId, target.shotId))).all();
       for (const candidate of filterAssetsForScript(candidates, script)) tx.update(assets).set({ selected: false }).where(eq(assets.id, candidate.id)).run();
       tx.update(assets).set({ selected: true }).where(eq(assets.id, target.id)).run();
+      return NextResponse.json({ ...target, selected: true });
     }, { behavior: "immediate" });
-    return NextResponse.json({ ...target, selected: true });
   } catch (error) {
     if (error instanceof AssetContextConflictError) return NextResponse.json({ error: errText(req, "脚本或创作配置已变化，请刷新后重新选择素材。", error.message), code: error.code }, { status: 409 });
     const message = error instanceof Error ? error.message : "切换素材失败";

@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import { useRef, useState, type ReactNode } from "react";
-import { LuLoaderCircle, LuX } from "react-icons/lu";
+import { LuLoaderCircle, LuSparkles, LuX } from "react-icons/lu";
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useT } from "@/lib/i18n";
 
@@ -45,14 +46,18 @@ export function AssetImagePreview({
   src,
   alt,
   shotId,
+  title,
   className,
   children,
+  onRefine,
 }: {
   src: string;
   alt: string;
   shotId: number;
+  title?: string;
   className?: string;
   children: ReactNode;
+  onRefine?: () => void;
 }) {
   const t = useT("assets");
   const [open, setOpen] = useState(false);
@@ -63,7 +68,7 @@ export function AssetImagePreview({
       <button
         ref={triggerRef}
         type="button"
-        aria-label={t("viewOriginalImage", { shot: shotId })}
+        aria-label={title ?? t("viewOriginalImage", { shot: shotId })}
         aria-haspopup="dialog"
         className={`${className ?? ""} cursor-zoom-in focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary`}
         onClick={() => setOpen(true)}
@@ -77,15 +82,23 @@ export function AssetImagePreview({
           finalFocus={triggerRef}
         >
           <div className="flex items-center justify-between gap-4">
-            <DialogTitle>{t("imagePreviewTitle", { shot: shotId })}</DialogTitle>
-            <button
-              type="button"
-              aria-label={t("closeImagePreview")}
-              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
-              onClick={() => setOpen(false)}
-            >
-              <LuX className="h-5 w-5" aria-hidden="true" />
-            </button>
+            <DialogTitle>{title ?? t("imagePreviewTitle", { shot: shotId })}</DialogTitle>
+            <div className="flex items-center gap-2">
+              {onRefine && (
+                <Button size="sm" variant="outline" onClick={() => { setOpen(false); onRefine(); }}>
+                  <LuSparkles className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                  {t("keyframeRefine")}
+                </Button>
+              )}
+              <button
+                type="button"
+                aria-label={t("closeImagePreview")}
+                className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
+                onClick={() => setOpen(false)}
+              >
+                <LuX className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
           </div>
           {open && <OriginalImage key={src} src={src} alt={alt} />}
         </DialogContent>

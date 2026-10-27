@@ -270,10 +270,10 @@ describe("durable Kling film runner", () => {
     expect(state.dispatch).toHaveBeenCalledTimes(2);
   });
 
-  it("stops before dispatch if the script revision changes after confirmation", async () => {
+  it("continues the confirmed film when the same script revision changes", async () => {
     await start(); getDb().update(scripts).set({ version: 2 }).where(eq(scripts.id, "script")).run();
     await runKlingFilmTick();
-    expect(getKlingFilm("film").status).toBe("needs_attention"); expect(state.dispatch).not.toHaveBeenCalled();
+    expect(getKlingFilm("film").status).toBe("running"); expect(state.dispatch).toHaveBeenCalledTimes(2);
   });
 
   it("retries a failed local composition without creating any new paid jobs", async () => {

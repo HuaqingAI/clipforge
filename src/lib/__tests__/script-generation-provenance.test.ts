@@ -111,14 +111,17 @@ describe("script generation provenance", () => {
     expect((await response.json()).scripts[0].generationMetadata).toEqual(row.generationMetadata);
   });
 
-  it("appends a new immutable script revision when commerce scripts are regenerated", async () => {
+  it("appends an immutable script generation even if only the project configuration counter changes", async () => {
     const first = await commerceScript(request("/api/llm/script", {
       projectId, productName: "Portable blender", productAnalysis: "Already analyzed", insightMode: false, llmConfig,
     }));
     expect(first.status).toBe(200);
     const original = db.select().from(schema.scripts).where(eq(schema.scripts.selected, true)).get()!;
 
-    generation.commerce.mockResolvedValueOnce([{ ...generated, title: "Regenerated script" }]);
+    generation.commerce.mockImplementationOnce(async () => {
+      db.update(schema.projects).set({ creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+      return [{ ...generated, title: "Regenerated script" }];
+    });
     const second = await commerceScript(request("/api/llm/script", {
       projectId, productName: "Portable blender", productAnalysis: "Already analyzed", insightMode: false, llmConfig,
     }));
@@ -131,6 +134,8 @@ describe("script generation provenance", () => {
     expect(rows.find((row) => row.selected)).toMatchObject({ version: 2, title: "Regenerated script" });
     expect(rows.find((row) => row.id === original.id)?.creativeProfileSnapshot)
       .toEqual(original.creativeProfileSnapshot);
+    expect(rows.find((row) => row.selected)?.creativeProfileSnapshot?.creativeConfigRevision).toBe(0);
+    expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeConfigRevision).toBe(1);
   });
 
   it("archives a late script result without selecting it after the creative profile changes", async () => {
@@ -153,7 +158,7 @@ describe("script generation provenance", () => {
       projectId, productName: "Portable blender", productAnalysis: "Already analyzed", insightMode: false, llmConfig,
     }));
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: "CREATIVE_CONFIG_STALE" });
+    expect(await response.json()).toMatchObject({ code: "SCRIPT_CONTEXT_CHANGED" });
     const rows = db.select().from(schema.scripts).where(eq(schema.scripts.projectId, projectId)).all();
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.id === "previous-selection")?.selected).toBe(true);
@@ -243,7 +248,7 @@ describe("script generation provenance", () => {
     });
   });
 
-  it("does not select a same-type script whose creative configuration revision is stale", async () => {
+  it("selects a same-project same-type alternative without changing its frozen configuration", async () => {
     const profile = createPremiumProductCgProfile({ narrationMode: "none" });
     db.update(schema.projects)
       .set({ creativeProfile: profile, creativeConfigRevision: 2 })
@@ -261,14 +266,11 @@ describe("script generation provenance", () => {
       request(`/api/project/${projectId}/scripts`, { selectedScriptId: "stale-cg-script" }),
       { params: Promise.resolve({ id: projectId }) },
     );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      code: "CREATIVE_CONFIG_STALE",
-      currentCreationType: "premium_product_cg",
-      scriptCreationType: "premium_product_cg",
-      projectRevision: 2,
-      scriptRevision: 1,
-    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, script: { id: "stale-cg-script", selected: true } });
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, "stale-cg-script")).get())
+      .toMatchObject({ selected: true, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) });
+    expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeConfigRevision).toBe(2);
   });
 
   it("persists topic model provenance with the original shots", async () => {

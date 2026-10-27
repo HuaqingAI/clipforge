@@ -568,7 +568,7 @@ describe("premium product CG composition policy", () => {
     }
   });
 
-  it("rejects a selected script whose frozen creative type or configuration is stale", async () => {
+  it("rejects a different creative type and composes the same script with an earlier configuration", async () => {
     setShots([{ source: "audible" }]);
     const profile = createPremiumProductCgProfile();
     const script = db.select().from(schema.scripts).get()!;
@@ -578,17 +578,21 @@ describe("premium product CG composition policy", () => {
         styleType: "premium_product_cg",
         creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 2),
       }).where(eq(schema.scripts.id, script.id)).run();
-      let response = await requestCompose();
+      const response = await requestCompose();
       expect(response.status).toBe(409);
       expect((await response.json()).code).toBe("CREATIVE_PROFILE_MISMATCH");
+      expect(state.render).not.toHaveBeenCalled();
 
       db.update(schema.scripts).set({
         creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
       }).where(eq(schema.scripts.id, script.id)).run();
-      response = await requestCompose();
-      expect(response.status).toBe(409);
-      expect((await response.json()).code).toBe("CREATIVE_CONFIG_STALE");
-      expect(state.render).not.toHaveBeenCalled();
+      await markSelectedAssetsAsTrustedPremiumCg();
+      const { config } = await compose();
+      expect(state.render).toHaveBeenCalledTimes(1);
+      expect(config.clips[0].hasAudio).toBe(false);
+      expect(state.freeTts).not.toHaveBeenCalled();
+      expect(state.paidTts).not.toHaveBeenCalled();
+      expect(db.select().from(schema.scripts).get()?.creativeProfileSnapshot?.creativeConfigRevision).toBe(1);
     } finally {
       db.update(schema.projects).set({ creativeProfile: null, creativeConfigRevision: 0 }).where(eq(schema.projects.id, projectId)).run();
     }

@@ -258,7 +258,14 @@ export async function PATCH(
         if ("error" in profileResult) {
           return NextResponse.json({ error: profileResult.error }, { status: 400 });
         }
-        // Identity only means restore the saved configuration for the selected creation type.
+        if (profileResult.profile.creationType !== currentProfile.creationType) {
+          return NextResponse.json({
+            error: errText(req, "创作类型确定后不可修改，请新建项目选择其他类型。", "Creation type cannot be changed after it is selected. Create a new project to use another type."),
+            code: "CREATION_TYPE_LOCKED",
+            creationType: currentProfile.creationType,
+          }, { status: 400 });
+        }
+        // Identity-only saves retain the saved settings for the project's fixed creation type.
         nextProfile = hasProfileSettings(profileInput)
           ? profileResult.profile
           : profileResult.profile.creationType === "premium_product_cg"

@@ -10,6 +10,8 @@ export interface PremiumCgAssetCandidate {
   filePath?: unknown;
   provider?: unknown;
   prompt?: unknown;
+  derivedFromAssetId?: unknown;
+  sourceKeyframeUrl?: unknown;
   sourceScriptId?: unknown;
   sourceShotKey?: unknown;
   sourceRevision?: unknown;
@@ -56,9 +58,21 @@ export function hasTrustedPremiumCgAssetProvenance(
     `^/api/files/${escapeRegex(projectId)}/asset-${asset.shotId}-\\d+-grid\\.(?:png|jpe?g|webp)$`,
     "i",
   );
-  return gridPath.test(asset.filePath)
+  if (gridPath.test(asset.filePath)
     && typeof asset.prompt === "string"
-    && asset.prompt.startsWith("[storyboard-grid");
+    && asset.prompt.startsWith("[storyboard-grid")) return true;
+
+  const refinementPath = new RegExp(
+    `^/api/files/${escapeRegex(projectId)}/keyframe-refine-${asset.shotId}-\\d+-[a-f0-9]{8}\\.(?:png|jpe?g|webp)$`,
+    "i",
+  );
+  return refinementPath.test(asset.filePath)
+    && typeof asset.prompt === "string"
+    && asset.prompt.startsWith("[keyframe-refine-v1]")
+    && typeof asset.derivedFromAssetId === "string"
+    && Boolean(asset.derivedFromAssetId)
+    && typeof asset.sourceKeyframeUrl === "string"
+    && asset.sourceKeyframeUrl.startsWith(projectFiles);
 }
 
 export function filterTrustedPremiumCgAssets<T extends PremiumCgAssetCandidate>(

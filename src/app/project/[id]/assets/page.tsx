@@ -9,6 +9,7 @@ import { KlingShotGenerator } from "@/components/kling-shot-generator";
 import { ApiShotGenerator, VideoGenerationFailure } from "@/components/video-generation-dialog";
 import { StoryboardFilmPanel } from "@/components/storyboard-film-panel";
 import { BatchMotionPanel } from "@/components/batch-motion-panel";
+import { KeyframeRefinementDialog } from "@/components/keyframe-refinement-dialog";
 import type { BatchMotionDraft } from "@/lib/batch-motion";
 import { klingFetch, klingErrorMessage } from "@/lib/kling/client";
 import type { KlingJobView } from "@/lib/kling/job-types";
@@ -17,7 +18,7 @@ import type { KlingPublicStatus } from "@/lib/kling/types";
 
 import { Suspense, useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { LuZap, LuCheck, LuCircleX, LuImage, LuArrowRight, LuLoaderCircle, LuTriangleAlert, LuUpload, LuScissors, LuPlay, LuFileText } from "react-icons/lu";
+import { LuZap, LuCheck, LuCircleX, LuImage, LuArrowRight, LuLoaderCircle, LuTriangleAlert, LuUpload, LuScissors, LuPlay, LuFileText, LuSparkles } from "react-icons/lu";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -234,6 +235,12 @@ function AssetsPageContent() {
   const [isGridGenerating, setIsGridGenerating] = useState(false);
   const [gridResolution, setGridResolution] = useState<StoryboardGridResolution>(DEFAULT_STORYBOARD_GRID_RESOLUTION);
   const [gridNotice, setGridNotice] = useState<string | null>(null);
+  const [keyframeRefinement, setKeyframeRefinement] = useState<{
+    scriptId: string;
+    initialShotId?: number;
+    shots: Array<{ assetId: string; shotId: number; imageUrl: string; description: string }>;
+  } | null>(null);
+  const [keyframeRefinementBusy, setKeyframeRefinementBusy] = useState(false);
   // on-camera presenter from the character library; their multi-view sheet rides the
   // grid and film passes as an identity reference so the person stops morphing
   const { characters: presenterLib } = useCharacterStore();
@@ -272,6 +279,14 @@ function AssetsPageContent() {
   // Premium CG always starts from the supplied product reference. Sales users may still
   // choose a freer text-to-image treatment through the existing toggle.
   const productReferenceLocked = premiumCg || tidewe || productSafe;
+  const refinableShots = assets.flatMap((asset) => asset.assetId && asset.status === "done" && !asset.isVideo
+    && asset.thumbnailUrl && !/\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(asset.thumbnailUrl)
+    ? [{ assetId: asset.assetId, shotId: asset.shotId, imageUrl: asset.thumbnailUrl, description: asset.description }]
+    : []);
+  const openKeyframeRefinement = (initialShotId?: number) => {
+    if (!scriptId || !refinableShots.length || keyframeRefinementBusy || isGridGenerating || isBatchGenerating || batchMotionBusy) return;
+    setKeyframeRefinement({ scriptId, shots: refinableShots, ...(initialShotId !== undefined && { initialShotId }) });
+  };
   motionContext.current = { scriptId, scriptHash, configurationKey: videoConfigurationKey, assets };
   const batchMotionValid = Boolean(batchMotion && batchMotion.scriptId === scriptId && batchMotion.configurationKey === videoConfigurationKey);
 
@@ -1282,6 +1297,14 @@ function AssetsPageContent() {
     <div className="min-h-screen grid-bg">
       {/* project context strip: name + step navigation (global chrome lives in AppShell) */}
       <ProjectHeader projectName={projectName || t("untitledProject")} />
+      {keyframeRefinement && <KeyframeRefinementDialog
+        key={`${id}:${keyframeRefinement.scriptId}`}
+        open={keyframeRefinement.scriptId === scriptId}
+        onOpenChange={(open) => { if (!open) setKeyframeRefinement(null); }}
+        projectId={id} scriptId={keyframeRefinement.scriptId}
+        shots={keyframeRefinement.shots} initialShotId={keyframeRefinement.initialShotId}
+        modelTarget={modelTarget} onApplied={reloadAssets} onBusyChange={setKeyframeRefinementBusy}
+      />}
       <KlingShotGenerator
         open={motionDraftValid && motionDraft?.provider === "kling-cli"}
         onOpenChange={(open) => { if (!open) finishMotionDraft(); }}
@@ -1446,6 +1469,15 @@ function AssetsPageContent() {
                     </div>
                   )}
                   <Button
+                    onClick={() => openKeyframeRefinement()}
+                    disabled={!scriptId || !refinableShots.length || isGridGenerating || isBatchGenerating || batchMotionBusy || keyframeRefinementBusy || motionShots.size > 0}
+                    variant="outline"
+                    className="text-xs"
+                    title={t("keyframeRefineTip")}
+                  >
+                    <LuSparkles className="mr-1.5 h-3.5 w-3.5" />{t("keyframeRefineBatch")}
+                  </Button>
+                  <Button
                     onClick={openBatchMotion}
                     disabled={!batchReady || isGridGenerating || isBatchGenerating || preparingBatchMotion || batchMotionBusy || motionShots.size > 0}
                     variant="outline"
@@ -1482,6 +1514,7 @@ function AssetsPageContent() {
         {uiMode === "pro" && (
           <p id="storyboard-grid-resolution-hint" className="-mt-2 mb-4 text-xs leading-relaxed text-muted-foreground">
             {t("gridResolutionHint")}
+            {" "}{t("keyframeRefineFlow")}
           </p>
         )}
 
@@ -1491,9 +1524,6 @@ function AssetsPageContent() {
         {uiMode === "pro" && (
         <div className="mb-6 flex flex-wrap items-center gap-2 rounded-xl border border-border/50 bg-muted/10 px-3 py-2.5">
           <span className="mr-1 text-xs font-semibold tracking-wide text-muted-foreground">{t("directorPanel")}</span>
-          <Link href={`/project/${id}/production`} className="inline-flex h-8 items-center rounded-full border border-primary/30 bg-primary/10 px-3 text-xs font-medium text-primary transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-            {t("productionConsole")}
-          </Link>
           {/* Presenter picker: characters from the library; ones with a multi-view sheet
               anchor the person's identity through the grid and film passes */}
           {!premiumCg && !tidewe && presenterLib.length > 0 && (
@@ -1910,9 +1940,14 @@ function AssetsPageContent() {
                           </div>
                           )}
                           {asset.prompt && (
-                            <p className="text-xs text-muted-foreground bg-muted/20 rounded px-2 py-1.5 mb-2 line-clamp-2">
+                            <div
+                              role="region"
+                              aria-label="Prompt"
+                              tabIndex={0}
+                              className="text-xs text-muted-foreground bg-muted/20 rounded px-2 py-1.5 mb-2 max-h-40 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                            >
                               {t("promptLabel", { prompt: asset.prompt })}
-                            </p>
+                            </div>
                           )}
                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
                             <span>
@@ -1952,6 +1987,7 @@ function AssetsPageContent() {
                                   src={asset.thumbnailUrl}
                                   alt={t("assetPreviewAlt")}
                                   shotId={asset.shotId}
+                                  onRefine={asset.assetId && !asset.isVideo && !batchMotionBusy && !isBatchGenerating && !isGridGenerating && !motionShots.has(asset.shotId) ? () => openKeyframeRefinement(asset.shotId) : undefined}
                                   className="block h-full w-full"
                                 >
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2018,6 +2054,16 @@ function AssetsPageContent() {
                             </Button>
                           )}
                           {/* convert to motion shot: existing image asset → image-to-video (real camera moves). Product close-up shots are best kept static to avoid distortion */}
+                          {asset.status === "done" && asset.assetId && asset.thumbnailUrl && !asset.isVideo && (
+                            <Button
+                              variant="outline" size="sm" className="text-xs w-24"
+                              disabled={batchMotionBusy || keyframeRefinementBusy || isBatchGenerating || isGridGenerating || motionShots.has(asset.shotId)}
+                              onClick={() => openKeyframeRefinement(asset.shotId)}
+                              title={t("keyframeRefineTip")}
+                            >
+                              <LuSparkles className="w-3 h-3 mr-1" />{t("keyframeRefine")}
+                            </Button>
+                          )}
                           {asset.status === "done" && asset.thumbnailUrl && !asset.isVideo && (
                             <Button
                               variant="ghost"

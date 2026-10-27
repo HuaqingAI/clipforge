@@ -181,7 +181,7 @@ function creativeProfileContextError(context: ReturnType<typeof checkCreativePro
     context.code,
     context.code === "CREATIVE_CONFIG_STALE"
       ? "脚本基于旧的创作配置，请重新生成脚本后再生成视频。"
-      : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+      : "当前脚本与项目创作类型不匹配，请刷新后重新生成脚本。",
     409,
   );
 }
@@ -316,8 +316,16 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
   const allScripts = db.select().from(scripts).where(eq(scripts.projectId, request.projectId)).all();
   const script = resolveCurrentScript(allScripts);
-  const shot = script?.shots?.find((item) => item.shotId === request.shotId);
-  if (!script || script.id !== request.scriptId || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
+  const currentShot = script?.shots?.find((item) => item.shotId === request.shotId);
+  if (!script || script.id !== request.scriptId || !currentShot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
+  const parent = film ? db.select().from(klingFilmRuns).where(eq(klingFilmRuns.id, film.filmRunId)).get() : undefined;
+  if (film && (!parent || parent.projectId !== project.id || parent.scriptId !== script.id || parent.principalKey !== profile.principalKey)) {
+    throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片父任务不存在或账号、项目、脚本不一致", 409);
+  }
+  // An approved film keeps its reviewed shot even when the same script is edited.
+  const frozenShot = parent?.data.scriptSnapshot.shots.find((item) => item.shotId === request.shotId);
+  if (parent && !frozenShot) throw new KlingError("KLING_FILM_CONTEXT_INVALID", "当前镜头不属于已确认的整片计划", 409);
+  const shot = frozenShot ?? currentShot;
   const creativeContext = assertCreativeProfileContext(project, script);
   const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
   const tidewe = isTideweOutdoorProfile(creativeContext.projectProfile);
@@ -424,8 +432,8 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     }
     if (accountJobs.filter(klingJobOccupiesGenerationSlot).length >= KLING_MAX_CONCURRENT_SHOTS) throw concurrencyLimit();
     const latestProject = tx.select().from(projects).where(eq(projects.id, request.projectId)).get();
-    const latestScript = tx.select().from(scripts).where(eq(scripts.id, script.id)).get();
-    if (!latestScript || scriptRevision(latestScript) !== data.scriptRevision) throw new KlingError("KLING_CONTEXT_CHANGED", "准备期间脚本已变化，请重新确认", 409);
+    const latestScript = resolveCurrentScript(tx.select().from(scripts).where(eq(scripts.projectId, request.projectId)).all());
+    if (!latestScript || latestScript.id !== script.id || !latestScript.shots?.some((item) => item.shotId === request.shotId)) throw new KlingError("KLING_CONTEXT_CHANGED", "准备期间所选脚本或镜头已变化，请重新确认", 409);
     if (!latestProject) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
     assertCreativeProfileContext(latestProject, latestScript);
     tx.insert(klingJobs).values({
@@ -488,15 +496,19 @@ function assertCurrentContext(job: KlingJob): void {
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在，已阻止首次生成。", 404);
   const rows = db.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
   const selected = resolveCurrentScript(rows);
-  if (!selected || selected.id !== job.scriptId || scriptRevision(selected) !== job.data.scriptRevision) throw new KlingError("KLING_CONTEXT_CHANGED", "原脚本或所选脚本已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
+  const currentShot = selected?.shots?.find((item) => item.shotId === job.shotId);
+  if (!selected || selected.id !== job.scriptId || !currentShot) throw new KlingError("KLING_CONTEXT_CHANGED", "原脚本或所选镜头已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
+  // Content revisions are audit metadata. The paid request retains its reviewed payload.
+  const shot = job.data.videoPromptAudit?.sourceShot ?? currentShot;
+  if (shot.shotId !== job.shotId) throw new KlingError("KLING_CONTEXT_CHANGED", "待提交镜头不属于原任务。", 409);
   const creativeContext = assertCreativeProfileContext(project, selected);
   if (job.data.promptContext) {
-    try { assertReviewedVideoPrompt(job.projectId, job.data.promptContext, job.data.prompt, { scriptId: job.scriptId, shotId: job.shotId, provider: "kling-cli", model: job.data.model.selectionKey }); }
-    catch (error) { if (error instanceof VideoPromptError) throw new KlingError("KLING_" + error.code, error.message, error.status); throw error; }
+    const receipt = job.data.promptContext;
+    if (receipt.scriptId !== job.scriptId || receipt.shotId !== job.shotId || receipt.provider !== "kling-cli" || receipt.model !== job.data.model.selectionKey) {
+      throw new KlingError("KLING_VIDEO_PROMPT_CONTEXT_CHANGED", "已确认的提示词不属于当前脚本、镜头或模型。", 409);
+    }
   }
   if (isPremiumProductCgProfile(creativeContext.projectProfile)) {
-    const shot = selected.shots?.find((item) => item.shotId === job.shotId);
-    if (!shot) throw new KlingError("KLING_CONTEXT_CHANGED", "原镜头已变化，已阻止首次生成。请取消此待提交作业并重新确认。", 409);
     const issues = lintCreativeProfileShot(creativeContext.projectProfile, shot);
     if (issues.length) throw new KlingError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 不能包含画面文字、营销图形或不符合旁白策略的内容。", 422);
     if (job.data.model.tool !== "image_to_video") throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的高端产品 CG 必须使用图生视频模型，请重新创建任务。", 422);
@@ -521,7 +533,6 @@ function assertCurrentContext(job: KlingJob): void {
     const refs = job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl }));
     const bound = validateTideweVideoInputs(project, selected, job.shotId, job.data.model, job.data.model.tool === "image_to_video" ? "image-to-video" : "text-to-video", refs);
     if (canonicalJson(bound) !== canonicalJson(refs)) throw new KlingError("TIDEWE_PRESENTER_REFERENCE_INVALID", "待提交镜头缺少脚本中冻结的主播参考，请重新准备关键帧或任务。", 422);
-    const shot = selected.shots!.find((item) => item.shotId === job.shotId)!;
     const compiled = compileTideweVisualPrompt(shot, "video", creativeContext.projectProfile.speechMode, creativeContext.projectProfile.presenter);
     if (!job.data.filmRunId && !job.data.promptContext) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 单镜缺少提示词预览，请重新创建任务。", 409);
     if (job.data.filmRunId && job.data.prompt !== compiled.prompt) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 整片镜头未使用当前脚本的服务端视觉提示词。", 422);
@@ -529,6 +540,10 @@ function assertCurrentContext(job: KlingJob): void {
     if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头未满足当前口播及视觉提示词策略，请重新创建任务。", 422);
     const expectedArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, expectedOptions, job.data.inputs, job.id);
     if (canonicalJson(expectedArgs) !== canonicalJson(job.data.args)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头参数已失去服务端约束，请重新创建任务。", 422);
+  }
+  if (job.data.promptContext) {
+    const frozenArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, job.data.options, job.data.inputs, job.id);
+    if (canonicalJson(frozenArgs) !== canonicalJson(job.data.args)) throw new KlingError("KLING_VIDEO_PROMPT_CONTEXT_CHANGED", "已确认的提示词与待提交参数不一致。", 409);
   }
   const scopedActive = filterAssetsForScript(
     db.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(),

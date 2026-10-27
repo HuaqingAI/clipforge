@@ -62,12 +62,17 @@ describe("TIDEWE asset source context", () => {
     expect(db.select().from(schema.assets).all()).toMatchObject([{ id: "recast-asset", selected: false }]);
   });
 
-  it.each([{ shotId: 1, sourceUrl: "old-task.png" }, { shotId: 1, sourceUrl: "old-task.png", scriptId: "script-current" }])("rejects old task saves without their original script hash", async (body) => {
-    const response = await POST(request(body), context());
+  it("requires the originating script ID without requiring a version hash", async () => {
+    const response = await POST(request({ shotId: 1, sourceUrl: "old-task.png" }), context());
     expect(response.status).toBe(400);
     expect((await response.json()).code).toBe("TIDEWE_ASSET_CONTEXT_REQUIRED");
     expect(state.persist).not.toHaveBeenCalled();
     expect(db.select().from(schema.assets).all()).toHaveLength(0);
+  });
+  it("saves a same-script output without a version hash", async () => {
+    const response = await POST(request({ shotId: 1, sourceUrl: "old-task.png", scriptId: "script-current" }), context());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ sourceScriptId: "script-current", selected: true });
   });
   it("saves current output with the exact source script and revision", async () => {
     const body = payload();
@@ -75,15 +80,15 @@ describe("TIDEWE asset source context", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ sourceScriptId: body.scriptId, sourceRevision: body.expectedScriptHash, sourceShotKey: assetScopeForShot(current(), shot).sourceShotKey, selected: true });
   });
-  it("rejects an output created before a visual edit", async () => {
+  it("saves a same-script output created before a visual edit", async () => {
     const body = payload();
     db.update(schema.scripts).set({ shots: [{ ...shot, camera: "缓慢前推镜头" }] }).where(eq(schema.scripts.id, body.scriptId)).run();
     const response = await POST(request(body), context());
-    expect(response.status).toBe(409);
-    expect((await response.json()).code).toBe("SCRIPT_CONTEXT_CHANGED");
-    expect(state.persist).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ sourceScriptId: body.scriptId, selected: true });
+    expect(state.persist).toHaveBeenCalledOnce();
   });
-  it.each(["script", "configuration"])("does not insert or select an asset when its %s changes during download", async (change) => {
+  it.each(["script", "configuration"])("continues saving when the same alternative's %s revision changes during download", async (change) => {
     const body = payload();
     state.persist.mockImplementationOnce(async () => {
       if (change === "script") db.update(schema.scripts).set({ shots: [{ ...shot, camera: "缓慢后拉镜头" }] }).where(eq(schema.scripts.id, body.scriptId)).run();
@@ -91,8 +96,17 @@ describe("TIDEWE asset source context", () => {
       return `/api/files/${projectId}/late.png`;
     });
     const response = await POST(request(body), context());
-    expect(response.status).toBe(409);
-    expect((await response.json()).code).toBe("SCRIPT_CONTEXT_CHANGED");
+    expect(response.status).toBe(200);
+    expect(db.select().from(schema.assets).all()).toMatchObject([{ sourceScriptId: body.scriptId, sourceRevision: body.expectedScriptHash, selected: true }]);
+  });
+  it("rejects a selected alternative change during download", async () => {
+    const body = payload();
+    state.persist.mockImplementationOnce(async () => {
+      db.update(schema.scripts).set({ selected: false }).run();
+      db.insert(schema.scripts).values({ ...current(), id: "script-new", selected: true }).run();
+      return `/api/files/${projectId}/late.png`;
+    });
+    expect((await POST(request(body), context())).status).toBe(409);
     expect(db.select().from(schema.assets).all()).toHaveLength(0);
   });
   it("rejects a completed output if another script becomes selected", async () => {
@@ -102,13 +116,12 @@ describe("TIDEWE asset source context", () => {
     expect((await POST(request(body), context())).status).toBe(409);
     expect(db.select().from(schema.assets).all()).toHaveLength(0);
   });
-  it("refuses asset selection after product facts invalidate the script context", async () => {
+  it("allows selecting an existing same-script take after a project revision changes", async () => {
     db.insert(schema.assets).values({ id: "old-take", projectId, shotId: 1, type: "ai_generated", status: "done", selected: false, ...assetScopeForShot(current(), shot) }).run();
     db.update(schema.projects).set({ creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
     const response = await PATCH(request({ assetId: "old-take" }, "PATCH"), context());
-    expect(response.status).toBe(409);
-    expect((await response.json()).code).toBe("SCRIPT_CONTEXT_CHANGED");
-    expect(db.select().from(schema.assets).get()?.selected).toBe(false);
+    expect(response.status).toBe(200);
+    expect(db.select().from(schema.assets).get()?.selected).toBe(true);
   });
   it("retains the legacy sales save protocol without a source hash", async () => {
     db.delete(schema.scripts).run();

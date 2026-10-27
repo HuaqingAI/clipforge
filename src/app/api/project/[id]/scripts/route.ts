@@ -19,8 +19,7 @@ function scriptView<T extends Parameters<typeof scriptRevision>[0]>(script: T) {
   return { ...script, scriptHash: scriptRevision(script) };
 }
 
-// Historical variants remain readable after regeneration or a profile switch. Selection and edits
-// are limited to scripts whose frozen creative context matches the current project configuration.
+// Saved alternatives keep their own policy and remain usable after project settings edits.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -152,7 +151,7 @@ export async function PATCH(
     const payload = body as Record<string, unknown>;
 
     if ("copyText" in payload) {
-      if (typeof payload.scriptId !== "string" || typeof payload.expectedScriptHash !== "string") return apiError(req, "修改全文需要源脚本及其修订", "A source script and expectedScriptHash are required", 400);
+      if (typeof payload.scriptId !== "string" || !payload.scriptId.trim()) return apiError(req, "修改全文需要源脚本", "A source script is required", 400);
       const project = getDb().select().from(projects).where(eq(projects.id, id)).get();
       if (!project) return apiError(req, "项目不存在", "Project not found", 404);
       if (!isTideweOutdoorProfile(project.creativeProfile)) return apiError(req, "当前创作类型不支持此全文协议", "This full-copy editing protocol requires a TIDEWE project", 400);
@@ -234,7 +233,7 @@ export async function PATCH(
       for (const patch of shotTexts) {
         if (patch && typeof patch.shotId === "number") patchByShot.set(patch.shotId, patch);
       }
-      const shots = (script.shots ?? []).map((shot) => {
+      const patchShots = (source: NonNullable<typeof script.shots>) => source.map((shot) => {
         const patch = patchByShot.get(shot.shotId);
         if (!patch) return shot;
         return {
@@ -244,17 +243,20 @@ export async function PATCH(
           ...(typeof patch.camera === "string" && { camera: patch.camera.trim().slice(0, CAMERA_MAX_LEN) }),
         };
       });
+      const shots = patchShots(script.shots ?? []);
 
       const profile = context.scriptProfile;
       if (isTideweOutdoorProfile(profile)) {
         if (shotTexts.some((patch) => patch && Object.prototype.hasOwnProperty.call(patch, "voiceover"))) return NextResponse.json({ error: "Edit the complete narration and replan its shots.", code: "TIDEWE_COPY_DOCUMENT_REQUIRED" }, { status: 409 });
-        if (payload.expectedScriptHash !== scriptRevision(script) || payload.expectedCreativeConfigRevision !== project.creativeConfigRevision) return NextResponse.json({ error: "The script or configuration changed. Refresh before editing.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
-        assertTideweScript({ ...script, shots }, profile.presenter ?? null);
         return db.transaction((tx) => {
           const current = tx.select().from(scripts).where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id))).get();
           const currentProject = tx.select().from(projects).where(eq(projects.id, id)).get();
-          if (!current || !currentProject || scriptRevision(current) !== payload.expectedScriptHash || currentProject.creativeConfigRevision !== payload.expectedCreativeConfigRevision) return NextResponse.json({ error: "The script or configuration changed. Refresh before editing.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
-          const updated = tx.update(scripts).set({ shots }).where(eq(scripts.id, scriptId)).returning().get()!;
+          if (!current || !currentProject) return apiError(req, "脚本或项目不存在", "Script or project not found", 404);
+          const currentContext = checkCreativeProfileContext(currentProject, current);
+          if (!currentContext.ok) return NextResponse.json(contextConflict(currentContext), { status: 409 });
+          const currentShots = patchShots(current.shots ?? []);
+          assertTideweScript({ ...current, shots: currentShots }, isTideweOutdoorProfile(currentContext.scriptProfile) ? currentContext.scriptProfile.presenter ?? null : undefined);
+          const updated = tx.update(scripts).set({ shots: currentShots }).where(eq(scripts.id, scriptId)).returning().get()!;
           return NextResponse.json({ success: true, script: scriptView(updated) });
         }, { behavior: "immediate" });
       }

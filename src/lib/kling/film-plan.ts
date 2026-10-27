@@ -219,7 +219,7 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
       context.code,
       context.code === "CREATIVE_CONFIG_STALE"
         ? "脚本基于旧的创作配置，请重新生成脚本后再预览整片。"
-        : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+        : "当前脚本与项目创作类型不匹配，请刷新后重新生成脚本。",
     );
   }
   const creativeProfile = context.projectProfile;
@@ -322,10 +322,9 @@ function assertContext(run: KlingFilmRun, shots: KlingFilmShot[]): void {
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, run.projectId)).get();
   if (!project) throw fail("KLING_PROJECT_NOT_FOUND", "整片所属项目已不存在，已停止后续生成。");
-  if (run.data.projectPromptRevision && run.data.projectPromptRevision !== projectPromptRevision(project)) throw fail("KLING_CONTEXT_CHANGED", "项目的视觉方向或一致性要求已变化，请重新预览整片计划。");
   const rows = db.select().from(scripts).where(eq(scripts.projectId, run.projectId)).all();
   const script = resolveCurrentScript(rows);
-  if (!script || script.id !== run.scriptId || scriptRevision(script) !== run.data.scriptRevision || shots.length !== (script.shots?.length ?? 0)) throw fail("KLING_CONTEXT_CHANGED", "整片脚本已变化，请停止原计划并重新预览。");
+  if (!script || script.id !== run.scriptId) throw fail("KLING_CONTEXT_CHANGED", "所选整片脚本已变化，请停止原计划并重新预览。");
   const context = checkCreativeProfileContext(project, script);
   if (!context.ok) {
     throw fail(
@@ -338,13 +337,9 @@ function assertContext(run: KlingFilmRun, shots: KlingFilmShot[]): void {
   if (isTideweOutdoorProfile(context.projectProfile)) {
     try { assertTideweScript(script, context.projectProfile.presenter ?? null); }
     catch (error) { throw fail("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 原文覆盖无效"); }
-    if (contentHash(script.copyDocument) !== contentHash(run.data.scriptSnapshot.copyDocument)) throw fail("KLING_CONTEXT_CHANGED", "TIDEWE 完整文案已变化，请重新预览整片计划。");
   }
-  if (run.data.creativeConfigRevision !== undefined && run.data.creativeConfigRevision !== context.projectRevision) {
-    throw fail("KLING_CONTEXT_CHANGED", "整片计划使用的创作配置版本已过期，请重新预览。");
-  }
-  if (run.data.creativeProfile && contentHash(run.data.creativeProfile) !== contentHash(context.projectProfile)) {
-    throw fail("KLING_CONTEXT_CHANGED", "整片计划使用的创作档案已变化，请重新预览。");
+  if (run.data.creativeProfile && run.data.creativeProfile.id !== context.projectProfile.id) {
+    throw fail("CREATIVE_PROFILE_MISMATCH", "整片计划与所选脚本的创作类型不匹配，请重新预览。");
   }
   const scopedActive = filterAssetsForScript(
     db.select().from(assets).where(and(eq(assets.projectId, run.projectId), eq(assets.selected, true))).all(),
@@ -354,7 +349,8 @@ function assertContext(run: KlingFilmRun, shots: KlingFilmShot[]): void {
     ? filterTrustedPremiumCgAssets(scopedActive, run.projectId, script)
     : scopedActive;
   for (const shot of shots) {
-    if (shot.ordinal < 0 || contentHash(script.shots?.[shot.ordinal]) !== contentHash(shot.data.shot)) throw fail("KLING_CONTEXT_CHANGED", "整片镜头顺序或内容已变化。");
+    // The plan owns order, prompts and copy; the live script only supplies identity.
+    if (shot.ordinal < 0 || !script.shots?.some((item) => item.shotId === shot.shotId) || shot.data.shot.shotId !== shot.shotId) throw fail("KLING_CONTEXT_CHANGED", "整片镜头已不存在或不属于原计划。");
     const selected = active.filter((asset) => asset.shotId === shot.shotId);
     const expected = shot.status === "ready" ? shot.assetId : shot.data.baselineAssetId;
     let matches = selected.length <= 1 && (selected[0]?.id ?? null) === (expected ?? null);

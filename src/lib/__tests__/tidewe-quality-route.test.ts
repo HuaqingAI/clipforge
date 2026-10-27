@@ -81,12 +81,27 @@ describe("TIDEWE quality reference identity", () => {
     expect(db.select().from(schema.generationReviews).get()?.humanDecision).toBe("accepted");
   });
 
-  it.each(["stale configuration", "different frozen presenter"])("refuses human acceptance with %s without selecting the asset", async cause => {
-    if (cause === "different frozen presenter") {
-      const replacement = { ...presenter, referenceImages: [replacementReference] };
-      db.update(schema.projects).set({ creativeConfigRevision: 1 }).run();
-      seedScript({ ...shot, description: `${tidewePresenterAnchor(replacement)}在林中展示装备。`, tidewe: { ...shot.tidewe!, presenter: replacement } });
-    } else seedScript();
+  it("accepts the same-script candidate after project settings and script revisions change", async () => {
+    seedScript();
+    const originalScript = db.select().from(schema.scripts).get()!;
+    const originalAsset = db.select().from(schema.assets).get()!;
+    const review = await (await evaluate()).json();
+    db.update(schema.projects).set({ creativeConfigRevision: 8 }).run();
+    db.update(schema.scripts).set({ version: 3, shots: [{ ...shot, camera: "缓慢前推镜头" }] }).run();
+    const response = await PATCH(new NextRequest(`http://localhost/api/project/${projectId}/quality`, { method: "PATCH",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewId: review.id, decision: "accepted" }) }),
+    { params: Promise.resolve({ id: projectId }) });
+    expect(response.status).toBe(200);
+    expect(db.select().from(schema.assets).get()).toMatchObject({ selected: true, sourceScriptId: originalScript.id,
+      sourceShotKey: originalAsset.sourceShotKey, sourceRevision: originalAsset.sourceRevision });
+    expect(db.select().from(schema.scripts).get()?.creativeProfileSnapshot).toEqual(originalScript.creativeProfileSnapshot);
+    expect(db.select().from(schema.generationReviews).get()?.humanDecision).toBe("accepted");
+  });
+
+  it("refuses human acceptance when the shot presenter differs from its frozen script identity", async () => {
+    const replacement = { ...presenter, referenceImages: [replacementReference] };
+    db.update(schema.projects).set({ creativeConfigRevision: 1 }).run();
+    seedScript({ ...shot, description: `${tidewePresenterAnchor(replacement)}在林中展示装备。`, tidewe: { ...shot.tidewe!, presenter: replacement } });
     const reviewResponse = await evaluate();
     expect(reviewResponse.status).toBe(200);
     const review = await reviewResponse.json();

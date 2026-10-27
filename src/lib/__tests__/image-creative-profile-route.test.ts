@@ -286,21 +286,20 @@ describe("premium image generation profile context", () => {
     expect(state.generateImage).not.toHaveBeenCalled();
   });
 
-  it("rejects a current script whose creative configuration snapshot is stale before billing", async () => {
+  it("generates for the same script with an earlier frozen creative configuration", async () => {
+    const snapshot = createCreativeProfileSnapshot(profile, 1);
     db.update(schema.scripts)
-      .set({ creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) })
+      .set({ creativeProfileSnapshot: snapshot })
       .where(eq(schema.scripts.id, scriptId))
       .run();
 
     const response = await POST(request());
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      code: "CREATIVE_CONFIG_STALE",
-      projectRevision: 2,
-      scriptRevision: 1,
-    });
-    expect(state.generateImage).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(state.generateImage).toHaveBeenCalledTimes(1);
+    expect(state.generateImage).toHaveBeenCalledWith(expect.objectContaining({ referenceImageUrl: productImage }));
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()?.creativeProfileSnapshot).toEqual(snapshot);
+    expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeConfigRevision).toBe(2);
   });
 
   it("rejects an image request after the selected script has changed", async () => {

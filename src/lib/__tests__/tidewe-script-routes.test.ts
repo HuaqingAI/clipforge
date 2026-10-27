@@ -121,19 +121,21 @@ describe("TIDEWE project context", () => {
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.characterId).toBeNull();
   });
 
-  it("restores the saved presenter draft after switching creation types", async () => {
+  it("keeps the saved presenter when a creation type change is rejected", async () => {
     const assigned = await updateProject(req(`/api/project/${projectId}`, {
       creativeProfile: createTideweOutdoorProfile({ presenter: presenterA }), expectedCreativeConfigRevision: 1,
     }, "PATCH"), params());
     expect(assigned.status).toBe(200);
-    expect((await updateProject(req(`/api/project/${projectId}`, {
+    const switched = await updateProject(req(`/api/project/${projectId}`, {
       creativeProfile: { creationType: "short_video_sales" }, expectedCreativeConfigRevision: 2,
-    }, "PATCH"), params())).status).toBe(200);
+    }, "PATCH"), params());
+    expect(switched.status).toBe(400);
+    expect(await switched.json()).toMatchObject({ code: "CREATION_TYPE_LOCKED", creationType: "tidewe_outdoor" });
     const restored = await updateProject(req(`/api/project/${projectId}`, {
-      creativeProfile: { creationType: "tidewe_outdoor" }, expectedCreativeConfigRevision: 3,
+      creativeProfile: { creationType: "tidewe_outdoor" }, expectedCreativeConfigRevision: 2,
     }, "PATCH"), params());
     expect(restored.status).toBe(200);
-    expect(await restored.json()).toMatchObject({ characterId: presenterA.id, creativeConfigRevision: 4, creativeProfile: { presenter: presenterA } });
+    expect(await restored.json()).toMatchObject({ characterId: presenterA.id, creativeConfigRevision: 2, creativeProfile: { presenter: presenterA } });
   });
 
   it("does not silently discard invalid presenter settings supplied through profile drafts", async () => {
@@ -246,7 +248,7 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect((await response.json()).scripts[0].creativeProfileSnapshot.profile.presenter).toEqual(presenterA);
   });
 
-  it("archives inflight results after the presenter changes without stealing the selected script", async () => {
+  it("keeps inflight generation eligible after project presenter settings change", async () => {
     const initial = createTideweOutdoorProfile({ presenter: presenterA });
     db.update(schema.projects).set({ creativeProfile: initial, characterId: presenterA.id }).where(eq(schema.projects.id, projectId)).run();
     const source = seedScript();
@@ -259,11 +261,11 @@ describe("TIDEWE generation, history and concurrency", () => {
       return [generated(copyText, presenterA)];
     });
     const response = await generate(req("/api/llm/script", generationBody("presenter-changed")));
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
     const rows = db.select().from(schema.scripts).all();
     expect(rows).toHaveLength(2);
-    expect(rows.find(row => row.selected)?.id).toBe(source.id);
-    expect(rows.find(row => row.id !== source.id)).toMatchObject({ selected: false,
+    expect(rows.find(row => row.id === source.id)?.selected).toBe(false);
+    expect(rows.find(row => row.id !== source.id)).toMatchObject({ selected: true,
       creativeProfileSnapshot: { creativeConfigRevision: 1, profile: { presenter: presenterA } } });
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeProfile).toMatchObject({ presenter: presenterB });
   });
@@ -282,9 +284,14 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(db.select().from(schema.scripts).all()).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain(llmConfig.apiKey);
   });
-  it("rejects stale or malformed requests before starting a model", async () => {
+  it("accepts an older configuration counter but rejects malformed request identifiers", async () => {
     const response = await generate(req("/api/llm/script", { ...generationBody(), expectedCreativeConfigRevision: 0 }));
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
+    expect(calls.generate).toHaveBeenCalledTimes(1);
+    calls.generate.mockClear();
+    const malformed = await generate(req("/api/llm/script", { ...generationBody("bad") }));
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({ code: "TIDEWE_REQUEST_ID_REQUIRED" });
     expect(calls.generate).not.toHaveBeenCalled();
   });
   it("coalesces concurrent retries into one generation and one saved batch", async () => {
@@ -323,7 +330,9 @@ describe("TIDEWE generation, history and concurrency", () => {
     const newer = await generate(req("/api/llm/script", generationBody("concurrent-newer")));
     expect(newer.status).toBe(200);
     release();
-    expect((await older).status).toBe(409);
+    const lateResponse = await older;
+    expect(lateResponse.status).toBe(409);
+    expect(await lateResponse.json()).toMatchObject({ code: "SCRIPT_CONTEXT_CHANGED" });
     const rows = db.select().from(schema.scripts).all();
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.selected)?.generationMetadata?.requestId).toBe("concurrent-newer");
@@ -340,18 +349,18 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect((await response.json()).scripts[0].id).toBe("other-worker-result");
     expect(db.select().from(schema.scripts).all()).toHaveLength(1);
   });
-  it("archives a late candidate when the source script changes during generation", async () => {
+  it("keeps generation eligible when the same source script is edited during generation", async () => {
     const source = seedScript();
     calls.generate.mockImplementationOnce(async () => {
       db.update(schema.scripts).set({ title: "New title", shots: [{ ...source.shots![0], camera: "缓慢横移" }] }).where(eq(schema.scripts.id, source.id)).run();
       return [generated()];
     });
     const response = await generate(req("/api/llm/script", { ...generationBody(), sourceScriptId: source.id, expectedScriptHash: scriptRevision(source) }));
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
     const rows = db.select().from(schema.scripts).all();
     expect(rows).toHaveLength(2);
-    expect(rows.find(row => row.id === source.id)?.selected).toBe(true);
-    expect(rows.find(row => row.id !== source.id)?.selected).toBe(false);
+    expect(rows.find(row => row.id === source.id)).toMatchObject({ selected: false, title: "New title", shots: [{ camera: "缓慢横移" }] });
+    expect(rows.find(row => row.id !== source.id)?.selected).toBe(true);
   });
   it("returns hashes and the canonical copy in script history", async () => {
     const source = seedScript();
@@ -361,20 +370,123 @@ describe("TIDEWE generation, history and concurrency", () => {
   });
 });
 
+describe("TIDEWE alternative selection", () => {
+  function select(scriptId: string) {
+    return edit(req(`/api/project/${projectId}/scripts`, { selectedScriptId: scriptId }, "PATCH"), params());
+  }
+
+  it("switches and restores earlier-configuration alternatives without changing frozen content or project settings", async () => {
+    const source = seedScript("source-script", presenterA);
+    const alternative = db.insert(schema.scripts).values({ ...source, id: "alternative", selected: false }).returning().get()!;
+    db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ presenter: presenterB }),
+      characterId: presenterB.id, creativeConfigRevision: 6 }).where(eq(schema.projects.id, projectId)).run();
+    const projectBefore = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+    const rowsBefore = db.select().from(schema.scripts).orderBy(schema.scripts.id).all();
+
+    for (const target of [alternative, source, alternative]) {
+      const response = await select(target.id);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ success: true, script: { id: target.id, selected: true,
+        scriptHash: scriptRevision(target), creativeProfileSnapshot: target.creativeProfileSnapshot } });
+      expect(db.select().from(schema.scripts).orderBy(schema.scripts.id).all())
+        .toEqual(rowsBefore.map(row => ({ ...row, selected: row.id === target.id })));
+      expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()).toEqual(projectBefore);
+    }
+
+    const edited = await edit(req(`/api/project/${projectId}/scripts`, { scriptId: alternative.id,
+      expectedScriptHash: scriptRevision(alternative), expectedCreativeConfigRevision: 6,
+      shotTexts: [{ shotId: 1, description: alternative.shots![0].description }] }, "PATCH"), params());
+    expect(edited.status).toBe(200);
+    expect(await edited.json()).toMatchObject({ success: true, script: { id: alternative.id } });
+    const restored = await edit(req(`/api/project/${projectId}/scripts`, { restoreScriptId: source.id }, "PATCH"), params());
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ success: true, selectedScriptId: source.id });
+    expect(db.select().from(schema.scripts).orderBy(schema.scripts.id).all())
+      .toEqual(rowsBefore.map(row => ({ ...row, selected: row.id === source.id })));
+    expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()).toEqual(projectBefore);
+  });
+
+  it("selects the same-project historical alternative regardless of batch or configuration counter", async () => {
+    const source = seedScript();
+    db.insert(schema.scripts).values({ ...source, id: "historical", version: 0, selected: false }).run();
+    db.update(schema.projects).set({ creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
+    const before = db.select().from(schema.scripts).all();
+    const response = await select("historical");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, script: { id: "historical", selected: true } });
+    expect(db.select().from(schema.scripts).all()).toEqual(before.map(row => ({ ...row, selected: row.id === "historical" })));
+  });
+
+  it.each(["legacy", "current", "different-revision", "different-profile"])("selects a saved alternative independently of its %s sibling configuration", async context => {
+    const source = seedScript("source-script", presenterA);
+    db.insert(schema.scripts).values({ ...source, id: "alternative", selected: false }).run();
+    const activeProfile = createTideweOutdoorProfile({ presenter: context === "different-profile" ? presenterB : presenterA });
+    db.update(schema.scripts).set({
+      ...(context === "different-profile" && generated(copyText, presenterB)),
+      creativeProfileSnapshot: context === "legacy" ? null : createCreativeProfileSnapshot(activeProfile,
+        context === "current" ? 6 : context === "different-revision" ? 2 : 1),
+    }).where(eq(schema.scripts.id, source.id)).run();
+    db.update(schema.projects).set({ creativeConfigRevision: 6 }).where(eq(schema.projects.id, projectId)).run();
+    const before = db.select().from(schema.scripts).all();
+    const response = await select("alternative");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, script: { id: "alternative", selected: true } });
+    expect(db.select().from(schema.scripts).all()).toEqual(before.map(row => ({ ...row, selected: row.id === "alternative" })));
+  });
+
+  it("rejects another project's script while allowing its own unselected saved option", async () => {
+    const source = seedScript();
+    db.update(schema.scripts).set({ selected: false }).where(eq(schema.scripts.id, source.id)).run();
+    db.insert(schema.projects).values({ id: "other-project", name: "Other project" }).run();
+    db.insert(schema.scripts).values({ ...source, id: "foreign-selection", projectId: "other-project" }).run();
+    db.update(schema.projects).set({ creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
+    const before = db.select().from(schema.scripts).all();
+    const foreign = await select("foreign-selection");
+    expect(foreign.status).toBe(404);
+    expect(db.select().from(schema.scripts).all()).toEqual(before);
+    const response = await select(source.id);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, script: { id: source.id, selected: true } });
+    expect(db.select().from(schema.scripts).all()).toEqual(before.map(row => ({ ...row, selected: true })));
+  });
+
+  it("rejects another creative type even when it has the active batch version", async () => {
+    const source = seedScript();
+    db.insert(schema.scripts).values({ ...source, id: "other-type", selected: false, styleType: "scene",
+      creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 1) }).run();
+    db.update(schema.projects).set({ creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
+    const before = db.select().from(schema.scripts).all();
+    const response = await select("other-type");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "CREATIVE_PROFILE_MISMATCH" });
+    expect(db.select().from(schema.scripts).all()).toEqual(before);
+  });
+
+  it("still validates a stale current-batch alternative against its frozen presenter", async () => {
+    const source = seedScript("source-script", presenterA);
+    db.insert(schema.scripts).values({ ...source, ...generated(copyText, presenterB), id: "corrupt-alternative", selected: false }).run();
+    db.update(schema.projects).set({ creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
+    const before = db.select().from(schema.scripts).all();
+    const response = await select("corrupt-alternative");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED" });
+    expect(db.select().from(schema.scripts).all()).toEqual(before);
+  });
+});
+
 describe("TIDEWE editing and import", () => {
-  it("preserves the presenter in a camera edit and invalidates media for that changed shot", async () => {
+  it("preserves the presenter, copy and same-script media when editing the camera", async () => {
     db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ presenter: presenterA }), characterId: presenterA.id }).run();
     const source = seedScript("source-script", presenterA);
     const previousAsset = { shotId: 1, ...assetScopeForShot(source, source.shots![0]) };
     const response = await edit(req(`/api/project/${projectId}/scripts`, { scriptId: source.id,
-      expectedScriptHash: scriptRevision(source), expectedCreativeConfigRevision: 1,
       shotTexts: [{ shotId: 1, camera: "缓慢前推镜头" }] }, "PATCH"), params());
     expect(response.status).toBe(200);
     const updated = db.select().from(schema.scripts).where(eq(schema.scripts.id, source.id)).get()!;
     expect(updated.shots![0].tidewe?.presenter).toEqual(presenterA);
     expect(updated.copyDocument).toEqual(source.copyDocument);
     expect(assetMatchesScript(previousAsset, source)).toBe(true);
-    expect(assetMatchesScript(previousAsset, updated)).toBe(false);
+    expect(assetMatchesScript(previousAsset, updated)).toBe(true);
   });
 
   it("rejects a visual description that replaces the selected presenter", async () => {
@@ -408,12 +520,10 @@ describe("TIDEWE editing and import", () => {
     expect((await response.json()).code).toBe("TIDEWE_COPY_DOCUMENT_REQUIRED");
     expect(db.select().from(schema.scripts).get()?.copyDocument?.text).toBe(copyText);
   });
-  it("requires a content hash for visual edits and keeps copy unchanged", async () => {
+  it("edits visuals without a content hash or configuration counter and keeps copy unchanged", async () => {
     const source = seedScript();
-    const body = { scriptId: source.id, expectedCreativeConfigRevision: 1, shotTexts: [{ shotId: 1, camera: "缓慢前移" }] };
-    const stale = await edit(req(`/api/project/${projectId}/scripts`, body, "PATCH"), params());
-    expect(stale.status).toBe(409);
-    const response = await edit(req(`/api/project/${projectId}/scripts`, { ...body, expectedScriptHash: scriptRevision(source) }, "PATCH"), params());
+    const body = { scriptId: source.id, shotTexts: [{ shotId: 1, camera: "缓慢前移" }] };
+    const response = await edit(req(`/api/project/${projectId}/scripts`, body, "PATCH"), params());
     expect(response.status).toBe(200);
     const updated = await response.json();
     expect(updated.script.shots[0].camera).toBe("缓慢前移");

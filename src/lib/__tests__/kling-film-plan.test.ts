@@ -291,13 +291,13 @@ describe("Kling frozen film planning", () => {
     ["category", { productCategory: "tech" }],
     ["creative direction", { creativeIntent: { subject: "Keep the blue package visible" } }],
     ["visual anchors", { visualBible: { characterAnchors: [], productAnchors: ["blue package"], wardrobeAnchors: [], environmentAnchors: [], lightingAnchors: [], forbiddenChanges: [] } }],
-  ] as Array<[string, Partial<typeof projects.$inferInsert>]>)("invalidates a frozen plan when project %s changes", async (_label, update) => {
+  ] as Array<[string, Partial<typeof projects.$inferInsert>]>)("keeps an approved frozen plan when project %s changes", async (_label, update) => {
     const original = await previewKlingFilm(request());
     expect(getKlingFilm(original.runId).data.projectPromptRevision).toEqual(expect.any(String));
     assertKlingFilmContext(original.runId);
     getDb().update(projects).set(update).where(eq(projects.id, "project-1")).run();
 
-    expect(() => assertKlingFilmContext(original.runId)).toThrow(expect.objectContaining({ code: "KLING_CONTEXT_CHANGED" }));
+    expect(() => assertKlingFilmContext(original.runId)).not.toThrow();
     const revised = await previewKlingFilm(request());
     expect(revised.planHash).not.toBe(original.planHash);
     assertKlingFilmContext(revised.runId);
@@ -508,12 +508,30 @@ describe("Kling frozen film planning", () => {
     const view = await previewKlingFilm(request()); expect(view.missingKeyframes).toEqual([shot.shotId]); expect(view.billableShotCount).toBe(1);
     expect(getKlingFilmShots(view.runId)[0].data.baselineAssetId).toBeNull();
   });
-  it("detects selected script, order and selected-asset changes synchronously", async () => {
-    const view = await previewKlingFilm(request()); setShots([{ ...shot, description: "changed" }]);
-    expect(() => assertKlingFilmContext(view.runId)).toThrow();
+  it("keeps same-script content changes and detects selected-asset changes synchronously", async () => {
+    const view = await previewKlingFilm(request());
+    const originalPayload = buildFilmShotJobRequest(getKlingFilm(view.runId), getKlingFilmShots(view.runId)[0]);
+    setShots([{ ...shot, description: "changed", camera: "New direction" }]);
+    getDb().update(scripts).set({ version: 4 }).run();
+    getDb().update(projects).set({ creativeConfigRevision: 9 }).run();
+    expect(() => assertKlingFilmContext(view.runId)).not.toThrow();
+    expect(buildFilmShotJobRequest(getKlingFilm(view.runId), getKlingFilmShots(view.runId)[0])).toEqual(originalPayload);
     setShots([shot]); const baseline = await previewKlingFilm(request()); await asset();
     expect(() => assertKlingFilmContext(baseline.runId)).toThrow();
     getDb().update(assets).set({ selected: false }).run(); assertKlingFilmContext(baseline.runId);
+  });
+  it.each(["selection", "shot", "project"])("still rejects a film whose %s identity changes", async (changed) => {
+    const view = await previewKlingFilm(request());
+    if (changed === "selection") {
+      getDb().update(scripts).set({ selected: false }).run();
+      getDb().insert(scripts).values({ id: "other-script", projectId: "project-1", styleType: "scene", shots: [shot], selected: true }).run();
+    } else if (changed === "shot") {
+      setShots([{ ...shot, shotId: 99 }]);
+    } else {
+      getDb().insert(projects).values({ id: "other-project", name: "Other project" }).run();
+      getDb().update(scripts).set({ projectId: "other-project" }).run();
+    }
+    expect(() => assertKlingFilmContext(view.runId)).toThrow(expect.objectContaining({ code: "KLING_CONTEXT_CHANGED" }));
   });
   it("rejects a deleted project even if its script remains in a legacy database", async () => {
     const view = await previewKlingFilm(request());
@@ -536,9 +554,20 @@ describe("Kling frozen film planning", () => {
     await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "KLING_FILM_LIMIT_EXCEEDED" });
     expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
   });
-  it("rechecks the selected script after asynchronous input copying", async () => {
+  it("allows same-script content updates during asynchronous input copying", async () => {
     useImageModel(); await asset("frame.png", { filePath: "https://example.com/frame.png" });
     state.download.mockImplementationOnce(async (_url: string, target: string) => { await fs.writeFile(target, png); setShots([{ ...shot, description: "changed during copy" }]); });
+    const view = await previewKlingFilm(request());
+    expect(getKlingFilm(view.runId).data.scriptSnapshot.shots[0]).toEqual(shot);
+    expect(() => assertKlingFilmContext(view.runId)).not.toThrow();
+  });
+  it("rechecks the selected script identity after asynchronous input copying", async () => {
+    useImageModel(); await asset("frame.png", { filePath: "https://example.com/frame.png" });
+    state.download.mockImplementationOnce(async (_url: string, target: string) => {
+      await fs.writeFile(target, png);
+      getDb().update(scripts).set({ selected: false }).run();
+      getDb().insert(scripts).values({ id: "other-script", projectId: "project-1", styleType: "scene", shots: [shot], selected: true }).run();
+    });
     await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "KLING_CONTEXT_CHANGED" });
     expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
   });

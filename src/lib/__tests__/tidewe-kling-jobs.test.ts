@@ -223,13 +223,15 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ tool: "image_to_video" }), [{ role: "image", sourceUrl: imageUrl }]);
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("rejects a same-number keyframe from an older shot revision", async () => {
+  it("accepts the same script and shot keyframe from an older content revision", async () => {
     const imageModel = productContext();
     const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
     const imageUrl = "/api/files/project-1/stale-keyframe.png";
     getDb().insert(assets).values({ id: "stale-keyframe", projectId: "project-1", shotId: 1, type: "ai_generated", status: "done", selected: true, filePath: imageUrl, ...assetScopeForShot(script, { ...script.shots![0], camera: "先前的中文运镜" }) }).run();
-    await expect(createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl }))).rejects.toMatchObject({ code: "TIDEWE_PRODUCT_REFERENCE_INVALID", status: 422 });
-    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+    const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, expectedSelectedAssetId: "stale-keyframe" }, { firstFrameUrl: imageUrl }));
+    expect(job.submissionState).toBe("prepared");
+    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ tool: "image_to_video" }), [{ role: "image", sourceUrl: imageUrl }]);
+    expect(state.cli).not.toHaveBeenCalled();
   });
   it("rechecks canonical copy after creation before the paid CLI call", async () => {
     const job = await createKlingJob(reviewedRequest());
@@ -245,13 +247,16 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "CREATIVE_POLICY_VIOLATION" } } });
   });
-  it.each(["voiceover", "on_camera"] as const)("allows a controlled %s film child with canonical prompt and a fresh parent dispatch grant", async (speechMode) => {
+  it.each(["voiceover", "on_camera"] as const)("keeps a controlled %s film child's frozen prompt after same-script edits", async (speechMode) => {
     if (speechMode === "on_camera") useNativeSpeech();
     const context = { filmRunId: "film-run-1", filmShotId: "film-shot-1", authorizationEpoch: 1, expectedInputHashes: [] };
     const now = Date.now();
     getDb().insert(klingFilmRuns).values({ id: context.filmRunId, projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: state.profile!.principalKey!, status: "running", createdAt: now, updatedAt: now,
       data: { scriptRevision: "fixture", scriptSnapshot: { shots: [shot] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: speechMode === "on_camera" ? "native" : "edge-tts", voice: "en-US-GuyNeural", subtitles: false }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
+    getDb().update(scripts).set({ version: 8, shots: [{ ...shot, camera: "中文慢速向左横移" }] }).where(eq(scripts.id, "script-1")).run();
+    getDb().update(projects).set({ creativeConfigRevision: 9 }).run();
     const job = await createKlingFilmShotJob(request({ prompt: compileTideweVisualPrompt(shot, "video", speechMode).prompt }), context);
+    expect(job.data.videoPromptAudit?.sourceShot).toEqual(shot);
     await expect(dispatchKlingJob(job.id)).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
     const guard = vi.fn();
     await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });

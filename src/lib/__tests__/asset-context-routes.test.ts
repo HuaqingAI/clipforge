@@ -77,7 +77,7 @@ describe("context-aware asset persistence and reading", () => {
     expect(db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-a")).get()?.selected).toBe(true);
   });
 
-  it("exposes same-script history for composition without treating it as a current selection", async () => {
+  it("keeps same-script takes available for composition after editing a shot", async () => {
     changeCurrentShot();
     const script = db.select().from(schema.scripts).where(eq(schema.scripts.id, "script-a")).get()!;
     db.insert(schema.assets).values({ id: "current-take", projectId, shotId: 1, type: "ai_generated", status: "done", selected: true, ...assetScopeForShot(script, script.shots![0]) }).run();
@@ -89,12 +89,12 @@ describe("context-aware asset persistence and reading", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(rows.map((row: { id: string }) => row.id).sort()).toEqual(["asset-script-a", "current-take"]);
     expect(rows.find((row: { id: string }) => row.id === "asset-script-a")).toMatchObject({
-      matchesCurrentScript: false, selected: false, previouslySelected: true, klingJobId: "history-job", klingOutputId: "history-output",
+      matchesCurrentScript: true, selected: true,
     });
     expect(rows.find((row: { id: string }) => row.id === "current-take")).toMatchObject({ matchesCurrentScript: true, selected: true });
     expect(db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-a")).get()?.selected).toBe(true);
     const current = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets`), context);
-    expect((await current.json()).map((row: { id: string }) => row.id)).toEqual(["current-take"]);
+    expect((await current.json()).map((row: { id: string }) => row.id).sort()).toEqual(["asset-script-a", "current-take"]);
   });
 
   it("keeps composition history empty when there is no explicitly selected script", async () => {
@@ -117,29 +117,29 @@ describe("context-aware asset persistence and reading", () => {
     const response = await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context);
     const rows = await response.json();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: "asset-script-a", matchesCurrentScript: false, selected: false });
+    expect(rows[0]).toMatchObject({ id: "asset-script-a", matchesCurrentScript: true, selected: true });
     expect(rows[0]).not.toHaveProperty("klingJobId");
     expect(rows[0]).not.toHaveProperty("klingOutputId");
   });
 
-  it("links a historical derived take back to the imported original output", async () => {
+  it("keeps a derived same-script take current after an edit without recovery metadata", async () => {
     const original = db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-a")).get()!;
     db.insert(schema.assets).values({ ...original, id: "old-derived-take", derivedFromAssetId: original.id }).run();
     changeCurrentShot();
     linkKlingOutput({ assetId: original.id });
     const rows = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context)).json();
     expect(rows.find((row: { id: string }) => row.id === "old-derived-take")).toMatchObject({
-      matchesCurrentScript: false, klingJobId: "history-job", klingOutputId: "history-output",
+      matchesCurrentScript: true,
     });
   });
 
-  it("hides an adopted historical original when a current derived binding exists", async () => {
+  it("retains the original and its derived take under their same script identity", async () => {
     changeCurrentShot();
     const script = db.select().from(schema.scripts).where(eq(schema.scripts.id, "script-a")).get()!;
     db.insert(schema.assets).values({ id: "adopted-take", projectId, shotId: 1, type: "ai_generated", status: "done", selected: true, ...assetScopeForShot(script, script.shots![0], "asset-script-a") }).run();
     linkKlingOutput({ assetId: "asset-script-a" });
     const rows = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?includeHistory=1`), context)).json();
-    expect(rows.map((row: { id: string }) => row.id)).toEqual(["adopted-take"]);
+    expect(rows.map((row: { id: string }) => row.id).sort()).toEqual(["adopted-take", "asset-script-a"]);
     expect(rows[0]).toMatchObject({ matchesCurrentScript: true, selected: true });
     expect(rows[0]).not.toHaveProperty("klingJobId");
     const all = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets?all=1&includeHistory=1`), context)).json();
@@ -173,12 +173,28 @@ describe("context-aware asset persistence and reading", () => {
     expect(db.select().from(schema.assets).where(eq(schema.assets.id, "asset-script-b")).get()?.selected).toBe(false);
   });
 
-  it("excludes an old revision and prevents a late import from selecting itself", async () => {
+  it("imports and selects an old revision when the same alternative and take remain selected", async () => {
     const original = db.select().from(schema.scripts).where(eq(schema.scripts.id, "script-a")).get()!;
     db.update(schema.scripts).set({ shots: [{ ...shot, description: "A new scene" }] }).where(eq(schema.scripts.id, original.id)).run();
     const imported = await saveAssetCandidate({ projectId, shotId: 1, filePath: "/api/files/p/old-revision.png", scope: assetScopeForShot(original, shot), selectedPolicy: { mode: "select-if-unchanged", baseline: { scriptId: original.id, scriptRevision: scriptRevision(original), selectedAssetId: "asset-script-a" } } });
-    expect(imported.selected).toBe(false);
-    expect(await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets`), context)).json()).toEqual([]);
+    expect(imported.selected).toBe(true);
+    const rows = await (await GET(new NextRequest(`http://localhost/api/project/${projectId}/assets`), context)).json();
+    expect(rows.map((row: { id: string }) => row.id).sort()).toEqual(["asset-script-a", imported.id].sort());
+    expect(rows.find((row: { id: string }) => row.id === "asset-script-a").selected).toBe(false);
+    expect(imported.sourceRevision).toBe(scriptRevision(original));
+  });
+
+  it.each(["other-script", "missing-shot", "other-project"])("rejects a scoped save for %s", async (change) => {
+    const original = db.select().from(schema.scripts).where(eq(schema.scripts.id, "script-a")).get()!;
+    const scope = assetScopeForShot(original, shot);
+    if (change === "other-script") {
+      db.update(schema.scripts).set({ selected: false }).where(eq(schema.scripts.id, original.id)).run();
+      db.update(schema.scripts).set({ selected: true }).where(eq(schema.scripts.id, "script-b")).run();
+    }
+    if (change === "missing-shot") db.update(schema.scripts).set({ shots: [] }).where(eq(schema.scripts.id, original.id)).run();
+    await expect(saveAssetCandidate({ projectId: change === "other-project" ? "different-project" : projectId, shotId: 1,
+      filePath: "/api/files/p/result.png", scope, expectedCurrentScript: { scriptId: original.id } })).rejects.toMatchObject({ code: "SCRIPT_CONTEXT_CHANGED" });
+    expect(db.select().from(schema.assets).all()).toHaveLength(2);
   });
 
   it("preserves the original local task import path and blocks the full-film Seedance fallback", async () => {

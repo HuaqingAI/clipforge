@@ -8,7 +8,7 @@ import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
 import { getUploadsDir } from "@/lib/paths";
 import { probeMedia } from "@/lib/media-probe";
-import { filterAssetsForScript, scriptRevision, shotKey, assetScopeForShot, assetMatchesScript } from "@/lib/asset-context";
+import { filterAssetsForScript, shotKey, assetMatchesScript } from "@/lib/asset-context";
 import { extractFirstFrame, extractLastFrame } from "@/lib/video-composer/frame-extract";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { klingJobOutputs, type KlingJob, type KlingJobOutput } from "./job-schema";
@@ -154,8 +154,8 @@ export async function importKlingOutputs(jobId: string): Promise<void> {
   } finally { cleanupDeletedKlingJob(jobId); }
 }
 
-/** Validate the original server-owned output before explicitly adopting an edited shot. */
-function hasTrustedHistoricalKlingOutput(
+/** Verify the original job/output record independently of the current shot's edits. */
+function hasTrustedKlingOutput(
   original: typeof assets.$inferSelect,
   job: KlingJob,
   output: KlingJobOutput,
@@ -169,12 +169,14 @@ function hasTrustedHistoricalKlingOutput(
     || original.provider !== "kling-cli" || original.filePath !== output.data.filePath
     || ![`${outputStem}.mp4`, `${outputStem}.webm`].includes(original.filePath ?? "")
     || original.sourceScriptId !== job.scriptId || original.sourceRevision !== job.data.scriptRevision
-    || original.sourceShotKey !== job.data.shotKey) return false;
+    || original.sourceShotKey !== job.data.shotKey
+    || shotKey(job.scriptId, sourceShot) !== job.data.shotKey) return false;
   return hasTrustedPremiumCgAssetProvenance(original, job.projectId, { id: job.scriptId, shots: [sourceShot] });
 }
 
-/** Explicitly selecting a recovered take may create a derived local binding, never a generation. */
-export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentContext: boolean): void {
+/** Select a recovered take from the same script alternative without generating again. */
+export function selectKlingOutput(jobId: string, outputId: string, _adoptCurrentContext: boolean): void {
+  void _adoptCurrentContext; // Retain the API argument for older clients; identity determines reuse.
   const job = getKlingJob(jobId);
   getDb().transaction((tx) => {
     assertKlingJobLease(job.id);
@@ -200,32 +202,24 @@ export function selectKlingOutput(jobId: string, outputId: string, adoptCurrentC
     const matches = assetMatchesScript(original, script);
     const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
     const belongsToJob = original.projectId === job.projectId && original.shotId === job.shotId;
-    const trustedCurrent = belongsToJob && matches && hasTrustedPremiumCgAssetProvenance(original, job.projectId, script);
-    const trustedHistorical = !matches && hasTrustedHistoricalKlingOutput(original, job, output, script.id);
-    if (premiumCg && !trustedCurrent && !trustedHistorical) {
+    const trusted = belongsToJob && matches && hasTrustedPremiumCgAssetProvenance(original, job.projectId, script)
+      && hasTrustedKlingOutput(original, job, output, script.id);
+    if (premiumCg && !trusted) {
       throw new KlingError(
         PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-        "Premium product CG can only select a verified Kling output from this script; changed shots require explicit adoption.",
+        "Premium product CG can only select a verified Kling output from this script.",
         409,
       );
     }
-    if (!matches && !adoptCurrentContext) throw new KlingError("KLING_CONTEXT_CHANGED", "此视频属于旧脚本，请明确确认用于当前镜头", 409);
+    if (script.id !== job.scriptId || !belongsToJob || !matches) {
+      throw new KlingError("KLING_CONTEXT_CHANGED", "此视频属于其他脚本方案，不能用于当前镜头", 409);
+    }
     const currentRaw = filterAssetsForScript(
       tx.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(),
       script,
     );
     if (currentRaw.length) tx.update(assets).set({ selected: false }).where(inArray(assets.id, currentRaw.map((item) => item.id))).run();
-    if (matches) tx.update(assets).set({ selected: true }).where(eq(assets.id, original.id)).run();
-    else {
-      const derived = tx.select().from(assets).where(and(eq(assets.derivedFromAssetId, original.id), eq(assets.sourceScriptId, script.id), eq(assets.sourceRevision, scriptRevision(script)), eq(assets.sourceShotKey, shotKey(script.id, shot)))).get();
-      if (derived) tx.update(assets).set({ selected: true }).where(eq(assets.id, derived.id)).run();
-      else tx.insert(assets).values({
-        projectId: job.projectId, shotId: job.shotId, type: "ai_generated", filePath: original.filePath,
-        thumbnailPath: original.thumbnailPath, sourceKeyframeUrl: original.sourceKeyframeUrl,
-        provider: "kling-cli", model: original.model, prompt: original.prompt,
-        ...assetScopeForShot(script, shot, original.id), selected: true, status: "done",
-      }).run();
-    }
+    tx.update(assets).set({ selected: true }).where(eq(assets.id, original.id)).run();
     tx.update(klingJobOutputs).set({ data: { ...output.data, selectionOutcome: "selected" }, updatedAt: Date.now() }).where(eq(klingJobOutputs.id, outputId)).run();
   });
 }

@@ -11,11 +11,13 @@ import type { Model } from "@/lib/providers/types";
 import type { KlingJobView } from "@/lib/kling/job-types";
 import type { VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import type { BatchMotionPanel } from "@/components/batch-motion-panel";
+import type { KeyframeRefinementDialogProps } from "@/components/keyframe-refinement-dialog";
 import { createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { Shot } from "@/lib/db/schema";
 
 const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, showMaterialLibrary: false }));
 const batch = vi.hoisted(() => ({ props: null as ComponentProps<typeof BatchMotionPanel> | null }));
+const refinement = vi.hoisted(() => ({ props: null as KeyframeRefinementDialogProps | null }));
 const navigation = vi.hoisted(() => ({ router: { replace: vi.fn() }, listeners: new Set<() => void>() }));
 vi.mock("next/navigation", async () => {
   const { useSyncExternalStore } = await import("react");
@@ -29,6 +31,10 @@ vi.mock("next/navigation", async () => {
   };
 });
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
+vi.mock("@/components/keyframe-refinement-dialog", () => ({ KeyframeRefinementDialog: (props: KeyframeRefinementDialogProps) => {
+  refinement.props = props;
+  return props.open ? <div aria-label="keyframe-refinement-dialog"><button aria-label="close-keyframe-refinement" onClick={() => props.onOpenChange(false)} /><button aria-label="apply-refined-keyframe" onClick={() => props.onApplied()} /></div> : null;
+} }));
 vi.mock("@/components/model-catalog-status", () => ({ ModelCatalogStatus: () => null }));
 vi.mock("@/components/model-capability-preflight", () => ({ ModelCapabilityPreflight: () => null }));
 vi.mock("@/app/project/[id]/assets/_components/local-material-library", async (importOriginal) => {
@@ -104,7 +110,7 @@ beforeEach(() => {
   useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: ark, providers: { volcengine: { enabled: true, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
   useCharacterStore.setState({ ...initialCharacters, characters: [] });
   api.models = [{ id: ark, name: "Ark", provider: "volcengine", mediaType: "video", modes: ["image-to-video"] }, { id: kling.selectionKey, name: "Chosen Kling", provider: "kling-cli", mediaType: "video", modes: ["image-to-video"] }];
-  api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; isVideo = false; pending = [];
+  api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; refinement.props = null; isVideo = false; pending = [];
   api.kling.mockReset().mockImplementation(async (url: string) => url.includes("/status") ? Response.json({ loggedIn: true, models: [kling], concurrency: api.concurrency }) : url.includes("/jobs?") ? Response.json({ jobs: api.jobs }) : Response.json({ jobId: "new-job" }, { status: 202 }));
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     if (url === videoPromptUrl) return Response.json(promptPreview(JSON.parse(init!.body as string)));
@@ -119,6 +125,100 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
+
+describe("keyframe refinement entry points", () => {
+  function configureFrames() {
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+    useSettingsStore.setState({ defaultImageModel: "fixture-image" });
+    const shots: Shot[] = [1, 2, 3, 4, 5, 6].map((shotId) => ({
+      shotId, type: "demo", duration: 5, description: `Frame ${shotId}`, camera: "Slow dolly in", voiceover: "",
+      visualSource: shotId === 5 ? "product_image" : "ai_generate", transition: "direct_concat",
+    }));
+    let savedAssets = [
+      { id: "frame-1", shotId: 1, status: "done", selected: true, filePath: "/api/files/crop-1.png", thumbnailPath: null },
+      { id: "unadopted-1", shotId: 1, status: "done", selected: false, filePath: "/api/files/candidate-1.png", thumbnailPath: null },
+      { id: "video-2", shotId: 2, status: "done", selected: true, filePath: "/api/files/clip-2.mp4", thumbnailPath: "/api/files/poster-2.png" },
+      { id: "failed-4", shotId: 4, status: "failed", selected: true, filePath: "", thumbnailPath: null },
+      { id: "frame-6", shotId: 6, status: "done", selected: true, filePath: "/api/files/crop-6.png", thumbnailPath: null },
+    ];
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, shots }]));
+      if (url.endsWith("/assets")) return Promise.resolve(Response.json(savedAssets));
+      return normal(url, init);
+    });
+    return {
+      adopt: () => { savedAssets = savedAssets.map((asset) => asset.id === "frame-6" ? { ...asset, id: "refined-6", filePath: "/api/files/refined-6.png" } : asset); },
+    };
+  }
+
+  function singleRefineButtons() {
+    return [...container.querySelectorAll("button")].filter((item) => item.textContent === "keyframeRefine");
+  }
+
+  function expectNoGenerationRequests() {
+    expect([...fetchMock.mock.calls, ...api.kling.mock.calls].filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  }
+
+  it("opens batch refinement for selected saved stills and excludes videos, missing, failed and unadopted assets", async () => {
+    configureFrames();
+    await mount(ark);
+    expect(refinement.props).toBeNull();
+    await click("keyframeRefineBatch");
+    expect(container.querySelector('[aria-label="keyframe-refinement-dialog"]')).not.toBeNull();
+    expect(refinement.props).toMatchObject({
+      open: true, projectId: "project", scriptId: "script",
+      modelTarget: { provider: "volcengine", model: "fixture-image", apiKey: "fixture" },
+      shots: [
+        { assetId: "frame-1", shotId: 1, imageUrl: "/api/files/crop-1.png", description: "Frame 1" },
+        { assetId: "frame-6", shotId: 6, imageUrl: "/api/files/crop-6.png", description: "Frame 6" },
+      ],
+    });
+    expect(refinement.props!.initialShotId).toBeUndefined();
+    expectNoGenerationRequests();
+  });
+
+  it("preselects the clicked shot while retaining the other available frames", async () => {
+    configureFrames();
+    await mount(ark);
+    expect(singleRefineButtons()).toHaveLength(2);
+    await act(async () => singleRefineButtons()[1].click());
+    expect(refinement.props!.initialShotId).toBe(6);
+    expect(refinement.props!.shots.map((shot) => shot.shotId)).toEqual([1, 6]);
+    expectNoGenerationRequests();
+  });
+
+  it("opens refinement from the original image preview with the correct shot and closes the preview", async () => {
+    configureFrames();
+    await mount(ark);
+    const previewTrigger = container.querySelector('img[src="/api/files/crop-6.png"]')!.closest("button")!;
+    await act(async () => previewTrigger.click());
+    const previewTitle = [...container.querySelectorAll("h2")].find((heading) => heading.textContent === "imagePreviewTitle")!;
+    expect(previewTitle).toBeDefined();
+    const refineAction = [...previewTitle.parentElement!.querySelectorAll("button")].find((item) => item.textContent === "keyframeRefine")!;
+    expect(refineAction).toBeDefined();
+    await act(async () => refineAction.click());
+    expect(refinement.props!.initialShotId).toBe(6);
+    expect([...container.querySelectorAll("h2")].some((heading) => heading.textContent === "imagePreviewTitle")).toBe(false);
+    expectNoGenerationRequests();
+  });
+
+  it("refreshes the selected image after explicit adoption and keeps the original refinement source snapshot", async () => {
+    const frames = configureFrames();
+    await mount(ark);
+    await click("keyframeRefineBatch");
+    const sourceSnapshot = refinement.props!.shots;
+    const readsBefore = fetchMock.mock.calls.filter(([url]) => url.endsWith("/assets")).length;
+    expect(container.querySelector('img[src="/api/files/refined-6.png"]')).toBeNull();
+    frames.adopt();
+    await act(async () => (container.querySelector('[aria-label="apply-refined-keyframe"]') as HTMLButtonElement).click());
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/assets"))).toHaveLength(readsBefore + 1);
+    expect(container.querySelector('img[src="/api/files/refined-6.png"]')).not.toBeNull();
+    expect(refinement.props!.shots).toBe(sourceSnapshot);
+    expect(refinement.props!.shots[1]).toMatchObject({ assetId: "frame-6", imageUrl: "/api/files/crop-6.png" });
+    expectNoGenerationRequests();
+  });
+});
 
 const tideweScriptHash = "a".repeat(64);
 function configureTideweAssets({ productVisible = true, savedFrame = false, projectOverrides = {} }: { productVisible?: boolean; savedFrame?: boolean; projectOverrides?: Record<string, unknown> } = {}) {

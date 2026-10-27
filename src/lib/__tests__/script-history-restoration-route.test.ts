@@ -168,16 +168,16 @@ describe("PATCH historical script restoration", () => {
     expect(await response.json()).toEqual({ error: "Project not found" });
   });
 
-  it("rejects outdated configuration without changing the project or selection", async () => {
+  it("restores an earlier configuration without changing its snapshot or project settings", async () => {
     db.update(schema.projects).set({ creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
     const before = rows();
     const response = await restore(historicalId, projectId, "zh-CN");
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      code: "CREATIVE_CONFIG_STALE", projectRevision: 1, scriptRevision: 0,
-      error: "该历史方案的创作配置已过期，暂时无法恢复；请按当前配置重新生成方案。",
+      success: true, selectedScriptId: historicalId,
     });
-    expect(rows()).toEqual(before);
+    expect(rows().map((row) => ({ ...row, selected: false }))).toEqual(before.map((row) => ({ ...row, selected: false })));
+    expect(rows().find((row) => row.selected)?.id).toBe(historicalId);
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeConfigRevision).toBe(1);
   });
 
@@ -195,16 +195,16 @@ describe("PATCH historical script restoration", () => {
     expect(rows()).toEqual(before);
   });
 
-  it("validates ownership and configuration after acquiring the write lock", async () => {
+  it("validates the current creation type after acquiring the write lock", async () => {
     const transaction = db.transaction.bind(db);
     vi.spyOn(db, "transaction").mockImplementationOnce((callback, config) => {
       expect(config).toEqual({ behavior: "immediate" });
-      db.update(schema.projects).set({ creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile(), creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
       return transaction(callback, config);
     });
     const response = await restore();
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: "CREATIVE_CONFIG_STALE" });
+    expect(await response.json()).toMatchObject({ code: "CREATIVE_PROFILE_MISMATCH" });
     expect(rows().find((row) => row.selected)?.id).toBe(currentId);
   });
 

@@ -5,7 +5,7 @@ import { join } from "path";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
-import { assetMatchesScript, filterAssetsForScript, scriptRevision, type AssetScope } from "@/lib/asset-context";
+import { assetMatchesScript, filterAssetsForScript, type AssetScope } from "@/lib/asset-context";
 import { validateOrDelete } from "@/lib/media-validate";
 import { getDataDir } from "@/lib/paths";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
@@ -82,12 +82,12 @@ export interface SaveAssetCandidateInput {
   sourceKeyframeUrl?: string | null;
   scope?: AssetScope;
   selectedPolicy?: AssetSelectionPolicy;
-  expectedCurrentScript?: { scriptId: string; scriptRevision: string; creativeConfigRevision: number };
+  expectedCurrentScript?: { scriptId: string; scriptRevision?: string; creativeConfigRevision?: number };
 }
 
 export class AssetContextConflictError extends Error {
   readonly code = "SCRIPT_CONTEXT_CHANGED";
-  constructor(message = "The script or creative configuration changed before the asset could be saved.") {
+  constructor(message = "The project, selected script, or target shot no longer exists in this context.") {
     super(message); this.name = "AssetContextConflictError";
   }
 }
@@ -115,14 +115,16 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
     if (input.expectedCurrentScript) {
       const expected = input.expectedCurrentScript;
       const project = transaction.select().from(projects).where(eq(projects.id, input.projectId)).get();
-      if (!project || project.creativeConfigRevision !== expected.creativeConfigRevision
-        || !currentScript || currentScript.id !== expected.scriptId || scriptRevision(currentScript) !== expected.scriptRevision
-        || !input.scope || input.scope.sourceRevision !== expected.scriptRevision
+      if (!project || !currentScript || currentScript.id !== expected.scriptId
+        || !input.scope || input.scope.sourceScriptId !== expected.scriptId
         || !assetMatchesScript({ shotId: input.shotId, ...input.scope }, currentScript)) {
         throw new AssetContextConflictError();
       }
     }
     const targetScript = input.scope ? scriptRows.find((row) => row.id === input.scope!.sourceScriptId) : currentScript;
+    if (input.scope && !assetMatchesScript({ shotId: input.shotId, ...input.scope }, targetScript)) {
+      throw new AssetContextConflictError();
+    }
     const candidates = transaction.select().from(assets).where(and(eq(assets.projectId, input.projectId), eq(assets.shotId, input.shotId))).all();
     const scopedCandidates = input.scope ? candidates.filter((row) => assetMatchesScript(row, targetScript)
       && (row.sourceScriptId ? row.sourceScriptId === input.scope!.sourceScriptId : input.scope!.sourceScriptId === currentScript?.id)) : filterAssetsForScript(candidates, currentScript);
@@ -131,7 +133,6 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
     if (policy.mode === "select-if-unchanged") {
       const currentSelected = scopedCandidates.find((row) => row.selected);
       selected = Boolean(currentScript && currentScript.id === policy.baseline.scriptId
-        && scriptRevision(currentScript) === policy.baseline.scriptRevision
         && (currentSelected?.id ?? null) === policy.baseline.selectedAssetId
         && (!input.scope || assetMatchesScript({ shotId: input.shotId, ...input.scope }, currentScript)));
     }

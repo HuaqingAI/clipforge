@@ -147,13 +147,28 @@ afterEach(async () => { stopKlingJobRunner(); await new Promise<void>((resolve) 
 afterAll(async () => { stopKlingJobRunner(); state.sqlite?.close(); await fs.rm(state.directory, { recursive: true, force: true }); if (oldPhase === undefined) delete process.env.NEXT_PHASE; else process.env.NEXT_PHASE = oldPhase; });
 
 describe("Kling durable submission and recovery", () => {
-  it("uses the reviewed server sales prompt and rechecks project direction before paid dispatch", async () => {
+  it("dispatches the frozen reviewed sales prompt after same-script content and direction edits", async () => {
     const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false };
     const reviewed = previewProjectVideoPrompt("project-1", context);
     const job = await createKlingJob(request({ prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey } }));
     expect(job.data.prompt).toBe(reviewed.prompt);
     expect(job.data.args.at(-1)).toBe(reviewed.prompt);
     getDb().update(projects).set({ creativeIntent: { subject: "new project direction" } }).where(eq(projects.id, "project-1")).run();
+    getDb().update(scripts).set({ version: 8, shots: [{ ...shot, description: "A newly edited shot", camera: "Slow push in" }] }).where(eq(scripts.id, "script-1")).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(state.cli.mock.calls[0][1]).toEqual(job.data.args);
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", data: { prompt: reviewed.prompt } });
+  });
+
+  it.each(["scriptId", "shotId", "provider", "model", "args"])("rejects a prepared reviewed prompt with an invalid %s binding", async (field) => {
+    const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false };
+    const reviewed = previewProjectVideoPrompt("project-1", context);
+    const job = await createKlingJob(request({ prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey } }));
+    const data = structuredClone(job.data);
+    if (field === "args") data.args = [...data.args, "unreviewed instruction"];
+    else Object.assign(data.promptContext!, { [field]: field === "shotId" ? 99 : "other" });
+    getDb().update(klingJobs).set({ data }).where(eq(klingJobs.id, job.id)).run();
     await dispatchKlingJob(job.id);
     expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED" } } });
@@ -442,19 +457,58 @@ describe("Kling durable submission and recovery", () => {
     await dispatchKlingJob(job.id); expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { blockedReason: "auth_required", error: { code: "KLING_ACCOUNT_MISMATCH" } } });
   });
-  it("rechecks script context immediately before the billable submission", async () => {
+  it("dispatches the reviewed request after the same script version changes", async () => {
     const job = await createKlingJob(request());
     getDb().update(scripts).set({ version: 2 }).where(eq(scripts.id, "script-1")).run();
-    await dispatchKlingJob(job.id); expect(state.cli).not.toHaveBeenCalled();
-    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_CONTEXT_CHANGED" } } });
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "remote-1", data: { prompt: job.data.prompt, scriptRevision: job.data.scriptRevision } });
   });
-  it("still blocks a prepared paid submission when only a sibling shot changes", async () => {
+  it("keeps the prepared payload when same-script shot content changes", async () => {
     useMultipleShots(2);
     const job = await createKlingJob(request());
-    getDb().update(scripts).set({ shots: [shot, { ...shot, shotId: 2, camera: "Slow push in" }] }).where(eq(scripts.id, "script-1")).run();
+    getDb().update(scripts).set({ shots: [{ ...shot, camera: "New camera instruction" }, { ...shot, shotId: 2, camera: "Slow push in" }] }).where(eq(scripts.id, "script-1")).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(state.cli.mock.calls[0][1]).toEqual(job.data.args);
+    expect(getKlingJob(job.id).data.videoPromptAudit?.sourceShot).toEqual(shot);
+  });
+  it.each(["selection", "shot", "project"])("blocks a prepared request when its %s identity changes", async (changed) => {
+    const job = await createKlingJob(request());
+    if (changed === "selection") {
+      getDb().update(scripts).set({ selected: false }).run();
+      getDb().insert(scripts).values({ id: "other-script", projectId: "project-1", styleType: "scene", shots: [shot], selected: true }).run();
+    } else if (changed === "shot") {
+      getDb().update(scripts).set({ shots: [{ ...shot, shotId: 99 }] }).run();
+    } else {
+      getDb().insert(projects).values({ id: "other-project", name: "Other project" }).run();
+      getDb().update(scripts).set({ projectId: "other-project" }).run();
+    }
     await dispatchKlingJob(job.id);
     expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_CONTEXT_CHANGED" } } });
+  });
+  it("accepts same-script edits during asynchronous input preparation", async () => {
+    state.prepare.mockImplementationOnce(async () => {
+      getDb().update(scripts).set({ version: 5, shots: [{ ...shot, description: "Updated shot description" }] }).run();
+      getDb().update(projects).set({ creativeConfigRevision: 8 }).run();
+      return [];
+    });
+    const job = await createKlingJob(request());
+    expect(job.submissionState).toBe("prepared");
+    expect(job.data.videoPromptAudit?.sourceShot).toEqual(shot);
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+  it("rejects a different selected script during asynchronous input preparation", async () => {
+    state.prepare.mockImplementationOnce(async () => {
+      getDb().update(scripts).set({ selected: false }).run();
+      getDb().insert(scripts).values({ id: "other-script", projectId: "project-1", styleType: "scene", shots: [shot], selected: true }).run();
+      return [];
+    });
+    await expect(createKlingJob(request())).rejects.toMatchObject({ code: "KLING_CONTEXT_CHANGED" });
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+    expect(state.cli).not.toHaveBeenCalled();
   });
   it("blocks an already prepared premium CG job after the project changes creative type", async () => {
     configurePremiumCgContext();
@@ -467,16 +521,20 @@ describe("Kling durable submission and recovery", () => {
     expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "CREATIVE_PROFILE_MISMATCH" } } });
   });
-  it("blocks an already prepared premium CG job after the project creative revision changes", async () => {
+  it("dispatches an already prepared premium CG job after only the project creative revision changes", async () => {
     configurePremiumCgContext();
     const imageModel = premiumCgImageModel();
+    const inputPath = path.join(state.directory, "revision-product.png");
+    const input = Buffer.from("product reference");
+    await fs.writeFile(inputPath, input);
+    state.prepare.mockResolvedValueOnce([{ role: "image", sourceUrl: "/api/files/project-1/product.png", path: inputPath, hash: createHash("sha256").update(input).digest("hex"), size: input.length }]);
     const job = await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video" }));
     getDb().update(projects).set({ creativeConfigRevision: 2 }).where(eq(projects.id, "project-1")).run();
 
     await dispatchKlingJob(job.id);
 
-    expect(state.cli).not.toHaveBeenCalled();
-    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "CREATIVE_CONFIG_STALE" } } });
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "remote-1" });
   });
   it("rebuilds a premium CG Kling request from the selected shot and project product image", async () => {
     configurePremiumCgContext();
@@ -715,9 +773,11 @@ describe("Kling ten-shot account concurrency", () => {
     expect(state.cli).toHaveBeenCalledTimes(2);
   });
   it("dispatches only available oldest reservations when legacy rows exceed ten slots", async () => {
+    useMultipleShots(11);
     const jobs = await Promise.all(slotShotIds.map((id) => createKlingJob(shotRequest(id))));
     for (const [index, job] of jobs.entries()) getDb().update(klingJobs).set({ createdAt: 100 + index }).where(eq(klingJobs.id, job.id)).run();
-    getDb().insert(klingJobs).values({ ...getKlingJob(jobs[0].id), id: "legacy-extra", clientRequestId: "legacy-extra-request", shotId: 11, createdAt: 200 }).run();
+    const legacy = getKlingJob(jobs[0].id);
+    getDb().insert(klingJobs).values({ ...legacy, id: "legacy-extra", clientRequestId: "legacy-extra-request", shotId: 11, data: { ...legacy.data, videoPromptAudit: { version: legacy.data.videoPromptAudit!.version, sourceShot: { ...shot, shotId: 11 } } }, createdAt: 200 }).run();
     await dispatchKlingJob("legacy-extra"); expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob("legacy-extra")).toMatchObject({ submissionState: "prepared", needsConfirmation: false, data: { error: { code: "KLING_CONCURRENCY_LIMIT" } } });
     for (const job of jobs) await dispatchKlingJob(job.id);
@@ -868,18 +928,16 @@ describe("Kling output persistence and selection", () => {
     expect(getDb().select().from(assets).where(eq(assets.id, output.assetId!)).get()).toMatchObject({ selected: true, provider: "kling-cli" });
     expect(output.data.selectionOutcome).toBe("selected");
   });
-  it("keeps premium CG outputs detached after the creative configuration becomes stale", async () => {
+  it("selects premium CG outputs when only the project creative revision changes", async () => {
     const job = await preparePremiumCgJob();
     getDb().update(projects).set({ creativeConfigRevision: 2 }).where(eq(projects.id, "project-1")).run();
 
     await completePremiumCgJob(job);
 
     const output = getKlingOutputs(job.id)[0];
-    expect(output.data.selectionOutcome).toBe("detached");
-    expect(getDb().select().from(assets).where(eq(assets.id, output.assetId!)).get()?.selected).toBe(false);
-    let failure: unknown;
-    try { selectKlingOutput(job.id, output.id, true); } catch (error) { failure = error; }
-    expect(failure).toMatchObject({ code: "CREATIVE_CONFIG_STALE", status: 409 });
+    expect(output.data.selectionOutcome).toBe("selected");
+    expect(getDb().select().from(assets).where(eq(assets.id, output.assetId!)).get()?.selected).toBe(true);
+    expect(() => selectKlingOutput(job.id, output.id, false)).not.toThrow();
   });
   it("rejects selecting a premium CG output whose provenance is no longer trusted", async () => {
     const job = await completePremiumCgJob();
@@ -891,19 +949,19 @@ describe("Kling output persistence and selection", () => {
     try { selectKlingOutput(job.id, output.id, true); } catch (error) { failure = error; }
     expect(failure).toMatchObject({ code: "PREMIUM_CG_ASSET_PROVENANCE_REQUIRED", status: 409 });
   });
-  it("requires explicit adoption of a verified premium CG output after editing its shot", async () => {
+  it("reuses a verified premium CG output after editing its shot without duplicating its binding", async () => {
     const job = await completePremiumCgJob();
     const output = getKlingOutputs(job.id)[0];
     const currentScript = editCurrentCamera();
     const cliCalls = state.cli.mock.calls.length;
-    expect(filterAssetsForScript(getDb().select().from(assets).all(), currentScript)).toEqual([]);
-    expect(() => selectKlingOutput(job.id, output.id, false)).toThrow(/明确确认/);
+    expect(filterAssetsForScript(getDb().select().from(assets).all(), currentScript)).toHaveLength(1);
+    expect(() => selectKlingOutput(job.id, output.id, false)).not.toThrow();
     selectKlingOutput(job.id, output.id, true);
     selectKlingOutput(job.id, output.id, true);
     const current = filterAssetsForScript(getDb().select().from(assets).all(), currentScript);
     expect(current).toHaveLength(1);
-    expect(current[0]).toMatchObject({ selected: true, derivedFromAssetId: output.assetId, filePath: output.data.filePath });
-    expect(getDb().select().from(assets).all()).toHaveLength(2);
+    expect(current[0]).toMatchObject({ id: output.assetId, selected: true, derivedFromAssetId: null, filePath: output.data.filePath });
+    expect(getDb().select().from(assets).all()).toHaveLength(1);
     expect(klingJobView(getKlingJob(job.id)).outputs[0]).toMatchObject({ selected: true, assetId: current[0].id });
     expect(state.cli).toHaveBeenCalledTimes(cliCalls);
   });
@@ -936,12 +994,12 @@ describe("Kling output persistence and selection", () => {
     expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/verified Kling output/);
     expect(getDb().select().from(assets).all()).toHaveLength(1);
   });
-  it("rechecks the current creative configuration before adopting a historical CG output", async () => {
+  it("selects the same premium CG output after both a shot edit and a project revision change", async () => {
     const job = await completePremiumCgJob();
     const output = getKlingOutputs(job.id)[0];
     editCurrentCamera();
     getDb().update(projects).set({ creativeConfigRevision: 2 }).where(eq(projects.id, "project-1")).run();
-    expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/outdated creative configuration/);
+    expect(() => selectKlingOutput(job.id, output.id, false)).not.toThrow();
     expect(getDb().select().from(assets).all()).toHaveLength(1);
   });
   it("keeps persisted outputs and mirrored URLs when a late query has no works", async () => {
@@ -967,18 +1025,27 @@ describe("Kling output persistence and selection", () => {
     const calls = state.cli.mock.calls.length; await retryKlingImport(job.id);
     expect(state.cli).toHaveBeenCalledTimes(calls); expect(getKlingJob(job.id).importState).toBe("completed");
   });
-  it("requires explicit adoption when a recovered output belongs to an old script", async () => {
+  it("keeps a recovered output usable after a version and content edit of the same script", async () => {
     const job = await completeJob(); const output = getKlingOutputs(job.id)[0];
     getDb().update(scripts).set({ version: 2, shots: [{ ...shot, description: "Changed scene" }] }).where(eq(scripts.id, "script-1")).run();
-    expect(() => selectKlingOutput(job.id, output.id, false)).toThrow(/旧脚本/);
+    expect(() => selectKlingOutput(job.id, output.id, false)).not.toThrow();
     selectKlingOutput(job.id, output.id, true); selectKlingOutput(job.id, output.id, true);
-    const rows = getDb().select().from(assets).all(); expect(rows).toHaveLength(2);
+    const rows = getDb().select().from(assets).all(); expect(rows).toHaveLength(1);
     const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
     const current = filterAssetsForScript(rows.filter((row) => row.selected), script);
     expect(current).toHaveLength(1);
-    expect(current[0].derivedFromAssetId).toBe(output.assetId);
+    expect(current[0].id).toBe(output.assetId);
+    expect(current[0].derivedFromAssetId).toBeNull();
     const projection = klingJobView(getKlingJob(job.id)).outputs[0];
     expect(projection.selected).toBe(true); expect(projection.assetId).toBe(current[0].id);
+  });
+  it("never adopts a recovered sales output into another script alternative", async () => {
+    const job = await completeJob(); const output = getKlingOutputs(job.id)[0];
+    const previous = getDb().select().from(scripts).where(eq(scripts.id, job.scriptId)).get()!;
+    getDb().update(scripts).set({ selected: false }).run();
+    getDb().insert(scripts).values({ ...previous, id: "other-alternative", selected: true }).run();
+    expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/其他脚本方案/);
+    expect(getDb().select().from(assets).all()).toHaveLength(1);
   });
 });
 
@@ -1088,11 +1155,20 @@ describe("Kling FilmRun child dispatch authorization", () => {
   });
   it("shares ten account reservations between different film shots and prevents an eleventh", async () => {
     useMultipleShots(11);
+    const parent = getDb().select().from(klingFilmRuns).where(eq(klingFilmRuns.id, context.filmRunId)).get()!;
+    const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
+    getDb().update(klingFilmRuns).set({ data: { ...parent.data, scriptSnapshot: { shots: structuredClone(script.shots!) } } }).where(eq(klingFilmRuns.id, parent.id)).run();
     for (const shotId of Array.from({ length: 10 }, (_, index) => index + 1)) {
       const job = await createKlingFilmShotJob(shotRequest(shotId), { ...context, filmShotId: `film-shot-${shotId}` });
       expect(job.submissionState).toBe("prepared");
     }
     await expect(createKlingFilmShotJob(shotRequest(11), { ...context, filmShotId: "film-shot-11" })).rejects.toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+  it("rejects a current script shot absent from the confirmed film manifest", async () => {
+    useMultipleShots(2);
+    await expect(createKlingFilmShotJob(shotRequest(2), { ...context, filmShotId: "film-shot-2" })).rejects.toMatchObject({ code: "KLING_FILM_CONTEXT_INVALID" });
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
     expect(state.cli).not.toHaveBeenCalled();
   });
 });

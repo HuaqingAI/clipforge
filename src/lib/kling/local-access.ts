@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { getDataDir } from "@/lib/paths";
+import { redactKlingCliText } from "./cli-diagnostics";
 import { isKlingRuntimeEnabled } from "./runtime";
 
 const COOKIE = "clipforge-kling-session";
@@ -103,10 +104,17 @@ export async function createKlingLocalSession(req: NextRequest): Promise<NextRes
 }
 
 export function klingRouteError(error: unknown): NextResponse {
-  const problem = error as { code?: string; status?: number; message?: string; retryable?: boolean; jobId?: string };
-  const known = typeof problem.code === "string" && /^(?:KLING|CREATIVE)_/.test(problem.code);
+  const problem = (error && typeof error === "object" ? error : {}) as { code?: string; status?: number; message?: string; retryable?: boolean; jobId?: string };
+  // Creative-profile validation runs before a job exists, so its actionable reason
+  // must reach the submitting shot instead of being replaced by an environment error.
+  const known = typeof problem.code === "string" && /^(?:KLING|CREATIVE|TIDEWE|PREMIUM_CG)_[A-Z][A-Z0-9_]*$/.test(problem.code) &&
+    typeof problem.message === "string" && Boolean(problem.message.trim());
+  if (!known) {
+    const detail = error instanceof Error ? error.stack ?? error.message : typeof problem.message === "string" ? problem.message : String(error);
+    console.error("Kling local operation failed:", redactKlingCliText(detail).slice(0, 32_768));
+  }
   return NextResponse.json({
-    error: { code: known ? problem.code : "KLING_INTERNAL_ERROR", message: known ? problem.message : "Kling 本地操作失败，请检查环境与任务详情", retryable: problem.retryable ?? false },
+    error: { code: known ? problem.code : "KLING_INTERNAL_ERROR", message: known ? problem.message : "Kling 本地操作失败，请查看服务日志中的具体原因", retryable: problem.retryable ?? false },
     ...(problem.jobId && { jobId: problem.jobId }),
   }, { status: problem.status && problem.status >= 400 && problem.status <= 599 ? problem.status : 500, headers: { "Cache-Control": "no-store" } });
 }

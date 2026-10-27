@@ -9,7 +9,7 @@ import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-pattern
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects, publishMetrics } from "@/lib/db/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
 import { topConvertingStyle, topConvertingHook, buildPerformanceHint, type MetricInput } from "@/lib/performance-insights";
@@ -260,20 +260,19 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
 
   const premiumProfile = isPremiumProductCgProfile(projectProfile) ? projectProfile : undefined;
   const tideweProfile = isTideweOutdoorProfile(projectProfile) ? projectProfile : undefined;
-  let originalSelection: { id: string; hash: string } | undefined;
-  let originalSource: { id: string; hash: string } | undefined;
+  let originalSelection: { id: string } | undefined;
+  let originalSource: { id: string } | undefined;
   if (tideweProfile) {
     if (!projectId || !project) return NextResponse.json({ error: "TIDEWE generation requires a saved project.", code: "TIDEWE_PROJECT_REQUIRED" }, { status: 400 });
     if (typeof body.requestId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(body.requestId)) return NextResponse.json({ error: "A valid requestId is required.", code: "TIDEWE_REQUEST_ID_REQUIRED" }, { status: 400 });
     const existing = getDb().select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
     const prior = existing.filter((row) => row.generationMetadata?.requestId === body.requestId);
     if (prior.length) {
-      const stale = prior.some((row) => row.creativeProfileSnapshot?.creativeConfigRevision !== projectRevision || row.creativeProfileSnapshot?.profile.creationType !== "tidewe_outdoor");
+      const stale = prior.some((row) => row.creativeProfileSnapshot?.profile.creationType !== "tidewe_outdoor");
       return NextResponse.json({ scripts: prior.map((row) => ({ ...row, scriptHash: scriptRevision(row) })), requestId: body.requestId,
         ...(stale || !prior.some((row) => row.selected) ? { error: "This request was saved as history; refresh the current script.", code: "CREATIVE_CONFIG_STALE" } : {}),
       }, { status: stale || !prior.some((row) => row.selected) ? 409 : 200 });
     }
-    if (!Number.isSafeInteger(body.expectedCreativeConfigRevision) || body.expectedCreativeConfigRevision !== projectRevision) return NextResponse.json({ error: "The project configuration changed. Refresh before generating.", code: "CREATIVE_CONFIG_STALE", creativeConfigRevision: projectRevision }, { status: 409 });
     if (body.styleType !== undefined && body.styleType !== TIDEWE_OUTDOOR_STYLE) return NextResponse.json({ error: "The requested style does not match the project.", code: "CREATIVE_PROFILE_MISMATCH" }, { status: 400 });
     if (body.creativeProfile !== undefined || body.profile !== undefined) {
       const requested = validateCreativeProfileInput(body.creativeProfile ?? body.profile);
@@ -282,11 +281,11 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1 || body.count > 3)) return apiError(req, "候选数量只能为1到3", "count must be between 1 and 3", 400);
     if (body.copyText !== undefined && (typeof body.copyText !== "string" || body.copyText.trim().length < 2 || body.copyText.length > 12000)) return apiError(req, "请提供有效的完整英文文案", "Provide complete English copy (2–12000 characters)", 400);
     const selected = existing.find((row) => row.selected);
-    originalSelection = selected ? { id: selected.id, hash: scriptRevision(selected) } : undefined;
+    originalSelection = selected ? { id: selected.id } : undefined;
     if (body.sourceScriptId !== undefined || body.expectedScriptHash !== undefined) {
       const source = existing.find((row) => row.id === body.sourceScriptId);
-      if (!source || typeof body.expectedScriptHash !== "string" || scriptRevision(source) !== body.expectedScriptHash) return NextResponse.json({ error: "The source script changed. Refresh before editing.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
-      originalSource = { id: source.id, hash: body.expectedScriptHash };
+      if (!source) return NextResponse.json({ error: "The source script does not belong to this project.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+      originalSource = { id: source.id };
     }
   }
   const productImages = (project?.productImages as string[] | undefined) ?? requestedProductImages;
@@ -418,12 +417,12 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         let replayedDuringSave = false;
         const rows = db.transaction((tx) => {
           const [currentProject] = tx
-            .select({ creativeConfigRevision: projects.creativeConfigRevision })
+            .select({ creativeProfile: projects.creativeProfile })
             .from(projects)
             .where(eq(projects.id, projectId))
             .limit(1)
             .all();
-          creativeConfigChanged = !currentProject || currentProject.creativeConfigRevision !== projectRevision;
+          creativeConfigChanged = !currentProject || resolveCreativeProfile(currentProject.creativeProfile).creationType !== projectProfile.creationType;
           if (tideweProfile) {
             const currentScripts = tx.select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
             // Another worker may have finished this request after our initial read.
@@ -431,15 +430,15 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
             const prior = currentScripts.filter((row) => row.generationMetadata?.requestId === body.requestId);
             if (prior.length) {
               replayedDuringSave = true;
-              creativeConfigChanged ||= prior.some((row) => row.creativeProfileSnapshot?.creativeConfigRevision !== projectRevision || row.creativeProfileSnapshot?.profile.creationType !== "tidewe_outdoor") || !prior.some((row) => row.selected);
+              creativeConfigChanged ||= prior.some((row) => row.creativeProfileSnapshot?.profile.creationType !== "tidewe_outdoor") || !prior.some((row) => row.selected);
               return prior;
             }
             const selected = currentScripts.find((row) => row.selected);
             const selectionUnchanged = originalSelection
-              ? selected?.id === originalSelection.id && scriptRevision(selected) === originalSelection.hash
+              ? selected?.id === originalSelection.id
               : !selected;
             const source = originalSource ? currentScripts.find((row) => row.id === originalSource.id) : undefined;
-            creativeConfigChanged ||= !selectionUnchanged || Boolean(originalSource && (!source || scriptRevision(source) !== originalSource.hash));
+            creativeConfigChanged ||= !selectionUnchanged || Boolean(originalSource && !source);
           }
           const [latest] = tx
             .select({ version: scriptsTable.version })
@@ -500,8 +499,8 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         })) as typeof scripts;
         if (creativeConfigChanged) {
           return NextResponse.json({
-            error: "The project creative configuration changed while the script was generating. The result was saved as history and was not selected.",
-            code: "CREATIVE_CONFIG_STALE",
+            error: "The project or selected script changed while generating. The result was saved as history and was not selected.",
+            code: "SCRIPT_CONTEXT_CHANGED",
             requestId: body.requestId,
             scripts: savedScripts,
             analysis,
@@ -511,7 +510,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         if (!replayedDuringSave) await db
           .update(projects)
           .set({ status: "scripting", ...(analysis && { productAnalysis: analysis }), updatedAt: new Date() })
-          .where(and(eq(projects.id, projectId), eq(projects.creativeConfigRevision, projectRevision)));
+          .where(eq(projects.id, projectId));
       } catch (e) {
         // DB write failure must surface as an error — returning 200 would let the frontend navigate away thinking it succeeded, then read empty scripts from the DB (which may already have had their old scripts deleted)
         console.error("脚本落库失败:", e);

@@ -621,13 +621,10 @@ function normalizedCreativeConfigRevision(value: unknown): number {
 }
 
 /**
- * Checks that a script may drive a current-generation action for a project. A script snapshot
- * captures the profile chosen when it was generated; after a type switch or settings change,
- * downstream generation must be replanned rather than quietly applying a stale visual policy.
- *
- * Rows created before profile snapshots existed remain readable: they are classified from their
- * stored style and only participate in the type check. New snapshots also carry a revision and
- * are rejected after the project's creation settings change.
+ * Resolves the policy for a saved script option. Revision counters are provenance only:
+ * the same option may keep driving generation, adoption and composition after settings edits.
+ * Its frozen policy remains authoritative; project/script/shot ownership is checked by callers.
+ * A different creation type is still incompatible with the project's locked type.
  */
 export function checkCreativeProfileContext(
   project: CreativeProfileProjectContext,
@@ -659,15 +656,6 @@ export function checkCreativeProfileContext(
       scriptRevision,
     };
   }
-  if (scriptRevision !== undefined && scriptRevision !== projectRevision) {
-    return {
-      ok: false,
-      code: "CREATIVE_CONFIG_STALE",
-      projectProfile,
-      scriptProfile,
-      projectRevision,
-      scriptRevision,
-    };
-  }
-  return { ok: true, projectProfile, scriptProfile, projectRevision, scriptRevision };
+  const effectiveProfile = snapshotProfile === undefined ? projectProfile : scriptProfile;
+  return { ok: true, projectProfile: effectiveProfile, scriptProfile: effectiveProfile, projectRevision, scriptRevision };
 }

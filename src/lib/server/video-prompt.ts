@@ -184,11 +184,10 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     creativeIntent: project.creativeIntent,
     visualBible: project.visualBible,
     profile,
-    creativeConfigRevision: project.creativeConfigRevision,
     scriptId: script.id,
-    shots: script.shots,
-    ...(tidewe ? { copyDocument: script.copyDocument } : {}),
-    snapshot: script.creativeProfileSnapshot,
+    shotId: shot.shotId,
+    prompt: compiled.prompt,
+    negativePrompt: compiled.negativePrompt,
     selectedAssets,
   })).digest("hex");
   return { ...compiled, scriptId: script.id, shotId: shot.shotId, contextKey, settings: request.settings, controlPlan };

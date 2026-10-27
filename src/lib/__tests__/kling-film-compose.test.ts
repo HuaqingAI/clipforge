@@ -218,19 +218,31 @@ describe("Kling frozen local film composition", () => {
     expect(state.compose).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["project", "shot", "script", "shot-key", "file-path"])("refuses a frozen asset whose %s binding changed", async (field) => {
+  it.each(["project", "shot", "script", "file-path"])("refuses a frozen asset whose %s binding changed", async (field) => {
     const patch = field === "project" ? { projectId: "other-project" } : field === "shot" ? { shotId: 99 } : field === "script" ? { sourceScriptId: "other-script" } :
-      field === "shot-key" ? { sourceShotKey: "other-key" } : { filePath: "/api/files/project-1/other.mp4" };
+      { filePath: "/api/files/project-1/other.mp4" };
     if (field === "project") getDb().insert(projects).values({ id: "other-project", name: "Other" }).run();
     getDb().update(assets).set(patch).where(eq(assets.id, "asset-1")).run();
     await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_ASSET_CHANGED" });
     expect(state.compose).not.toHaveBeenCalled();
   });
 
-  it.each(["sourceScriptId", "sourceRevision", "sourceShotKey"] as const)("refuses a partially scoped frozen asset missing %s", async (field) => {
-    getDb().update(assets).set({ [field]: null }).where(eq(assets.id, "asset-1")).run();
+  it("refuses a partially scoped frozen asset without its script owner", async () => {
+    getDb().update(assets).set({ sourceScriptId: null }).where(eq(assets.id, "asset-1")).run();
     await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_ASSET_CHANGED" });
     expect(state.compose).not.toHaveBeenCalled();
+  });
+
+  it.each(["sourceRevision", "sourceShotKey"] as const)("composes a same-script asset without optional %s metadata", async (field) => {
+    getDb().update(assets).set({ [field]: null }).where(eq(assets.id, "asset-1")).run();
+    await composeKlingFilm("run-1");
+    expect(state.compose).toHaveBeenCalledOnce();
+  });
+
+  it("composes a same-script asset with historical shot hash metadata", async () => {
+    getDb().update(assets).set({ sourceShotKey: "old-shot-key" }).where(eq(assets.id, "asset-1")).run();
+    await composeKlingFilm("run-1");
+    expect(state.compose).toHaveBeenCalledOnce();
   });
 
   it.each(["https://cdn.example/video.mp4", "/api/files/../../private.mp4"])("refuses non-local or escaped frozen video paths: %s", async (videoUrl) => {

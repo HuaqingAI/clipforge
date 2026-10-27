@@ -181,7 +181,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           error: context.code === "CREATIVE_CONFIG_STALE"
             ? "脚本基于旧的创作设置生成，请重新生成脚本后再生成视频。"
-            : "当前脚本与项目创作类型不匹配，请切换到匹配类型或重新生成脚本。",
+            : "当前脚本与项目创作类型不匹配，请刷新后重新生成脚本。",
           code: context.code,
           projectCreationType: context.projectProfile.creationType,
           scriptCreationType: context.scriptProfile.creationType,
