@@ -95,6 +95,16 @@ describe("非幂等付费 POST 的重试策略（issue #16 问题1）", () => {
 });
 
 describe("模型能力校验与 i2v 映射（issue #16 问题4：转动态被计费为文生视频）", () => {
+  it("原生口播最短7秒时选择Veo的8秒档，超过8秒则在付费POST之前拒绝", async () => {
+    const provider = new AtlasCloudProvider(cfg);
+    const request = vi.spyOn(asAny(provider), "request").mockResolvedValue({ data: { id: "native-task" } });
+    const options = { modelId: "google/veo3.1/image-to-video", mode: "image-to-video" as const, firstFrameUrl: "https://example.test/face.png", prompt: "Speak the complete English line", duration: 7, minimumDuration: 7, audioEnabled: true };
+    await expect(provider.submitVideoTask(options)).resolves.toMatchObject({ taskId: "native-task" });
+    expect(request.mock.calls[0][1]).toMatchObject({ body: { duration: 8, generate_audio: true } });
+    request.mockClear();
+    await expect(provider.submitVideoTask({ ...options, duration: 9, minimumDuration: 8.1 })).rejects.toMatchObject({ code: "MINIMUM_DURATION_UNSUPPORTED" });
+    expect(request).not.toHaveBeenCalled();
+  });
   it("默认 t2v 模型 + 首帧图 → 自动映射为同族 image-to-video 模型提交", async () => {
     const p = new AtlasCloudProvider(cfg);
     const req = vi.spyOn(asAny(p), "request").mockResolvedValue({ data: { id: "task-1" } });

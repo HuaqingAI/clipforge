@@ -3,13 +3,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AssetsPage from "@/app/project/[id]/assets/page";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { useCharacterStore, type Character } from "@/lib/stores/project-store";
+import { snapshotTidewePresenter } from "@/lib/tidewe/presenter";
 import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 import type { KlingConcurrencyStatus } from "@/lib/kling/concurrency";
 import type { Model } from "@/lib/providers/types";
 import type { KlingJobView } from "@/lib/kling/job-types";
 import type { VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import type { BatchMotionPanel } from "@/components/batch-motion-panel";
-import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import type { Shot } from "@/lib/db/schema";
 
 const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, showMaterialLibrary: false }));
 const batch = vi.hoisted(() => ({ props: null as ComponentProps<typeof BatchMotionPanel> | null }));
@@ -58,6 +61,7 @@ vi.mock("@/components/ui/dialog", () => ({
 const kling: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","image_to_video","chosen"]', provider: "kling-cli", profileId: "profile", region: "global", tool: "image_to_video", remoteModelId: "chosen", displayName: "Chosen Kling", catalogRevision: "rev", available: true, parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5, 10], default: 5 }], inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { image: true, tailFrame: false, multiImage: false, audio: false } };
 const ark = "doubao-seedance-2.5";
 const initial = useSettingsStore.getInitialState();
+const initialCharacters = useCharacterStore.getInitialState();
 const fetchMock = vi.fn();
 let root: Root, container: HTMLDivElement, isVideo: boolean, pending: Array<Record<string, unknown>>;
 function button(part: string) { return [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(part)); }
@@ -73,7 +77,7 @@ function previewRequests(): VideoPromptRequest[] {
   return fetchMock.mock.calls.filter(([url]) => url === videoPromptUrl).map(([, init]) => JSON.parse(init.body));
 }
 function promptPreview(request: VideoPromptRequest, overrides: Partial<VideoPromptPreview> = {}): VideoPromptPreview {
-  const native = Boolean(request.generateAudio && request.controlInputs?.supportsAudio && !request.batch);
+  const native = Boolean(request.generateAudio && request.controlInputs?.supportsAudio);
   return {
     prompt: serverPrompt(request.shotId), negativePrompt: "backend negative direction",
     scriptId: request.scriptId, shotId: request.shotId, contextKey: `backend-context-${request.shotId}`,
@@ -98,6 +102,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("fetch", fetchMock);
   navigation.router.replace.mockReset().mockImplementation((url: string) => changeUrl(url));
   useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: ark, providers: { volcengine: { enabled: true, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
+  useCharacterStore.setState({ ...initialCharacters, characters: [] });
   api.models = [{ id: ark, name: "Ark", provider: "volcengine", mediaType: "video", modes: ["image-to-video"] }, { id: kling.selectionKey, name: "Chosen Kling", provider: "kling-cli", mediaType: "video", modes: ["image-to-video"] }];
   api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; isVideo = false; pending = [];
   api.kling.mockReset().mockImplementation(async (url: string) => url.includes("/status") ? Response.json({ loggedIn: true, models: [kling], concurrency: api.concurrency }) : url.includes("/jobs?") ? Response.json({ jobs: api.jobs }) : Response.json({ jobId: "new-job" }, { status: 202 }));
@@ -113,7 +118,267 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/project/project/assets");
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
+
+const tideweScriptHash = "a".repeat(64);
+function configureTideweAssets({ productVisible = true, savedFrame = false, projectOverrides = {} }: { productVisible?: boolean; savedFrame?: boolean; projectOverrides?: Record<string, unknown> } = {}) {
+  api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+  useSettingsStore.setState({ defaultImageModel: "fixture-image", uiMode: "pro" });
+  const planned: Shot = {
+    shotId: 1, type: "demo", duration: 5, description: productVisible ? "猎人在森林边整理迷彩夹克" : "森林清晨，树梢上的薄雾缓慢消散", camera: "Slow dolly in", visualSource: "ai_generate", transition: "direct_concat",
+    voiceover: "The woods are quiet before the day begins.",
+    tidewe: { copySpan: { start: 0, end: 42 }, translation: "天亮前，树林很安静。", shotGoal: productVisible ? "展示同款夹克的自然使用" : "建立安静的森林清晨环境", productVisible, factRefs: [], sceneId: "morning-woods" },
+  };
+  const normal = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+    if (url === "/api/project/project") return Promise.resolve(Response.json({ name: "TIDEWE jacket", productImages: ["/api/files/product.jpg"], creativeProfile: createTideweOutdoorProfile(), creativeConfigRevision: 7, productionWorkflow: [{ id: "motion", enabled: false }], ...projectOverrides }));
+    if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots: [planned] }]));
+    if (url.endsWith("/assets")) return Promise.resolve(Response.json(init?.method === "POST" ? { filePath: "/api/files/tidewe-saved.png" } : savedFrame ? [{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", filePath: "/api/files/frame.jpg" }] : []));
+    if (url === "/api/ai/image") return Promise.resolve(Response.json({ imageUrls: ["https://example.test/tidewe-generated.png"] }));
+    return normal(url, init);
+  });
+  return { planned };
+}
+
+describe("TIDEWE assets preserve the frozen script context", () => {
+  const selectedPresenter: Character = { id: "bound-presenter", name: "Frozen outdoor creator", appearance: "An adult outdoors in a green cap", referenceImages: ["/api/files/frozen-presenter.png"], sourceReferenceImages: ["/api/files/frozen-portrait.png"] };
+  it("shows the frozen project presenter, ignores query and library replacements, and automatically binds it to grid and single images", async () => {
+    const presenter = snapshotTidewePresenter(selectedPresenter)!;
+    const { planned } = configureTideweAssets({ projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
+    planned.tidewe = { ...planned.tidewe!, personVisible: true, presenter };
+    useCharacterStore.setState({ characters: [{ ...selectedPresenter, name: "Changed library identity", referenceImages: ["/api/files/changed-presenter.png"] }, { id: "query-presenter", name: "Query identity", appearance: "A different adult", referenceImages: ["/api/files/query-presenter.png"] }] });
+    window.history.replaceState(null, "", "/project/project/assets?presenter=query-presenter");
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/storyboard-grid")
+      ? Promise.resolve(Response.json({ count: 2 }))
+      : url.endsWith("/scripts")
+        ? Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots: [planned, { ...planned, shotId: 2 }] }]))
+        : normal(url, init));
+    await mount(ark);
+    const identity = container.querySelector('[aria-label="presenterLabel"]');
+    expect(identity?.textContent).toContain(selectedPresenter.name);
+    expect(container.querySelector(`select option[value="${presenter.id}"]`)).toBeNull();
+    expect(container.querySelector('select option[value="query-presenter"]')).toBeNull();
+    expect(container.querySelector('a[href="/project/project/script"]')).not.toBeNull();
+    await act(async () => useCharacterStore.setState({ characters: [] }));
+    await navigate("/project/project/assets?presenter=another-presenter");
+    expect(identity?.textContent).toContain(selectedPresenter.name);
+    await click("gridButton");
+    const gridRequest = fetchMock.mock.calls.find(([url]) => url.endsWith("/storyboard-grid"))!;
+    expect(JSON.parse(gridRequest[1].body)).toMatchObject({ scriptId: "script", characterSheetUrl: "/api/files/frozen-presenter.png" });
+    await click("btnGenerate");
+    const imageRequest = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/ai/image")![1].body);
+    expect(imageRequest).toMatchObject({ imageUrl: "/api/files/frozen-presenter.png", referenceImageUrls: ["/api/files/frozen-presenter.png", "/api/files/product.jpg"] });
+    expect(JSON.stringify(imageRequest)).not.toContain("changed-presenter");
+    expect(JSON.stringify(imageRequest)).not.toContain("query-presenter");
+  });
+  it("automatically sends the frozen presenter identity to the reviewed video controls", async () => {
+    const presenter = snapshotTidewePresenter(selectedPresenter)!;
+    const { planned } = configureTideweAssets({ savedFrame: true, projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
+    planned.tidewe = { ...planned.tidewe!, personVisible: true, presenter };
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    useCharacterStore.setState({ characters: [{ ...selectedPresenter, referenceImages: ["/api/files/changed-presenter.png"] }] });
+    await mount(ark); await click("btnConvertMotion");
+    expect(previewRequests()[0]).toMatchObject({ generateAudio: true, controlInputs: { characterReferenceUrl: "/api/files/frozen-presenter.png", productReferenceUrl: "/api/files/product.jpg" } });
+  });
+  it("keeps the selected presenter out of silent person-free B-roll image and video reference packs", async () => {
+    const presenter = snapshotTidewePresenter(selectedPresenter)!;
+    const { planned } = configureTideweAssets({ productVisible: false, projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
+    planned.voiceover = "";
+    planned.tidewe = { ...planned.tidewe!, personVisible: false, presenter };
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    await mount(ark); await click("btnGenerate");
+    const imageRequest = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/ai/image")![1].body);
+    expect(imageRequest.mode).toBe("text-to-image");
+    expect(imageRequest).not.toHaveProperty("imageUrl");
+    expect(imageRequest).not.toHaveProperty("referenceImageUrls");
+    expect(imageRequest.prompt).not.toContain(selectedPresenter.name);
+    await click("btnConvertMotion");
+    expect(previewRequests()[0].controlInputs).not.toHaveProperty("characterReferenceUrl");
+    expect(previewRequests()[0].controlInputs).not.toHaveProperty("productReferenceUrl");
+  });
+  it.each([false, true])("keeps exact native spoken text and audio enabled for TIDEWE batch=%s even when global audio is off", async (batchMode) => {
+    const { planned } = configureTideweAssets({ savedFrame: true });
+    planned.duration = 5.4;
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: false } });
+    await mount(ark);
+    if (batchMode) {
+      await click("batchMotionButton");
+      await act(async () => (container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).click());
+    } else {
+      await click("btnConvertMotion");
+      await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+      await click("确认生成此镜头");
+    }
+    expect(previewRequests()[0]).toMatchObject({ batch: batchMode, generateAudio: true, controlInputs: { supportsAudio: true } });
+    expect(submissions()).toHaveLength(1);
+    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ options: { duration: 6, audioEnabled: true, voiceover: planned.voiceover, audioPrompt: serverAudioPrompt } });
+  });
+  it("saves an image against its source script hash before showing the adopted result", async () => {
+    configureTideweAssets();
+    await mount(ark);
+    await click("btnGenerate");
+    const generation = fetchMock.mock.calls.find(([url]) => url === "/api/ai/image")!;
+    expect(JSON.parse(generation[1].body)).toMatchObject({ scriptId: "script", shotId: 1, mode: "image-to-image", imageUrl: "/api/files/product.jpg" });
+    const saves = fetchMock.mock.calls.filter(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST");
+    expect(saves).toHaveLength(1);
+    expect(JSON.parse(saves[0][1].body)).toMatchObject({ scriptId: "script", expectedScriptHash: tideweScriptHash, shotId: 1, sourceUrl: "https://example.test/tidewe-generated.png" });
+    expect(container.querySelector('img[src="/api/files/tidewe-saved.png"]')).not.toBeNull();
+    expect(button("btnRegenerate")).toBeDefined();
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("keeps a 409 image-save conflict failed instead of showing an unadopted generated image as done", async () => {
+    configureTideweAssets();
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project/assets" && init?.method === "POST"
+      ? Promise.resolve(Response.json({ error: "The script revision changed. Refresh before adopting this image." }, { status: 409 })) : normal(url, init));
+    await mount(ark);
+    await click("btnGenerate");
+    expect(container.textContent).toContain("The script revision changed. Refresh before adopting this image.");
+    expect(button("retry")).toBeDefined();
+    expect(button("btnRegenerate")).toBeUndefined();
+    expect(button("btnConvertMotion")).toBeUndefined();
+    expect(container.querySelector('img[src="https://example.test/tidewe-generated.png"]')).toBeNull();
+    expect(container.querySelector('img[src="/api/files/tidewe-saved.png"]')).toBeNull();
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("generates environment shots without product references or obsolete sales visual rules", async () => {
+    configureTideweAssets({ productVisible: false, projectOverrides: {
+      creativeIntent: { subject: "OLD SALES HOST", continuity: ["黑棚产品促销"] },
+      visualBible: { productAnchors: ["OLD SALES PACKAGING"], forbiddenChanges: ["森林清晨"] },
+    } });
+    await mount(ark);
+    await click("btnGenerate");
+    const imageCalls = fetchMock.mock.calls.filter(([url]) => url === "/api/ai/image");
+    expect(imageCalls).toHaveLength(1);
+    const request = JSON.parse(imageCalls[0][1].body);
+    expect(request.mode).toBe("text-to-image");
+    for (const field of ["imageUrl", "imageUrls", "referenceImageUrls"]) expect(request).not.toHaveProperty(field);
+    expect(request.prompt).toContain("产品不出镜");
+    expect(request.prompt).toContain("森林清晨");
+    expect(request.prompt).not.toContain("OLD SALES HOST");
+    expect(request.prompt).not.toContain("OLD SALES PACKAGING");
+    expect(container.textContent).not.toContain("visualBibleBlocked");
+    expect(container.querySelector('img[src="/api/files/tidewe-saved.png"]')).not.toBeNull();
+  });
+
+  it("sends the source hash and creative revision when editing a camera move", async () => {
+    configureTideweAssets({ savedFrame: true });
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts") && init?.method === "PATCH"
+      ? Promise.resolve(Response.json({ success: true })) : normal(url, init));
+    await mount(ark);
+    await act(async () => (container.querySelector('button[title="cameraEditTip"]') as HTMLButtonElement).click());
+    const input = container.querySelector('input[maxlength="200"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Slow pan across the jacket"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    const patch = fetchMock.mock.calls.find(([url, init]) => url.endsWith("/scripts") && init?.method === "PATCH")!;
+    expect(JSON.parse(patch[1].body)).toEqual({ scriptId: "script", expectedScriptHash: tideweScriptHash, expectedCreativeConfigRevision: 7, shotTexts: [{ shotId: 1, camera: "Slow pan across the jacket" }] });
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/scripts")).length).toBeGreaterThan(2);
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("keeps a recovered legacy task result available without adopting it into a newer TIDEWE script", async () => {
+    configureTideweAssets({ savedFrame: true });
+    pending = [{ id: "legacy-task", shotId: 1, provider: "volcengine", model: ark, taskId: "legacy-video", status: "unknown" }];
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/ai/video/task"
+      ? Promise.resolve(Response.json({ status: "completed", videoUrls: ["https://example.test/recovered.mp4"] })) : normal(url, init));
+    await mount(ark);
+    await click("btnResumeTask");
+    expect(container.textContent).toContain("该历史任务没有原始文案版本");
+    expect(container.textContent).toContain("https://example.test/recovered.mp4");
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST")).toHaveLength(0);
+    expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
+    expect(button("btnRedoMotion")).toBeUndefined();
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it.each(["pin", "tail"] as const)("only chains %s frames within matching TIDEWE scenes and product visibility", async (chainMode) => {
+    const { planned } = configureTideweAssets();
+    useSettingsStore.setState({ chainMode });
+    const shots = [1, 2, 3].map((shotId): Shot => ({ ...planned, shotId, type: "hook", tidewe: { ...planned.tidewe!, sceneId: "same-woods", productVisible: true } }));
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots }]))
+      : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json([
+        { shotId: 1, status: "done", selected: true, filePath: "/api/files/previous.mp4", sourceKeyframeUrl: "/api/files/frame-1.jpg", lastFrameUrl: "/api/files/previous-tail.jpg" },
+        { shotId: 2, status: "done", selected: true, filePath: "/api/files/frame-2.jpg" },
+        { shotId: 3, status: "done", selected: true, filePath: "/api/files/frame-3.jpg" },
+      ])) : normal(url, init));
+    await mount(ark);
+    await click("btnConvertMotion"); // shot 1 is already video; the first still is shot 2.
+    expect(previewRequests()).toHaveLength(1);
+    const request = previewRequests()[0];
+    expect(request.shotId).toBe(2);
+    expect(request.controlInputs?.firstFrameUrl).toBe(chainMode === "tail" ? "/api/files/previous-tail.jpg" : "/api/files/frame-2.jpg");
+    expect(request.controlInputs?.lastFrameUrl).toBe(chainMode === "pin" ? "/api/files/frame-3.jpg" : undefined);
+    expect(request.controlInputs?.continuityReferenceUrl).toBe("/api/files/previous-tail.jpg");
+    expect(request.chainToNext).toBe(chainMode === "pin");
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it.each([
+    { change: "scene", chainMode: "pin" as const }, { change: "scene", chainMode: "tail" as const },
+    { change: "product visibility", chainMode: "pin" as const }, { change: "product visibility", chainMode: "tail" as const },
+  ])("does not automatically reuse $chainMode or continuity frames across a TIDEWE $change change", async ({ change, chainMode }) => {
+    const { planned } = configureTideweAssets();
+    useSettingsStore.setState({ chainMode });
+    const shots = [1, 2, 3].map((shotId): Shot => ({ ...planned, shotId, type: "hook", tidewe: {
+      ...planned.tidewe!, sceneId: shotId !== 2 && change === "scene" ? "other-clearing" : "same-woods",
+      productVisible: !(shotId !== 2 && change === "product visibility"),
+    } }));
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots }]))
+      : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json([
+        { shotId: 1, status: "done", selected: true, filePath: "/api/files/previous.mp4", sourceKeyframeUrl: "/api/files/frame-1.jpg", lastFrameUrl: "/api/files/previous-tail.jpg" },
+        { shotId: 2, status: "done", selected: true, filePath: "/api/files/frame-2.jpg" },
+        { shotId: 3, status: "done", selected: true, filePath: "/api/files/frame-3.jpg" },
+      ])) : normal(url, init));
+    await mount(ark);
+    await click("btnConvertMotion");
+    expect(previewRequests()).toHaveLength(1);
+    expect(previewRequests()[0]).toMatchObject({ shotId: 2, chainToNext: false, controlInputs: { firstFrameUrl: "/api/files/frame-2.jpg" } });
+    expect(previewRequests()[0].controlInputs?.lastFrameUrl).toBeUndefined();
+    expect(previewRequests()[0].controlInputs?.continuityReferenceUrl).toBeUndefined();
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("recovers a task into its original script without changing the current preview or tail-frame cache", async () => {
+    const { planned } = configureTideweAssets({ savedFrame: true });
+    useSettingsStore.setState({ chainMode: "tail" });
+    const sourceContext = { version: 1, sourceScriptId: "original-script", sourceShotKey: "b".repeat(64), sourceRevision: "c".repeat(64) };
+    pending = [{ id: "original-task", shotId: 1, provider: "volcengine", model: ark, taskId: "original-video", status: "unknown", controlPlan: {
+      version: 1, strategy: "keyframe", mode: "image-to-video", referenceRoles: ["keyframe"], referenceCount: 1, audioMode: "none", voiceoverBound: false, warnings: [], sourceContext,
+    } }];
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots: [planned, { ...planned, shotId: 2 }] }]));
+      if (url.endsWith("/assets")) return Promise.resolve(Response.json(init?.method === "POST"
+        ? { filePath: "/api/files/original-recovered.mp4", lastFrameUrl: "/api/files/original-tail.jpg" }
+        : [1, 2].map((shotId) => ({ shotId, status: "done", selected: true, filePath: `/api/files/current-frame-${shotId}.jpg` }))));
+      if (url === "/api/ai/video/task") return Promise.resolve(Response.json({ status: "completed", videoUrls: ["https://example.test/original-recovered.mp4"] }));
+      return normal(url, init);
+    });
+    await mount(ark);
+    await click("btnResumeTask");
+    const save = fetchMock.mock.calls.find(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST")!;
+    expect(JSON.parse(save[1].body)).toMatchObject({ scriptId: sourceContext.sourceScriptId, expectedScriptHash: sourceContext.sourceRevision, sourceUrl: "https://example.test/original-recovered.mp4", generationPlan: { sourceContext } });
+    expect(container.querySelector('img[src="/api/files/current-frame-1.jpg"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/api/files/original-recovered.mp4"]')).toBeNull();
+    expect(button("btnRedoMotion")).toBeUndefined();
+    const nextMotion = [...container.querySelectorAll("button")].filter((item) => item.textContent?.includes("btnConvertMotion"))[1];
+    await act(async () => nextMotion.click());
+    expect(previewRequests()).toHaveLength(1);
+    expect(previewRequests()[0]).toMatchObject({ shotId: 2, controlInputs: { firstFrameUrl: "/api/files/current-frame-2.jpg" } });
+    expect(previewRequests()[0].controlInputs?.continuityReferenceUrl).toBeUndefined();
+    expect(submissions()).toHaveLength(0);
+  });
+});
 
 describe("assets uses the configured provider through one motion entry", () => {
   it("submits the selected grid resolution and reports the actual cropped dimensions when the model is limited", async () => {

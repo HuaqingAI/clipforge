@@ -5,12 +5,15 @@ import { desc } from "drizzle-orm";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
+  createTideweOutdoorProfile,
+  isTideweOutdoorProfile,
   sanitizeCreativeProfileDrafts,
   validateCreativeProfileInput,
   type CreativeProfileFallback,
   type ProjectCreativeProfile,
   type ProjectCreativeProfileDrafts,
 } from "@/lib/creative-profiles";
+import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -55,6 +58,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
     "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
   }
@@ -71,7 +75,9 @@ function createProfileDrafts(
   const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
   if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
   if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
+  if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
   if (profile.creationType === "premium_product_cg") drafts.premium_product_cg = profile;
+  else if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
   else drafts.short_video_sales = profile;
   return drafts;
 }
@@ -116,7 +122,21 @@ export async function POST(req: NextRequest) {
     if (hasOwn(body, "creativeProfileDrafts") && !isRecord(body.creativeProfileDrafts)) {
       return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
     }
+    if (isRecord(body.creativeProfileDrafts) && body.creativeProfileDrafts.tidewe_outdoor !== undefined) {
+      const draft = validateCreativeProfileInput(body.creativeProfileDrafts.tidewe_outdoor);
+      if (!draft.profile || !isTideweOutdoorProfile(draft.profile)) return NextResponse.json({ error: draft.error ?? "Invalid TIDEWE creative profile draft." }, { status: 400 });
+    }
     const creativeProfile = profileResult.profile;
+    if (isTideweOutdoorProfile(creativeProfile) && hasOwn(body, "characterId")
+      && (body.characterId ?? null) !== (creativeProfile.presenter?.id ?? null)) {
+      return NextResponse.json({ error: "TIDEWE 主播须通过创作配置中的 presenter 完整保存，不能单独修改 characterId。", code: "TIDEWE_PRESENTER_PROFILE_REQUIRED" }, { status: 400 });
+    }
+    let productFacts: ReturnType<typeof normalizeProductFacts>;
+    try { productFacts = body.productFacts == null ? undefined : normalizeProductFacts(body.productFacts); }
+    catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid product facts", code: "TIDEWE_FACTS_INVALID" }, { status: 400 }); }
+    if (body.productFacts != null && !productFacts) {
+      return NextResponse.json({ error: "Invalid productFacts.", code: "TIDEWE_FACTS_INVALID" }, { status: 400 });
+    }
     const creativeProfileDrafts = createProfileDrafts(creativeProfile, body.creativeProfileDrafts, fallback);
     const sourceType = body.sourceType === "clone" ? "clone" : undefined;
 
@@ -126,8 +146,12 @@ export async function POST(req: NextRequest) {
       ...(optionalString(body.productCategory) && { productCategory: optionalString(body.productCategory) }),
       ...(optionalString(body.productDescription) && { productDescription: optionalString(body.productDescription) }),
       productImages: stringList(body.productImages),
+      ...(productFacts ? { productFacts } : isTideweOutdoorProfile(creativeProfile) ? {
+        productFacts: productFactsFromDescription(optionalString(body.productDescription) ?? "", optionalString(body.productCategory)),
+      } : {}),
       videoMode: creativeProfile.videoMode,
       creativeProfile,
+      ...(isTideweOutdoorProfile(creativeProfile) ? { characterId: creativeProfile.presenter?.id ?? null } : {}),
       creativeProfileDrafts,
       creativeConfigRevision: 1,
       ...(sourceType && { sourceType }),

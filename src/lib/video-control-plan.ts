@@ -18,6 +18,23 @@ export type VideoControlWarning =
   | "last-frame-as-reference"
   | "reference-audio-unsupported";
 
+/** Frozen generation provenance used when a paid task finishes after the script changes. */
+export interface VideoSourceContext {
+  version: 1;
+  sourceScriptId: string;
+  sourceShotKey: string;
+  sourceRevision: string;
+}
+
+export function sanitizeVideoSourceContext(value: unknown): VideoSourceContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.version !== 1 || typeof raw.sourceScriptId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(raw.sourceScriptId)
+    || typeof raw.sourceShotKey !== "string" || !/^[a-f0-9]{64}$/.test(raw.sourceShotKey)
+    || typeof raw.sourceRevision !== "string" || !/^[a-f0-9]{64}$/.test(raw.sourceRevision)) return undefined;
+  return { version: 1, sourceScriptId: raw.sourceScriptId, sourceShotKey: raw.sourceShotKey, sourceRevision: raw.sourceRevision };
+}
+
 export interface VideoReferenceInput {
   url: string;
   role: VideoReferenceRole;
@@ -34,6 +51,7 @@ export interface VideoControlSummary {
   audioMode: "native" | "post" | "none";
   voiceoverBound: boolean;
   warnings: VideoControlWarning[];
+  sourceContext?: VideoSourceContext;
 }
 
 export interface VideoControlPlan extends VideoControlSummary {
@@ -207,6 +225,7 @@ export function sanitizeVideoControlSummary(value: unknown): VideoControlSummary
   const warnings = Array.isArray(raw.warnings)
     ? unique(raw.warnings.filter((warning): warning is VideoControlWarning => typeof warning === "string" && allowedWarnings.includes(warning as VideoControlWarning))).slice(0, allowedWarnings.length)
     : [];
+  const sourceContext = sanitizeVideoSourceContext(raw.sourceContext);
   return {
     version: 1,
     strategy,
@@ -216,5 +235,6 @@ export function sanitizeVideoControlSummary(value: unknown): VideoControlSummary
     audioMode,
     voiceoverBound: raw.voiceoverBound === true,
     warnings,
+    ...(sourceContext && { sourceContext }),
   };
 }

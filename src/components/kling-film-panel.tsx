@@ -17,6 +17,9 @@ import { KLING_MAX_CONCURRENT_SHOTS } from "@/lib/kling/concurrency";
 import { KLING_AUDIO_PARAMETER_NAMES, klingModelOptions } from "@/lib/kling/model-options";
 import type { VideoPromptSettings } from "@/lib/shot-video-prompt";
 import { TASK_FEED_REFRESH_EVENT } from "@/lib/task-feed";
+import { isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { resolveNarrationVoice } from "@/lib/narration-voice";
+import { useT } from "@/lib/i18n";
 
 const filmStatus: Record<KlingFilmView["status"], string> = {
   draft: "待确认", running: "镜头生成中", paused: "已暂停", needs_attention: "需要恢复", composing: "本地合成中", completed: "已完成", cancelled: "已取消",
@@ -40,10 +43,12 @@ function matchesCurrentPromptSettings(saved?: VideoPromptSettings) {
   return Boolean(saved && saved.visualLook === current.visualLook && saved.motionIntensity === current.motionIntensity && saved.motionRealism === current.motionRealism);
 }
 
-export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, presenterId, initialRunId, onAssetsChanged, onOpenJob }: {
+export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, presenterId, initialRunId, onAssetsChanged, onOpenJob, creativeProfile }: {
   open: boolean; onOpenChange(open: boolean): void; projectId: string; scriptId: string; profileId?: string; defaultModel?: string;
   presenterId?: string; initialRunId?: string; onAssetsChanged(): Promise<void> | void; onOpenJob(jobId: string): void;
+  creativeProfile?: unknown;
 }) {
+  const tt = useT("tidewe");
   const [status, setStatus] = useState<KlingPublicStatus | null>(null);
   const [selectionKey, setSelectionKey] = useState("");
   const [options, setOptions] = useState<Record<string, string | number | boolean>>({});
@@ -53,6 +58,8 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
   const motionIntensity = useSettingsStore((settings) => settings.motionIntensity);
   const motionRealism = useSettingsStore((settings) => settings.motionRealism);
   const [output, setOutput] = useState<KlingFilmOutputSettings>({ resolution: "720p", aspectRatio: "9:16", audioStrategy: "edge-tts", voice: DEFAULT_FREE_VOICE, subtitles: true });
+  const tidewe = isTideweOutdoorProfile(creativeProfile);
+  const tideweNativeSpeech = isTideweNativeSpeech(creativeProfile);
   const [reuseVideos, setReuseVideos] = useState(true);
   const [runs, setRuns] = useState<KlingFilmView[]>([]);
   const [view, setView] = useState<KlingFilmView | null>(null);
@@ -74,7 +81,7 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
   const startId = useRef<{ planId: string; requestId: string } | null>(null);
   const alive = useRef(false);
   const latestContext = useRef("");
-  latestContext.current = JSON.stringify([defaultModel, profileId, scriptId, presenterId, visualLook, motionIntensity, motionRealism]);
+  latestContext.current = JSON.stringify([defaultModel, profileId, scriptId, presenterId, visualLook, motionIntensity, motionRealism, tideweNativeSpeech]);
   const model = status?.models.find((item) => item.selectionKey === selectionKey);
   const editableParameters = model?.parameters.filter((parameter) => !orchestratedParameters.has(parameter.name)) ?? [];
   const active = Boolean(view && view.status !== "draft");
@@ -111,7 +118,7 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
     let cancelled = false;
     setLoading(true); setError(null); setConfirmed(false); setImageConfirmed(false); setActionConfirmed(false); setRetryShotId(null);
     const settings = useSettingsStore.getState();
-    setOutput({ resolution: settings.defaultResolution, aspectRatio: settings.defaultAspectRatio, audioStrategy: "edge-tts", voice: DEFAULT_FREE_VOICE, subtitles: true });
+    setOutput({ resolution: settings.defaultResolution, aspectRatio: tidewe ? "9:16" : settings.defaultAspectRatio, audioStrategy: tideweNativeSpeech ? "native" : "edge-tts", voice: resolveNarrationVoice(creativeProfile), subtitles: isTideweOutdoorProfile(creativeProfile) ? creativeProfile.composeSnapshot?.subtitles !== false : true });
     void Promise.allSettled([
       klingFetch(`/api/integrations/kling/status${profileId ? `?profileId=${encodeURIComponent(profileId)}` : ""}`).then(responseData),
       loadRuns(),
@@ -125,7 +132,7 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
     }).catch((failure) => { if (!cancelled) setError(failure instanceof Error ? failure.message : "读取 Kling 环境失败"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; alive.current = false; };
-  }, [open, profileId, defaultModel, initialRunId, loadRuns, refreshRun]);
+  }, [open, profileId, defaultModel, initialRunId, loadRuns, refreshRun, creativeProfile, tidewe, tideweNativeSpeech]);
 
   useEffect(() => {
     if (!model) return;
@@ -165,7 +172,7 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
     const context = latestContext.current;
     try {
       const promptSettings: VideoPromptSettings = { visualLook, motionIntensity, motionRealism };
-      const next = await responseData(await klingFetch("/api/integrations/kling/films/preview", { method: "POST", body: JSON.stringify({ projectId, scriptId, profileId: model.profileId, selectionKey: model.selectionKey, options, reuseExistingVideos: reuseVideos, output, promptSettings }) })) as KlingFilmView;
+      const next = await responseData(await klingFetch("/api/integrations/kling/films/preview", { method: "POST", body: JSON.stringify({ projectId, scriptId, profileId: model.profileId, selectionKey: model.selectionKey, options, reuseExistingVideos: reuseVideos, output: tideweNativeSpeech ? { ...output, audioStrategy: "native" } : output, promptSettings }) })) as KlingFilmView;
       if (alive.current && currentRevision === revision.current && context === latestContext.current) acceptView(next);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "预览失败"); }
     finally { lock.current = false; setBusy(false); }
@@ -186,7 +193,7 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
       const imageTarget = await resolveDefaultModelTarget(settings.providers, settings.defaultImageModel, settings.customModels, "image");
       if (!imageTarget) throw new Error("请先在设置中配置可用的图片模型；不会自动替换到其他收费平台。");
       const project = await responseData(await fetch(`/api/project/${projectId}`));
-      const selectedPresenterId = presenterId || project.characterId || "";
+      const selectedPresenterId = isTideweOutdoorProfile(project.creativeProfile) ? "" : presenterId || project.characterId || "";
       const library = useCharacterStore.getState();
       const presenter = selectedPresenterId ? library.characters.find((item) => item.id === selectedPresenterId) : undefined;
       if (selectedPresenterId && !presenter) throw new Error("所选主播在人物库中不存在，请重新选择主播后再准备关键帧。");
@@ -290,11 +297,12 @@ export function KlingFilmPanel({ open, onOpenChange, projectId, scriptId, profil
           {model && <div className="grid gap-3 sm:grid-cols-2">{editableParameters.map((parameter) => <label key={parameter.name} className="space-y-1 text-sm"><span>{videoParameterLabel(parameter.name)}{parameter.required ? " *" : ""}</span>{parameter.allowedValues || parameter.type === "boolean" ? <select aria-label={`整片参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded border bg-background p-2" value={String(options[parameter.name] ?? "")} disabled={formDisabled} onChange={(event) => { const value = (parameter.allowedValues ?? [true, false]).find((item) => String(item) === event.target.value); setOptions((previous) => { const next = { ...previous }; if (value === undefined) delete next[parameter.name]; else next[parameter.name] = value; return next; }); }}><option value="">使用平台默认值</option>{(parameter.allowedValues ?? [true, false]).map((value) => <option key={String(value)} value={String(value)}>{videoParameterValueLabel(parameter.name, value)}</option>)}</select> : <input aria-label={`整片参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded border bg-background p-2" type={parameter.type === "number" ? "number" : "text"} value={String(options[parameter.name] ?? "")} disabled={formDisabled} onChange={(event) => setOptions((previous) => { const next = { ...previous }; if (!event.target.value) delete next[parameter.name]; else next[parameter.name] = parameter.type === "number" ? Number(event.target.value) : event.target.value; return next; })} />}{videoParameterDescription(parameter) && <p className="text-xs text-muted-foreground">{videoParameterDescription(parameter)}</p>}</label>)}</div>}
           {parameterWarnings.map((warning) => <p key={warning} role="status" className="text-xs text-amber-600">{warning}</p>)}
           <p className="text-xs text-muted-foreground">镜头时长按脚本选择足够长的官方档位，声音和画幅由整片输出设置控制。每镜头实际参数会在计划中展示。</p>
+          {tideweNativeSpeech && <p className="text-xs text-muted-foreground">{tt("nativeSpeechHint")}</p>}
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-sm"><span>合成画幅</span><select aria-label="整片画幅" className="w-full rounded border bg-background p-2" value={output.aspectRatio} disabled={formDisabled} onChange={(event) => setOutput((previous) => ({ ...previous, aspectRatio: event.target.value as KlingFilmOutputSettings["aspectRatio"] }))}>{["9:16", "16:9", "1:1"].map((value) => <option key={value}>{value}</option>)}</select></label>
             <label className="space-y-1 text-sm"><span>合成分辨率</span><select aria-label="整片分辨率" className="w-full rounded border bg-background p-2" value={output.resolution} disabled={formDisabled} onChange={(event) => setOutput((previous) => ({ ...previous, resolution: event.target.value as KlingFilmOutputSettings["resolution"] }))}><option>720p</option><option>1080p</option></select></label>
-            <label className="space-y-1 text-sm"><span>声音策略</span><select aria-label="整片声音策略" className="w-full rounded border bg-background p-2" value={output.audioStrategy} disabled={formDisabled} onChange={(event) => setOutput((previous) => ({ ...previous, audioStrategy: event.target.value as KlingFilmOutputSettings["audioStrategy"] }))}><option value="edge-tts">免费 Edge 配音，替换镜头原声音</option><option value="edge-tts-mix">免费 Edge 配音，叠加镜头原声音</option><option value="native">保留镜头原声音，不补配音</option></select></label>
-            {output.audioStrategy !== "native" && <label className="space-y-1 text-sm"><span>配音音色</span><select aria-label="整片配音音色" className="w-full rounded border bg-background p-2" value={output.voice} disabled={formDisabled} onChange={(event) => setOutput((previous) => ({ ...previous, voice: event.target.value }))}>{FREE_TTS_VOICES.map((voice) => <option key={voice.value} value={voice.value}>{voice.label}</option>)}</select></label>}
+            <label className="space-y-1 text-sm"><span>声音策略</span><select aria-label="整片声音策略" className="w-full rounded border bg-background p-2" value={output.audioStrategy} disabled={formDisabled || tidewe} onChange={(event) => setOutput((previous) => ({ ...previous, audioStrategy: event.target.value as KlingFilmOutputSettings["audioStrategy"] }))}><option value="edge-tts">免费 Edge 配音，替换镜头原声音</option><option value="edge-tts-mix">免费 Edge 配音，叠加镜头原声音</option><option value="native">保留镜头原声音，不补配音</option></select></label>
+            {output.audioStrategy !== "native" && <label className="space-y-1 text-sm"><span>配音音色</span><select aria-label="整片配音音色" className="w-full rounded border bg-background p-2" value={output.voice} disabled={formDisabled} onChange={(event) => setOutput((previous) => ({ ...previous, voice: event.target.value }))}>{FREE_TTS_VOICES.filter((voice) => !tidewe || voice.lang.startsWith("en-")).map((voice) => <option key={voice.value} value={voice.value}>{voice.label}</option>)}</select></label>}
           </div>
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={output.subtitles} disabled={formDisabled} onChange={(event) => setOutput((previous) => ({ ...previous, subtitles: event.target.checked }))} />按脚本台词添加字幕</label>
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={reuseVideos} disabled={formDisabled} onChange={(event) => setReuseVideos(event.target.checked)} />复用当前脚本已选用的视频素材</label>

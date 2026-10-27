@@ -9,6 +9,8 @@ import { and, eq } from "drizzle-orm";
 import {
   checkCreativeProfileContext,
   isPremiumProductCgProfile,
+  isTideweOutdoorProfile,
+  isTideweNativeSpeech,
   resolveCreativeProfile,
 } from "@/lib/creative-profiles";
 import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
@@ -16,6 +18,9 @@ import {
   compilePremiumCgImagePrompt,
   PREMIUM_CG_IMAGE_NEGATIVE_PROMPT,
 } from "@/lib/premium-cg-prompt";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -60,7 +65,7 @@ export async function POST(req: NextRequest) {
   const apiKey = requiredString(body.apiKey);
   const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl : "";
   let imageUrl = typeof body.imageUrl === "string" && body.imageUrl.trim() ? body.imageUrl.trim() : undefined;
-  const imageUrls = Array.isArray(body.imageUrls)
+  let imageUrls = Array.isArray(body.imageUrls)
     ? body.imageUrls
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => value.trim())
@@ -82,6 +87,8 @@ export async function POST(req: NextRequest) {
     const scriptId = typeof body.scriptId === "string" ? body.scriptId : undefined;
     let shotId: number | undefined;
     let approvedPremiumShot: Shot | undefined;
+    let approvedTideweShot: Shot | undefined;
+    let tidewePresenterImage: string | undefined;
     if (body.projectId !== undefined && typeof body.projectId !== "string") {
       return apiError(req, "项目ID格式无效", "Invalid project id", 400);
     }
@@ -102,7 +109,7 @@ export async function POST(req: NextRequest) {
       const profile = resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode });
       // Existing sales integrations can still generate project images before or outside a script
       // selection. The assets page supplies scriptId; premium CG always requires one.
-      const requiresScriptContext = Boolean(scriptId) || isPremiumProductCgProfile(profile);
+      const requiresScriptContext = Boolean(scriptId) || isPremiumProductCgProfile(profile) || isTideweOutdoorProfile(profile);
       const selectedRows = requiresScriptContext
         ? db.select().from(scripts).where(and(eq(scripts.projectId, projectId), eq(scripts.selected, true))).all()
         : [];
@@ -134,6 +141,28 @@ export async function POST(req: NextRequest) {
         // Retain pre-script legacy image creation, but never accept a client-supplied profile
         // in place of a persisted project profile.
         creativeProfile = profile;
+      }
+      if (isTideweOutdoorProfile(profile)) {
+        if (!selected || !scriptId || !Number.isSafeInteger(body.shotId)) {
+          return NextResponse.json({ error: "TIDEWE 生图必须指定当前脚本和镜头。", code: "TIDEWE_PROJECT_CONTEXT_REQUIRED" }, { status: 400 });
+        }
+        try { assertTideweScript(selected, profile.presenter ?? null); }
+        catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
+        shotId = body.shotId as number;
+        approvedTideweShot = selected.shots?.find((item) => item.shotId === shotId);
+        if (!approvedTideweShot) return apiError(req, "镜头不存在", "Shot not found", 404);
+        // The frozen project/script presenter is authoritative, regardless of browser
+        // references or subsequent edits/removal in the local character library.
+        tidewePresenterImage = approvedTideweShot.tidewe?.personVisible !== false || (isTideweNativeSpeech(profile) && approvedTideweShot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
+        const references: string[] = tidewePresenterImage ? [tidewePresenterImage] : [];
+        if (approvedTideweShot.tidewe?.productVisible !== false) {
+          const savedImages = (project.productImages ?? []).filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+          if (!savedImages.length) return NextResponse.json({ error: "TIDEWE 产品镜需要当前项目的商品参考图。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
+          references.push(...savedImages);
+        }
+        imageUrls = references.length ? [...new Set(references)] : undefined;
+        imageUrl = imageUrls?.[0];
+        mode = imageUrls?.length ? "image-to-image" : "text-to-image";
       }
       if (isPremiumProductCgProfile(profile)) {
         if (!selected) return apiError(req, "高端产品 CG 生图必须指定当前脚本", "Premium product CG image generation requires a current script", 400);
@@ -185,13 +214,17 @@ export async function POST(req: NextRequest) {
     }
 
     const profileIsPremium = isPremiumProductCgProfile(creativeProfile);
+    const profileIsTidewe = isTideweOutdoorProfile(creativeProfile);
+    if (profileIsTidewe && (!projectId || !approvedTideweShot)) {
+      return NextResponse.json({ error: "TIDEWE 生图需要当前项目和已保存镜头。", code: "TIDEWE_PROJECT_CONTEXT_REQUIRED" }, { status: 400 });
+    }
     if (profileIsPremium && !projectId) {
       return NextResponse.json({
         error: "高端产品 CG 生图必须关联包含产品参考图的项目。",
         code: "PREMIUM_CG_PROJECT_CONTEXT_REQUIRED",
       }, { status: 400 });
     }
-    if (!profileIsPremium && !requestedPrompt) {
+    if (!profileIsPremium && !profileIsTidewe && !requestedPrompt) {
       return apiError(req, "Missing required parameters", "Missing required parameters");
     }
     if (profileIsPremium && !approvedPremiumShot) {
@@ -199,23 +232,27 @@ export async function POST(req: NextRequest) {
     }
     const compiled = profileIsPremium
       ? compilePremiumCgImagePrompt(approvedPremiumShot!, creativeProfile)
+      : profileIsTidewe ? compileTideweVisualPrompt(approvedTideweShot!, "image", isTideweOutdoorProfile(creativeProfile) ? creativeProfile.speechMode : "voiceover", isTideweOutdoorProfile(creativeProfile) ? creativeProfile.presenter : undefined)
       : { prompt: requestedPrompt!, negativePrompt: undefined as string | undefined };
-    const providerOptions = controlledImageOptionKeys(options, profileIsPremium);
-    if (profileIsPremium) {
+    const providerOptions = controlledImageOptionKeys(options, profileIsPremium || profileIsTidewe);
+    if (profileIsPremium || profileIsTidewe) {
       providerOptions.negativePrompt = compiled.negativePrompt ?? PREMIUM_CG_IMAGE_NEGATIVE_PROMPT;
     }
 
     // For image-to-image mode, convert local reference images to data URIs.
     // imageUrls (plural) feeds multi-reference edits (e.g. character sheet + product photo);
     // the array order is preserved so prompts can cite references by position.
-    const referenceImageUrl = await toRemoteUsableImage(imageUrl);
-    const referenceImageUrls = imageUrls && imageUrls.length > 0
-      ? (await Promise.all(imageUrls.map(toRemoteUsableImage))).filter((u): u is string => !!u)
+    const referenceImageUrl = await toRemoteUsableImage(imageUrl, { requireReadableLocal: profileIsTidewe });
+    const convertedReferences = imageUrls && imageUrls.length > 0 ? await Promise.all(imageUrls.map(reference => toRemoteUsableImage(reference, { requireReadableLocal: profileIsTidewe }))) : undefined;
+    const referenceImageUrls = convertedReferences
+      ? convertedReferences.filter((u): u is string => !!u)
       : undefined;
-    if (profileIsPremium && !referenceImageUrl && !referenceImageUrls?.length) {
+    if (profileIsTidewe && convertedReferences?.some((reference) => !reference)) return NextResponse.json({ error: "TIDEWE 已选主播或商品参考图不可用，请恢复脚本中保存的参考图后重试。", code: tidewePresenterImage ? "TIDEWE_REFERENCE_UNAVAILABLE" : "TIDEWE_PRODUCT_REFERENCE_UNAVAILABLE" }, { status: 400 });
+    if (tidewePresenterImage && (referenceImageUrls?.length ?? 0) > 1 && !["openai", "atlas-cloud", "volcengine"].includes(providerName) && !(providerName === "fal-ai" && /edit/i.test(model))) return NextResponse.json({ error: "此图片模型无法同时接收已选主播和商品参考，请选择支持多图参考的生图模型。", code: "TIDEWE_PRESENTER_REFERENCE_UNSUPPORTED" }, { status: 400 });
+    if ((profileIsPremium || (profileIsTidewe && approvedTideweShot?.tidewe?.productVisible !== false)) && !referenceImageUrl && !referenceImageUrls?.length) {
       return NextResponse.json({
-        error: "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
-        code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
+        error: profileIsTidewe ? "TIDEWE 产品参考图不可用，请重新上传或选择项目中可访问的产品图。" : "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
+        code: profileIsTidewe ? "TIDEWE_PRODUCT_REFERENCE_UNAVAILABLE" : "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
       }, { status: 400 });
     }
 

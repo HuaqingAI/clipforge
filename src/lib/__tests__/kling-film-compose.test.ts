@@ -43,6 +43,9 @@ import { assetScopeForShot, scriptRevision, shotKey } from "@/lib/asset-context"
 import { readCompositionError } from "@/lib/composition-error";
 import { KlingError } from "@/lib/kling/errors";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { productFactsFromDescription } from "@/lib/tidewe/facts";
+import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 
 const baseShot: Shot = { shotId: 1, type: "demo", duration: 5, description: "Show the product", camera: "static",
   visualSource: "ai_generate", transition: "direct_concat", voiceover: "This is our product." };
@@ -71,6 +74,25 @@ async function addShot(ordinal: number, partial: Partial<Shot> = {}): Promise<vo
       sourceFilePath: local, videoUrl, sourceFileHash: createHash("sha256").update(source).digest("hex"), attempt: 1 }, updatedAt: Date.now() }).run();
   const run = getRun();
   updateRun({ scriptSnapshot: { shots: [...run.data.scriptSnapshot.shots, shot] } });
+}
+
+function tideweRun(speechMode: "on_camera" | "voiceover", transition: Shot["transition"] = "direct_concat"): void {
+  const profile = createTideweOutdoorProfile({ speechMode });
+  const facts = productFactsFromDescription("", "hunting_chair");
+  const text = baseShot.voiceover!;
+  const shot: Shot = { ...baseShot, transition, description: "猎人在林边自然展示装备。", camera: "稳定中景",
+    prompt: "林边自然光，人物动作真实。", visualIntent: "呈现真实户外使用场景",
+    tidewe: { copySpan: { start: 0, end: text.length }, translation: "这是我们的产品。", shotGoal: "真实展示装备",
+      productVisible: true, factRefs: [], sceneId: "woods" } };
+  const snapshot: KlingFilmRun["data"]["scriptSnapshot"] = { shots: [shot], copyDocument: {
+    version: 1, language: "en-US", text, translation: "这是我们的产品。", angle: "practical_choice", hookType: "question",
+    claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts), corpusVersion: profile.corpusVersion,
+    compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 2,
+  } };
+  updateShot({}, { shot });
+  getDb().update(assets).set(assetScopeForShot({ id: "script-1", ...snapshot }, shot)).run();
+  updateRun({ creativeProfile: profile, scriptSnapshot: snapshot,
+    output: { ...getRun().data.output, voice: "en-US-GuyNeural", audioStrategy: speechMode === "on_camera" ? "native" : "edge-tts" } });
 }
 
 beforeEach(async () => {
@@ -103,6 +125,47 @@ beforeEach(async () => {
 afterAll(async () => { state.sqlite?.close(); if (state.directory) await fs.rm(state.directory, { recursive: true, force: true }); });
 
 describe("Kling frozen local film composition", () => {
+  it("preserves native TIDEWE speech at full source length with hard cuts and no second voice", async () => {
+    tideweRun("on_camera", "ffmpeg_fade");
+    await composeKlingFilm("run-1");
+    const config = state.compose.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips[0]).toMatchObject({ hasAudio: true, duration: 5, sourceDuration: 5,
+      strictSourceDuration: true, preserveNativeSpeech: true, transition: "direct_concat" });
+    expect(config.clips[0].audioPath).toBeUndefined();
+    expect(config.clips[0].mixNativeAudio).toBeUndefined();
+    expect(state.tts).not.toHaveBeenCalled();
+    expect(getDb().select().from(compositions).get()).toMatchObject({ ttsEnabled: false, status: "done" });
+    const timeline = JSON.parse(await fs.readFile(path.join(state.directory, "output/project-1/kling-film-composition-1.mp4.timeline.json"), "utf8"));
+    expect(timeline).toMatchObject({ speechMode: "on_camera", captionTiming: "segment-estimate", audioStrategy: "native" });
+  });
+
+  it("keeps historical TIDEWE voiceover plans on the English post-production voice path", async () => {
+    tideweRun("voiceover");
+    await composeKlingFilm("run-1");
+    const config = state.compose.mock.calls[0][0] as ComposeConfig;
+    expect(state.tts).toHaveBeenCalledWith(baseShot.voiceover, { voice: "en-US-GuyNeural", rate: "+0%" });
+    expect(config.clips[0]).toMatchObject({ hasAudio: false, strictSourceDuration: true });
+    expect(config.clips[0].audioPath).toMatch(/\.mp3$/);
+    expect(config.clips[0].preserveNativeSpeech).toBeUndefined();
+  });
+
+  it("fails native TIDEWE dialogue without a source audio track", async () => {
+    tideweRun("on_camera");
+    state.sourceAudio = false;
+    await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "KLING_FILM_NATIVE_AUDIO_MISSING" });
+    expect(state.tts).not.toHaveBeenCalled();
+    expect(state.compose).not.toHaveBeenCalled();
+    expect(await readCompositionError("project-1", "composition-1")).toContain("不能用 TTS 代替真人口播");
+  });
+
+  it.each(["edge-tts", "edge-tts-mix"] as const)("rejects a native TIDEWE plan changed to %s", async audioStrategy => {
+    tideweRun("on_camera");
+    updateRun({ output: { ...getRun().data.output, audioStrategy } });
+    await expect(composeKlingFilm("run-1")).rejects.toMatchObject({ code: "TIDEWE_OUTPUT_POLICY" });
+    expect(state.tts).not.toHaveBeenCalled();
+    expect(state.compose).not.toHaveBeenCalled();
+  });
+
   it("uses the frozen asset even after selection changes, and keeps the snapshot in a private verified copy", async () => {
     getDb().update(assets).set({ selected: false }).run();
     getDb().insert(assets).values({ id: "new-selected", projectId: "project-1", shotId: 1, type: "ai_generated", filePath: "/api/files/project-1/other.mp4", selected: true, status: "done" }).run();
@@ -326,7 +389,8 @@ describe("Kling frozen local film composition", () => {
     expect(await readCompositionError("project-1", "composition-1")).toBeNull();
   });
 
-  it("renders frozen local media, captions and native audio through the real FFmpeg adapter", async () => {
+  it.each([false, true])("renders frozen local media, captions and native audio through real FFmpeg (TIDEWE native: %s)", async tideweNative => {
+    if (tideweNative) tideweRun("on_camera");
     const { composeVideo } = await vi.importActual<typeof import("@/lib/video-composer/composer")>("@/lib/video-composer/composer");
     const { probeMedia } = await vi.importActual<typeof import("@/lib/media-probe")>("@/lib/media-probe");
     const shot = getShot();
@@ -337,6 +401,8 @@ describe("Kling frozen local film composition", () => {
     const result = await composeKlingFilm("run-1");
     expect(result.quality).toMatchObject({ width: 720, height: 1280, hasAudio: true });
     expect(result.quality.duration).toBeCloseTo(0.8, 1);
+    expect(state.tts).not.toHaveBeenCalled();
+    if (tideweNative) expect((state.compose.mock.calls[0][0] as ComposeConfig).clips[0]).toMatchObject({ preserveNativeSpeech: true, hasAudio: true });
     expect(getDb().select().from(compositions).get()?.status).toBe("done");
   }, 30000);
 });

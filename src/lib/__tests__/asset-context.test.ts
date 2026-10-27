@@ -45,6 +45,15 @@ describe("asset script context", () => {
     expect(assetMatchesScript({ shotId: 1, sourceScriptId: "", sourceRevision: "", sourceShotKey: "" }, script)).toBe(false);
     expect(assetMatchesScript({ shotId: 1, ...assetScopeForShot(script, shot) }, null)).toBe(false);
   });
+
+  it("requires explicit source provenance for TIDEWE and canonical copy scripts", () => {
+    const legacy = { shotId: 1, sourceScriptId: null, sourceRevision: null, sourceShotKey: null };
+    const outdoor = { ...script, styleType: "tidewe_outdoor" };
+    expect(assetMatchesScript(legacy, outdoor)).toBe(false);
+    expect(assetMatchesScript(legacy, { ...script, copyDocument: { text: "Outdoor narration." } })).toBe(false);
+    expect(assetMatchesScript({ shotId: 1, ...assetScopeForShot(outdoor, shot) }, outdoor)).toBe(true);
+    expect(assetMatchesScript(legacy, script)).toBe(true);
+  });
 });
 
 describe("Kling asset source vs display poster", () => {

@@ -18,6 +18,8 @@ export interface AssetItem {
   characterId?: string;
   /** The shot's voiceover line — with characterId present it marks a talking shot for the i2v motion prompt */
   voiceover?: string;
+  /** Frozen TIDEWE semantic plan, including whether this shot shows the product. */
+  tidewe?: Shot["tidewe"];
   visualSource: Shot["visualSource"];
   status: "pending" | "generating" | "done" | "failed";
   thumbnailUrl?: string;
@@ -129,6 +131,7 @@ export function buildAssetRows(
         camera: s.camera || undefined,
         characterId: s.characterId || undefined,
         voiceover: s.voiceover || undefined,
+        tidewe: s.tidewe,
         visualSource: s.visualSource,
         status: "done" as const,
         thumbnailUrl: isVideo && saved.thumbnailPath ? saved.thumbnailPath : saved.filePath,
@@ -142,6 +145,7 @@ export function buildAssetRows(
         generationPlan: saved.generationPlan ?? undefined,
       };
     }
+    const useProductImage = s.visualSource === "product_image" && s.tidewe?.productVisible !== false;
     return {
       shotId: s.shotId,
       type: s.type,
@@ -151,9 +155,10 @@ export function buildAssetRows(
       camera: s.camera || undefined,
       characterId: s.characterId || undefined,
       voiceover: s.voiceover || undefined,
+      tidewe: s.tidewe,
       visualSource: s.visualSource,
-      status: s.visualSource === "product_image" ? "done" : saved?.status === "failed" || saved?.status === "generating" ? saved.status : "pending",
-      thumbnailUrl: s.visualSource === "product_image" ? firstProduct : undefined,
+      status: useProductImage ? "done" : saved?.status === "failed" || saved?.status === "generating" ? saved.status : "pending",
+      thumbnailUrl: useProductImage ? firstProduct : undefined,
     };
   });
 }

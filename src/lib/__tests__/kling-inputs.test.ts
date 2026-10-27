@@ -43,6 +43,13 @@ describe("Kling submission preflight", () => {
     expect(() => normalizeVideoParameters(descriptor(), { unsupported: 1 })).toThrow();
     expect(() => normalizeVideoParameters(descriptor(), { duration: Infinity })).toThrow();
   });
+  it("uses a declared duration covering a native speaking minimum without changing ordinary defaults", () => {
+    expect(normalizeVideoParameters(descriptor(), { duration: 5 }, 5.4).duration).toBe(10);
+    expect(normalizeVideoParameters(descriptor(), {}, 5.4).duration).toBe(10);
+    expect(normalizeVideoParameters(descriptor(), { duration: 5 }).duration).toBe(5);
+    expect(() => normalizeVideoParameters(descriptor(), {}, 10.1)).toThrow("无法覆盖");
+    expect(() => normalizeVideoParameters({ ...descriptor(), parameters: [] }, {}, 5)).toThrow("没有可核验");
+  });
   it.each([false, true])("preserves the official Kling 3 enable_audio=%s setting from discovery through CLI submission", async (audioEnabled) => {
     // Relevant image_to_video model fields returned by live who_am_i on 2026-10-20.
     const [model] = parseCatalog({ ok: true, body: { availableModels: { image_to_video: [{

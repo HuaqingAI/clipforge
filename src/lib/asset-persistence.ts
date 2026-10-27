@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { assets, scripts } from "@/lib/db/schema";
+import { assets, projects, scripts } from "@/lib/db/schema";
 import { assetMatchesScript, filterAssetsForScript, scriptRevision, type AssetScope } from "@/lib/asset-context";
 import { validateOrDelete } from "@/lib/media-validate";
 import { getDataDir } from "@/lib/paths";
@@ -82,6 +82,14 @@ export interface SaveAssetCandidateInput {
   sourceKeyframeUrl?: string | null;
   scope?: AssetScope;
   selectedPolicy?: AssetSelectionPolicy;
+  expectedCurrentScript?: { scriptId: string; scriptRevision: string; creativeConfigRevision: number };
+}
+
+export class AssetContextConflictError extends Error {
+  readonly code = "SCRIPT_CONTEXT_CHANGED";
+  constructor(message = "The script or creative configuration changed before the asset could be saved.") {
+    super(message); this.name = "AssetContextConflictError";
+  }
 }
 
 export type AssetSelectionPolicy =
@@ -104,6 +112,16 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
   const rows = db.transaction((transaction) => {
     const scriptRows = transaction.select().from(scripts).where(eq(scripts.projectId, input.projectId)).all();
     const currentScript = resolveCurrentScript(scriptRows);
+    if (input.expectedCurrentScript) {
+      const expected = input.expectedCurrentScript;
+      const project = transaction.select().from(projects).where(eq(projects.id, input.projectId)).get();
+      if (!project || project.creativeConfigRevision !== expected.creativeConfigRevision
+        || !currentScript || currentScript.id !== expected.scriptId || scriptRevision(currentScript) !== expected.scriptRevision
+        || !input.scope || input.scope.sourceRevision !== expected.scriptRevision
+        || !assetMatchesScript({ shotId: input.shotId, ...input.scope }, currentScript)) {
+        throw new AssetContextConflictError();
+      }
+    }
     const targetScript = input.scope ? scriptRows.find((row) => row.id === input.scope!.sourceScriptId) : currentScript;
     const candidates = transaction.select().from(assets).where(and(eq(assets.projectId, input.projectId), eq(assets.shotId, input.shotId))).all();
     const scopedCandidates = input.scope ? candidates.filter((row) => assetMatchesScript(row, targetScript)
@@ -133,6 +151,6 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
       selected,
       status: "done",
     }).returning().all();
-  });
+  }, { behavior: "immediate" });
   return { ...rows[0], ...(lastFrameUrl && { lastFrameUrl }) };
 }

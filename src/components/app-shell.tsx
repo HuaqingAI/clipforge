@@ -27,11 +27,8 @@ const NAV_SECTIONS: { labelKey: string; items: NavItem[] }[] = [
   {
     labelKey: "navSectionCreate",
     items: [
-      { key: "navHome", href: "/start", icon: "home" },
       { key: "navNew", href: "/project/new", icon: "plus" },
-      { key: "navClone", href: "/project/clone", icon: "flame" },
       { key: "navMediaLab", href: "/media-lab", icon: "scan" },
-      { key: "navBatch", href: "/batch", icon: "layers" },
     ],
   },
   {

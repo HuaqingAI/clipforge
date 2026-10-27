@@ -20,7 +20,10 @@ import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSigna
 import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
 import { saveAssetCandidate } from "@/lib/asset-persistence";
 import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { TIDEWE_VISUAL_NEGATIVE_PROMPT } from "@/lib/tidewe/visual-policy";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 import {
@@ -182,8 +185,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const creativeProfile = profileContext.projectProfile;
     const premiumCg = isPremiumProductCgProfile(creativeProfile);
+    const tidewe = isTideweOutdoorProfile(creativeProfile);
+    if (tidewe) {
+      try { assertTideweScript(script, creativeProfile.presenter ?? null); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
+    }
     const resolution = normalizeStoryboardGridResolution(gridResolution);
-    const baseGenerationOptions = gridGenerationOptions(options, premiumCg);
+    const baseGenerationOptions = gridGenerationOptions(options, premiumCg || tidewe);
+    if (tidewe) baseGenerationOptions.negativePrompt = TIDEWE_VISUAL_NEGATIVE_PROMPT;
     const targetDimensions = storyboardGridTargetDimensions(baseGenerationOptions.width as number, baseGenerationOptions.height as number, resolution);
     const generationOptions = withStoryboardGridResolution(baseGenerationOptions, resolution, providerName ?? "", model ?? "");
     const requestedProductImageUrl = nonEmptyString(productImageUrl);
@@ -202,6 +211,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const projectProductRefs = Array.isArray(project.productImages)
       ? project.productImages.map(nonEmptyString).filter((u): u is string => Boolean(u))
       : [];
+    if (tidewe && shots.some((shot) => shot.tidewe?.productVisible) && !projectProductRefs.length) {
+      return NextResponse.json({ error: "TIDEWE 产品镜需要当前商品参考图。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
+    }
     if (premiumCg) {
       // The profile came from a matching, canonical project/script context above.
       // Do not accept a request-level fallback here: an untrusted output policy
@@ -244,7 +256,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
     const baselineAssets = premiumCg
       ? filterTrustedPremiumCgAssets(scopedBaselineAssets, id, script)
-      : scopedBaselineAssets;
+      : tidewe ? scopedBaselineAssets.filter((asset) => asset.type !== "stock_footage" || shots.find((shot) => shot.shotId === asset.shotId)?.tidewe?.productVisible === false) : scopedBaselineAssets;
     const baselineByShot = new Map(shots.map((shot) => [shot.shotId, baselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null]));
     const preserved = new Map<number, { shotId: number; filePath: string }>();
     if (preserveExisting === true) {
@@ -272,23 +284,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // [character sheet?, ...product photos]; local /api/files paths travel as Base64
     // A CG grid always remains tied to the product identity. Explicit valid refs can
     // narrow the view set; a missing/empty request uses the project's persisted images.
-    const productRefs = premiumCg
+    const productRefs = tidewe ? projectProductRefs : premiumCg
       ? (requestedProductRefs.length > 0 ? requestedProductRefs : projectProductRefs)
       : requestedProductRefs;
-    const sheetRef = nonEmptyString(characterSheetUrl) ?? "";
+    const frozenPresenter = tidewe && shots.some((shot) => shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(creativeProfile) && shot.voiceover?.trim())) ? tidewePresenterReference(creativeProfile) : undefined;
+    const requestedSheet = nonEmptyString(characterSheetUrl);
+    if (tidewe && requestedSheet && requestedSheet !== frozenPresenter) return NextResponse.json({ error: "TIDEWE 主播已随脚本冻结，请回到脚本设置更换主播并重新规划。", code: "TIDEWE_PRESENTER_REFERENCE_INVALID" }, { status: 400 });
+    const sheetRef = tidewe ? frozenPresenter ?? "" : requestedSheet ?? "";
     const useCharacterSheet = !premiumCg && Boolean(sheetRef);
     const refInputs = [...(useCharacterSheet ? [sheetRef] : []), ...productRefs];
-    const convertedReferenceInputs = await Promise.all(refInputs.map(toRemoteUsableImage));
+    const convertedReferenceInputs = await Promise.all(refInputs.map(reference => toRemoteUsableImage(reference, { requireReadableLocal: tidewe })));
     const referenceImageUrls = convertedReferenceInputs.filter(
       (u): u is string => !!u
     );
+    if (tidewe && convertedReferenceInputs.some((reference) => !reference)) return NextResponse.json({ error: "TIDEWE 已选主播或商品参考图不可用，请恢复脚本中保存的参考图后重试。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
+    if (frozenPresenter && referenceImageUrls.length > 1 && !["openai", "atlas-cloud", "volcengine"].includes(providerName) && !(providerName === "fal-ai" && /edit/i.test(model))) return NextResponse.json({ error: "此图片模型无法同时接收已选主播和商品参考，请选择支持多图参考的生图模型。", code: "TIDEWE_PRESENTER_REFERENCE_UNSUPPORTED" }, { status: 400 });
     // Providers with one-reference-only image APIs need the product rather than a
     // presenter sheet. Multi-reference providers continue to receive the full ordered set.
     const primaryProductReference = convertedReferenceInputs
       .slice(useCharacterSheet ? 1 : 0)
       .find((u): u is string => Boolean(u));
-    const primaryReferenceImageUrl = primaryProductReference ?? referenceImageUrls[0];
-    if (premiumCg && !primaryProductReference) {
+    const primaryReferenceImageUrl = frozenPresenter ? referenceImageUrls[0] : primaryProductReference ?? referenceImageUrls[0];
+    if ((premiumCg || (tidewe && shots.some((shot) => shot.tidewe?.productVisible))) && !primaryProductReference) {
       return NextResponse.json({
         error: "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
         code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",

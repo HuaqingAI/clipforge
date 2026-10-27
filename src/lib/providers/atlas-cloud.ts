@@ -413,6 +413,10 @@ export class AtlasCloudProvider extends BaseProvider {
           ...options.extra,
         }
 
+    if (options.minimumDuration !== undefined && (!Number.isFinite(options.minimumDuration) || options.minimumDuration <= 0 || !Number.isFinite(Number(body.duration)) || Number(body.duration) < options.minimumDuration)) {
+      throw new ProviderError('当前模型参数无法覆盖脚本要求的完整口播时长，请更换模型或重新规划镜头。', 'MINIMUM_DURATION_UNSUPPORTED', this.name)
+    }
+
     // Task-creating POST: base.request() will NOT auto-retry it on timeout/network errors
     // (money safety, issue #16). Longer timeout than the 30s default — a slow acknowledge
     // must not be misreported as failure when the server may have accepted the task.

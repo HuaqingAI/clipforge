@@ -21,7 +21,8 @@
 
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { compositions, pipelineRuns } from "@/lib/db/schema";
+import { compositions, pipelineRuns, projects } from "@/lib/db/schema";
+import { isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 import { isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
 import {
   autoApplicableRewrites,
@@ -69,6 +70,8 @@ async function setRun(runId: string, patch: Partial<typeof pipelineRuns.$inferIn
 
 /** Judge stage: run the panel and auto-apply tier-gated rewrites. Best-effort by contract. */
 async function runJudgeStage(input: StartPipelineInput): Promise<void> {
+  const project = getDb().select().from(projects).where(eq(projects.id, input.projectId)).get();
+  if (project && isTideweOutdoorProfile(resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode }))) return;
   if (!input.llmConfig?.baseUrl || !input.llmConfig.model || !input.scriptId) return;
   try {
     const res = await fetch(`${input.origin}/api/project/${input.projectId}/script-judge`, {

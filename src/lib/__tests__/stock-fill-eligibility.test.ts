@@ -6,8 +6,9 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
 import { POST } from "@/app/api/project/[id]/stock-fill/route";
-import { fillShotStock, isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
+import { fillShotStock, isPremiumCgStockFillBlocked, searchShotCandidates } from "@/lib/stock-fill";
 import { rerankShotCandidates } from "@/lib/semantic-match";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
 vi.mock("@/lib/stock-fill", () => ({
@@ -120,4 +121,31 @@ it("blocks stock adoption for a premium product CG project before any candidate 
   await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_STOCK_FILL_FORBIDDEN" });
   expect(fillShotStock).not.toHaveBeenCalled();
   expect(rerankShotCandidates).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("only auto-fills silent environment B-roll in native TIDEWE projects, semantic=%s", async (semantic) => {
+  db.delete(schema.assets).run();
+  db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile() }).run();
+  const shots: schema.Shot[] = [
+    { shotId: 1, type: "hook", duration: 5, description: "林间人物介绍", voiceover: "Cold mornings are when I want a choice.", visualSource: "ai_generate", stockKeywords: ["speaking forest"], transition: "direct_concat" },
+    { shotId: 2, type: "demo", duration: 2, description: "清晨环境空镜", voiceover: "", visualSource: "ai_generate", stockKeywords: ["silent forest"], transition: "direct_concat" },
+    { shotId: 3, type: "demo", duration: 3, description: "装备细节", voiceover: "", visualSource: "ai_generate", stockKeywords: ["hunting jacket"], transition: "direct_concat" },
+  ].map((shot, index): schema.Shot => ({ ...shot, type: index === 0 ? "hook" : "demo", camera: "固定镜头", visualSource: "ai_generate", transition: "direct_concat", tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "户外展示", productVisible: index === 2, factRefs: [], sceneId: "woods" } }));
+  db.update(schema.scripts).set({ styleType: "tidewe_outdoor", shots }).run();
+  vi.mocked(searchShotCandidates).mockResolvedValue({ cands: [], matchedQuery: "silent forest", fallbackLevel: "original" });
+  const response = await POST(new NextRequest("http://localhost/api/project/fill-test/stock-fill", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "local", force: true, ...(semantic && { llmConfig: { baseUrl: "https://example.test", model: "fixture" } }) }),
+  }), { params: Promise.resolve({ id: "fill-test" }) });
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result.results.find((shot: { shotId: number }) => shot.shotId === 1)).toMatchObject({ ok: false, reason: expect.stringContaining("真人口播") });
+  expect(result.results.find((shot: { shotId: number }) => shot.shotId === 3)).toMatchObject({ ok: false, reason: expect.stringContaining("产品镜头") });
+  if (semantic) {
+    expect(vi.mocked(searchShotCandidates).mock.calls.map(([query]) => query)).toEqual(["silent forest"]);
+    expect(fillShotStock).not.toHaveBeenCalled();
+  } else {
+    expect(vi.mocked(fillShotStock).mock.calls.map(([input]) => input.shotId)).toEqual([2]);
+    expect(searchShotCandidates).not.toHaveBeenCalled();
+  }
 });

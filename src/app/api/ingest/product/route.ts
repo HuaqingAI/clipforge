@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { getUploadsDir } from "@/lib/paths";
@@ -12,12 +12,15 @@ import { apiError, errText } from "@/lib/api-error";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
+  createTideweOutdoorProfile,
+  isTideweOutdoorProfile,
   sanitizeCreativeProfileDrafts,
   validateCreativeProfileInput,
   type CreativeProfileFallback,
   type ProjectCreativeProfile,
   type ProjectCreativeProfileDrafts,
 } from "@/lib/creative-profiles";
+import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 
 const UA = "Mozilla/5.0 (compatible; ClipForge/1.0; +https://github.com/xixihhhh/clipforge)";
 const MAX_HTML_BYTES = 3 * 1024 * 1024;
@@ -44,6 +47,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
     "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
   }
@@ -71,7 +75,9 @@ function createProfileDrafts(
   const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
   if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
   if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
+  if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
   if (profile.creationType === "premium_product_cg") drafts.premium_product_cg = profile;
+  else if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
   else drafts.short_video_sales = profile;
   return drafts;
 }
@@ -97,6 +103,14 @@ function projectCreationCreativeConfig(
   }
   const profileResult = validateCreativeProfileInput(requestedProfile);
   if ("error" in profileResult) return { error: profileResult.error ?? "Invalid creative profile." };
+  if (isTideweOutdoorProfile(profileResult.profile) && hasOwn(body, "characterId")
+    && (body.characterId ?? null) !== (profileResult.profile.presenter?.id ?? null)) {
+    return { error: "TIDEWE 主播须通过创作配置中的 presenter 完整保存，不能单独修改 characterId。" };
+  }
+  if (isRecord(body.creativeProfileDrafts) && body.creativeProfileDrafts.tidewe_outdoor !== undefined) {
+    const draft = validateCreativeProfileInput(body.creativeProfileDrafts.tidewe_outdoor);
+    if (!draft.profile || !isTideweOutdoorProfile(draft.profile)) return { error: draft.error ?? "Invalid TIDEWE creative profile draft." };
+  }
 
   const fallback = creativeFallback(body);
   return {
@@ -156,6 +170,12 @@ export async function POST(req: NextRequest) {
   }
   if (hasOwn(body, "creativeProfileDrafts") && !isRecord(body.creativeProfileDrafts)) {
     return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
+  }
+  let productFacts: ReturnType<typeof normalizeProductFacts>;
+  try { productFacts = body.productFacts == null ? undefined : normalizeProductFacts(body.productFacts); }
+  catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid product facts", code: "TIDEWE_FACTS_INVALID" }, { status: 400 }); }
+  if (body.productFacts != null && !productFacts) {
+    return NextResponse.json({ error: "Invalid productFacts.", code: "TIDEWE_FACTS_INVALID" }, { status: 400 });
   }
 
   // Fetch HTML (descriptive UA + timeout + size cap)
@@ -219,12 +239,20 @@ export async function POST(req: NextRequest) {
       contentType: "product",
       productName: name,
       productDescription: product.description ?? null,
+      ...(productFacts ? { productFacts } : isTideweOutdoorProfile(creativeProfile) ? {
+        // Parsed storefront copy remains attributed to the imported page, rather than vision inference.
+        productFacts: {
+          ...productFactsFromDescription(product.description ?? ""),
+          items: productFactsFromDescription(product.description ?? "").items.map((fact) => ({ ...fact, source: { ...fact.source, kind: "product_page" as const, ref: url } })),
+        },
+      } : {}),
       productPrice: product.priceText ?? null,
       // Preserve the storefront link so it can flow into publish copy (UTM-tagged) and an end-card QR code
       shopUrl: url,
       productImages: [],
       videoMode: creativeProfile.videoMode,
       creativeProfile,
+      ...(isTideweOutdoorProfile(creativeProfile) ? { characterId: creativeProfile.presenter?.id ?? null } : {}),
       creativeProfileDrafts,
       creativeConfigRevision: 1,
     })
@@ -241,9 +269,20 @@ export async function POST(req: NextRequest) {
       /* Skip images that fail to download or are blocked by SSRF protection */
     }
   }
+  let creativeConfigRevision = proj.creativeConfigRevision;
   if (saved.length > 0) {
-    await db.update(projects).set({ productImages: saved, updatedAt: new Date() }).where(eq(projects.id, proj.id));
+    if (isTideweOutdoorProfile(creativeProfile)) {
+      const [updated] = await db.update(projects).set({ productImages: saved, creativeConfigRevision: proj.creativeConfigRevision + 1, updatedAt: new Date() })
+        .where(and(eq(projects.id, proj.id), eq(projects.creativeConfigRevision, proj.creativeConfigRevision))).returning();
+      if (!updated) return NextResponse.json({ error: "Project configuration changed while product images were downloading. Refresh before continuing.", code: "CREATIVE_CONFIG_CONFLICT", projectId: proj.id }, { status: 409 });
+      creativeConfigRevision = updated.creativeConfigRevision;
+    } else {
+      // A sales project may have switched to TIDEWE while images downloaded.
+      const [updated] = await db.update(projects).set({ productImages: saved, updatedAt: new Date() })
+        .where(and(eq(projects.id, proj.id), eq(projects.creativeConfigRevision, proj.creativeConfigRevision))).returning();
+      if (!updated) return NextResponse.json({ error: "Project configuration changed while product images were downloading. Refresh before continuing.", code: "CREATIVE_CONFIG_CONFLICT", projectId: proj.id }, { status: 409 });
+    }
   }
 
-  return NextResponse.json({ projectId: proj.id, product, productImages: saved });
+  return NextResponse.json({ projectId: proj.id, product, productImages: saved, creativeConfigRevision });
 }

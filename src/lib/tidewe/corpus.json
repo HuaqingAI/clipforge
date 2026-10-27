@@ -1,0 +1,163 @@
+{
+  "version": "tidewe-2026-10-26-v1",
+  "sourceFile": "TIDEWE_2026.10.26-30_三人88条_含加热服脚本.xlsx",
+  "sourceSha256": "3c8e7e8918ef21f44ab5120eed7c36f14d097e2e17adc59fc022d13ca3f6d3d5",
+  "examples": [
+    {
+      "id": "7",
+      "product": "BL022",
+      "text": "A map shows the field, the tree line, and the trail. Your blind should too.\nThree see-through sides give you a 270-degree view of what's around you.\nFace those panels toward the area you actually want to keep watching.\nYou can look through the mesh without opening every shooting window.\nSliding windows let you adjust the openings separately when needed.\nThe pop-up frame packs into the included bag when the trip is over.\nSee the linked blind if your spot needs more than one narrow view.",
+      "translation": "地图上有田边、林缘和小径，帐内也该考虑这些视线。\n三面透视网，提供周围270°的观察视野。\n让这三面对着实际想持续观察的区域。\n不用打开所有射击窗，也能透过网面观察。\n有需要时，滑窗可以单独调整开口。\n行程结束后，弹开式帐体可收进随附携行袋。\n如果猎位不只需要一条窄视线，点链接看看。",
+      "angle": "V01\n地图变实景：把三条观察线连起来\n常规",
+      "visualReference": "桌面手绘猎位示意三条视线，转向真实林缘。\n帐内连续看三面，第四面保持实体暗墙。\n简单俯视示意，三面朝向开阔林缘。\n窗关闭状态看向外部，保留网布质感。\n只演示一处真实横向滑窗，不让人物射击。\n收好的帐体旁摆正确黑色袋，切镜收纳。\n回到三面连续视野，产品内构准确。",
+      "source": {
+        "sheet": "全产品-CC",
+        "row": 8,
+        "cells": "D8:G8"
+      }
+    },
+    {
+      "id": "10",
+      "product": "BL022",
+      "text": "I don't want to be shopping for another blind every fall.\nIf I'm hauling one into the woods and packing it up again, I care about the parts holding it together.\nSee these metal hubs and reinforced corners? That's the kind of detail I like.\nAnd from inside, you can see through three whole sides.\nSo the shooting windows can stay closed while you're watching what's out there.\nIf you're replacing an old blind, this one's worth a look.",
+      "translation": "我可不想每年秋天都重新买一顶猎帐。\n既然要背进林子、搭起来、再收回去，我就挺在意撑着它的这些部件。\n你看，这些金属连接件，还有加固过的角位。我看装备就会留意这种细节。\n而且坐到里面，整整三面都能看出去。\n射击窗口不用打开，也能看看外面有什么动静。\n要是你也准备换掉旧猎帐，可以看看这顶。",
+      "angle": "V04\n不想每年重买，所以在意连接件和角位\n品质与售后测试",
+      "visualReference": "人物在车尾整理猎帐，像跟同行朋友聊天一样对镜说自己的选购想法；不演成用了多年后的客户证言。\n拿着同一顶BL022，顺手指出实际金属连接件和加固角位。细节用实拍或官方原图，让讲述始终有对应实物。\n人物坐进帐内，随手示意三面可以看出去的方向；保留三面透视、一面实墙，射击窗口关闭。\n外观沿用已确认的新版上翻门；场景、人物和产品连续，画面参考由使用者后续自行拆镜。",
+      "source": {
+        "sheet": "全产品-CC",
+        "row": 10,
+        "cells": "D10:G10"
+      }
+    },
+    {
+      "id": "8",
+      "product": "JTC001",
+      "text": "You get settled in the blind, get your binoculars out, and then you start noticing the cold.\nThat's the part of the morning I'd want this jacket for.\nSee this button? It controls the heat built into the jacket.\nYou can choose low, medium, or high instead of being stuck with one setting.\nThere's fleece inside, too, so you're starting with a lined jacket.\nAnd the rechargeable battery comes with it.\nIf that quiet stretch of the hunt is when you get cold, take a look at this one.",
+      "translation": "在猎帐里坐好，拿出望远镜，待一会儿才开始觉得冷。\n我想穿这件衣服，就是为了早上这段时间。\n看这个按钮，它控制的是衣服自带的加热。\n低、中、高三档能自己选，不是只有一种热度。\n里面也有抓绒，本身就是有保暖内里的外套。\n充电电池也随衣服附带。\n如果你也是安静坐着等的时候容易冷，可以看看这件。",
+      "angle": "JTC001-01\n坐定之后才想起加热\n常规\n本轮新增加热服",
+      "visualReference": "猎帐内自然光，人物坐好后把望远镜放在腿上，顺手拢一下外套。\n胸前实际加热按钮与手部动作近景，灯色按实物呈现。\n翻开全拉链外套展示绒里，再展示随附电池与实际内袋。\n回到人物坐姿分享，外套轮廓、迷彩和按钮位置保持一致。",
+      "source": {
+        "sheet": "全产品-CC",
+        "row": 14,
+        "cells": "D14:G14"
+      }
+    },
+    {
+      "id": "15",
+      "product": "JTC001",
+      "text": "If you've never looked at a heated jacket, here's the part I'd show you first.\nThis little battery is what powers the heat.\nIt comes with the jacket, and it goes in the inside pocket after you connect it.\nThen you've got the control right here on the chest.\nLow, medium, high. Pick the level that feels right for you.\nThat's what interests me for a cold morning in the woods: having some extra warmth I can control.\nThe jacket's linked if you want a closer look.",
+      "translation": "如果你还没接触过加热服，我会先给你看这个。\n就是这块小电池给加热供电。\n它随衣服附带，接好以后放进内袋。\n控制按钮就在胸前这里。\n低、中、高，选适合自己的热度就行。\n冷天一早进林子，我看中的就是能自己控制的这份额外热量。\n想仔细看看，链接里就是这件。",
+      "angle": "JTC001-03\n第一次看加热服先看怎么用\n常规\n本轮新增加热服",
+      "visualReference": "桌边真人拿着完整外套讲解，电池与外套同框。\n按实物接口展示连接过程，电池放进正确内袋，不添加不存在的线缆。\n穿着状态展示胸前控制位置，后期只标Low / Medium / High。\n人物对着镜头展示外套正面与内里，自然结束推荐。",
+      "source": {
+        "sheet": "全产品-CC",
+        "row": 16,
+        "cells": "D16:G16"
+      }
+    },
+    {
+      "id": "29",
+      "product": "JTC001",
+      "text": "If a buddy asked what I'd add to my setup for a cold hunt, I'd show him this button.\nThis jacket heats up, and you can choose between three levels.\nI'd want it most after we're done carrying gear and finally sit down.\nYou've still got a fleece-lined jacket, with the option to add heat when you need it.\nAnd the battery is included, so it's one less thing to shop for separately.\nIf you're getting ready for a trip with the guys, have a look before you finish packing.",
+      "translation": "猎友要是问，冷天出猎我想给装备加点什么，我会给他看这个按钮。\n这件外套能加热，还有三档可以选。\n搬完装备、终于坐下来的时候，我最想用上它。\n衣服本身有抓绒内里，需要时还能再开加热。\n电池也是随附的，不用再单独买一件配件。\n如果你正准备和猎友一起出发，收拾好行李前可以看看它。",
+      "angle": "JTC001-12\n猎友出发前聊你多带了什么\n猎友同行\n本轮新增加热服",
+      "visualReference": "两位猎友在车尾整理背包，一人自然向同伴展示外套按钮。\n保持聊天式手持构图，不把对方演成已购买且强烈称赞的证言人物。\n展示外套绒里及随附电池，随后进入两人坐下等候的情境。\n车尾装备合影或猎帐内日常交流收尾，不出现猎获保证。",
+      "source": {
+        "sheet": "全产品-CC",
+        "row": 30,
+        "cells": "D30:G30"
+      }
+    },
+    {
+      "id": "30",
+      "product": "JTC001",
+      "text": "If your husband's Christmas list just says \"hunting stuff,\" this might help.\nI'd start with something for the cold mornings he keeps going out in.\nThis jacket has built-in heat, with three settings he can choose from.\nThe rechargeable battery comes with it, too.\nBefore ordering, I'd compare the size chart with a jacket that fits him over his usual layers.\nIt's the kind of gift I can picture getting packed for the next trip.\nSave the link if you're starting your Christmas shopping.",
+      "translation": "如果你老公的圣诞愿望只写了“狩猎装备”，这个可以参考。\n我会先想，他总在冷天一早出门，有什么能派上用场。\n这件外套自带加热，三档热度让他自己选。\n充电电池也随衣服附带。\n下单前，我会拿他穿着常用内搭也合身的外套，对照一下尺码表。\n这样的礼物，我能想象他下次出门就装进行李里。\n开始挑圣诞礼物的话，可以先把链接留好。",
+      "angle": "JTC001-13\n圣诞礼物挑能让人带出门的\n圣诞送礼\n本轮新增加热服",
+      "visualReference": "家中手写礼物清单旁展开外套，生活化陈列，不做夸张节庆广告背景。\n人物拿起随附电池，指向实际胸前按钮。\n用现有外套与尺码表作比较，不出现未经确认的收礼人使用经历。\n简单礼盒、帽子与背包同框，保留产品为视觉重点。",
+      "source": {
+        "sheet": "全产品-CC",
+        "row": 31,
+        "cells": "D31:G31"
+      }
+    },
+    {
+      "id": "35",
+      "product": "THC004",
+      "text": "Walking into the woods gets you warmed up. Sitting there waiting is a different story.\nThat's where a heated seat makes sense to me.\nThis one has three heat settings, and the rechargeable battery comes with it.\nYou're not left wondering which battery to buy.\nAnd with anything that runs on a battery, I like knowing there's customer support if I've got questions.\nThe heated cover comes off, too, for days you don't need it.\nIf you spend a lot of your hunt sitting, this is worth a look.",
+      "translation": "往林子里走的时候，身上还挺暖和。坐下来等，那就是另一回事了。\n所以这种时候，我就觉得座面能加热挺实用。\n这把有三档加热，充电电池也是一起带的。\n不用再琢磨该另外买哪块电池。\n而且像这种用电池的装备，我会在意有问题时能不能找客服问问。\n不需要加热的日子，这个加热套还能拆下来。\n如果你打猎大半时间都坐着，这把可以看看。",
+      "angle": "S05\n走进去不觉得冷，坐下来等才想要加热\n品质与售后测试",
+      "visualReference": "人物带着装备走到猎位，再坐到THC004上，边坐边像和身边猎友聊天；不表演无法证实的冻伤或治疗效果。\n随着讲述，手自然落到座面按钮和随附电池；只展示座面加热，不补成靠背加热。\n客服使用真实官方资料作辅助；不演示虚构电话获赔或工作人员即时解决。\n讲到椅套可拆时用断电后的同款真实演示，回到人物自然坐姿收尾；不固定每句对应一个镜头。",
+      "source": {
+        "sheet": "全产品-李欣",
+        "row": 6,
+        "cells": "D6:G6"
+      }
+    },
+    {
+      "id": "37",
+      "product": "THC003",
+      "text": "One chair, three ways to choose where you want the warmth.\nThe seat and back both heat up, and you control them separately.\nUse the seat alone when that's the area you want to warm.\nChoose the back alone, or turn both zones on together.\nThree heat settings give you another choice beyond simply switching it on.\nThe rechargeable battery comes with the chair, ready to charge before you leave.\nTap the link if you'd like more say in how your chair adds warmth.",
+      "translation": "一把椅子，热量加在哪里有三种选择。\n坐垫和靠背都能加热，而且可以分别控制。\n想暖坐下的位置时，可以只开坐垫。\n也可以只开靠背，或者两区一起开启。\n三档热度，让选择不只停留在开关。\n随附可充电电池，出发前先充好。\n如果想更自由地选择座椅供热方式，点链接看看。",
+      "angle": "D01\n三个选择：坐面、靠背、同时开启\n常规",
+      "visualReference": "同一椅子画面后期分成三个状态卡。\n两热区位置标记，真实双按钮近景。\n坐面暖色示意，靠背不亮。\n靠背单亮切到双区亮，注明功能示意。\n三档文字配真实按键，不造温度数据。\n电池桌面充电，椅子在后景。\n三种热区状态并列收尾，产品保持同款。",
+      "source": {
+        "sheet": "全产品-李欣",
+        "row": 8,
+        "cells": "D8:G8"
+      }
+    },
+    {
+      "id": "62",
+      "product": "WD012",
+      "text": "Two insulation numbers, two different places. Know which part you're buying warmth for.\nThe body of these waders has two-hundred-gram quilted insulation.\nThe boots carry sixteen-hundred-gram Thinsulate insulation for cold water conditions.\nThat boot number isn't the weight of the entire pair of waders.\nThe waterproof shell and sealed seams add the water protection you also need.\nA breathable shell helps moisture escape during the more active part of your morning.\nUse the product link to compare insulation by location, then check your size.",
+      "translation": "两个保温数字，对应两个部位。先看清保暖加在哪里。\n这款水裤的裤身采用200g绗缝保温层。\n靴部采用1600g Thinsulate保温配置，针对冷水环境。\n靴部这个数字，不是整件水裤的重量。\n防水外层和密封接缝，也提供需要的防水配置。\n早晨活动较多时，透气外层有助湿气散出。\n点链接按部位比较保温配置，再核对尺码。",
+      "angle": "W02\n两个数字两个部位：避免选购误读\n常规",
+      "visualReference": "水裤全貌，裤身与靴部出现两个后期定位框。\n裤身功能图与200g字幕同框。\n靴部实物近景，浅水水线只到小腿。\n整件平铺，后期字幕Insulation rating, not total weight。\n面料与接缝两个真实细节并列。\n岸上行走中景，细微后期透气示意。\n全身展示，两个保温标注保留到CTA。",
+      "source": {
+        "sheet": "全产品-马嘉珊",
+        "row": 3,
+        "cells": "D3:G3"
+      }
+    },
+    {
+      "id": "78",
+      "product": "HJ006",
+      "text": "That big front pocket is probably the first thing you'll notice on this jacket.\nBut this button is the part I'd want you to look at.\nIt controls the built-in heat, and you've got three levels to pick from.\nFor a morning spent waiting on birds, that interests me a lot more than another pocket would.\nThe front pouch still gives your hands somewhere to tuck away, and there's fleece inside the jacket.\nI'd put this one on the list if cold sits are part of your season.\nYou can take a closer look in the link.",
+      "translation": "看这件衣服，你可能先注意到前面这个大口袋。\n但我更想让你看的是这个按钮。\n它控制衣服自带的加热，能选三档。\n一早上等鸭子的时候，这个比多一个口袋更让我感兴趣。\n前面的大袋还是能让手有地方放，衣服里面也有抓绒。\n如果你的猎季少不了冷天久坐，我会把它列进备选。\n点链接可以仔细看看。",
+      "angle": "HJ006-03\n别只盯着这个大口袋\n常规\n本轮新增加热服",
+      "visualReference": "人物先把手自然放入前袋，再指向胸前实际加热按钮。\n半拉链外套正面完整展示，口袋尺寸和位置按实物。\n手操作按钮与内侧绒里细节，可分开选材。\n前袋不添加发热光效，不将普通手袋写成已核实的独立加热区。",
+      "source": {
+        "sheet": "全产品-马嘉珊",
+        "row": 10,
+        "cells": "D10:G10"
+      }
+    },
+    {
+      "id": "72",
+      "product": "WD012",
+      "text": "Water outside. Moisture inside. Good wader shopping considers both directions.\nThese waders have a three-layer shell that's waterproof and breathable.\nSealed seams help keep outside water from working its way in.\nBreathability helps moisture escape during the walk and setup.\nQuilted body insulation adds warmth for the less active part of the hunt.\nInsulated built-in boots complete the cold-water setup around your feet.\nCompare that combination in the link before picking your next pair.",
+      "translation": "外面的水，里面的湿气。选水裤时两边都要考虑。\n这款水裤的三层外层兼具防水与透气。\n密封接缝有助阻止外部水分进入。\n步行和布置装备时，透气性有助湿气散出。\n活动减少、开始守候时，绗缝裤身保温层增加保暖。\n连体保温靴为脚部补上冷水环境需要的保温。\n选下一条水裤前，点链接看看这组配置。",
+      "angle": "W07\n外界水与内部湿气：两种需求分别解释\n常规",
+      "visualReference": "面料实物近景，后期两个方向箭头分别说明。\n三层仅用已核对功能图，不把实物变透明。\n真实裤缝近景配小水珠。\n岸上提袋步行，动作平缓，无汗液消失特效。\n站在岸边静候，用已有内里细节小窗。\n靴子站在浅水中，水线低于膝。\n全身水裤与Waterproof / Breathable / Insulated字幕。",
+      "source": {
+        "sheet": "全产品-马嘉珊",
+        "row": 13,
+        "cells": "D13:G13"
+      }
+    },
+    {
+      "id": "87",
+      "product": "HJ006",
+      "text": "One thing I'd sort out before taking this heated jacket hunting is the battery.\nThis model doesn't include one, so get a compatible pack and set it up at home.\nThen try the heat settings while you're getting your other gear ready.\nThe control is right here on the chest, with three levels to choose from.\nI'd rather know how it works before I'm sitting in the dark waiting on birds.\nThat extra heat is the reason I'd choose this pullover for a cold morning.\nHave a look if you're putting your winter hunting kit together.",
+      "translation": "带这件加热服出猎前，我会先把电池这件事安排好。\n这款不附带电池，所以先配好兼容的电池，在家接好。\n准备其他装备的时候，也顺手试一下加热档位。\n控制在胸前这里，有三档可选。\n我更愿意出发前弄明白，不想天没亮、等鸭子的时候才摸索。\n想给冷天早晨多加一点热量，就是我会选这件套头外套的原因。\n正在准备冬季狩猎装备的话，可以看看它。",
+      "angle": "HJ006-10\n买加热服我会先把电池配好\n常规\n本轮新增加热服",
+      "visualReference": "家中桌面摆外套与另购兼容电池，字幕Battery sold separately。\n接口与内袋按实物展示，不声称通用任意充电宝。\n穿着状态测试胸前档位，设备与衣服保持干燥。\n人物把准备好的外套放在出猎装备旁，自然推荐收尾。",
+      "source": {
+        "sheet": "全产品-马嘉珊",
+        "row": 23,
+        "cells": "D23:G23"
+      }
+    }
+  ]
+}

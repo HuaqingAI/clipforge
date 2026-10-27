@@ -8,7 +8,7 @@ import { mkdir, writeFile } from "fs/promises";
 import { generateSpeech, estimateSpeechSeconds, type TTSConfig } from "@/lib/tts";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { shotEmotion, EMOTION_TTS } from "@/lib/emotion-acting";
-import { generateSpeechFreeDetailed, DEFAULT_FREE_VOICE, type TTSWord } from "@/lib/edge-tts";
+import { generateSpeechFreeDetailed, type TTSWord } from "@/lib/edge-tts";
 import { resolveRenderProfile, isRenderPreset } from "@/lib/compose-presets";
 import { isCaptionPreset, captionPresetOverrides, CAPTION_PRESETS } from "@/lib/caption-presets";
 import { getDb } from "@/lib/db";
@@ -29,6 +29,8 @@ import { desc, and } from "drizzle-orm";
 import { readCompositionError, saveCompositionError } from "@/lib/composition-error";
 import {
   isPremiumProductCgProfile,
+  isTideweOutdoorProfile,
+  isTideweNativeSpeech,
   sanitizeCreativeProfile,
   checkCreativeProfileContext,
 } from "@/lib/creative-profiles";
@@ -38,6 +40,9 @@ import {
   hasTrustedPremiumCgAssetProvenance,
   PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
 } from "@/lib/premium-cg-assets";
+import { resolveNarrationVoice } from "@/lib/narration-voice";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { assertTideweMediaDuration } from "@/lib/tidewe/visual-policy";
 
 type ComposeRequestBody = {
   scriptId?: unknown;
@@ -276,6 +281,23 @@ export async function POST(
     // policy values are accepted solely for old clients with no persisted data.
     const bodyProfile = sanitizeCreativeProfile(body.creativeProfile) ?? sanitizeCreativeProfile(body.outputPolicy);
     const activeProfile = projectProfile ?? scriptSnapshotProfile ?? bodyProfile;
+    const tidewe = isTideweOutdoorProfile(activeProfile);
+    const tideweNative = isTideweNativeSpeech(activeProfile);
+    if (tidewe) {
+      if (body.voiceoverOverrides !== undefined || body.narration !== undefined || body.voiceover !== undefined
+        || selected.shots.some((shot) => Boolean(shot.narration?.trim()))) {
+        return NextResponse.json({ error: "TIDEWE 口播须通过完整文案保存并更新分镜，不能临时覆盖旁白。", code: "TIDEWE_COPY_DOCUMENT_REQUIRED" }, { status: 409 });
+      }
+      try { assertTideweScript(selected); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
+      if (body.productCard === true || body.ctaEnabled === true || (typeof body.ctaText === "string" && body.ctaText.trim())) {
+        return NextResponse.json({ error: "TIDEWE 使用文案中的自然推荐，不叠加默认购买条或商品卡。", code: "TIDEWE_OUTPUT_POLICY" }, { status: 400 });
+      }
+      if (tideweNative && (body.ttsEnabled === true || body.freeTts?.enabled === true || body.ttsConfig
+        || body.voiceoverMode === "replace" || body.voiceoverMode === "mix")) {
+        return NextResponse.json({ error: "TIDEWE 真人口播保留视频中的原生英语声音，不能再添加或替换 TTS 配音。", code: "TIDEWE_NATIVE_AUDIO_POLICY" }, { status: 400 });
+      }
+    }
     const premiumProfile = activeProfile?.creationType === "premium_product_cg" ? activeProfile : undefined;
     const premiumCg = Boolean(premiumProfile)
       || (!activeProfile && (isPremiumProductCgProfile(body.creativeProfile) || isPremiumProductCgProfile(body.outputPolicy)
@@ -291,6 +313,16 @@ export async function POST(
     // profile's locked-off output policy; legacy projects preserve their default.
     const subtitles = premiumCg ? false : requestedSubtitles;
     let shots = selected.shots as Shot[];
+    if (tidewe) {
+      // The copy document owns executable narration; never prefer legacy narration fields.
+      const text = selected.copyDocument!.text;
+      shots = shots.map((shot) => {
+        const clean = { ...shot, voiceover: text.slice(shot.tidewe!.copySpan.start, shot.tidewe!.copySpan.end).trim() };
+        delete clean.narration;
+        delete clean.textOverlay;
+        return clean;
+      });
+    }
     if (premiumProfile) {
       // A silent CG profile deliberately discards historical sales narration.
       // Restrained mode checks exactly the line that will reach controlled TTS
@@ -337,6 +369,9 @@ export async function POST(
         return transition ? { ...shot, transition } : shot;
       });
     }
+    // Native dialogue has no verified silent handles for a cross-fade. Hard cuts
+    // preserve every recorded word and keep the original lips and audio together.
+    if (tideweNative) shots = shots.map((shot) => ({ ...shot, transition: "direct_concat" }));
     // Variant-matrix voiceover overrides for hook A/B: applied in memory
     // for this render only — the stored script stays untouched, so each variant compose can
     // carry a different hook copy without mutating the project.
@@ -376,7 +411,7 @@ export async function POST(
     // Dialogue-script cast (drama style): deterministic per-character Edge voices, free multi-voice
     // dialogue. Narrator shots (no characterId) keep the default/free voice below.
     const scriptCharacters = (selected.characters ?? []) as ScriptCharacter[];
-    const characterVoices = assignCharacterVoices(scriptCharacters);
+    const characterVoices = assignCharacterVoices(tidewe ? [] : scriptCharacters);
     if (characterVoices.size > 0) {
       console.info(
         `[compose] 剧情多音色：${scriptCharacters.map((c) => `${c.name}→${characterVoices.get(c.id)}`).join("、")}`
@@ -393,6 +428,9 @@ export async function POST(
       : scopedAssetRows;
     const assetByShot = new Map<number, string>();
     for (const a of assetRows) {
+      if (tidewe && a.selected && a.type === "stock_footage" && shots.find((shot) => shot.shotId === a.shotId)?.tidewe?.productVisible !== false) {
+        return NextResponse.json({ error: `镜头 ${a.shotId} 是产品镜，不能使用相似库存装备冒充商品。`, code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 409 });
+      }
       if (a.selected && a.status === "done" && a.filePath && !assetByShot.has(a.shotId)) assetByShot.set(a.shotId, a.filePath);
     }
     // Pin each requested take before starting background work. null pins product-image fallback.
@@ -418,6 +456,9 @@ export async function POST(
         }
         pinnedShotIds.add(item.shotId);
         const asset = scopedAssetRows.find((row) => row.id === item.assetId && row.shotId === item.shotId);
+        if (tidewe && asset?.type === "stock_footage" && shots.find((shot) => shot.shotId === item.shotId)?.tidewe?.productVisible !== false) {
+          return NextResponse.json({ error: `镜头 ${item.shotId} 的库存素材不能作为 TIDEWE 商品展示。`, code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 409 });
+        }
         if (premiumCg && asset && !hasTrustedPremiumCgAssetProvenance(asset, id, selected)) {
           return NextResponse.json(
             {
@@ -436,23 +477,28 @@ export async function POST(
 
     // 可选 TTS 配音配置（前端从设置带入）
     const ttsConfig: TTSConfig | undefined =
-      !premiumCg && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
+      !premiumCg && !tideweNative && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
         ? body.ttsConfig
         : undefined;
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
-    const freeTts = premiumCg ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
+    const freeTts = premiumCg || tideweNative ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
     // Restrained CG narration is a controlled post-production voice track. It
     // uses the keyless Edge voice without exposing provider/voice switches to
     // the request, and always replaces model-native speech when present.
     const usePremiumRestrainedTts = Boolean(premiumProfile && narrationMode === "restrained");
-    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && !ttsConfig && freeTts?.enabled === true);
+    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && !tideweNative && !ttsConfig && (tidewe || freeTts?.enabled === true));
     // Both extra switches are off in auto mode: audible source audio takes priority.
-    const voiceoverMode = usePremiumRestrainedTts
+    const voiceoverMode = usePremiumRestrainedTts || (tidewe && !tideweNative)
       ? "replace"
       : !premiumCg && (body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
         ? body.voiceoverMode
         : "auto";
-    const freeVoice = freeTts?.voice || DEFAULT_FREE_VOICE;
+    let freeVoice: string;
+    try { freeVoice = tideweNative ? "en-US-GuyNeural" : resolveNarrationVoice(activeProfile, freeTts?.voice); }
+    catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "英语音色无效", code: "TIDEWE_VOICE_INVALID" }, { status: 400 }); }
+    if (tidewe && ttsConfig && /^(?:zh|ja|ko)-/i.test(ttsConfig.voice)) {
+      return NextResponse.json({ error: "TIDEWE 英文口播不能使用此非英语音色。", code: "TIDEWE_VOICE_INVALID" }, { status: 400 });
+    }
     const freeRate = typeof freeTts?.rate === "string" ? freeTts.rate : undefined;
     const ttsDir = join(getDataDir(), "uploads", id, "tts");
     if (ttsConfig || useFreeTts) await mkdir(ttsDir, { recursive: true });
@@ -516,7 +562,7 @@ export async function POST(
       // per-shot expressive delivery for paid engines that support it (hook → eager,
       // pain_point → troubled, cta → confident); providers without the capability
       // silently ignore these fields inside generateSpeech
-      const emo = shotType ? shotEmotion(shotType) : undefined;
+      const emo = !tidewe && shotType ? shotEmotion(shotType) : undefined;
       const expressive = emo ? { emotion: EMOTION_TTS[emo].minimax, instruction: EMOTION_TTS[emo].instruction } : {};
       try {
         // 付费 TTS 优先；否则走免费 Edge keyless TTS（速度映射：speed 倍率 → SSML 带符号百分比）
@@ -526,6 +572,7 @@ export async function POST(
           try {
             audio = await generateSpeech(text, { ...ttsConfig, ...expressive });
           } catch (e) {
+            if (tidewe) throw e;
             console.warn(`分镜 ${shotId} 付费配音失败，回退免费 Edge 配音:`, e);
             composeWarnings.push({ code: "tts_fallback_free", shotId });
             const d = await generateSpeechFreeDetailed(text, freeOpts);
@@ -541,6 +588,7 @@ export async function POST(
         await writeFile(file, audio);
         return { file, words };
       } catch (e) {
+        if (tidewe) throw new Error(`镜头 ${shotId} 英文配音失败，请修复声音服务后重试：${e instanceof Error ? e.message : "未知错误"}`);
         console.warn(`分镜 ${shotId} 配音生成失败（已跳过）:`, e);
         composeWarnings.push({ code: "tts_failed", shotId });
         return undefined;
@@ -548,7 +596,8 @@ export async function POST(
     }
 
     // 廉价预检：至少一个分镜有可用素材（避免返回 202 后才发现没素材）
-    const hasAnyAsset = shots.some((s) => toLocalPath(assetByShot.get(s.shotId) ?? productImages[0]));
+    const fallbackFor = (shot: Shot) => (tideweNative && shot.voiceover?.trim()) || (tidewe && shot.tidewe?.productVisible === false) ? undefined : productImages[0];
+    const hasAnyAsset = shots.some((s) => toLocalPath(assetByShot.get(s.shotId) ?? fallbackFor(s)));
     if (!hasAnyAsset) {
       return NextResponse.json(
         { error: "没有可用素材，请先在素材步骤生成素材或上传商品图" },
@@ -586,7 +635,7 @@ export async function POST(
     // 立即建合成记录(composing)并返回；重活(TTS+FFmpeg)后台异步跑，前端轮询 GET 获取结果
     const [comp] = await db
       .insert(compositions)
-      .values({ projectId: id, resolution: outputCfg.resolution, aspectRatio: outputCfg.aspectRatio, aigcBadge, ...(label && { label }), status: "composing" })
+      .values({ projectId: id, resolution: outputCfg.resolution, aspectRatio: outputCfg.aspectRatio, aigcBadge, ...(label && { label }), ...(tideweNative ? { ttsEnabled: false } : {}), status: "composing" })
       .returning();
     await db.update(projects).set({ status: "composing", updatedAt: new Date() }).where(eq(projects.id, id));
 
@@ -602,9 +651,10 @@ export async function POST(
     const missing: number[] = [];
     for (const shot of shots) {
       // 素材优先级：该分镜已生成素材 → 商品原图兜底
-      const ref = assetByShot.get(shot.shotId) ?? productImages[0];
+      const ref = assetByShot.get(shot.shotId) ?? fallbackFor(shot);
       let local = toLocalPath(ref);
       if (!local) {
+        if (tidewe) throw new Error(`镜头 ${shot.shotId} 缺少可用素材，请先生成或上传对应场景，不能跳过此镜口播。`);
         if (pinnedShotIds.has(shot.shotId)) throw new Error(`镜头 ${shot.shotId} 选择的素材已失效，请刷新后重新选择`);
         missing.push(shot.shotId);
         continue;
@@ -616,6 +666,7 @@ export async function POST(
       // as .mp4) would fail the whole single-pass filter_complex with an inscrutable error — swap
       // it for the product image instead of feeding it to ffmpeg, and log which shot degraded.
       if (isVideo && (await probeDuration(local)) <= 0) {
+        if (tidewe) throw new Error(`镜头 ${shot.shotId} 视频无法测得有效时长，请恢复或重生成后合成。`);
         if (pinnedShotIds.has(shot.shotId)) throw new Error(`镜头 ${shot.shotId} 选中的视频无法解码，请重新选择视频版本后合成`);
         const fallback = toLocalPath(productImages[0]);
         console.warn(`[compose] 分镜 ${shot.shotId} 的视频素材无法解码（${local}），已降级为商品图兜底`);
@@ -628,8 +679,11 @@ export async function POST(
         }
       }
       const nativeAudio = isVideo ? await videoHasAudio(local) : false;
+      if (tideweNative && shot.voiceover?.trim() && (!isVideo || !nativeAudio)) {
+        throw new Error(`镜头 ${shot.shotId} 有英语口播，但素材缺少可听见的原生音轨。请重新生成或上传带原生英语声音的视频，不能用 TTS 或静态图片代替。`);
+      }
       const vo =
-        shot.voiceover && (!nativeAudio || voiceoverMode !== "auto")
+        !tideweNative && shot.voiceover && (!nativeAudio || voiceoverMode !== "auto")
           ? await buildVoiceover(shot.shotId, shot.voiceover, shot.characterId ? characterVoices.get(shot.characterId) : undefined, shot.type)
           : undefined;
       const audioPath = vo?.file;
@@ -638,7 +692,7 @@ export async function POST(
       // visual-only footage; restrained CG replaces it with the profile-owned
       // post-production narration. Ambient or music belongs in the explicit
       // BGM layer where it remains reviewable.
-      const keepNativeAudio = !premiumCg && nativeAudio && (!audioPath || voiceoverMode === "mix");
+      const keepNativeAudio = !premiumCg && (!tidewe || tideweNative) && nativeAudio && (!audioPath || voiceoverMode === "mix");
 
       // Effective duration (core fix for issue #14 "next segment starts before speech ends"):
       // 1) TTS narration → actual audio length + breathing gap (clamped 1.5–20s); when the probe
@@ -651,10 +705,14 @@ export async function POST(
       // silent video clips also get probed: the composer speed-fits a moderately-too-long clip into
       // its slot (preserving a keyframe-chained ending) and needs the real source length for that
       let sourceDuration: number | undefined;
-      if (audioPath) {
+      if (tideweNative && isVideo) {
+        sourceDuration = await probeDuration(local);
+        duration = sourceDuration;
+      } else if (audioPath) {
         const probed = await probeDuration(audioPath);
+        if (tidewe && (!Number.isFinite(probed) || probed <= 0)) throw new Error(`镜头 ${shot.shotId} 英语配音无法测得实际时长，不能用估算值完成合成。`);
         voiceSec = probed > 0 ? probed : estimateSpeechSeconds(stripPauseMarks(shot.voiceover ?? ""));
-        duration = Math.min(Math.max(voiceSec + VOICE_GAP, 1.5), 20);
+        duration = tidewe ? Math.max(voiceSec + VOICE_GAP, 1.5) : Math.min(Math.max(voiceSec + VOICE_GAP, 1.5), 20);
         if (isVideo) {
           const mediaDur = await probeDuration(local);
           if (mediaDur > 0) {
@@ -663,7 +721,7 @@ export async function POST(
             if (keepNativeAudio) duration = Math.max(duration, mediaDur);
           }
         }
-      } else if (nativeAudio) {
+      } else if (nativeAudio && !tidewe) {
         const mediaDur = await probeDuration(local);
         if (mediaDur > 0) duration = Math.min(Math.max(mediaDur, 1.5), 20);
       } else if (isVideo) {
@@ -680,7 +738,10 @@ export async function POST(
         ...(sourceDuration && { sourceDuration }),
         ...(audioPath && { audioPath }),
         ...(audioPath && keepNativeAudio && { mixNativeAudio: true }),
+        ...(tidewe && isVideo ? { strictSourceDuration: true } : {}),
+        ...(tideweNative && shot.voiceover?.trim() ? { preserveNativeSpeech: true } : {}),
       };
+      if (tidewe && isVideo) assertTideweMediaDuration(shot.shotId, duration, sourceDuration ?? await probeDuration(local));
       rendered.push({ shot, clip, duration, voiceSec, ...(vo?.words ? { words: vo.words } : {}) });
     }
 
@@ -699,6 +760,7 @@ export async function POST(
     rendered.forEach((r, i) => {
       r.duration = paddedDurations[i];
       r.clip.duration = paddedDurations[i];
+      if (tidewe && r.clip.type === "video") assertTideweMediaDuration(r.shot.shotId, r.clip.duration, r.clip.sourceDuration ?? 0);
     });
 
     const clips = rendered.map((r) => r.clip);
@@ -756,7 +818,7 @@ export async function POST(
         ...(bgmLocal && { bgmPath: bgmLocal, bgmVolume: bgmMix.volume, bgmDuck: bgmMix.duck }),
         // voice grounding (TTS de-broadcast + room-tone bed) defaults ON in the composer when a
         // TTS track exists; body.voiceGround === false is the explicit opt-out for a clean read
-        ...(body.voiceGround === false && { voiceGround: false }),
+        ...((body.voiceGround === false || tideweNative) && { voiceGround: false }),
       },
       subtitle:
         subtitles && subtitleTexts.length > 0
@@ -767,7 +829,7 @@ export async function POST(
 
     // karaoke per-character subtitles (opt-in via the karaoke flag or captionPreset=karaoke):
     // whole-sentence ASS \k burn-in via libass, replacing the rapid short caption cards
-    const wantKaraoke = subtitles && (body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true));
+    const wantKaraoke = !tideweNative && subtitles && (body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true));
     if (wantKaraoke && karaokeLines.length > 0) {
       const ass = buildKaraokeAss(karaokeLines, { fontName: resolveChineseFontFamily() });
       const assDir = join(getDataDir(), "output", id);
@@ -834,6 +896,7 @@ export async function POST(
             boundaries,
             total: timeline.total,
             audioTracks,
+            ...(tideweNative ? { speechMode: "on_camera", captionTiming: "segment-estimate" } : {}),
             ...(exportAudioStems ? {
               audioStems: {
                 voiceUrl: renderedStems.voicePath ? `/api/output/${id}/${stemDirName}/voice.wav` : null,

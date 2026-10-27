@@ -5,7 +5,7 @@ import { assignCharacterVoices } from "@/lib/character-voices";
 import type { ScriptCharacter } from "@/lib/db/schema";
 
 describe("十风格体系（剧情形/物品形/口播形/场景形）", () => {
-  const nonCustom = (Object.keys(styleNameMap) as ScriptStyleType[]).filter((s) => s !== "custom");
+  const nonCustom = (Object.keys(styleNameMap) as ScriptStyleType[]).filter((s) => s !== "custom" && s !== "tidewe_outdoor");
 
   it("每个非 custom 风格都有提示词与显示名", () => {
     for (const s of nonCustom) {

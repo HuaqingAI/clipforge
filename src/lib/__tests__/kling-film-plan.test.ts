@@ -35,8 +35,12 @@ import { LEGACY_SILENT_PROMPT_SUFFIX, VIDEO_AUDIO_DIRECTIONS, withVideoAudioMode
 import { buildShotVideoPrompt as compileShotVideoPrompt } from "@/lib/shot-video-prompt";
 import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import type { CreativeIntent, VisualBible } from "@/lib/production-system";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
+import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
+import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 const shot: Shot = { shotId: 8, type: "demo", duration: 5, description: "Product on table", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "商品清洁更轻松。" };
 const model: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","text_to_video","model-1"]', provider: "kling-cli", profileId: "profile-1", region: "global", tool: "text_to_video", remoteModelId: "model-1", displayName: "Model 1", catalogRevision: "catalog-1", available: true,
@@ -71,6 +75,104 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.unstubAllEnvs(); });
 afterAll(async () => { state.sqlite?.close(); await fs.rm(state.directory, { recursive: true, force: true }); });
+
+function useTidewe(productVisible = true, speechMode: "on_camera" | "voiceover" = "voiceover", presenter?: TidewePresenterSnapshot) {
+  const profile = createTideweOutdoorProfile({ speechMode, presenter, composeSnapshot: { subtitles: false } });
+  const text = "The walk into the woods is only the start. Have a look if that sounds familiar.";
+  const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "other", items: [] };
+  const copyDocument: TideweCopyDocument = {
+    version: 1, language: "en-US", text, translation: "走进林子只是开始。适合的话可以看看。", angle: "scene", hookType: "scene",
+    claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts), corpusVersion: profile.corpusVersion,
+    compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 5,
+  };
+  const tideweShot: Shot = {
+    ...shot, ...(presenter && { characterId: presenter.id }), visualSource: productVisible ? "product_image" : "ai_generate", voiceover: text, description: `${presenter ? tidewePresenterAnchor(presenter) : "猎人"}在清晨林缘停步，低头检查装备。`, visualIntent: "建立户外行走场景。", prompt: "清晨户外小径。", camera: "固定中景",
+    tidewe: { ...(presenter && { presenter, personVisible: true }), copySpan: { start: 0, end: text.length }, translation: copyDocument.translation, shotGoal: "展示入林前检查装备", productVisible, factRefs: [], sceneId: "woods" },
+  };
+  getDb().update(projects).set({ creativeProfile: profile, creativeConfigRevision: 1, productImages: ["/api/files/frame.png"] }).run();
+  getDb().update(scripts).set({ styleType: "tidewe_outdoor", shots: [tideweShot], copyDocument, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
+  return { shot: tideweShot, copyDocument };
+}
+
+describe("TIDEWE frozen film planning", () => {
+  const presenter: TidewePresenterSnapshot = { id: "chosen-host", name: "Sam", appearance: "短发户外主播", referenceImages: ["/api/files/presenter.png"] };
+  it("requires a generated current-shot presenter keyframe instead of falling back to raw product photos", async () => {
+    useImageModel();
+    const { shot: tideweShot } = useTidewe(true, "voiceover", presenter);
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const missing = await previewKlingFilm(request());
+    expect(missing.missingKeyframes).toEqual([tideweShot.shotId]);
+    expect(getKlingFilmShots(missing.runId)[0].data.inputs).toEqual([]);
+    await asset("presenter-frame.png", assetScopeForShot(currentScript(), tideweShot));
+    const ready = await previewKlingFilm(request());
+    expect(ready.missingKeyframes).toEqual([]);
+    const planned = getKlingFilmShots(ready.runId)[0];
+    expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/presenter-frame.png"]);
+    expect(planned.data.prompt).toContain(presenter.name);
+  });
+  it("freezes actual presenter reference bytes as an additional Kling image when supported", async () => {
+    useImageModel();
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.capabilities.multiImage = true;
+    descriptor.inputSlots.push({ name: "image2", role: "image", required: false });
+    const { shot: tideweShot } = useTidewe(true, "voiceover", presenter);
+    await fs.writeFile(path.join(state.directory, "uploads", "presenter.png"), png);
+    await asset("presenter-frame.png", assetScopeForShot(currentScript(), tideweShot));
+    const ready = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(ready.runId)[0];
+    expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/presenter-frame.png", "/api/files/presenter.png"]);
+    expect(planned.data.inputs[1].hash).toBe(contentHash(png));
+  });
+  it("freezes native English speech with the declared model audio enabled", async () => {
+    useImageModel();
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.capabilities.audio = true;
+    descriptor.parameters.push({ name: "generate_audio", type: "boolean", required: false, default: false });
+    const { shot } = useTidewe(true, "on_camera");
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    expect(view.output.audioStrategy).toBe("native");
+    expect(planned.data.options.generate_audio).toBe(true);
+    expect(planned.data.prompt).toContain(shot.voiceover);
+    expect(planned.data.prompt).not.toContain("仅生成静音视觉素材");
+    expect(buildFilmShotJobRequest(getKlingFilm(view.runId), planned).prompt).toBe(planned.data.prompt);
+    await expect(previewKlingFilm(request({ output: { audioStrategy: "edge-tts" } }))).rejects.toMatchObject({ code: "TIDEWE_OUTPUT_POLICY" });
+  });
+  it("rejects a native TIDEWE film on a model without confirmed audio support", async () => {
+    useImageModel();
+    useTidewe(true, "on_camera");
+    await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "KLING_FILM_AUDIO_UNSUPPORTED" });
+    expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
+  });
+  it("requires an image model for product shots before making a billable film plan", async () => {
+    useTidewe();
+    await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" });
+    expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
+  });
+  it("freezes the full English copy and a silent visual prompt with the shared English voice", async () => {
+    useImageModel();
+    const { shot, copyDocument } = useTidewe();
+    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const run = getKlingFilm(view.runId);
+    const planned = getKlingFilmShots(view.runId)[0];
+    expect(view.output).toMatchObject({ audioStrategy: "edge-tts", voice: "en-US-GuyNeural", subtitles: false });
+    expect(run.data.scriptSnapshot.copyDocument).toEqual(copyDocument);
+    expect(planned.data.prompt).toBe(compileTideweVisualPrompt(shot).prompt);
+    expect(planned.data.prompt).not.toContain(shot.voiceover);
+    expect(planned.data.keyframeUrl).toBe("/api/files/frame.png");
+    expect(buildFilmShotJobRequest(run, planned).prompt).toBe(planned.data.prompt);
+    await expect(previewKlingFilm(request({ output: { audioStrategy: "native" } }))).rejects.toMatchObject({ code: "TIDEWE_OUTPUT_POLICY" });
+  });
+  it("keeps an environment shot missing its own keyframe from falling back to the product image", async () => {
+    useImageModel();
+    useTidewe(false);
+    const view = await previewKlingFilm(request());
+    expect(view.missingKeyframes).toEqual([shot.shotId]);
+    expect(getKlingFilmShots(view.runId)[0].data.keyframeUrl).toBeUndefined();
+  });
+});
 
 describe("Kling frozen film planning", () => {
   it("shows the exact paid backend CG template in the full-film plan", async () => {

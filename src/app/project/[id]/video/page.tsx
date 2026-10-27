@@ -18,7 +18,8 @@ import { decodeStoredAdTemplate, adTemplateStorageKey, adTemplateAppliedKey } fr
 import { buildHookVariants } from "@/lib/script-engine/hook-variants";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
-import { sanitizeCreativeProfile, type PremiumProductCgProfile } from "@/lib/creative-profiles";
+import { sanitizeCreativeProfile, isTideweOutdoorProfile, isTideweNativeSpeech, type PremiumProductCgProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
+import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { ProjectHeader } from "@/components/project-header";
 import { FreeVoicePreview } from "@/components/free-voice-preview";
 import { ShotVideoPicker, buildShotAssetSelections, selectedShotAsset, type ShotVideoAsset } from "@/components/shot-video-picker";
@@ -83,6 +84,31 @@ function lockPremiumCgComposeConfig(config: ComposeConfig): ComposeConfig {
   };
 }
 
+function applyTideweComposeSnapshot(config: ComposeConfig, profile: TideweOutdoorProfile): ComposeConfig {
+  const snapshot = profile.composeSnapshot;
+  const captionPreset = CAPTION_PRESET_IDS.find((preset) => preset === snapshot.captionPreset) ?? "standard";
+  const quality = snapshot.quality;
+  const renderPreset = quality === "fast" || quality === "standard" || quality === "hd" ? quality : DEFAULT_RENDER_PRESET;
+  return {
+    ...config,
+    ttsEnabled: !isTideweNativeSpeech(profile),
+    voiceoverMode: isTideweNativeSpeech(profile) ? "auto" : "replace",
+    freeVoice: resolveNarrationVoice(profile),
+    subtitles: snapshot.subtitles !== false,
+    subtitleSize: 24,
+    subtitlePosition: "bottom",
+    captionPreset,
+    aspectRatio: "9:16",
+    renderPreset,
+    resolution: RENDER_PRESETS[renderPreset].resolution,
+    bgmDuck: typeof snapshot.bgmDuck === "boolean" ? snapshot.bgmDuck : true,
+    bgmVolume: typeof snapshot.bgmVolume === "number" && Number.isFinite(snapshot.bgmVolume) ? Math.max(0, Math.min(1, snapshot.bgmVolume)) : 0.18,
+    ctaEnabled: false,
+    ctaText: "",
+    productCard: false,
+  };
+}
+
 // 免费配音音色（微软 Edge keyless TTS，无需 Key）——与后端 FREE_TTS_VOICES 对应
 // label 改为 i18n key，渲染时经 t() 取对应语言文案
 const freeVoiceOptions = [
@@ -122,6 +148,7 @@ const isVideoPath = (p: string) => /\.(mp4|webm|mov|m4v)(\?|$)/i.test(p);
 
 export default function VideoPage() {
   const t = useT("video");
+  const tt = useT("tidewe");
   const locale = useLocale();
   const { id } = useParams<{ id: string }>();
   const { defaultResolution, defaultAspectRatio, tts, providers } = useSettingsStore();
@@ -140,6 +167,14 @@ export default function VideoPage() {
   const [premiumCgProfile, setPremiumCgProfile] = useState<PremiumProductCgProfile | null>(null);
   const premiumCg = premiumCgProfile !== null;
   const premiumCgRef = useRef(false);
+  const [tidewe, setTidewe] = useState(false);
+  const [tideweNativeSpeech, setTideweNativeSpeech] = useState(false);
+  const tideweRef = useRef(false);
+  const [loadedProfileProjectId, setLoadedProfileProjectId] = useState<string | null>(null);
+  const availableFreeVoices: { value: string; labelKey?: string; label?: string }[] = tidewe ? [
+    { value: "en-US-GuyNeural", label: "Guy · US English" },
+    { value: "en-US-AriaNeural", label: "Aria · US English" },
+  ] : freeVoiceOptions;
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
@@ -196,7 +231,11 @@ export default function VideoPage() {
       setLoading(true);
       setLoadError(null);
       setAssetSelectionError(null);
+      setLoadedProfileProjectId(null);
       premiumCgRef.current = false;
+      tideweRef.current = false;
+      setTidewe(false);
+      setTideweNativeSpeech(false);
       setPremiumCgProfile(null);
       try {
         const [projectRes, scriptsRes, assetsRes] = await Promise.all([
@@ -213,14 +252,20 @@ export default function VideoPage() {
           setProjectName(project.name ?? project.productName ?? "");
           setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
           const creativeProfile = sanitizeCreativeProfile(project.creativeProfile);
+          const isTidewe = isTideweOutdoorProfile(creativeProfile);
+          tideweRef.current = isTidewe;
+          setTidewe(isTidewe);
+          setTideweNativeSpeech(isTideweNativeSpeech(creativeProfile));
           const cgProfile = creativeProfile?.creationType === "premium_product_cg" ? creativeProfile : null;
           premiumCgRef.current = Boolean(cgProfile);
           setPremiumCgProfile(cgProfile);
           if (cgProfile) setConfig(lockPremiumCgComposeConfig);
+          if (isTidewe) setConfig((current) => applyTideweComposeSnapshot(current, creativeProfile));
           if (Array.isArray(project.productionWorkflow)) {
             const voiceStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "voice");
-            if (voiceStage && !cgProfile) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
+            if (voiceStage && !cgProfile && !isTidewe) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
           }
+          setLoadedProfileProjectId(id);
         }
         setSavedAssets(Array.isArray(assets) ? assets : []);
         const selected = Array.isArray(scripts)
@@ -265,9 +310,10 @@ export default function VideoPage() {
   // Production-console preview hand-off: select the existing real fast profile
   // (720p / veryfast / CRF 26) without touching any paid generation stage.
   useEffect(() => {
+    if (loadedProfileProjectId !== id) return;
     if (new URLSearchParams(window.location.search).get("renderPreset") !== "fast") return;
     setConfig((current) => ({ ...current, renderPreset: "fast", resolution: RENDER_PRESETS.fast.resolution }));
-  }, []);
+  }, [id, loadedProfileProjectId]);
 
   const totalDuration = clips.reduce((sum, c) => sum + c.duration, 0);
 
@@ -291,7 +337,7 @@ export default function VideoPage() {
   const [packNotice, setPackNotice] = useState<string | null>(null);
 
   const applyStylePack = (pack: StylePack) => {
-    if (premiumCgRef.current) return;
+    if (premiumCgRef.current || tideweRef.current) return;
     const p = pack.compose;
     setConfig((c) => ({
       ...c,
@@ -310,7 +356,13 @@ export default function VideoPage() {
   // template's compose recipe ONCE per project, through the same whitelisted style-pack
   // path — later manual tweaks are never overwritten on revisit.
   useEffect(() => {
+    if (loadedProfileProjectId !== id) return;
     try {
+      if (premiumCgRef.current || tideweRef.current) {
+        localStorage.removeItem(adTemplateStorageKey(id));
+        localStorage.removeItem(adTemplateAppliedKey(id));
+        return;
+      }
       const stored = localStorage.getItem(adTemplateStorageKey(id));
       if (!stored || localStorage.getItem(adTemplateAppliedKey(id))) return;
       // decodes both builtin ids and inline AI custom templates (custom:<json>)
@@ -326,7 +378,7 @@ export default function VideoPage() {
       // localStorage unavailable — the pre-fill is a convenience, never a blocker
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, loadedProfileProjectId]);
 
   const importStylePack = async (file: File) => {
     const pack = parseStylePack(await file.text());
@@ -424,8 +476,8 @@ export default function VideoPage() {
 
   // zero-LLM hook rewrites from the validated pattern library (base + 2 alternatives)
   const hookVariants = useMemo(
-    () => (scriptShots.length > 0 ? buildHookVariants({ shots: scriptShots }, matrixCategory, 2) : []),
-    [scriptShots, matrixCategory]
+    () => (!tidewe && scriptShots.length > 0 ? buildHookVariants({ shots: scriptShots }, matrixCategory, 2) : []),
+    [scriptShots, matrixCategory, tidewe]
   );
 
   const matrixCombos = useMemo(() => {
@@ -463,7 +515,7 @@ export default function VideoPage() {
 
   /** Run the matrix: sequential compose per combo, each polled by its own compositionId. */
   const runMatrix = async () => {
-    if (premiumCg || matrixRunning || isComposing || selectingAsset.current || !scriptId || matrixCombos.length === 0) return;
+    if (premiumCg || tidewe || matrixRunning || isComposing || selectingAsset.current || !scriptId || matrixCombos.length === 0) return;
     const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
     const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setMatrixRunning(true);
@@ -560,6 +612,7 @@ export default function VideoPage() {
           renderPreset: config.renderPreset,
           aspectRatio: config.aspectRatio,
           subtitles: premiumCg ? false : config.subtitles,
+          ...(tideweNativeSpeech && { nativeAudio: true, ttsEnabled: false }),
           ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
           ...(!premiumCg && config.productCard && { productCard: true }),
           ...(!premiumCg && config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
@@ -770,7 +823,7 @@ export default function VideoPage() {
             <h2 className="text-base font-semibold">{t("composeSettings")}</h2>
 
             {/* style packs: apply a whole look at once; import shared packs / export the current settings */}
-            {!premiumCg && <Card className="glass-card">
+            {!premiumCg && !tidewe && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("stylePackLabel")}</Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -816,7 +869,13 @@ export default function VideoPage() {
             </Card>}
 
             {/* 配音设置 */}
-            {!premiumCg && <Card className="glass-card">
+            {tideweNativeSpeech && <Card className="glass-card">
+              <CardContent className="p-4 space-y-3">
+                <Label className="text-sm font-medium">{tt("speechOnCamera")}</Label>
+                <p className="text-xs text-muted-foreground">{tt("nativeSpeechHint")}</p>
+              </CardContent>
+            </Card>}
+            {!premiumCg && !tideweNativeSpeech && <Card className="glass-card">
               <CardContent className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">{t("ttsLabel")}</Label>
@@ -831,6 +890,7 @@ export default function VideoPage() {
                     role="switch"
                     aria-label={t("ttsEnableLabel")}
                     aria-checked={config.ttsEnabled}
+                    disabled={tidewe}
                     onClick={() => setConfig((c) => ({ ...c, ttsEnabled: !c.ttsEnabled }))}
                     className={`relative w-10 h-5 rounded-full transition-colors ${config.ttsEnabled ? "bg-primary" : "bg-muted"}`}
                   >
@@ -854,7 +914,7 @@ export default function VideoPage() {
                         aria-label={t(label)}
                         aria-describedby={`voiceover-${mode}-hint`}
                         aria-checked={config.voiceoverMode === mode}
-                        disabled={!config.ttsEnabled}
+                        disabled={tidewe || !config.ttsEnabled}
                         onClick={() => setConfig((c) => ({ ...c, voiceoverMode: c.voiceoverMode === mode ? "auto" : mode }))}
                         className={`relative h-5 w-10 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed ${config.voiceoverMode === mode ? "bg-primary" : "bg-muted"}`}
                       >
@@ -875,15 +935,15 @@ export default function VideoPage() {
                         {/* Base UI 的 Select.Value 默认显示原始 value，用函数子节点映射为中文标签 */}
                         <SelectValue>
                           {(value: string) => {
-                            const o = freeVoiceOptions.find((o) => o.value === value);
-                            return o ? t(o.labelKey) : value;
+                            const o = availableFreeVoices.find((o) => o.value === value);
+                            return o?.labelKey ? t(o.labelKey) : o?.label ?? value;
                           }}
                         </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        {freeVoiceOptions.map((o) => (
+                        {availableFreeVoices.map((o) => (
                           <SelectItem key={o.value} value={o.value}>
-                            {t(o.labelKey)}
+                            {o.labelKey ? t(o.labelKey) : o.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -891,7 +951,7 @@ export default function VideoPage() {
                     <FreeVoicePreview
                       key={`${config.freeVoice}:${locale}`}
                       voice={config.freeVoice}
-                      text={t("ttsPreviewText")}
+                      text={tidewe ? "The walk in is one thing. Sitting still on a cold morning is another." : t("ttsPreviewText")}
                     />
                   </div>
                 )}
@@ -973,7 +1033,7 @@ export default function VideoPage() {
             </Card>}
 
             {/* 带货转化：购买 CTA 片尾 */}
-            {!premiumCg && <Card className="glass-card">
+            {!premiumCg && !tidewe && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("complianceLabel")}</Label>
                 <div className="flex items-center justify-between">
@@ -1184,7 +1244,7 @@ export default function VideoPage() {
 
               {/* Variant matrix: hook × caption × BGM combos as
                   labeled outputs — same assets, compose-only reruns, zero AI-gen cost */}
-              {!premiumCg && clips.length > 0 && (
+              {!premiumCg && !tidewe && clips.length > 0 && (
                 <div className="rounded-lg border border-border/50 bg-muted/10 p-3 space-y-2">
                   <button
                     type="button"

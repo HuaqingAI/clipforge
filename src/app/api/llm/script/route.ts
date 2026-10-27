@@ -9,7 +9,7 @@ import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-pattern
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects, publishMetrics } from "@/lib/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
 import { topConvertingStyle, topConvertingHook, buildPerformanceHint, type MetricInput } from "@/lib/performance-insights";
@@ -17,16 +17,22 @@ import {
   createCreativeProfileSnapshot,
   createShortVideoSalesProfile,
   isPremiumProductCgProfile,
+  isTideweOutdoorProfile,
+  TIDEWE_OUTDOOR_STYLE,
   resolveCreativeProfile,
   validateCreativeProfileInput,
   type ProjectCreativeProfile,
 } from "@/lib/creative-profiles";
+import { scriptRevision } from "@/lib/asset-context";
+import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { analyzeTideweProductImages } from "@/lib/tidewe/image-analysis";
 
 /** Allowed enum values for the styleType column in the scripts table */
 const VALID_SCRIPT_STYLE = new Set([
   "pain_point", "scene", "comparison", "story",
   "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head",
-  "premium_product_cg", "custom",
+  "premium_product_cg", "tidewe_outdoor", "custom",
 ]);
 
 type RequestLlmConfig = LLMConfig & { provider?: string };
@@ -58,7 +64,16 @@ interface ScriptRequestBody {
   referenceStructure?: string;
   customRequirements?: string;
   preferredHookId?: string;
+  requestId?: string;
+  expectedCreativeConfigRevision?: number;
+  sourceScriptId?: string;
+  expectedScriptHash?: string;
+  copyText?: string;
+  count?: number;
 }
+
+// Deduplicate simultaneous retries in this process; persisted request IDs cover later retries.
+const activeScriptRequests = new Map<string, Promise<NextResponse>>();
 
 /** Convert a local image path to a base64 data URI for use with LLM vision models */
 async function imagePathToBase64(imagePath: string): Promise<string> {
@@ -169,11 +184,26 @@ async function loadInsights(category: string): Promise<{ hint: string; topStyle:
 
 // Generate commerce script
 export async function POST(req: NextRequest) {
-  const rawBody: unknown = await req.json();
+  let rawBody: unknown;
+  try { rawBody = await req.json(); }
+  catch { return apiError(req, "请求内容必须是有效的 JSON", "Request body must be valid JSON", 400); }
   if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
-    return apiError(req, "璇锋眰鏍煎紡鏃犳晥", "Request body must be a JSON object");
+    return apiError(req, "请求内容必须是对象", "Request body must be a JSON object");
   }
   const body = rawBody as ScriptRequestBody;
+  const requestProjectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
+  const requestKey = requestProjectId && typeof body.requestId === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(body.requestId)
+    ? `${requestProjectId}:${body.requestId}` : undefined;
+  if (!requestKey) return generateRequestedScripts(req, body);
+  const active = activeScriptRequests.get(requestKey);
+  if (active) return (await active).clone() as NextResponse;
+  const pending = generateRequestedScripts(req, body);
+  activeScriptRequests.set(requestKey, pending);
+  try { return (await pending).clone() as NextResponse; }
+  finally { activeScriptRequests.delete(requestKey); }
+}
+
+async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBody): Promise<NextResponse> {
   const {
     productImages: requestedProductImages,
     productName: requestedProductName,
@@ -229,21 +259,52 @@ export async function POST(req: NextRequest) {
   }
 
   const premiumProfile = isPremiumProductCgProfile(projectProfile) ? projectProfile : undefined;
+  const tideweProfile = isTideweOutdoorProfile(projectProfile) ? projectProfile : undefined;
+  let originalSelection: { id: string; hash: string } | undefined;
+  let originalSource: { id: string; hash: string } | undefined;
+  if (tideweProfile) {
+    if (!projectId || !project) return NextResponse.json({ error: "TIDEWE generation requires a saved project.", code: "TIDEWE_PROJECT_REQUIRED" }, { status: 400 });
+    if (typeof body.requestId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(body.requestId)) return NextResponse.json({ error: "A valid requestId is required.", code: "TIDEWE_REQUEST_ID_REQUIRED" }, { status: 400 });
+    const existing = getDb().select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
+    const prior = existing.filter((row) => row.generationMetadata?.requestId === body.requestId);
+    if (prior.length) {
+      const stale = prior.some((row) => row.creativeProfileSnapshot?.creativeConfigRevision !== projectRevision || row.creativeProfileSnapshot?.profile.creationType !== "tidewe_outdoor");
+      return NextResponse.json({ scripts: prior.map((row) => ({ ...row, scriptHash: scriptRevision(row) })), requestId: body.requestId,
+        ...(stale || !prior.some((row) => row.selected) ? { error: "This request was saved as history; refresh the current script.", code: "CREATIVE_CONFIG_STALE" } : {}),
+      }, { status: stale || !prior.some((row) => row.selected) ? 409 : 200 });
+    }
+    if (!Number.isSafeInteger(body.expectedCreativeConfigRevision) || body.expectedCreativeConfigRevision !== projectRevision) return NextResponse.json({ error: "The project configuration changed. Refresh before generating.", code: "CREATIVE_CONFIG_STALE", creativeConfigRevision: projectRevision }, { status: 409 });
+    if (body.styleType !== undefined && body.styleType !== TIDEWE_OUTDOOR_STYLE) return NextResponse.json({ error: "The requested style does not match the project.", code: "CREATIVE_PROFILE_MISMATCH" }, { status: 400 });
+    if (body.creativeProfile !== undefined || body.profile !== undefined) {
+      const requested = validateCreativeProfileInput(body.creativeProfile ?? body.profile);
+      if (!requested.profile || !isTideweOutdoorProfile(requested.profile)) return NextResponse.json({ error: "The requested profile does not match the project.", code: "CREATIVE_PROFILE_MISMATCH" }, { status: 400 });
+    }
+    if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1 || body.count > 3)) return apiError(req, "候选数量只能为1到3", "count must be between 1 and 3", 400);
+    if (body.copyText !== undefined && (typeof body.copyText !== "string" || body.copyText.trim().length < 2 || body.copyText.length > 12000)) return apiError(req, "请提供有效的完整英文文案", "Provide complete English copy (2–12000 characters)", 400);
+    const selected = existing.find((row) => row.selected);
+    originalSelection = selected ? { id: selected.id, hash: scriptRevision(selected) } : undefined;
+    if (body.sourceScriptId !== undefined || body.expectedScriptHash !== undefined) {
+      const source = existing.find((row) => row.id === body.sourceScriptId);
+      if (!source || typeof body.expectedScriptHash !== "string" || scriptRevision(source) !== body.expectedScriptHash) return NextResponse.json({ error: "The source script changed. Refresh before editing.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+      originalSource = { id: source.id, hash: body.expectedScriptHash };
+    }
+  }
   const productImages = (project?.productImages as string[] | undefined) ?? requestedProductImages;
   const productName = project?.productName ?? requestedProductName;
   const productDescription = project?.productDescription ?? requestedProductDescription;
   const effectiveCategory = project?.productCategory ?? body.category ?? body.productCategory;
 
   // Support both frontend field naming conventions: category/productCategory, targetDuration/duration
-  const category = normalizeCategory(effectiveCategory);
+  // TIDEWE's original outdoor category travels in facts/categoryHint, never in the legacy beauty fallback.
+  const category = tideweProfile ? "fashion" : normalizeCategory(effectiveCategory);
   // detect smart-recommend ("auto"/unset) BEFORE normalizing, so the flywheel can pick a data-driven
   // default instead of the hardcoded pain_point fallback; an explicit style is always respected
   const rawStyle = String(projectProfile.styleType ?? body.styleType ?? "").toLowerCase();
   const isAutoStyle = rawStyle === "" || rawStyle === "auto";
-  let styleType = premiumProfile ? "premium_product_cg" : normalizeStyle(projectProfile.styleType);
+  let styleType = tideweProfile ? TIDEWE_OUTDOOR_STYLE : premiumProfile ? "premium_product_cg" : normalizeStyle(projectProfile.styleType);
   const duration = projectProfile.targetDuration;
   // data flywheel: performance feedback is on by default; pass insightMode:false to opt out
-  const useInsights = !premiumProfile && body.insightMode !== false;
+  const useInsights = !premiumProfile && !tideweProfile && body.insightMode !== false;
 
   if (!productName) {
     return apiError(req, "请填写商品名称", "Please enter the product name");
@@ -257,7 +318,16 @@ export async function POST(req: NextRequest) {
     // Product image analysis: convert local paths to base64 before passing to the vision model
     let analysis = body.productAnalysis;
     const imageReferences = productImages ?? [];
-    if (!analysis && imageReferences.length > 0 && llmConfig) {
+    if (tideweProfile && imageReferences.length && !analysis) {
+      try {
+        const imageUrls = await Promise.all(imageReferences.slice(0, 4).map(imagePathToBase64));
+        analysis = await analyzeTideweProductImages(llmConfig, imageUrls);
+      } catch (error) {
+        // Vision is optional and never supplies confirmed facts. A conservative copy can still use the product brief.
+        console.warn("TIDEWE image observations unavailable:", error);
+      }
+    }
+    if (!tideweProfile && !analysis && imageReferences.length > 0 && llmConfig) {
       try {
         const imageUrls = await Promise.all(
           imageReferences.map(imagePathToBase64)
@@ -282,13 +352,21 @@ export async function POST(req: NextRequest) {
       productName,
       category,
       // CG accepts any product category; the legacy sales fallback must not relabel it as beauty.
-      ...(premiumProfile && { productCategoryHint: typeof effectiveCategory === "string" && effectiveCategory.trim() ? effectiveCategory.trim() : "unspecified" }),
+      ...((premiumProfile || tideweProfile) && { productCategoryHint: typeof effectiveCategory === "string" && effectiveCategory.trim() ? effectiveCategory.trim() : "unspecified" }),
       productDescription,
       productAnalysis: analysis,
       styleType,
       targetDuration: duration,
       videoMode: projectProfile.videoMode,
       creativeProfile: projectProfile,
+      ...(tideweProfile?.presenter ? { character: {
+        id: tideweProfile.presenter.id, name: tideweProfile.presenter.name, appearance: tideweProfile.presenter.appearance,
+      } } : {}),
+      ...(tideweProfile && {
+        productFacts: normalizeProductFacts(project?.productFacts) ?? productFactsFromDescription(productDescription ?? "", typeof effectiveCategory === "string" ? effectiveCategory : undefined),
+        ...(body.copyText !== undefined && { copyText: body.copyText }),
+        count: body.copyText !== undefined ? 1 : body.count ?? 3,
+      }),
       ...(premiumProfile && { narrationMode: premiumProfile.narrationMode }),
       priceRange: body.priceRange,
       platforms: body.platforms,
@@ -298,7 +376,7 @@ export async function POST(req: NextRequest) {
       // ad-template creative direction (look + per-shot-type camera plan) and any other
       // caller-supplied requirements — buildUserPrompt already injects this field
       customRequirements: typeof body.customRequirements === "string" ? body.customRequirements.slice(0, 2000) : undefined,
-      performanceHint: premiumProfile ? undefined : insights.hint,
+      performanceHint: premiumProfile || tideweProfile ? undefined : insights.hint,
       // anti-homogenization: batch rotation pins a different opening hook mechanism per video (validated against the pattern library)
       preferredHookId:
         typeof body.preferredHookId === "string" && HOOK_PATTERNS.some((p) => p.id === body.preferredHookId)
@@ -306,12 +384,19 @@ export async function POST(req: NextRequest) {
           : undefined,
       llmConfig,
     });
+    if (tideweProfile) {
+      if (!scripts.length || scripts.length > 3) throw new Error("TIDEWE returned an invalid candidate count.");
+      for (const script of scripts) {
+        if (!script.copyDocument) throw new Error("TIDEWE generation returned no canonical copy document.");
+        assertTideweScript(script, tideweProfile.presenter ?? null);
+      }
+    }
 
     // Persist: write generated scripts to the scripts table so the script/assets pages can read them by projectId
-    const generationMetadata = scriptGenerationMetadata(
+    const generationMetadata = { ...scriptGenerationMetadata(
       llmConfig,
-      premiumProfile ? "premium-product-cg-script" : "commerce-script",
-    );
+      tideweProfile ? "tidewe-outdoor-script" : premiumProfile ? "premium-product-cg-script" : "commerce-script",
+    ), ...(tideweProfile && { requestId: body.requestId }) };
     let savedScripts = scripts;
     if (projectId) {
       const db = getDb();
@@ -330,6 +415,7 @@ export async function POST(req: NextRequest) {
         // Regeneration appends a new revision and keeps prior scripts inspectable. Deselecting and
         // inserting in one transaction prevents a failed write from leaving no active script.
         let creativeConfigChanged = false;
+        let replayedDuringSave = false;
         const rows = db.transaction((tx) => {
           const [currentProject] = tx
             .select({ creativeConfigRevision: projects.creativeConfigRevision })
@@ -338,6 +424,23 @@ export async function POST(req: NextRequest) {
             .limit(1)
             .all();
           creativeConfigChanged = !currentProject || currentProject.creativeConfigRevision !== projectRevision;
+          if (tideweProfile) {
+            const currentScripts = tx.select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
+            // Another worker may have finished this request after our initial read.
+            // Recheck while holding the write lock so one request ID saves one batch.
+            const prior = currentScripts.filter((row) => row.generationMetadata?.requestId === body.requestId);
+            if (prior.length) {
+              replayedDuringSave = true;
+              creativeConfigChanged ||= prior.some((row) => row.creativeProfileSnapshot?.creativeConfigRevision !== projectRevision || row.creativeProfileSnapshot?.profile.creationType !== "tidewe_outdoor") || !prior.some((row) => row.selected);
+              return prior;
+            }
+            const selected = currentScripts.find((row) => row.selected);
+            const selectionUnchanged = originalSelection
+              ? selected?.id === originalSelection.id && scriptRevision(selected) === originalSelection.hash
+              : !selected;
+            const source = originalSource ? currentScripts.find((row) => row.id === originalSource.id) : undefined;
+            creativeConfigChanged ||= !selectionUnchanged || Boolean(originalSource && (!source || scriptRevision(source) !== originalSource.hash));
+          }
           const [latest] = tx
             .select({ version: scriptsTable.version })
             .from(scriptsTable)
@@ -360,11 +463,12 @@ export async function POST(req: NextRequest) {
               version: nextVersion,
               styleType: (VALID_SCRIPT_STYLE.has(s.styleType) ? s.styleType : "custom") as
                 | "pain_point" | "scene" | "comparison" | "story"
-                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head" | "premium_product_cg"
+                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head" | "premium_product_cg" | "tidewe_outdoor"
                 | "custom",
               title: s.title,
               totalDuration: s.totalDuration,
               shots: s.shots,
+              ...(s.copyDocument && { copyDocument: s.copyDocument }),
               generationMetadata,
               creativeProfileSnapshot: createCreativeProfileSnapshot(
                 projectProfile,
@@ -380,13 +484,17 @@ export async function POST(req: NextRequest) {
           )
           .returning()
           .all();
-        });
+        }, { behavior: "immediate" });
         savedScripts = rows.map((r) => ({
           id: r.id,
+          version: r.version,
           title: r.title ?? "",
           styleType: r.styleType,
           totalDuration: r.totalDuration ?? 0,
           shots: r.shots ?? [],
+          copyDocument: r.copyDocument,
+          creativeProfileSnapshot: r.creativeProfileSnapshot,
+          scriptHash: scriptRevision(r),
           generationMetadata: r.generationMetadata,
           selected: r.selected ?? false,
         })) as typeof scripts;
@@ -394,15 +502,16 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({
             error: "The project creative configuration changed while the script was generating. The result was saved as history and was not selected.",
             code: "CREATIVE_CONFIG_STALE",
+            requestId: body.requestId,
             scripts: savedScripts,
             analysis,
           }, { status: 409 });
         }
         // Sync project status and analysis result
-        await db
+        if (!replayedDuringSave) await db
           .update(projects)
           .set({ status: "scripting", ...(analysis && { productAnalysis: analysis }), updatedAt: new Date() })
-          .where(eq(projects.id, projectId));
+          .where(and(eq(projects.id, projectId), eq(projects.creativeConfigRevision, projectRevision)));
       } catch (e) {
         // DB write failure must surface as an error — returning 200 would let the frontend navigate away thinking it succeeded, then read empty scripts from the DB (which may already have had their old scripts deleted)
         console.error("脚本落库失败:", e);
@@ -410,8 +519,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ scripts: savedScripts, analysis });
+    return NextResponse.json({ scripts: savedScripts, analysis, ...(tideweProfile && { requestId: body.requestId }) });
   } catch (error) {
+    if (tideweProfile && error && typeof error === "object" && "code" in error && String(error.code).startsWith("TIDEWE_")) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE script validation failed.", code: error.code, requestId: body.requestId }, { status: "status" in error ? Number(error.status) || 502 : 502 });
+    }
     console.error("脚本生成失败:", error);
     // LLM failures carry an actionable bilingual message (bad key / dead free endpoint / rate limit)
     const { zh, en } = llmErrorPair(error);

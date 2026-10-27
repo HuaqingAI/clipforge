@@ -9,7 +9,15 @@ import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
 import {
   checkCreativeProfileContext,
   isPremiumProductCgProfile,
+  isTideweOutdoorProfile,
 } from "@/lib/creative-profiles";
+import { scriptRevision } from "@/lib/asset-context";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { POST as generateScripts } from "@/app/api/llm/script/route";
+
+function scriptView<T extends Parameters<typeof scriptRevision>[0]>(script: T) {
+  return { ...script, scriptHash: scriptRevision(script) };
+}
 
 // Historical variants remain readable after regeneration or a profile switch. Selection and edits
 // are limited to scripts whose frozen creative context matches the current project configuration.
@@ -24,7 +32,7 @@ export async function GET(
       .from(scripts)
       .where(eq(scripts.projectId, id))
       .orderBy(desc(scripts.createdAt));
-    return NextResponse.json(rows);
+    return NextResponse.json(rows.map(scriptView));
   } catch (error) {
     console.error("Failed to fetch scripts:", error);
     return NextResponse.json(
@@ -95,7 +103,7 @@ export async function DELETE(
       const remaining = selected ? tx.select().from(scripts).where(and(
         eq(scripts.projectId, id), eq(scripts.version, selected.version),
       )).orderBy(desc(scripts.createdAt), asc(scripts.id)).all() : [];
-      return NextResponse.json({ success: true, deletedScriptId: scriptId, selectedScriptId: selected?.id ?? null, scripts: remaining });
+      return NextResponse.json({ success: true, deletedScriptId: scriptId, selectedScriptId: selected?.id ?? null, scripts: remaining.map(scriptView) });
     }, { behavior: "immediate" });
   } catch (error) {
     console.error("Failed to delete script:", error);
@@ -143,6 +151,18 @@ export async function PATCH(
     }
     const payload = body as Record<string, unknown>;
 
+    if ("copyText" in payload) {
+      if (typeof payload.scriptId !== "string" || typeof payload.expectedScriptHash !== "string") return apiError(req, "修改全文需要源脚本及其修订", "A source script and expectedScriptHash are required", 400);
+      const project = getDb().select().from(projects).where(eq(projects.id, id)).get();
+      if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+      if (!isTideweOutdoorProfile(project.creativeProfile)) return apiError(req, "当前创作类型不支持此全文协议", "This full-copy editing protocol requires a TIDEWE project", 400);
+      return generateScripts(new NextRequest(new URL("/api/llm/script", req.url), {
+        method: "POST", headers: { "Content-Type": "application/json", "Accept-Language": req.headers.get("accept-language") ?? "zh" },
+        body: JSON.stringify({ projectId: id, requestId: payload.requestId, expectedCreativeConfigRevision: payload.expectedCreativeConfigRevision,
+          sourceScriptId: payload.scriptId, expectedScriptHash: payload.expectedScriptHash, copyText: payload.copyText, llmConfig: payload.llmConfig, count: 1 }),
+      }));
+    }
+
     if ("restoreScriptId" in payload) {
       const restoreScriptId = typeof payload.restoreScriptId === "string" ? payload.restoreScriptId.trim() : "";
       if (!restoreScriptId || ["selectedScriptId", "scriptId", "shotTexts"].some((key) => key in payload)) {
@@ -163,6 +183,7 @@ export async function PATCH(
               : "该历史方案的创作类型与当前项目不一致，暂时无法恢复。", conflict.error),
           }, { status: 409 });
         }
+        if (isTideweOutdoorProfile(context.scriptProfile)) assertTideweScript(target, context.scriptProfile.presenter ?? null);
 
         // Restoring changes the project's active batch. Any unfinished work in the project
         // must settle first, including work bound to a different historical script.
@@ -190,7 +211,7 @@ export async function PATCH(
         const restored = tx.select().from(scripts).where(and(
           eq(scripts.projectId, id), eq(scripts.version, target.version),
         )).orderBy(desc(scripts.createdAt), asc(scripts.id)).all();
-        return NextResponse.json({ success: true, selectedScriptId: restoreScriptId, scripts: restored });
+        return NextResponse.json({ success: true, selectedScriptId: restoreScriptId, scripts: restored.map(scriptView) });
       }, { behavior: "immediate" });
     }
 
@@ -225,6 +246,18 @@ export async function PATCH(
       });
 
       const profile = context.scriptProfile;
+      if (isTideweOutdoorProfile(profile)) {
+        if (shotTexts.some((patch) => patch && Object.prototype.hasOwnProperty.call(patch, "voiceover"))) return NextResponse.json({ error: "Edit the complete narration and replan its shots.", code: "TIDEWE_COPY_DOCUMENT_REQUIRED" }, { status: 409 });
+        if (payload.expectedScriptHash !== scriptRevision(script) || payload.expectedCreativeConfigRevision !== project.creativeConfigRevision) return NextResponse.json({ error: "The script or configuration changed. Refresh before editing.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+        assertTideweScript({ ...script, shots }, profile.presenter ?? null);
+        return db.transaction((tx) => {
+          const current = tx.select().from(scripts).where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id))).get();
+          const currentProject = tx.select().from(projects).where(eq(projects.id, id)).get();
+          if (!current || !currentProject || scriptRevision(current) !== payload.expectedScriptHash || currentProject.creativeConfigRevision !== payload.expectedCreativeConfigRevision) return NextResponse.json({ error: "The script or configuration changed. Refresh before editing.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+          const updated = tx.update(scripts).set({ shots }).where(eq(scripts.id, scriptId)).returning().get()!;
+          return NextResponse.json({ success: true, script: scriptView(updated) });
+        }, { behavior: "immediate" });
+      }
       if (isPremiumProductCgProfile(profile)) {
         if (profile.narrationMode === "none" && shots.some((shot) => shot.voiceover.trim() || shot.narration?.trim())) {
           return NextResponse.json({
@@ -243,7 +276,7 @@ export async function PATCH(
       }
 
       const [updated] = await db.update(scripts).set({ shots }).where(eq(scripts.id, scriptId)).returning();
-      return NextResponse.json({ success: true, script: updated });
+      return NextResponse.json({ success: true, script: scriptView(updated) });
     }
 
     const selectedId = payload.selectedScriptId as string | undefined;
@@ -260,12 +293,14 @@ export async function PATCH(
       if (!target) return apiError(req, "脚本不存在", "Script not found", 404);
       const context = checkCreativeProfileContext(project, target);
       if (!context.ok) return NextResponse.json(contextConflict(context), { status: 409 });
+      if (isTideweOutdoorProfile(context.scriptProfile)) assertTideweScript(target, context.scriptProfile.presenter ?? null);
       tx.update(scripts).set({ selected: false }).where(eq(scripts.projectId, id)).run();
       const updated = tx.update(scripts).set({ selected: true }).where(eq(scripts.id, selectedId)).returning().get();
-      return NextResponse.json({ success: true, script: updated });
+      return NextResponse.json({ success: true, script: updated ? scriptView(updated) : updated });
     }, { behavior: "immediate" });
   } catch (error) {
     console.error("Failed to update script:", error);
+    if (error && typeof error === "object" && "code" in error && String(error.code).startsWith("TIDEWE_")) return NextResponse.json({ error: error instanceof Error ? error.message : "Script validation failed", code: error.code }, { status: "status" in error ? Number(error.status) || 400 : 400 });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : errText(req, "Update failed", "Update failed") },
       { status: 500 },

@@ -9,6 +9,10 @@ import { apiError, errText, pickLocale } from "@/lib/api-error";
 import { getDb } from "@/lib/db";
 import { assets, characters, generationReviews, projects, scripts } from "@/lib/db/schema";
 import { assetMatchesScript, filterAssetsForScript } from "@/lib/asset-context";
+import { AssetContextConflictError } from "@/lib/asset-persistence";
+import { checkCreativeProfileContext, isTideweNativeSpeech, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
+import { assertTideweScript } from "@/lib/tidewe/validation";
 import {
   buildShotQualityContract,
   qualityDisposition,
@@ -152,12 +156,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const previousShotId = shotIndex > 0 ? script.shots?.[shotIndex - 1]?.shotId : undefined;
   const previousAsset = filterAssetsForScript(selectedAssets, script).find((row) => row.shotId === previousShotId);
   const sourceKeyframe = await usableReference(asset.sourceKeyframeUrl ?? (asset.provider === "kling-cli" ? null : asset.thumbnailPath));
-  const productReference = await usableReference(project.productImages?.[0]);
-  const characterId = shot.characterId || project.characterId;
+  const frozenProfile = script.creativeProfileSnapshot?.profile;
+  const tidewe = script.styleType === "tidewe_outdoor" || isTideweOutdoorProfile(frozenProfile);
+  const nativeSpeech = isTideweOutdoorProfile(frozenProfile) ? isTideweNativeSpeech(frozenProfile) : tidewe;
+  const personVisible = shot.tidewe?.personVisible !== false || (nativeSpeech && Boolean(shot.voiceover?.trim()));
+  const productReference = !tidewe || shot.tidewe?.productVisible !== false
+    ? await usableReference(project.productImages?.[0]) : undefined;
+  const characterId = tidewe ? undefined : shot.characterId || project.characterId;
   const [character] = characterId
     ? await db.select().from(characters).where(eq(characters.id, characterId)).limit(1)
     : [];
-  const characterReference = await usableReference(character?.referenceImages?.[0]);
+  const characterReference = await usableReference(tidewe
+    ? personVisible ? tidewePresenterReference(shot.tidewe) : undefined
+    : character?.referenceImages?.[0]);
   let previousReference: string | undefined;
   if (previousAsset?.filePath) {
     const tail = VIDEO_EXT.test(previousAsset.filePath) ? `${previousAsset.filePath}${LAST_FRAME_SUFFIX}` : previousAsset.filePath;
@@ -167,8 +178,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const contract = buildShotQualityContract({
     shot,
     mediaType,
-    intent: project.creativeIntent,
-    bible: project.visualBible,
+    intent: tidewe ? undefined : project.creativeIntent,
+    bible: tidewe ? undefined : project.visualBible,
     hasSourceKeyframe: Boolean(sourceKeyframe),
     hasProductReference: Boolean(productReference),
     hasCharacterReference: Boolean(characterReference),
@@ -251,6 +262,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)).all();
         const script = resolveCurrentScript(scriptRows);
         if (!script || !assetMatchesScript(asset, script)) throw new Error("此候选不属于当前脚本修订，无法直接替换当前镜头");
+        const project = tx.select().from(projects).where(eq(projects.id, id)).get();
+        if (isTideweOutdoorProfile(project?.creativeProfile) || script.styleType === "tidewe_outdoor" || script.copyDocument != null) {
+          if (!project) throw new AssetContextConflictError();
+          const context = checkCreativeProfileContext(project, script);
+          if (!context.ok) throw new AssetContextConflictError();
+          try { assertTideweScript(script, isTideweOutdoorProfile(context.scriptProfile) ? context.scriptProfile.presenter ?? null : undefined); }
+          catch { throw new AssetContextConflictError("The current TIDEWE script is invalid. Regenerate it before selecting assets."); }
+        }
         const candidates = tx.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.shotId, asset.shotId))).all();
         for (const candidate of filterAssetsForScript(candidates, script)) tx.update(assets).set({ selected: false }).where(eq(assets.id, candidate.id)).run();
         tx.update(assets).set({ selected: true }).where(eq(assets.id, asset.id)).run();
@@ -259,6 +278,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     });
     return NextResponse.json(publicReview(updated));
   } catch (error) {
+    if (error instanceof AssetContextConflictError) return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
     return NextResponse.json({ error: error instanceof Error ? error.message : errText(req, "保存评审决定失败", "Failed to save review decision") }, { status: 500 });
   }
 }

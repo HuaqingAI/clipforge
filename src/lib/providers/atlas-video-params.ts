@@ -22,6 +22,7 @@
  */
 
 import type { VideoOptions } from './types'
+import { ProviderError } from './base'
 
 // ==================== Spec type ====================
 
@@ -357,6 +358,10 @@ export function buildAtlasVideoBody(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = { model: modelId, prompt }
   const { width, height, duration } = options
+  const minimumDuration = options.minimumDuration
+  if (minimumDuration !== undefined && (!Number.isFinite(minimumDuration) || minimumDuration <= 0 || spec.noDuration)) {
+    throw new ProviderError('当前模型无法保证脚本要求的最短口播时长，请更换模型或重新规划镜头。', 'MINIMUM_DURATION_UNSUPPORTED', 'atlas-cloud')
+  }
 
   if (options.mode === 'video-to-video' && spec.referenceShape) {
     const images = options.referenceImageUrls ?? []
@@ -388,7 +393,14 @@ export function buildAtlasVideoBody(
   }
 
   if (!spec.noDuration) {
-    if (duration) {
+    if (minimumDuration !== undefined) {
+      const wanted = Math.max((duration ?? Number(spec.requiredDefaults?.duration)) || 0, minimumDuration)
+      const covering = spec.durationEnum
+        ? pickEnumDuration(spec.durationEnum.filter((seconds) => seconds >= minimumDuration), wanted)
+        : Math.ceil(wanted)
+      if (covering === undefined) throw new ProviderError(`当前模型的时长档位无法覆盖 ${minimumDuration} 秒口播，请选择更长时长的模型或重新规划镜头。`, 'MINIMUM_DURATION_UNSUPPORTED', 'atlas-cloud')
+      body.duration = covering
+    } else if (duration) {
       body.duration = spec.durationEnum
         ? pickEnumDuration(spec.durationEnum, duration)
         : Math.round(duration)
@@ -414,7 +426,9 @@ export function buildAtlasVideoBody(
   if (spec.supportsSeed && options.seed !== undefined) body.seed = options.seed
   if (spec.supportsWatermark) body.watermark = false
 
-  return { ...body, ...options.extra }
+  const result = { ...body, ...options.extra }
+  if (minimumDuration !== undefined && (!Number.isFinite(Number(result.duration)) || Number(result.duration) < minimumDuration)) throw new ProviderError('生成参数不能缩短脚本要求的最短口播时长。', 'MINIMUM_DURATION_UNSUPPORTED', 'atlas-cloud')
+  return result
 }
 
 // ==================== Runtime spec derivation (dynamic discovery) ====================

@@ -62,7 +62,24 @@ const ALIASES: Record<string, string[]> = {
 };
 const RESERVED_ARGUMENTS = new Set(["model", "prompt", "image", "tailImage", "poll", "quiet", "base-url", "task-trace-id"]);
 
-export function normalizeVideoParameters(model: KlingVideoModelDescriptor, source: Record<string, unknown>): Record<string, string | number | boolean> {
+export function normalizeVideoParameters(model: KlingVideoModelDescriptor, source: Record<string, unknown>, minimumDuration?: number): Record<string, string | number | boolean> {
+  if (minimumDuration !== undefined) {
+    const duration = model.parameters.find((parameter) => ALIASES.duration.includes(parameter.name));
+    if (!Number.isFinite(minimumDuration) || minimumDuration <= 0 || !duration) throw new KlingError("TIDEWE_NATIVE_DURATION_UNSUPPORTED", "当前模型没有可核验的时长参数，不能保证完整英语口播。", 422);
+    const explicit = ALIASES.duration.map((name) => source[name]).filter((value) => value !== undefined && value !== null && value !== "");
+    if (new Set(explicit.map(String)).size > 1) throw new KlingError("KLING_INPUT_INVALID", "同一镜头不能设置相互冲突的时长参数。", 422);
+    const requested = Number(explicit[0] ?? duration.default ?? minimumDuration);
+    if (!Number.isFinite(requested) || requested <= 0) throw new KlingError("TIDEWE_NATIVE_DURATION_UNSUPPORTED", "口播镜头的生成时长无效。", 422);
+    const wanted = Math.max(requested, minimumDuration);
+    const declared = duration.allowedValues ?? (duration.type === "number" ? undefined : duration.default !== undefined ? [duration.default] : []);
+    const covering = declared
+      ? declared.filter((value) => Number.isFinite(Number(value)) && Number(value) >= wanted).sort((left, right) => Number(left) - Number(right))[0]
+      : Math.ceil(wanted);
+    if (covering === undefined) throw new KlingError("TIDEWE_NATIVE_DURATION_UNSUPPORTED", `当前模型的时长档位无法覆盖 ${minimumDuration} 秒英语口播，请更换模型或重新规划镜头。`, 422);
+    source = { ...source };
+    for (const name of ALIASES.duration) delete source[name];
+    source[duration.name] = duration.type === "number" ? Number(covering) : covering;
+  }
   const normalized: Record<string, string | number | boolean> = {};
   const validateValue = (parameter: KlingParameter, raw: unknown): string | number | boolean => {
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(parameter.name) || RESERVED_ARGUMENTS.has(parameter.name)) {

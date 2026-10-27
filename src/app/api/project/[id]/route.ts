@@ -11,6 +11,8 @@ import { apiError, errText } from "@/lib/api-error";
 import {
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
+  createTideweOutdoorProfile,
+  isTideweOutdoorProfile,
   resolveCreativeProfile,
   sanitizeCreativeProfileDrafts,
   validateCreativeProfileInput,
@@ -18,6 +20,7 @@ import {
   type ProjectCreativeProfile,
   type ProjectCreativeProfileDrafts,
 } from "@/lib/creative-profiles";
+import { normalizeProductFacts } from "@/lib/tidewe/facts";
 
 // Project ids are UUIDs; validate before using one in a filesystem path (guards the rm below against traversal)
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
@@ -92,6 +95,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
     "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
   }
@@ -106,6 +110,7 @@ function hasProfileSettings(value: unknown): boolean {
     "styleType", "videoMode", "targetDuration", "duration", "narrationMode", "soundMode",
     "textPolicy", "visualDirection", "brandEndCard", "composeSnapshot", "compose",
     "creativeSettings", "recipeSnapshot",
+    "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ].some((key) => hasOwn(value, key));
 }
 
@@ -121,7 +126,9 @@ function mergeCreativeProfileDrafts(
   };
   if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
   if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
+  if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
   if (profile.creationType === "premium_product_cg") drafts.premium_product_cg = profile;
+  else if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
   else drafts.short_video_sales = profile;
   return drafts;
 }
@@ -169,7 +176,17 @@ export async function PATCH(
     const db = getDb();
     const profileInput = requestedCreativeProfile(body);
     const hasDraftUpdate = hasOwn(body, "creativeProfileDrafts");
-    const hasCreativeConfigUpdate = profileInput !== undefined || hasDraftUpdate;
+    const hasFactsUpdate = hasOwn(body, "productFacts");
+    const productContextFields = ["productName", "productCategory", "productDescription", "productImages", "productId", "brandId"] as const;
+    const hasProductUpdate = productContextFields.some((field) => hasOwn(body, field));
+    const hasCharacterUpdate = hasOwn(body, "characterId");
+    const hasContextUpdate = hasProductUpdate || hasCharacterUpdate;
+    const [contextProject] = hasContextUpdate
+      ? await db.select().from(projects).where(eq(projects.id, id)).limit(1)
+      : [];
+    const hasTideweContextUpdate = Boolean(contextProject && isTideweOutdoorProfile(contextProject.creativeProfile));
+    const hasTideweProductUpdate = hasProductUpdate && hasTideweContextUpdate;
+    const hasCreativeConfigUpdate = profileInput !== undefined || hasDraftUpdate || hasFactsUpdate || hasTideweContextUpdate;
 
     // Only pick allowlisted fields; discard dangerous fields such as id/createdAt
     const updates: Record<string, unknown> = {};
@@ -177,6 +194,13 @@ export async function PATCH(
       if (hasOwn(body, field) && !(hasCreativeConfigUpdate && field === "videoMode")) {
         updates[field] = body[field];
       }
+    }
+    if (hasFactsUpdate) {
+      let facts: ReturnType<typeof normalizeProductFacts> | null;
+      try { facts = body.productFacts === null ? null : normalizeProductFacts(body.productFacts); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid product facts", code: "TIDEWE_FACTS_INVALID" }, { status: 400 }); }
+      if (facts === undefined) return NextResponse.json({ error: "Invalid productFacts.", code: "TIDEWE_FACTS_INVALID" }, { status: 400 });
+      updates.productFacts = facts;
     }
 
     // Validate that the status value is a legal enum member
@@ -198,6 +222,10 @@ export async function PATCH(
       }
       if (hasDraftUpdate && !isRecord(body.creativeProfileDrafts)) {
         return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
+      }
+      if (isRecord(body.creativeProfileDrafts) && body.creativeProfileDrafts.tidewe_outdoor !== undefined) {
+        const draft = validateCreativeProfileInput(body.creativeProfileDrafts.tidewe_outdoor);
+        if (!draft.profile || !isTideweOutdoorProfile(draft.profile)) return NextResponse.json({ error: draft.error ?? "Invalid TIDEWE creative profile draft." }, { status: 400 });
       }
 
       const [current] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
@@ -235,13 +263,25 @@ export async function PATCH(
           ? profileResult.profile
           : profileResult.profile.creationType === "premium_product_cg"
             ? preliminaryDrafts.premium_product_cg ?? profileResult.profile
+            : profileResult.profile.creationType === "tidewe_outdoor"
+              ? preliminaryDrafts.tidewe_outdoor ?? profileResult.profile
             : preliminaryDrafts.short_video_sales ?? profileResult.profile;
       } else if (hasDraftUpdate) {
         const incoming = sanitizeCreativeProfileDrafts(incomingDrafts);
         const activeDraft = currentProfile.creationType === "premium_product_cg"
           ? incoming?.premium_product_cg
+          : currentProfile.creationType === "tidewe_outdoor"
+            ? incoming?.tidewe_outdoor
           : incoming?.short_video_sales;
         if (activeDraft) nextProfile = activeDraft;
+      }
+
+      if (isTideweOutdoorProfile(nextProfile)) {
+        const presenterId = nextProfile.presenter?.id ?? null;
+        if (hasCharacterUpdate && (body.characterId ?? null) !== presenterId) {
+          return NextResponse.json({ error: "TIDEWE 主播须通过创作配置中的 presenter 完整保存，不能单独修改 characterId。", code: "TIDEWE_PRESENTER_PROFILE_REQUIRED" }, { status: 400 });
+        }
+        updates.characterId = presenterId;
       }
 
       const nextDrafts = mergeCreativeProfileDrafts(
@@ -259,6 +299,9 @@ export async function PATCH(
       const changed = current.creativeProfile === null
         || !sameJson(currentProfile, nextProfile)
         || !sameJson(currentDrafts, nextDrafts)
+        || (hasFactsUpdate && !sameJson(current.productFacts, updates.productFacts))
+        || (hasTideweProductUpdate && productContextFields.some((field) => hasOwn(body, field) && !sameJson(current[field], updates[field])))
+        || (isTideweOutdoorProfile(nextProfile) && current.characterId !== updates.characterId)
         || current.videoMode !== nextProfile.videoMode;
       const nextRevision = changed ? expectedRevision + 1 : expectedRevision;
 
@@ -312,10 +355,17 @@ export async function PATCH(
     const result = await db
       .update(projects)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(projects.id, id))
+      // A profile switch between the product-context read and this write must not
+      // let the legacy unrevisioned path mutate a now-TIDEWE project's product.
+      .where(and(eq(projects.id, id), ...(hasContextUpdate && contextProject
+        ? [eq(projects.creativeConfigRevision, contextProject.creativeConfigRevision)] : [])))
       .returning();
 
     if (result.length === 0) {
+      if (hasContextUpdate && contextProject) {
+        const [latest] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+        if (latest) return NextResponse.json({ error: "Creative configuration changed while saving the product. Refresh before saving.", code: "CREATIVE_CONFIG_CONFLICT", creativeConfigRevision: latest.creativeConfigRevision }, { status: 409 });
+      }
       return apiError(req, "项目不存在", "Project not found", 404);
     }
 

@@ -395,6 +395,10 @@ export interface ClipInput {
    * a keyframe-chained ending (the in-clip transition into the next shot) and break the seam.
    */
   sourceDuration?: number;
+  /** Controlled narration paths must not hide a short source behind a frozen last frame. */
+  strictSourceDuration?: boolean;
+  /** Keep recorded speech and visible lips at their original speed and complete length. */
+  preserveNativeSpeech?: boolean;
 }
 
 // resolution mapping
@@ -460,8 +464,9 @@ export function buildClipAudioFilters(input: {
   ttsInput?: string;
   nativeInput?: string;
   voiceGround: boolean;
+  preserveNativeSpeech?: boolean;
 }): string[] {
-  const { duration, outputLabel, ttsInput, nativeInput, voiceGround } = input;
+  const { duration, outputLabel, ttsInput, nativeInput, voiceGround, preserveNativeSpeech } = input;
   const filters: string[] = [];
   if (ttsInput !== undefined) {
     const label = nativeInput !== undefined ? `${outputLabel}_tts` : outputLabel;
@@ -471,7 +476,7 @@ export function buildClipAudioFilters(input: {
   if (nativeInput !== undefined) {
     const label = ttsInput !== undefined ? `${outputLabel}_native` : outputLabel;
     // Keep the original ambience, softening its edges without shortening the clip.
-    const edgeFade = duration > 0.1
+    const edgeFade = !preserveNativeSpeech && duration > 0.1
       ? `,afade=t=in:st=0:d=0.02,afade=t=out:st=${Math.max(0, duration - 0.02).toFixed(3)}:d=0.02`
       : "";
     filters.push(`[${nativeInput}:a]aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS${edgeFade}[${label}]`);
@@ -507,6 +512,16 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
 
   // process each clip
   config.clips.forEach((clip, i) => {
+    if (clip.preserveNativeSpeech && (clip.type !== "video" || !clip.hasAudio || clip.audioPath || clip.mixNativeAudio
+      || !Number.isFinite(clip.sourceDuration) || (clip.sourceDuration ?? 0) <= 0
+      || Math.abs(clip.duration - (clip.sourceDuration ?? 0)) > 0.01 || clip.transition === "ffmpeg_fade"
+      || config.clips[i + 1]?.transition === "ffmpeg_fade")) {
+      throw new Error(`片段 ${i + 1} 的原生口播必须保留完整视频、原声音轨与原始速度，不能重配音、裁短或交叉淡化。`);
+    }
+    if (clip.type === "video" && clip.strictSourceDuration && (!Number.isFinite(clip.sourceDuration)
+      || (clip.sourceDuration ?? 0) <= 0 || clip.duration > (clip.sourceDuration ?? 0) + 0.01)) {
+      throw new Error(`片段 ${i + 1} 的实际视频时长不足或无法核验，请补长/重生成对应镜头。`);
+    }
     if (clip.type === "image") {
       // product image + motion effect. falls back to default motion when the motion key is invalid; never skips the clip
       // (otherwise the inputs/filter count would mismatch the [v${i}] references in the concat below, crashing ffmpeg)
@@ -574,7 +589,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
       const nativeInput = clip.hasAudio && clip.type === "video" && (!clip.audioPath || clip.mixNativeAudio)
         ? String(i)
         : undefined;
-      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, voiceGround }));
+      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, voiceGround, preserveNativeSpeech: clip.preserveNativeSpeech }));
     });
   }
 

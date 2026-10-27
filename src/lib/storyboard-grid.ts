@@ -15,6 +15,9 @@
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { REAL_FACE_CONSTRAINT, UGC_FIRST_FRAME_RULES } from "@/lib/presenters";
 import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
+import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 export const GRID_ROWS = 3;
 export const GRID_COLS = 3;
@@ -87,6 +90,25 @@ export function buildStoryboardGridPrompt(
     || isPremiumCgPromptPolicy(refs?.creativeProfile)
     || isPremiumCgPromptPolicy(refs?.outputPolicy);
   if (premiumCg) return buildPremiumStoryboardGridPrompt(cells, refs);
+  if (isTideweOutdoorProfile(profileValue) || isTideweOutdoorProfile(refs?.creativeProfile)) {
+    const tideweProfile = isTideweOutdoorProfile(profileValue) ? profileValue : refs!.creativeProfile as import("@/lib/creative-profiles").TideweOutdoorProfile;
+    if (shots.length > GRID_MAX_SHOTS) throw new Error("TIDEWE 九宫格最多容纳 9 镜，请使用逐镜生成或明确重新规划，不能截断脚本。");
+    const aspect = promptAspectRatio(refs?.aspectRatio);
+    const productCount = typeof refs?.productImageCount === "number" && Number.isFinite(refs.productImageCount)
+      ? Math.max(0, Math.floor(refs.productImageCount)) : refs?.productImage ? 1 : 0;
+    const offset = refs?.characterSheet ? 1 : 0;
+    return [
+      `TIDEWE 户外分镜：${GRID_ROWS}x${GRID_COLS} 严格等分九宫格，整图与每格画幅均为 ${aspect.ratio}。两条横/竖分隔线位于1/3和2/3，极细纯白直线，无外边框。按从左到右、从上到下顺序，每格独立可裁切。编号只作说明，不绘制文字。`,
+      "同 sceneId 的人物、衣物、产品、环境、天气与光线连续；按脚本允许合理换场景。人物参考只约束有人镜头，商品参考只约束产品出镜镜头；无人空镜不添加人物。",
+      tideweProfile.presenter ? `整支视频出镜人物固定为${tidewePresenterAnchor(tideweProfile.presenter)}，所有有人镜头沿用同一主播，不因换景重新选人。` : "",
+      refs?.characterSheet ? "第 1 张参考图为所选主播身份参考（可能是定妆照或上传的人像）：锁定脸型、发型、体型；不要将其背景、分格、边框带入各格。该图不是商品图，也不是可直接复用的分镜。" : "",
+      ...Array.from({ length: productCount }, (_, i) => `第 ${i + 1 + offset} 张参考图为当前同一商品的第 ${i + 1}/${productCount} 个视角，只锁定商品外观和结构，不能替换主播身份。`),
+      ...Array.from({ length: GRID_MAX_SHOTS }, (_, index) => cells[index]
+        ? `第 ${index + 1} 格：${compileTideweVisualPrompt(cells[index], "image", tideweProfile.speechMode, tideweProfile.presenter).prompt}`
+        : `第 ${index + 1} 格为占位：重复最后一个有效格，不增加叙事，不跨格合并。`),
+      "严格九格。产品身份参考不得把背景带入环境空镜；所有新增字幕、价格、营销字与水印均禁止。",
+    ].join("\n");
+  }
   const aspect = promptAspectRatio(refs?.aspectRatio);
 
   const cast = (characters ?? [])

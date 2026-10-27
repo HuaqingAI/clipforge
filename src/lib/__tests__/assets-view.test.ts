@@ -24,6 +24,7 @@ function shot(partial: Partial<Shot> & { shotId: number }): Shot {
     voiceover: partial.voiceover ?? "",
     prompt: partial.prompt ?? "",
     stockKeywords: partial.stockKeywords,
+    tidewe: partial.tidewe,
   };
 }
 
@@ -167,6 +168,29 @@ describe("buildAssetRows", () => {
     const rows = buildAssetRows(shots, [], ["/uploads/prod.jpg"]);
     expect(rows[0].status).toBe("done");
     expect(rows[0].thumbnailUrl).toBe("/uploads/prod.jpg");
+  });
+
+  it.each(["pending", "generating", "failed"] as const)("TIDEWE environment-only shots keep their %s status without a product-image fallback", (status) => {
+    const tidewe: NonNullable<Shot["tidewe"]> = { copySpan: { start: 0, end: 24 }, translation: "林间天刚亮。", shotGoal: "Establish the early morning woods", productVisible: false, factRefs: [], sceneId: "woods" };
+    const [row] = buildAssetRows([shot({ shotId: 1, visualSource: "product_image", tidewe })], [{ shotId: 1, status }], ["/uploads/prod.jpg"]);
+    expect(row.status).toBe(status);
+    expect(row.thumbnailUrl).toBeUndefined();
+    expect(row.tidewe).toEqual(tidewe);
+  });
+
+  it("keeps a TIDEWE environment-only shot pending when it has no saved asset", () => {
+    const tidewe: NonNullable<Shot["tidewe"]> = { copySpan: { start: 0, end: 24 }, translation: "林间天刚亮。", shotGoal: "Establish the early morning woods", productVisible: false, factRefs: [], sceneId: "woods" };
+    const [row] = buildAssetRows([shot({ shotId: 1, visualSource: "product_image", tidewe })], [], ["/uploads/prod.jpg"]);
+    expect(row).toMatchObject({ status: "pending", tidewe });
+    expect(row.thumbnailUrl).toBeUndefined();
+  });
+
+  it("retains the frozen TIDEWE plan for saved assets and keeps product-visible image fallbacks", () => {
+    const tidewe: NonNullable<Shot["tidewe"]> = { copySpan: { start: 0, end: 24 }, translation: "看看这个款式。", shotGoal: "Show the referenced jacket", productVisible: true, factRefs: ["color"], sceneId: "woods" };
+    const planned = shot({ shotId: 1, visualSource: "product_image", tidewe });
+    expect(buildAssetRows([planned], [], ["/uploads/prod.jpg"])[0]).toMatchObject({ status: "done", thumbnailUrl: "/uploads/prod.jpg", tidewe });
+    const environment = { ...planned, tidewe: { ...tidewe, productVisible: false } };
+    expect(buildAssetRows([environment], [{ shotId: 1, filePath: "/api/files/p/woods.png", status: "done" }], ["/uploads/prod.jpg"])[0]).toMatchObject({ status: "done", thumbnailUrl: "/api/files/p/woods.png", tidewe: environment.tidewe });
   });
 
   it("普通 AI 分镜无素材 → 待生成", () => {

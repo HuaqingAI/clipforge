@@ -26,6 +26,7 @@
  */
 import { SPOKEN_VOICE_RULES } from "@/lib/presenters";
 import { extractJSON } from "@/lib/script-engine/generator";
+import type { TideweCopyDocument } from "@/lib/tidewe/types";
 
 export const JUDGE_IDS = ["pace", "voice", "idea", "structure", "visual"] as const;
 export type JudgeId = (typeof JUDGE_IDS)[number];
@@ -161,6 +162,24 @@ export function buildJudgePrompt(
   ]
     .filter((l) => l !== undefined && l !== "")
     .join("\n");
+}
+
+/** Review the canonical brand copy without offering executable per-shot narration rewrites. */
+export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeShotInput[]): string {
+  return [
+    "Review this US-English TIDEWE outdoor product narration. Return feedback only; do not rewrite or translate it.",
+    "Judge pace, natural American spoken voice, specific outdoor situations, one coherent angle, and visible feasible actions.",
+    "A first-person preference is allowed. Invented ownership, tests, testimonials, scarcity, offers, and unsupported performance are defects.",
+    "Current product facts below are the only source for claims. Never transfer specifications from a reference product.",
+    "Do not demand dual CTAs, a mid-video suspense hook, a product in every frame, a visible presenter, or one unchanging room.",
+    "Off-screen narration may accompany environment footage. Chinese shot descriptions are visual directions, not narration.",
+    "Quote the exact offending English copy or Chinese visual phrase in every issue. Write explanations in Chinese for review.",
+    `CURRENT_PRODUCT_FACTS: ${JSON.stringify(copy.factsSnapshot)}`,
+    `FINAL_COPY: ${JSON.stringify(copy.text)}`,
+    `SHOTS: ${JSON.stringify(shots)}`,
+    'Return JSON only: {"verdicts":[{"judge":"pace","issues":[{"shotId":1,"issue":"quoted evidence and reason","tier":"default"}]},{"judge":"voice","issues":[]},{"judge":"idea","issues":[]},{"judge":"structure","issues":[]},{"judge":"visual","issues":[]}],"rewrites":[],"descriptionRewrites":[],"summary":"中文总评"}.',
+    "Use invariant only for factual/structural defects, default for clear writing problems, taste for preferences. Never output rewritten narration.",
+  ].join("\n");
 }
 
 /** Clamp a tier value; anything unrecognized becomes "taste" (show, never auto-change). */

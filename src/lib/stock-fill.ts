@@ -20,7 +20,7 @@ import { getDb } from "@/lib/db";
 import { assets as assetsTable, projects, scripts } from "@/lib/db/schema";
 import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { and, eq } from "drizzle-orm";
-import { isPremiumProductCgProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
+import { isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech, resolveCreativeProfile } from "@/lib/creative-profiles";
 
 export const PREMIUM_CG_STOCK_FILL_FORBIDDEN = "PREMIUM_CG_STOCK_FILL_FORBIDDEN";
 
@@ -43,8 +43,21 @@ export function isPremiumCgStockFillBlocked(projectId: string): boolean {
   return Boolean(project && isPremiumProductCgProfile(resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode })));
 }
 
-function assertStockFillAllowed(projectId: string): void {
+function assertStockFillAllowed(projectId: string, shotId?: number): void {
   if (isPremiumCgStockFillBlocked(projectId)) throw new PremiumCgStockFillForbiddenError();
+  const db = getDb();
+  const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+  const profile = project && resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode });
+  if (isTideweOutdoorProfile(profile)) {
+    const script = resolveCurrentScript(db.select().from(scripts).where(eq(scripts.projectId, projectId)).all());
+    const shot = script?.shots?.find((item) => item.shotId === shotId);
+    if (isTideweNativeSpeech(profile) && shot?.voiceover?.trim()) {
+      throw new Error("TIDEWE 真人口播镜头不能自动使用库存素材，请生成或上传准确说出本镜英文台词的原声视频；库存素材仅用于无口播的环境镜。");
+    }
+    if (!shot || shot.tidewe?.productVisible !== false) {
+      throw new Error("TIDEWE 产品镜不能使用相似库存装备冒充商品，请生成产品素材或上传真实产品图；库存素材仅用于环境镜。");
+    }
+  }
 }
 
 export interface FillShotInput {
@@ -132,7 +145,7 @@ export async function persistCandidate(
 ): Promise<Record<string, unknown>> {
   // This exported persistence primitive is also used by the semantic route path. Keep the
   // policy here so a future caller cannot bypass the route-level stock-fill rejection.
-  assertStockFillAllowed(projectId);
+  assertStockFillAllowed(projectId, shotId);
   const stockDir = join(getUploadsDir(), projectId, "stock");
   await mkdir(stockDir, { recursive: true });
   const base = `${c.source}_${c.id}_${Date.now()}_${shotId}`;
@@ -146,6 +159,9 @@ export async function persistCandidate(
 
   const db = getDb();
   const [row] = db.transaction((tx) => {
+    // A profile or selected script may have changed while the candidate downloaded.
+    // Recheck before deselecting an existing take or binding stock to the current script.
+    assertStockFillAllowed(projectId, shotId);
     const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, projectId)).all();
     const script = resolveCurrentScript(scriptRows);
     const shot = script?.shots?.find((item) => item.shotId === shotId);
@@ -180,7 +196,7 @@ export async function fillShotStock(input: FillShotInput): Promise<Record<string
   const { projectId, shotId, query, source, searchOpts, usedIds, sameSourceAuthors, slotSec, subjectEn } = input;
   // Reject before searching/downloading so direct library callers cannot source arbitrary B-roll
   // for a Premium CG project.
-  assertStockFillAllowed(projectId);
+  assertStockFillAllowed(projectId, shotId);
 
   const search = await searchShotCandidates(query, source, searchOpts, { subjectEn });
   // A generic "abstract background / lifestyle" hit technically fills the slot but makes a

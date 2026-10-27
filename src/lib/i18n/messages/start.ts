@@ -10,9 +10,8 @@ export const start: NamespaceMessages = {
     navSettings: "设置",
     // 主视觉
     eyebrow: "AI 带货短视频工作台",
-    h1Lead: "丢张商品图，",
-    h1Highlight: "直接出片",
-    sub: "上传商品图，或说一句话主题。AI 自动写脚本、配画面、配音，合成竖屏成片——先开跑，要用到 AI 时再配 Key。",
+    h1Lead: "AI ",
+    h1Highlight: "短视频工作台",
     // 模式切换
     tabUpload: "上传商品图",
     tabLink: "商品链接",
@@ -168,9 +167,8 @@ export const start: NamespaceMessages = {
     navSettings: "Settings",
     // 主视觉
     eyebrow: "AI Short-Video Studio",
-    h1Lead: "Drop a product photo, ",
-    h1Highlight: "ship the video",
-    sub: "Upload a product photo or just type a topic. AI writes the script, fills the visuals, adds voiceover, and renders a vertical short — start now, add a key only when AI kicks in.",
+    h1Lead: "AI ",
+    h1Highlight: "Short-Video Studio",
     // 模式切换
     tabUpload: "Upload product photo",
     tabLink: "Product link",

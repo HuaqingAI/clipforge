@@ -134,6 +134,8 @@ export interface VideoOptions {
   height?: number
   /** Video duration (seconds) */
   duration?: number
+  /** Internal server minimum; model duration mapping must never shorten below it. */
+  minimumDuration?: number
   /** Frame rate */
   fps?: number
   /** First-frame image URL (image-to-video mode) */

@@ -1,7 +1,8 @@
 /** Only non-secret generation identifiers belong in persisted script history. */
 export interface ScriptGenerationMetadata {
   version: 1;
-  operation: "commerce-script" | "premium-product-cg-script" | "topic-script" | "translation";
+  operation: "commerce-script" | "premium-product-cg-script" | "tidewe-outdoor-script" | "topic-script" | "translation";
+  requestId?: string;
   provider: string;
   model: string;
   generatedAt: string;

@@ -16,7 +16,9 @@ import { stripPauseMarks } from "@/lib/voice-markup";
 import { getVideoParamSpec } from "@/lib/providers/atlas-video-params";
 import { arkSeedanceVersion } from "@/lib/ark-video-models";
 import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
-import { sanitizeCreativeProfile } from "@/lib/creative-profiles";
+import { sanitizeCreativeProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 /** Seedance 2.5 duration bounds (schema: integer 4-30 seconds) */
 export const FILM_MIN_SECONDS = 4;
@@ -287,6 +289,26 @@ export function buildStoryboardFilmPrompt(
   const profileValue = opts?.creativeProfile ?? opts?.outputPolicy ?? refs?.creativeProfile ?? refs?.outputPolicy;
   if (isPremiumCgPromptPolicy(profileValue)) {
     return buildPremiumStoryboardFilmPrompt(shots, refs, profileValue);
+  }
+  if (isTideweOutdoorProfile(profileValue)) {
+    const total = filmTotalSeconds(shots);
+    if (total > FILM_MAX_SECONDS || shots.length > 9) throw new Error("当前整片模式无法容纳此 TIDEWE 脚本，请使用逐镜生成或明确重新规划，不能截断旁白或镜头。");
+    let cursor = 0;
+    const offset = refs?.characterSheet ? 1 : 0;
+    return [
+      `竖屏 9:16 TIDEWE 户外使用素材，总时长 ${total} 秒，${shots.length} 镜，按以下时间点切镜。`,
+      profileValue.speechMode === "on_camera"
+        ? "生成原生有声真人英语口播：每段文案由画面中嘴部清晰可见的同一成年人物准确说出，嘴型配合英文发音和停顿，不增加台词、音乐或字幕。完整保留每句句尾与自然停顿。"
+        : "仅生成静音视觉素材；不生成对白、口播、口型、音乐、环境声或字幕。完整英文画外旁白和字幕由后期添加。",
+      "同 sceneId 保持人物、衣物、装备、天气和光线一致；不同场景可以自然换景，不强迫在同一房间。",
+      profileValue.presenter ? `固定出镜人物为${tidewePresenterAnchor(profileValue.presenter)}，所有有人镜头都沿用此主播；无人物镜头不强加人物。` : "",
+      refs?.characterSheet ? "第1张参考图仅为所选主播身份参考，锁定有人镜头的面容与外貌，不带入其背景或排版；后续图片为按顺序排列的分镜关键帧。" : "",
+      ...shots.map((shot, index) => {
+        const start = cursor;
+        cursor += shot.duration;
+        return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${index + 1}，构图参考第${index + 1 + offset}张图片：${compileTideweVisualPrompt(shot, "video", profileValue.speechMode, profileValue.presenter).prompt}`;
+      }),
+    ].join("\n");
   }
   const total = filmRequestSeconds(shots);
   const cast = (characters ?? []).filter((c) => (c.name ?? "").trim());

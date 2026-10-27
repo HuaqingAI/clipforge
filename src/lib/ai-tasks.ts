@@ -12,7 +12,7 @@
 import { getDb } from "@/lib/db";
 import { aiTasks } from "@/lib/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
-import type { GenerationControlSummary } from "@/lib/video-repair-plan";
+import { sanitizeGenerationControlSummary, type GenerationControlSummary } from "@/lib/video-repair-plan";
 
 export type AiTaskStatus = "submitted" | "processing" | "completed" | "failed" | "unknown";
 
@@ -46,7 +46,7 @@ export async function recordAiTask(input: RecordAiTaskInput): Promise<string | n
         mode: input.mode ?? null,
         prompt: input.prompt ?? null,
         taskId: input.taskId,
-        controlPlan: input.controlPlan ?? null,
+        controlPlan: sanitizeGenerationControlSummary(input.controlPlan),
         status: "submitted",
       })
       .returning({ id: aiTasks.id });

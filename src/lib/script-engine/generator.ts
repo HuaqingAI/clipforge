@@ -27,6 +27,9 @@ import {
   type PremiumProductCgProfile,
 } from "@/lib/creative-profiles";
 import { lintCreativeProfileShot, type CreativePolicyLintIssue } from "@/lib/creative-policy-lint";
+import type { TideweCopyDocument } from "@/lib/tidewe/types";
+import { generateTideweScripts, type TideweCompletion } from "@/lib/tidewe/generator";
+import { tideweProfileForInput } from "@/lib/tidewe/prompts";
 
 // ==================== Type definitions ====================
 
@@ -50,6 +53,7 @@ export interface ScriptInput extends ScriptGenerationInput {
 
 /** Generated script result */
 export interface GeneratedScript {
+  copyDocument?: TideweCopyDocument;
   /** Script title */
   title: string;
   /** Script style */
@@ -409,6 +413,13 @@ export async function completeWithJsonRetry<T>(
  */
 export async function generateScript(input: ScriptInput): Promise<GeneratedScript[]> {
   const client = createClient(input.llmConfig);
+  if (tideweProfileForInput(input)) {
+    const complete: TideweCompletion = (system, prompt, parse) => completeWithJsonRetry(client, {
+      model: input.llmConfig.model, messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      temperature: 0.65, max_tokens: 16000, ...reasoningParams(input.llmConfig.baseUrl), ...jsonModeParams(input.llmConfig.baseUrl),
+    }, input.llmConfig, parse);
+    return generateTideweScripts({ ...input, count: batchCountFor(input.llmConfig.baseUrl, input.count ?? 3) }, complete);
+  }
   const userPrompt = buildBatchPrompt(input, batchCountFor(input.llmConfig.baseUrl));
   const premiumProfile = premiumProductCgProfileForInput(input);
   const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
@@ -475,6 +486,7 @@ export async function generateTopicScript(input: TopicScriptGenInput): Promise<G
  * @returns A single generated script
  */
 export async function generateSingleScript(input: ScriptInput): Promise<GeneratedScript> {
+  if (tideweProfileForInput(input)) return (await generateScript({ ...input, count: 1 }))[0];
   const client = createClient(input.llmConfig);
   const userPrompt = buildUserPrompt(input);
   const premiumProfile = premiumProductCgProfileForInput(input);
@@ -520,6 +532,18 @@ export function generateScriptStream(
   const abortController = new AbortController();
 
   const run = async () => {
+    if (tideweProfileForInput(input)) {
+      try {
+        const scripts = await generateScript(input);
+        if (!abortController.signal.aborted) {
+          callbacks.onToken?.(JSON.stringify({ scripts }));
+          callbacks.onComplete?.(scripts);
+        }
+      } catch (error) {
+        if (!abortController.signal.aborted) callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+      return;
+    }
     const client = createClient(input.llmConfig);
     const userPrompt = buildUserPrompt(input);
     const premiumProfile = premiumProductCgProfileForInput(input);
@@ -575,6 +599,13 @@ export function generateScriptStream(
  */
 export function createScriptStream(input: ScriptInput): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
+
+  if (tideweProfileForInput(input)) return new ReadableStream({
+    async start(controller) {
+      try { controller.enqueue(encoder.encode(JSON.stringify({ scripts: await generateScript(input) }))); controller.close(); }
+      catch (error) { controller.error(error); }
+    },
+  });
 
   return new ReadableStream({
     async start(controller) {

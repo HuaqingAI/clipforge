@@ -169,6 +169,13 @@
       "when": 1792554000000,
       "tag": "0023_add_creative_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1793006234040,
+      "tag": "0024_add_tidewe_style",
+      "breakpoints": true
     }
   ]
 }

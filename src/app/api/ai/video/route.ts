@@ -6,6 +6,7 @@ import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
 import { apiError, errText } from "@/lib/api-error";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
+import { sanitizeVideoControlSummary, type VideoSourceContext } from "@/lib/video-control-plan";
 import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
 import { createKlingJob } from "@/lib/kling/jobs";
 import { klingJobView } from "@/lib/kling/repository";
@@ -14,9 +15,12 @@ import { validateVideoPrompt } from "@/lib/video-prompt";
 import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
-import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
-import { filterAssetsForScript } from "@/lib/asset-context";
+import { filterAssetsForScript, shotKey, scriptRevision } from "@/lib/asset-context";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
@@ -124,8 +128,12 @@ export async function POST(req: NextRequest) {
   let referenceVideoUrls = body.referenceVideoUrls;
   let referenceImageUrls = body.referenceImageUrls;
   let referenceAudioUrls = body.referenceAudioUrls;
-  const controlPlan = sanitizeGenerationControlSummary(body.controlPlan);
+  let controlPlan = sanitizeGenerationControlSummary(body.controlPlan);
+  let sourceContext: VideoSourceContext | undefined;
   let premiumCg = false;
+  let tideweProductVisible = false;
+  let tideweNative = false;
+  let tidewePresenterImage: string | undefined;
   let reviewedPrompt: ReturnType<typeof assertReviewedVideoPrompt> | undefined;
 
   if (!providerName || !model) {
@@ -182,6 +190,52 @@ export async function POST(req: NextRequest) {
         }, { status: 409 });
       }
       const profile = context.projectProfile;
+      if (isTideweOutdoorProfile(profile)) {
+        tideweNative = isTideweNativeSpeech(profile);
+        if (!scriptId || shotId === undefined || !reviewedPrompt) {
+          return NextResponse.json({ error: "TIDEWE 视频生成须指定当前脚本、镜头并预览确认提示词。", code: "TIDEWE_PROJECT_CONTEXT_REQUIRED" }, { status: 400 });
+        }
+        try { assertTideweScript(selected, profile.presenter ?? null); }
+        catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
+        const shot = selected.shots?.find((item) => item.shotId === shotId);
+        if (!shot) return apiError(req, "镜头不存在", "Shot not found", 404);
+        tideweProductVisible = shot.tidewe?.productVisible === true;
+        tidewePresenterImage = shot.tidewe?.personVisible !== false || (tideweNative && shot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
+        sourceContext = { version: 1, sourceScriptId: selected.id, sourceShotKey: shotKey(selected.id, shot), sourceRevision: scriptRevision(selected) };
+        // Browser metadata cannot choose the provenance for a recovered paid result.
+        controlPlan = sanitizeVideoControlSummary({ ...reviewedPrompt.controlPlan, sourceContext });
+        const currentAssets = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, projectId), eq(assets.selected, true), eq(assets.status, "done"))).all(), selected);
+        const knownImages = new Set([
+          ...(tidewePresenterImage ? [tidewePresenterImage] : []),
+          ...(shot.tidewe?.productVisible ? project.productImages ?? [] : []),
+          ...currentAssets.filter((asset) => !(shot.tidewe?.productVisible && asset.type === "stock_footage"))
+            .flatMap((asset) => [asset.filePath, asset.sourceKeyframeUrl, asset.thumbnailPath]).filter((value): value is string => Boolean(value && /\.(?:png|jpe?g|webp|gif|avif|bmp)(?:$|\?)/i.test(value))),
+        ]);
+        const requestedImages = [imageUrl, lastImageUrl, ...(Array.isArray(referenceImageUrls) ? referenceImageUrls : [])].filter((value): value is string => typeof value === "string" && Boolean(value));
+        if (requestedImages.some((value) => !knownImages.has(value))) return NextResponse.json({ error: "TIDEWE 只能使用当前脚本已保存的关键帧及商品参考。", code: "TIDEWE_PRODUCT_REFERENCE_INVALID" }, { status: 400 });
+        if (shot.tidewe?.productVisible && !project.productImages?.length) return NextResponse.json({ error: "TIDEWE 产品镜需要当前商品参考图。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
+        if (tideweProductVisible && (!requestedImages.some((reference) => reference !== tidewePresenterImage) || mode === "text-to-video")) return NextResponse.json({ error: "TIDEWE 产品镜须使用当前脚本的关键帧或商品参考图生成视频。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
+        if (tidewePresenterImage && reviewedPrompt.controlPlan.referenceInputs.some((reference) => reference.role === "character" && reference.url === tidewePresenterImage)) {
+          const references = reviewedPrompt.controlPlan.referenceInputs.filter((reference) => reference.mediaType === "image").map((reference) => reference.url);
+          referenceImageUrls = [...new Set([tidewePresenterImage, ...references, ...requestedImages])];
+          mode = "video-to-video";
+          imageUrl = undefined;
+          lastImageUrl = undefined;
+        }
+        prompt = reviewedPrompt.prompt;
+        options.negativePrompt = compileTideweVisualPrompt(shot, "video", profile.speechMode, profile.presenter).negativePrompt;
+        stripCgAudioControls(options);
+        options.audioEnabled = tideweNative;
+        if (tideweNative) {
+          // The persisted plan owns the speaking budget. Browser rounding or a
+          // forged shorter duration must not truncate the last English words.
+          options.minimumDuration = shot.duration;
+          options.duration = Math.max(Math.ceil(shot.duration), options.duration ?? 0);
+        }
+        delete options.extra;
+        referenceAudioUrls = undefined;
+        referenceVideoUrls = undefined;
+      }
       if (isPremiumProductCgProfile(profile)) {
         premiumCg = true;
         // Providers apply `extra` after their typed request body. Premium CG owns every
@@ -267,8 +321,14 @@ export async function POST(req: NextRequest) {
       delete options.voiceover;
     }
     const provider = createProvider({ name: providerName, apiKey, baseUrl });
+    if (tideweNative) {
+      const models = await provider.listModels("video");
+      const nativeModel = models.find((candidate) => candidate.id === model && candidate.mediaType === "video");
+      if (nativeModel?.supportsAudio !== true) return NextResponse.json({ error: "所选模型没有已确认的原生音频能力，请更换支持英语真人口播的模型。", code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED" }, { status: 400 });
+    }
 
-    const firstFrameUrl = await toRemoteUsableImage(imageUrl);
+    const firstFrameUrl = await toRemoteUsableImage(imageUrl, { requireReadableLocal: Boolean(tidewePresenterImage || tideweProductVisible) });
+    if ((tidewePresenterImage || tideweProductVisible) && imageUrl && !firstFrameUrl) return NextResponse.json({ error: "TIDEWE 当前关键帧不可用，请恢复或重新生成当前分镜图片。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
     if (premiumCg && !firstFrameUrl) {
       return NextResponse.json({
         error: "Premium product CG product or approved keyframe reference is unavailable.",
@@ -277,7 +337,8 @@ export async function POST(req: NextRequest) {
     }
     // Keyframe chaining: pin the clip's last frame to the next
     // shot's keyframe so the transition is generated inside the clip (seamless on hard concat)
-    const lastFrameUrl = lastImageUrl ? await toRemoteUsableImage(lastImageUrl) : undefined;
+    const lastFrameUrl = lastImageUrl ? await toRemoteUsableImage(lastImageUrl, { requireReadableLocal: Boolean(tidewePresenterImage || tideweProductVisible) }) : undefined;
+    if ((tidewePresenterImage || tideweProductVisible) && lastImageUrl && !lastFrameUrl) return NextResponse.json({ error: "TIDEWE 当前尾帧不可用，请恢复或重新生成当前分镜图片。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
 
     // Reference-to-video inputs (viral replication): reference IMAGES may travel as Base64
     // like first frames, but reference VIDEOS must be real URLs — local /api/files paths
@@ -302,7 +363,10 @@ export async function POST(req: NextRequest) {
     }
     if (Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0) {
       const imageRefs = (referenceImageUrls as unknown[]).filter((ref): ref is string => typeof ref === "string" && Boolean(ref)).slice(0, 9);
-      refImages = (await Promise.all(imageRefs.map(toRemoteUsableImage))).filter(
+      const converted = await Promise.all(imageRefs.map(reference => toRemoteUsableImage(reference, { requireReadableLocal: Boolean(tidewePresenterImage || tideweProductVisible) })));
+      if ((tidewePresenterImage || tideweProductVisible) && converted.some((reference) => !reference)) return NextResponse.json({ error: "TIDEWE 已选主播或商品参考不可用，请恢复脚本中保存的参考图后重试。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
+      if (tidewePresenterImage && !imageRefs.includes(tidewePresenterImage)) return NextResponse.json({ error: "TIDEWE 视频参考缺少脚本中已选主播，请重新预览后重试。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
+      refImages = converted.filter(
         (u): u is string => !!u
       );
     }
@@ -322,6 +386,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (tideweProductVisible && !firstFrameUrl && !refImages?.length) {
+      return NextResponse.json({ error: "TIDEWE 产品镜参考图不可用，请重新保存关键帧或商品图片。", code: "TIDEWE_PRODUCT_REFERENCE_UNAVAILABLE" }, { status: 400 });
+    }
+
     const videoOptions: VideoOptions = {
       ...options,
       modelId: model,
@@ -337,7 +405,7 @@ export async function POST(req: NextRequest) {
     // legacy single-phase path for providers without two-phase task support
     if (!provider.submitVideoTask || !provider.waitForTask) {
       const result = await provider.generateVideo(videoOptions);
-      return NextResponse.json(result);
+      return NextResponse.json({ ...result, ...(sourceContext && { sourceContext }) });
     }
 
     // Phase 1: submit. Mode/model capability is validated inside the provider BEFORE any
@@ -367,7 +435,7 @@ export async function POST(req: NextRequest) {
       if (!videoUrls || videoUrls.length === 0) {
         await updateAiTask(rowId, { status: "unknown", error: "任务完成但未返回视频地址" });
         return NextResponse.json(
-          { error: errText(req, "任务完成但未返回视频地址", "Task completed but returned no video URL"), taskId, modelId, recoverable: true },
+          { error: errText(req, "任务完成但未返回视频地址", "Task completed but returned no video URL"), taskId, modelId, recoverable: true, ...(sourceContext && { sourceContext }) },
           { status: 502 }
         );
       }
@@ -379,6 +447,7 @@ export async function POST(req: NextRequest) {
         duration: videoOptions.duration,
         processingTime: Date.now() - startTime,
         hasAudio: videoOptions.audioEnabled ?? false,
+        ...(sourceContext && { sourceContext }),
       });
     } catch (error) {
       // definitive provider-side failure vs. lost contact (task may still be running & billed)
@@ -397,6 +466,7 @@ export async function POST(req: NextRequest) {
           taskId,
           modelId,
           recoverable: !failed,
+          ...(sourceContext && { sourceContext }),
         },
         { status: failed ? 500 : 504 }
       );

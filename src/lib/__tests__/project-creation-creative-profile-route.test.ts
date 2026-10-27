@@ -4,10 +4,12 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
+import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as schema from "@/lib/db/schema";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -119,5 +121,44 @@ describe("project creation requires an explicit creative profile", () => {
       product: { title: "Reference Chair" },
     });
     expect(db.select().from(schema.projects).all()).toHaveLength(0);
+  });
+
+  it("revisions TIDEWE product images before returning a completed link import", async () => {
+    state.safeFetch.mockResolvedValueOnce(new Response('<title>Hunting chair</title><meta property="og:image" content="https://example.test/chair.png">', { headers: { "Content-Type": "text/html" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/png" } }));
+    const response = await ingestProduct(request("http://localhost/api/ingest/product", { url: "https://example.test/chair", creativeProfile: { creationType: "tidewe_outdoor" } }));
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.creativeConfigRevision).toBe(2);
+    const project = db.select().from(schema.projects).get()!;
+    expect(project.productImages).toHaveLength(1);
+    expect(project.creativeConfigRevision).toBe(2);
+  });
+
+  it("preserves the selected TIDEWE presenter in a flat link-import creation request", async () => {
+    state.safeFetch.mockResolvedValueOnce(productHtmlResponse());
+    const presenter = { id: "hunter-link", name: "Hunter", appearance: "成年户外装备演示者，短发。",
+      referenceImages: ["/api/files/presenter-library/hunter.png"] };
+    const response = await ingestProduct(request("http://localhost/api/ingest/product", {
+      url: "https://example.test/chair", creationType: "tidewe_outdoor", presenter,
+    }));
+    expect(response.status).toBe(200);
+    const project = db.select().from(schema.projects).get()!;
+    expect(project.creativeProfile).toMatchObject({ presenter });
+    expect(project.creativeProfileDrafts?.tidewe_outdoor).toMatchObject({ presenter });
+    expect(project.characterId).toBe(presenter.id);
+  });
+
+  it.each(["tidewe_outdoor", "short_video_sales"])("does not overwrite TIDEWE images if a %s project changes during link image download", async (creationType) => {
+    state.safeFetch.mockResolvedValueOnce(new Response('<title>Hunting chair</title><meta property="og:image" content="https://example.test/chair.png">', { headers: { "Content-Type": "text/html" } }))
+      .mockImplementationOnce(async () => {
+        const project = db.select().from(schema.projects).get()!;
+        db.update(schema.projects).set({ productImages: ["newer-image.png"], creativeProfile: createTideweOutdoorProfile(), creativeConfigRevision: 2 }).where(eq(schema.projects.id, project.id)).run();
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/png" } });
+      });
+    const response = await ingestProduct(request("http://localhost/api/ingest/product", { url: "https://example.test/chair", creativeProfile: { creationType } }));
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("CREATIVE_CONFIG_CONFLICT");
+    expect(db.select().from(schema.projects).get()?.productImages).toEqual(["newer-image.png"]);
   });
 });

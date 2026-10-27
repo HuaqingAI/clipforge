@@ -25,17 +25,17 @@ export function resolveUploadFilePath(ref: string): string | null {
  * Convert a local `/api/files` path to a base64 data URI (remote providers cannot access localhost and require a data URI or public URL).
  * http(s) URLs and data URIs are passed through unchanged; non-local paths or path-traversal attempts return ref as-is (no disk read).
  */
-export async function toRemoteUsableImage(ref: string | undefined): Promise<string | undefined> {
+export async function toRemoteUsableImage(ref: string | undefined, options?: { requireReadableLocal?: boolean }): Promise<string | undefined> {
   if (!ref) return undefined;
   if (ref.startsWith("http") || ref.startsWith("data:")) return ref;
   const filePath = resolveUploadFilePath(ref);
-  if (!filePath) return ref; // not an /api/files path or path traversal — skip disk read, return as-is
+  if (!filePath) return options?.requireReadableLocal ? undefined : ref;
   try {
     const buf = await readFile(filePath);
     const ext = filePath.split(".").pop()?.toLowerCase() || "png";
     const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
     return `data:${mime};base64,${buf.toString("base64")}`;
   } catch {
-    return ref;
+    return options?.requireReadableLocal ? undefined : ref;
   }
 }

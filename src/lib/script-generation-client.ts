@@ -1,4 +1,5 @@
 import type { Shot } from "@/lib/db/schema";
+import type { TideweCopyDocument } from "@/lib/tidewe/types";
 
 export interface SavedScript {
   id: string;
@@ -8,6 +9,9 @@ export interface SavedScript {
   totalDuration: number | null;
   shots: Shot[];
   selected: boolean | null;
+  copyDocument?: TideweCopyDocument | null;
+  scriptHash?: string;
+  generationMetadata?: { requestId?: string } | null;
 }
 
 /** A generation produces several alternatives sharing one version; older versions are history. */
@@ -23,11 +27,13 @@ export function currentScriptOptions<T extends { version?: number; selected?: bo
 
 interface GenerationOptions {
   endpoint: string;
+  method?: "POST" | "PATCH";
   payload: unknown;
   projectId: string;
   knownScriptIds: string[];
   signal: AbortSignal;
   messages: { failed: string; reload: string; unconfirmed: string };
+  requestId?: string;
 }
 
 function isSavedScripts(value: unknown): value is SavedScript[] {
@@ -49,6 +55,7 @@ export function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<
 export async function generateProjectScripts(options: GenerationOptions): Promise<SavedScript[]> {
   const { endpoint, payload, projectId, signal, messages } = options;
   const knownIds = new Set(options.knownScriptIds);
+  const requestId = options.requestId ?? (options.payload && typeof options.payload === "object" && "requestId" in options.payload && typeof options.payload.requestId === "string" ? options.payload.requestId : undefined);
   const controller = new AbortController();
   const onAbort = () => controller.abort(signal.reason);
   if (signal.aborted) onAbort();
@@ -80,7 +87,7 @@ export async function generateProjectScripts(options: GenerationOptions): Promis
 
   const request = async () => {
     const response = await fetch(endpoint, {
-      method: "POST",
+      method: options.method ?? "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal: controller.signal,
@@ -118,7 +125,7 @@ export async function generateProjectScripts(options: GenerationOptions): Promis
       try {
         const rows = await readScripts();
         // Old selections and archived results from a changed creative profile are not completion.
-        if (rows.some((row) => row.selected && !knownIds.has(row.id))) return rows;
+        if (rows.some((row) => row.selected && !knownIds.has(row.id) && (!requestId || row.generationMetadata?.requestId === requestId))) return rows;
       } catch {
         // A transient read failure must not interrupt the generation request.
       }

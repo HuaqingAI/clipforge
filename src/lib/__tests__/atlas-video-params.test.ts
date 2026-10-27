@@ -28,6 +28,22 @@ const i2vBase: VideoOptions = {
 };
 
 describe("取值选择器", () => {
+  it("keeps a server-owned speaking minimum while preserving ordinary nearest-duration mapping", () => {
+    const modelId = "google/veo3.1/image-to-video";
+    const spec = getVideoParamSpec(modelId)!;
+    const request = { ...i2vBase, modelId, duration: 7 };
+    expect(buildAtlasVideoBody(modelId, spec, request, "Speak the full line").duration).toBe(6);
+    expect(buildAtlasVideoBody(modelId, spec, { ...request, minimumDuration: 7 }, "Speak the full line").duration).toBe(8);
+    expect(() => buildAtlasVideoBody(modelId, spec, { ...request, minimumDuration: 8.1 }, "Speak the full line")).toThrow("无法覆盖");
+    expect(() => buildAtlasVideoBody(modelId, spec, { ...request, minimumDuration: 7, extra: { duration: 4 } }, "Speak the full line")).toThrow("不能缩短");
+  });
+  it("applies the speaking minimum to dynamic enums and integer durations, rejecting models with no duration control", () => {
+    const dynamic = specFromOpenApiInput({ properties: { duration: { type: "number", enum: [4, 6, 8], default: 4 } } })!;
+    expect(buildAtlasVideoBody("custom/native", dynamic, { ...i2vBase, duration: 5, minimumDuration: 6.4 }, "Speak").duration).toBe(8);
+    expect(() => buildAtlasVideoBody("custom/native", dynamic, { ...i2vBase, minimumDuration: 9 }, "Speak")).toThrow("无法覆盖");
+    expect(buildAtlasVideoBody("custom/integer", {}, { ...i2vBase, duration: 5, minimumDuration: 5.4 }, "Speak").duration).toBe(6);
+    expect(() => buildAtlasVideoBody("custom/fixed", { noDuration: true }, { ...i2vBase, minimumDuration: 5.4 }, "Speak")).toThrow("无法保证");
+  });
   it("pickEnumDuration：就近取整档，平手取更短（更省）", () => {
     expect(pickEnumDuration([4, 5, 6, 7, 8], 3)).toBe(4);
     expect(pickEnumDuration([6, 10], 7)).toBe(6);

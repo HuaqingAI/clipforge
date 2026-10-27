@@ -6,14 +6,16 @@ import { eq, and, desc } from "drizzle-orm";
 import { LAST_FRAME_SUFFIX } from "@/lib/video-composer/frame-extract";
 import { resolveUploadFilePath } from "@/lib/remote-image";
 import { existsSync } from "fs";
-import { persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence";
+import { AssetContextConflictError, persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
-import { assetScopeForShot, assetMatchesScript, filterAssetsForScript } from "@/lib/asset-context";
+import { assetScopeForShot, assetMatchesScript, filterAssetsForScript, scriptRevision } from "@/lib/asset-context";
 import { errText } from "@/lib/api-error";
 import {
   checkCreativeProfileContext,
   isPremiumProductCgProject,
+  isTideweOutdoorProfile,
 } from "@/lib/creative-profiles";
+import { assertTideweScript } from "@/lib/tidewe/validation";
 import {
   hasTrustedPremiumCgAssetProvenance,
   PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
@@ -97,10 +99,11 @@ export async function POST(
   try {
     const { id } = await params;
     const body = await req.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "请求内容必须是对象" }, { status: 400 });
     if (body.provider === "kling-cli") return NextResponse.json({ error: "Kling 视频请通过原作业恢复入库", code: "KLING_JOB_REQUIRED" }, { status: 409 });
     const { shotId, sourceUrl } = body as { shotId?: number; sourceUrl?: string };
 
-    if (typeof shotId !== "number" || !sourceUrl) {
+    if (typeof shotId !== "number" || typeof sourceUrl !== "string" || !sourceUrl) {
       return NextResponse.json({ error: "缺少 shotId 或 sourceUrl" }, { status: 400 });
     }
     // 校验 projectId 防路径穿越
@@ -125,6 +128,18 @@ export async function POST(
     const scriptRows = await db.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt));
     const script = typeof body.scriptId === "string" ? scriptRows.find((row) => row.id === body.scriptId) : resolveCurrentScript(scriptRows);
     const shot = script?.shots?.find((row) => row.shotId === shotId);
+    const tidewe = isTideweOutdoorProfile(project.creativeProfile) || script?.styleType === "tidewe_outdoor" || script?.copyDocument != null;
+    if (tidewe) {
+      if (typeof body.scriptId !== "string" || !body.scriptId.trim() || typeof body.expectedScriptHash !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedScriptHash)) {
+        return NextResponse.json({ error: "TIDEWE 保存素材必须携带生成开始时的 scriptId 与 expectedScriptHash。", code: "TIDEWE_ASSET_CONTEXT_REQUIRED" }, { status: 400 });
+      }
+      const currentScript = resolveCurrentScript(scriptRows);
+      const context = script ? checkCreativeProfileContext(project, script) : null;
+      if (!script || !shot || currentScript?.id !== script.id || scriptRevision(script) !== body.expectedScriptHash
+        || !context?.ok) throw new AssetContextConflictError();
+      try { assertTideweScript(script, isTideweOutdoorProfile(context.scriptProfile) ? context.scriptProfile.presenter ?? null : undefined); }
+      catch { throw new AssetContextConflictError("The current TIDEWE script is invalid. Regenerate it before saving assets."); }
+    }
     if (scriptRows.length && (!script || !shot)) return NextResponse.json({ error: "目标脚本或镜头已变化，请刷新素材页" }, { status: 409 });
     const filePath = await persistAssetSource(id, sourceUrl, shotId);
 
@@ -157,9 +172,11 @@ export async function POST(
       prompt: body.prompt,
       generationPlan,
       ...(script && shot && { scope: assetScopeForShot(script, shot) }),
+      ...(tidewe && script && { expectedCurrentScript: { scriptId: script.id, scriptRevision: body.expectedScriptHash as string, creativeConfigRevision: project.creativeConfigRevision } }),
       ...(thumbnailPath && { sourceKeyframeUrl: thumbnailPath }),
     }));
   } catch (error) {
+    if (error instanceof AssetContextConflictError) return NextResponse.json({ error: errText(req, "脚本或创作配置已变化，旧素材不能保存到当前脚本，请刷新后重试。", error.message), code: error.code }, { status: 409 });
     console.error("保存素材失败:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "保存素材失败" },
@@ -221,13 +238,21 @@ export async function PATCH(
     db.transaction((tx) => {
       const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, id)).orderBy(desc(scripts.createdAt)).all();
       const script = resolveCurrentScript(scriptRows);
+      const currentProject = tx.select().from(projects).where(eq(projects.id, id)).get();
+      if (isTideweOutdoorProfile(currentProject?.creativeProfile) || script?.styleType === "tidewe_outdoor" || script?.copyDocument != null) {
+        const context = currentProject && script ? checkCreativeProfileContext(currentProject, script) : null;
+        if (!currentProject || !script || !context?.ok) throw new AssetContextConflictError();
+        try { assertTideweScript(script, isTideweOutdoorProfile(context.scriptProfile) ? context.scriptProfile.presenter ?? null : undefined); }
+        catch { throw new AssetContextConflictError("The current TIDEWE script is invalid. Regenerate it before selecting assets."); }
+      }
       if (!script || !assetMatchesScript(target, script)) throw new Error("此素材属于其他脚本修订，请在原 Kling 任务详情中明确采用为当前镜头");
       const candidates = tx.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.shotId, target.shotId))).all();
       for (const candidate of filterAssetsForScript(candidates, script)) tx.update(assets).set({ selected: false }).where(eq(assets.id, candidate.id)).run();
       tx.update(assets).set({ selected: true }).where(eq(assets.id, target.id)).run();
-    });
+    }, { behavior: "immediate" });
     return NextResponse.json({ ...target, selected: true });
   } catch (error) {
+    if (error instanceof AssetContextConflictError) return NextResponse.json({ error: errText(req, "脚本或创作配置已变化，请刷新后重新选择素材。", error.message), code: error.code }, { status: 409 });
     const message = error instanceof Error ? error.message : "切换素材失败";
     return NextResponse.json({ error: message }, { status: message.startsWith("此素材属于其他脚本修订") ? 409 : 500 });
   }

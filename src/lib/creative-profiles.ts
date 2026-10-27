@@ -4,6 +4,9 @@ import {
   normalizePremiumCgRecipeSnapshot,
   type PremiumCgRecipeSnapshot,
 } from "@/lib/premium-cg-recipes";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION } from "@/lib/tidewe/types";
+import type { TidewePresenterSnapshot } from "@/lib/tidewe/types";
+import { isValidTidewePresenterInput, snapshotTidewePresenter } from "@/lib/tidewe/presenter";
 
 /**
  * Versioned, server-authoritative creative profiles.
@@ -16,8 +19,11 @@ export const PREMIUM_PRODUCT_CG_STYLE = "premium_product_cg" as const;
 export const PREMIUM_PRODUCT_CG_PROFILE_ID = "premium_product_cg_v1" as const;
 export const PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION = "premium-product-cg-2" as const;
 export const SHORT_VIDEO_SALES_PROFILE_ID = "short_video_sales_v1" as const;
+export const TIDEWE_OUTDOOR_STYLE = "tidewe_outdoor" as const;
+export const TIDEWE_OUTDOOR_PROFILE_ID = "tidewe_outdoor_v1" as const;
+export const TIDEWE_OUTDOOR_PROMPT_COMPILER_VERSION = TIDEWE_COMPILER_VERSION;
 
-export type CreationType = "short_video_sales" | "premium_product_cg";
+export type CreationType = "short_video_sales" | "premium_product_cg" | "tidewe_outdoor";
 export type NarrationMode = "none" | "restrained";
 export type PremiumSoundMode = "ambient" | "music" | "restrained-voice";
 export type LegacyVideoMode = "product_closeup" | "graphic_montage" | "scene_demo" | "live_presenter";
@@ -104,11 +110,31 @@ export interface PremiumProductCgProfile {
   promptCompilerVersion: typeof PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION;
 }
 
-export type ProjectCreativeProfile = ShortVideoSalesProfile | PremiumProductCgProfile;
+export interface TideweOutdoorProfile {
+  version: 1;
+  id: typeof TIDEWE_OUTDOOR_PROFILE_ID;
+  creationType: "tidewe_outdoor";
+  styleType: "tidewe_outdoor";
+  videoMode: PremiumProductCgVideoMode;
+  targetDuration: 30 | 40 | 60;
+  language: "en-US";
+  reviewLanguage: "zh-CN";
+  market: "US";
+  platform: "tiktok";
+  narrativeAngle: "auto" | "scene_pain" | "choice" | "use_demo" | "long_wait" | "gift";
+  speechMode: "on_camera" | "voiceover";
+  presenter?: TidewePresenterSnapshot;
+  corpusVersion: string;
+  promptCompilerVersion: string;
+  composeSnapshot: LegacyComposeSettings;
+}
+
+export type ProjectCreativeProfile = ShortVideoSalesProfile | PremiumProductCgProfile | TideweOutdoorProfile;
 
 export interface ProjectCreativeProfileDrafts {
   short_video_sales?: ShortVideoSalesProfile;
   premium_product_cg?: PremiumProductCgProfile;
+  tidewe_outdoor?: TideweOutdoorProfile;
 }
 
 export interface CreativeProfileFallback {
@@ -356,7 +382,48 @@ function premiumSignal(value: Record<string, unknown>): boolean {
     || id === PREMIUM_PRODUCT_CG_PROFILE_ID;
 }
 
+export function createTideweOutdoorProfile(options: {
+  targetDuration?: unknown; videoMode?: unknown; narrativeAngle?: unknown; composeSnapshot?: unknown; speechMode?: unknown; presenter?: unknown;
+} = {}): TideweOutdoorProfile {
+  const compose = sanitizeComposeSnapshot(options.composeSnapshot);
+  const speechMode = options.speechMode === "voiceover" ? "voiceover" : "on_camera";
+  const presenter = snapshotTidewePresenter(options.presenter);
+  const angles = ["auto", "scene_pain", "choice", "use_demo", "long_wait", "gift"];
+  return {
+    version: 1, id: TIDEWE_OUTDOOR_PROFILE_ID, creationType: "tidewe_outdoor", styleType: TIDEWE_OUTDOOR_STYLE,
+    videoMode: options.videoMode === "product_closeup" ? "product_closeup" : "scene_demo",
+    targetDuration: options.targetDuration === 30 || options.targetDuration === 60 ? options.targetDuration : 40,
+    language: "en-US", reviewLanguage: "zh-CN", market: "US", platform: "tiktok", speechMode,
+    ...(presenter && { presenter }),
+    narrativeAngle: angles.includes(String(options.narrativeAngle)) ? options.narrativeAngle as TideweOutdoorProfile["narrativeAngle"] : "auto",
+    corpusVersion: TIDEWE_CORPUS_VERSION, promptCompilerVersion: TIDEWE_COMPILER_VERSION,
+    composeSnapshot: { ...compose, ttsEnabled: speechMode === "voiceover", nativeAudio: speechMode === "on_camera", subtitles: compose.subtitles !== false, productCard: false,
+      ctaEnabled: false, editorialGraphics: false, aspectRatio: "9:16" },
+  };
+}
+
+function tideweSignal(value: Record<string, unknown>): boolean {
+  return value.creationType === TIDEWE_OUTDOOR_STYLE || value.styleType === TIDEWE_OUTDOOR_STYLE
+    || [value.id, value.profileId, value.creativeProfileId].includes(TIDEWE_OUTDOOR_PROFILE_ID);
+}
+
+export function isTideweOutdoorProfile(value: unknown): value is TideweOutdoorProfile {
+  return value === TIDEWE_OUTDOOR_STYLE || value === TIDEWE_OUTDOOR_PROFILE_ID || (isRecord(value) && tideweSignal(value));
+}
+
+/** Only explicit native profiles opt in; frozen historical voiceover footage stays compatible. */
+export function isTideweNativeSpeech(value: unknown): value is TideweOutdoorProfile & { speechMode: "on_camera" } {
+  return isRecord(value) && isTideweOutdoorProfile(value) && value.speechMode === "on_camera";
+}
+
+export function assertSupportedTideweProfile(profile: TideweOutdoorProfile): void {
+  if (profile.version !== 1 || profile.corpusVersion !== TIDEWE_CORPUS_VERSION || profile.promptCompilerVersion !== TIDEWE_COMPILER_VERSION) {
+    throw new Error("Unsupported TIDEWE profile version; regenerate with the current creative profile");
+  }
+}
+
 function profileTypeFromId(value: unknown): CreationType | undefined {
+  if (value === TIDEWE_OUTDOOR_PROFILE_ID) return "tidewe_outdoor";
   if (value === PREMIUM_PRODUCT_CG_PROFILE_ID) return "premium_product_cg";
   if (value === SHORT_VIDEO_SALES_PROFILE_ID) return "short_video_sales";
   return undefined;
@@ -366,6 +433,7 @@ function profileTypeFromStyle(value: unknown): CreationType | undefined {
   const style = asTrimmedString(value)?.toLowerCase();
   if (!style) return undefined;
   if (style === PREMIUM_PRODUCT_CG_STYLE) return "premium_product_cg";
+  if (style === TIDEWE_OUTDOOR_STYLE) return "tidewe_outdoor";
   const aliases: Record<string, LegacySalesStyle> = {
     "pain-point": "pain_point",
     scenario: "scene",
@@ -384,6 +452,7 @@ function profileTypeFromStyle(value: unknown): CreationType | undefined {
  * creation type by relying on defaults.
  */
 export function validateCreativeProfileInput(value: unknown): CreativeProfileInputResult {
+  if (value === TIDEWE_OUTDOOR_STYLE || value === TIDEWE_OUTDOOR_PROFILE_ID) return { profile: createTideweOutdoorProfile() };
   if (value === PREMIUM_PRODUCT_CG_PROFILE_ID || value === PREMIUM_PRODUCT_CG_STYLE) {
     return { profile: createPremiumProductCgProfile() };
   }
@@ -397,7 +466,7 @@ export function validateCreativeProfileInput(value: unknown): CreativeProfileInp
   const identities: CreationType[] = [];
   const creationType = value.creationType;
   if (creationType !== undefined) {
-    if (creationType !== "short_video_sales" && creationType !== "premium_product_cg") {
+    if (creationType !== "short_video_sales" && creationType !== "premium_product_cg" && creationType !== "tidewe_outdoor") {
       return { error: "Unknown creative creationType." };
     }
     identities.push(creationType);
@@ -432,6 +501,12 @@ export function validateCreativeProfileInput(value: unknown): CreativeProfileInp
   if (!profile || profile.creationType !== identities[0]) {
     return { error: "Creative profile could not be resolved." };
   }
+  if (profile.creationType === "tidewe_outdoor") {
+    if (value.version !== undefined && value.version !== 1) return { error: "Unsupported TIDEWE profile version." };
+    if (value.speechMode !== undefined && value.speechMode !== "on_camera" && value.speechMode !== "voiceover") return { error: "Unsupported TIDEWE speech mode." };
+    if (value.presenter != null && !isValidTidewePresenterInput(value.presenter)) return { error: "请选择有外貌描述或参考图的有效出镜主播。" };
+    try { assertSupportedTideweProfile(profile); } catch (e) { return { error: (e as Error).message }; }
+  }
   return { profile };
 }
 
@@ -443,6 +518,7 @@ export function validateCreativeProfileInput(value: unknown): CreativeProfileInp
  * can weaken the premium policy; they only identify the premium profile to be canonicalized.
  */
 export function sanitizeCreativeProfile(value: unknown): ProjectCreativeProfile | undefined {
+  if (value === TIDEWE_OUTDOOR_STYLE || value === TIDEWE_OUTDOOR_PROFILE_ID) return createTideweOutdoorProfile();
   if (value === PREMIUM_PRODUCT_CG_PROFILE_ID || value === PREMIUM_PRODUCT_CG_STYLE) {
     return createPremiumProductCgProfile();
   }
@@ -450,6 +526,14 @@ export function sanitizeCreativeProfile(value: unknown): ProjectCreativeProfile 
     return createShortVideoSalesProfile();
   }
   if (!isRecord(value)) return undefined;
+
+  if (tideweSignal(value)) {
+    const profile = createTideweOutdoorProfile(value);
+    // History keeps the actual compiler/corpus used, even after an upgrade.
+    return { ...profile, ...(typeof value.version === "number" && { version: value.version as 1 }),
+      ...(typeof value.corpusVersion === "string" && { corpusVersion: value.corpusVersion }),
+      ...(typeof value.promptCompilerVersion === "string" && { promptCompilerVersion: value.promptCompilerVersion }) };
+  }
 
   if (premiumSignal(value)) {
     const legacyTextPolicy = value.textPolicy;
@@ -485,16 +569,19 @@ export function resolveCreativeProfile(
   value: unknown,
   fallback: CreativeProfileFallback = {},
 ): ProjectCreativeProfile {
-  return sanitizeCreativeProfile(value) ?? createShortVideoSalesProfile(fallback);
+  return sanitizeCreativeProfile(value) ?? (fallback.styleType === TIDEWE_OUTDOOR_STYLE
+    ? createTideweOutdoorProfile(fallback) : createShortVideoSalesProfile(fallback));
 }
 
 export function sanitizeCreativeProfileDrafts(value: unknown): ProjectCreativeProfileDrafts | undefined {
   if (!isRecord(value)) return undefined;
   const sales = sanitizeCreativeProfile(value.short_video_sales ?? value.sales);
   const premium = sanitizeCreativeProfile(value.premium_product_cg ?? value.cg);
+  const tidewe = sanitizeCreativeProfile(value.tidewe_outdoor);
   const result: ProjectCreativeProfileDrafts = {};
   if (sales?.creationType === "short_video_sales") result.short_video_sales = sales;
   if (premium?.creationType === "premium_product_cg") result.premium_product_cg = premium;
+  if (tidewe?.creationType === "tidewe_outdoor") result.tidewe_outdoor = tidewe;
   return Object.keys(result).length > 0 ? result : undefined;
 }
 

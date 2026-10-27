@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { scripts } from "@/lib/db/schema";
+import { projects, scripts } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
-import { buildJudgePrompt, parseJudgeResponse, type JudgeShotInput } from "@/lib/script-judge";
+import { buildJudgePrompt, buildTideweJudgePrompt, parseJudgeResponse, type JudgeShotInput } from "@/lib/script-judge";
 import { styleNameMap } from "@/lib/script-engine/prompts";
 import { reasoningParams, completeWithJsonRetry } from "@/lib/script-engine/generator";
 import { createLLMClient, llmErrorPair, jsonModeParams } from "@/lib/llm-error";
 import { apiError, errText } from "@/lib/api-error";
+import { isTideweOutdoorProfile, checkCreativeProfileContext } from "@/lib/creative-profiles";
+import { assertTideweScript } from "@/lib/tidewe/validation";
 
 /**
  * POST /api/project/[id]/script-judge — the judge panel: tear the lines apart
@@ -40,6 +42,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from(scripts)
       .where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
     if (!script) return apiError(req, "脚本不存在", "Script not found", 404);
+    const project = db.select().from(projects).where(eq(projects.id, id)).get();
+    const tidewe = isTideweOutdoorProfile(project?.creativeProfile) || script.styleType === "tidewe_outdoor";
+    if (tidewe) {
+      if (!project) return apiError(req, "项目不存在", "Project not found", 404);
+      const context = checkCreativeProfileContext(project, script);
+      if (!context.ok) return NextResponse.json({ error: "The script no longer matches the project configuration.", code: context.code }, { status: 409 });
+      assertTideweScript(script);
+    }
 
     const shots: JudgeShotInput[] = (Array.isArray(script.shots) ? script.shots : [])
       .filter((s) => typeof s.voiceover === "string" && s.voiceover.trim())
@@ -54,7 +64,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const styleLabel = script.styleType ? styleNameMap[script.styleType] : undefined;
-    const prompt = buildJudgePrompt(shots, { styleLabel, styleType: script.styleType ?? undefined });
+    const prompt = tidewe && script.copyDocument
+      ? buildTideweJudgePrompt(script.copyDocument, shots)
+      : buildJudgePrompt(shots, { styleLabel, styleType: script.styleType ?? undefined });
 
     const client = createLLMClient({
       baseUrl: llmConfig.baseUrl ?? "",
@@ -77,8 +89,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { baseUrl: llmConfig.baseUrl ?? "", apiKey: llmConfig.apiKey ?? "", model: llmConfig.model },
       (content) => parseJudgeResponse(content, shots),
     );
-    return NextResponse.json(report);
+    // The model cannot open an alternate edit channel around canonical-copy validation.
+    return NextResponse.json(tidewe ? { ...report, rewrites: [], descriptionRewrites: [] } : report);
   } catch (error) {
+    if (error && typeof error === "object" && "code" in error && String(error.code).startsWith("TIDEWE_")) return NextResponse.json({ error: error instanceof Error ? error.message : "Script validation failed", code: error.code }, { status: "status" in error ? Number(error.status) || 400 : 400 });
     console.error("判官团评审失败:", error);
     const { zh, en } = llmErrorPair(error);
     return NextResponse.json(

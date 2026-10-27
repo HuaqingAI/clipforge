@@ -7,16 +7,22 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
+import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
+import { TIDEWE_VISUAL_NEGATIVE_PROMPT } from "@/lib/tidewe/visual-policy";
+import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
+import { shotKey, scriptRevision } from "@/lib/asset-context";
+import { sanitizeVideoControlSummary } from "@/lib/video-control-plan";
+import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
 
-const state = vi.hoisted(() => ({ db: null as unknown, generate: vi.fn(), provider: vi.fn() }));
+const state = vi.hoisted(() => ({ db: null as unknown, generate: vi.fn(), provider: vi.fn(), recordTask: vi.fn(), updateTask: vi.fn(), remoteImage: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
 vi.mock("@/lib/providers", () => ({ createProvider: state.provider }));
-vi.mock("@/lib/remote-image", () => ({ toRemoteUsableImage: async (value: unknown) => value, resolveUploadFilePath: () => undefined }));
-vi.mock("@/lib/ai-tasks", () => ({ recordAiTask: vi.fn(), updateAiTask: vi.fn() }));
+vi.mock("@/lib/remote-image", () => ({ toRemoteUsableImage: state.remoteImage, resolveUploadFilePath: () => undefined }));
+vi.mock("@/lib/ai-tasks", () => ({ recordAiTask: state.recordTask, updateAiTask: state.updateTask }));
 vi.mock("@/lib/kling/jobs", () => ({ createKlingJob: vi.fn() }));
 vi.mock("@/lib/kling/repository", () => ({ klingJobView: vi.fn() }));
 
@@ -41,6 +47,9 @@ beforeEach(() => {
   db.insert(schema.scripts).values({ id: scriptId, projectId, selected: true, styleType: "scene", shots: [shot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
   state.generate.mockReset().mockResolvedValue({ videoUrls: ["https://example.test/clip.mp4"] });
   state.provider.mockReset().mockReturnValue({ generateVideo: state.generate });
+  state.recordTask.mockReset().mockResolvedValue("task-row");
+  state.updateTask.mockReset();
+  state.remoteImage.mockReset().mockImplementation(async (value: unknown) => value);
 });
 afterEach(() => { sqlite.close(); state.db = null; });
 
@@ -59,7 +68,178 @@ function submit(value: VideoPromptPreview, request: VideoPromptRequest, extra: R
   }) }));
 }
 
+function useTidewe(speechMode: "on_camera" | "voiceover" = "voiceover", presenter?: TidewePresenterSnapshot) {
+  const profile = createTideweOutdoorProfile({ speechMode, presenter });
+  const text = "The walk into the woods is only the start. Have a look if that sounds familiar.";
+  const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "other", items: [] };
+  const copyDocument: TideweCopyDocument = {
+    version: 1, language: "en-US", text, translation: "走进林子只是开始。适合的话可以看看。", angle: "scene", hookType: "scene",
+    claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts), corpusVersion: profile.corpusVersion,
+    compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 5,
+  };
+  const tideweShot: schema.Shot = {
+    ...shot, voiceover: text, description: `${presenter ? tidewePresenterAnchor(presenter) : "猎人"}在清晨林缘停步，低头检查装备。`, visualIntent: "建立户外行走场景。", prompt: "清晨户外小径。",
+    ...(presenter && { characterId: presenter.id }), tidewe: { ...(presenter && { presenter, personVisible: true }), copySpan: { start: 0, end: text.length }, translation: copyDocument.translation, shotGoal: "展示入林前检查装备", productVisible: true, factRefs: [], sceneId: "woods" },
+  };
+  db.update(schema.projects).set({ creativeProfile: profile, creativeIntent: { subject: "卧室主播卖货" }, visualBible: { characterAnchors: [], productAnchors: [], wardrobeAnchors: [], environmentAnchors: ["室内"], lightingAnchors: [], forbiddenChanges: ["户外"] } }).run();
+  db.update(schema.scripts).set({ styleType: "tidewe_outdoor", shots: [tideweShot], copyDocument, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
+  return { shot: tideweShot, copyDocument };
+}
+
+describe("authoritative TIDEWE video preview and dispatch", () => {
+  const presenter: TidewePresenterSnapshot = { id: "selected-host", name: "Selected host", appearance: "棕色短发", referenceImages: ["/api/files/selected-host.png"] };
+  it("binds the frozen presenter in preview and sends the actual portrait to reference-capable video generation", async () => {
+    useTidewe("voiceover", presenter);
+    const request = input();
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.controlPlan.referenceInputs).toContainEqual(expect.objectContaining({ role: "character", url: presenter.referenceImages[0] }));
+    expect(value.prompt).toContain(presenter.name);
+    const result = await submit(value, request);
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ mode: "video-to-video", referenceImageUrls: [presenter.referenceImages[0], "/api/files/product.png"] }));
+    expect(state.generate.mock.calls[0][0].firstFrameUrl).toBeUndefined();
+  });
+  it("rejects changing the frozen presenter or silently dropping an unreadable portrait", async () => {
+    useTidewe("voiceover", presenter);
+    const wrong = await getPreview(input({ controlInputs: { characterReferenceUrl: "https://example.test/other-person.png" } }));
+    expect(wrong.response.status).toBe(400);
+    expect(wrong.value).toMatchObject({ code: "TIDEWE_PRESENTER_REFERENCE_INVALID" });
+    const request = input();
+    const { value } = await getPreview(request);
+    state.remoteImage.mockImplementation(async (url: unknown) => url === presenter.referenceImages[0] ? undefined : url);
+    const result = await submit(value, request);
+    expect(result.status).toBe(400);
+    expect(await result.json()).toMatchObject({ code: "TIDEWE_REFERENCE_UNAVAILABLE" });
+    expect(state.generate).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("rejects an unreadable extra product reference with appearance-only presenter=%s", async (hasPresenter) => {
+    useTidewe("voiceover", hasPresenter ? { ...presenter, referenceImages: [] } : undefined);
+    const missingProduct = "/api/files/missing-product-side.png";
+    db.update(schema.projects).set({ productImages: ["/api/files/product.png", missingProduct] }).run();
+    const request = input();
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    state.remoteImage.mockImplementation(async (url: unknown) => url === missingProduct ? undefined : url);
+    const result = await submit(value, request, { referenceImageUrls: ["/api/files/product.png", missingProduct] });
+    expect(result.status).toBe(400);
+    expect(await result.json()).toMatchObject({ code: "TIDEWE_REFERENCE_UNAVAILABLE" });
+    expect(state.generate).not.toHaveBeenCalled();
+  });
+  it("binds native English speech in a reviewed batch and enables the exact model's audio before dispatch", async () => {
+    const { shot } = useTidewe("on_camera");
+    db.update(schema.scripts).set({ shots: [{ ...shot, duration: 5.4 }] }).run();
+    const request = input({ batch: true, generateAudio: true, controlInputs: { firstFrameUrl: "/api/files/product.png", supportsAudio: false } });
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.prompt).toContain(shot.voiceover);
+    expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
+    expect(value.prompt).not.toContain("仅生成静音视觉素材");
+    expect(value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
+    const listModels = vi.fn().mockResolvedValue([{ id: request.model, mediaType: "video", supportsAudio: true }]);
+    state.provider.mockReturnValue({ generateVideo: state.generate, listModels });
+    const result = await submit(value, request, { options: { duration: 5, minimumDuration: 1, audioEnabled: false, voiceover: "Unapproved replacement", extra: { generate_audio: false } } });
+    expect(result.status).toBe(200);
+    expect(listModels).toHaveBeenCalledWith("video");
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ prompt: value.prompt, audioEnabled: true, duration: 6, minimumDuration: 5.4 }));
+    const generated = state.generate.mock.calls[0][0];
+    expect(generated.voiceover).toBeUndefined();
+    expect(generated.extra).toBeUndefined();
+  });
+  it("rejects native mute requests and a forged audio capability before any paid generation", async () => {
+    useTidewe("on_camera");
+    const muted = await getPreview(input());
+    expect(muted.response.status).toBe(400);
+    expect(muted.value).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_REQUIRED" });
+    const request = input({ generateAudio: true });
+    const { value } = await getPreview(request);
+    state.provider.mockReturnValue({ generateVideo: state.generate, listModels: vi.fn().mockResolvedValue([{ id: request.model, mediaType: "video", supportsAudio: false }]) });
+    const response = await submit(value, request, { options: { audioEnabled: true } });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED" });
+    state.provider.mockReturnValue({ generateVideo: state.generate, listModels: vi.fn().mockResolvedValue([]) });
+    const unknown = await submit(value, request);
+    expect(unknown.status).toBe(400);
+    expect(await unknown.json()).toMatchObject({ code: "TIDEWE_NATIVE_AUDIO_UNSUPPORTED" });
+    expect(state.generate).not.toHaveBeenCalled();
+  });
+  it("keeps saved outdoor descriptions and reference labels while ignoring legacy sales controls", async () => {
+    const { shot } = useTidewe();
+    const request = input({ retake: "background_dead", negativePrompt: "avoid outdoor scenes", controlInputs: { firstFrameUrl: "/api/files/product.png", productReferenceUrl: "/api/files/product.png", supportsAudio: true, audioReferenceUrl: "https://example.test/voice.mp3" } });
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.prompt).toContain(`本镜画面：${shot.description}`);
+    expect(value.prompt).toContain(shot.visualIntent);
+    expect(value.prompt).toContain("参考映射：");
+    expect(value.prompt).toContain("静音视觉素材");
+    expect(value.prompt).not.toContain(shot.voiceover);
+    expect(value.prompt).not.toContain("卧室主播卖货");
+    expect(value.prompt).not.toContain("窗帘轻晃");
+    expect(value.controlPlan.audioMode).toBe("none");
+    expect(value.controlPlan.referenceInputs.every((item) => item.mediaType === "image")).toBe(true);
+    expect(value.negativePrompt).toBe(TIDEWE_VISUAL_NEGATIVE_PROMPT);
+    const result = await submit(value, request, { options: { audioEnabled: true, voiceover: "Different narration", audioPrompt: "Speak now", extra: { generate_audio: true, arbitrary_audio_flag: true } }, referenceAudioUrls: ["https://example.test/voice.mp3"], referenceVideoUrls: ["https://example.test/motion.mp4"] });
+    expect(result.status).toBe(200);
+    const generated = state.generate.mock.calls[0][0];
+    expect(generated).toMatchObject({ prompt: value.prompt, audioEnabled: false, negativePrompt: TIDEWE_VISUAL_NEGATIVE_PROMPT });
+    for (const key of ["voiceover", "audioPrompt", "extra", "referenceAudioUrls", "referenceVideoUrls"]) expect(generated[key]).toBeUndefined();
+  });
+  it("rejects native narration and unreviewed dispatch before creating a provider", async () => {
+    useTidewe();
+    const native = await getPreview(input({ generateAudio: true }));
+    expect(native.response.status).toBe(400);
+    expect(native.value).toMatchObject({ code: "TIDEWE_VISUAL_AUDIO_FORBIDDEN" });
+    const request = input();
+    const { value } = await getPreview(request);
+    const response = await submit(value, request, { promptContext: undefined });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_PROJECT_CONTEXT_REQUIRED" });
+    expect(state.provider).not.toHaveBeenCalled();
+  });
+  it("rejects canonical narration drift and an unrelated product reference before dispatch", async () => {
+    const { shot } = useTidewe();
+    const request = input();
+    const { value } = await getPreview(request);
+    const unrelated = await submit(value, request, { imageUrl: "https://example.test/unrelated-product.png" });
+    expect(unrelated.status).toBe(400);
+    expect(await unrelated.json()).toMatchObject({ code: "TIDEWE_PRODUCT_REFERENCE_INVALID" });
+    const unanchored = await submit(value, request, { imageUrl: undefined, mode: "text-to-video" });
+    expect(unanchored.status).toBe(400);
+    expect(await unanchored.json()).toMatchObject({ code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" });
+    db.update(schema.scripts).set({ shots: [{ ...shot, voiceover: "An edited sentence outside the copy document." }] }).run();
+    const stale = await submit(value, request);
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: "TIDEWE_SCRIPT_INVALID" });
+    expect(state.provider).not.toHaveBeenCalled();
+  });
+  it("persists server-frozen task provenance and returns it when paid polling is interrupted", async () => {
+    const { shot } = useTidewe();
+    const savedScript = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const sourceContext = { version: 1, sourceScriptId: scriptId, sourceShotKey: shotKey(scriptId, shot), sourceRevision: scriptRevision(savedScript) };
+    state.provider.mockReturnValue({ submitVideoTask: vi.fn().mockResolvedValue({ taskId: "paid-task", modelId: "actual-model" }), waitForTask: vi.fn().mockRejectedValue(new Error("poll connection lost")) });
+    const request = input();
+    const { value } = await getPreview(request);
+    const response = await submit(value, request, { controlPlan: { ...value.controlPlan, sourceContext: { version: 1, sourceScriptId: "forged-script", sourceShotKey: "a".repeat(64), sourceRevision: "b".repeat(64) } } });
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ taskId: "paid-task", recoverable: true, sourceContext });
+    expect(state.recordTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: "paid-task", controlPlan: expect.objectContaining({ sourceContext }) }));
+    const restored = sanitizeVideoControlSummary(JSON.parse(JSON.stringify(state.recordTask.mock.calls[0][0].controlPlan)));
+    expect(restored?.sourceContext).toEqual(sourceContext);
+    expect(state.updateTask).toHaveBeenCalledWith("task-row", expect.objectContaining({ status: "unknown" }));
+  });
+});
+
 describe("authoritative dynamic prompt preview", () => {
+  it("preserves ordinary sales reference filtering when an optional reference is unavailable", async () => {
+    const request = input();
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    const missingReference = "/api/files/missing-optional.png";
+    state.remoteImage.mockImplementation(async (url: unknown) => url === missingReference ? undefined : url);
+    const result = await submit(value, request, { referenceImageUrls: ["/api/files/product.png", missingReference] });
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ referenceImageUrls: ["/api/files/product.png"] }));
+  });
   it("returns the exact existing CG backend template for first generation, retake and batch", async () => {
     const profile = createPremiumProductCgProfile({ narrationMode: "none" });
     const cgShot = { ...shot, voiceover: "", type: "product_reveal" as const };

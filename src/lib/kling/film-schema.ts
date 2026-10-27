@@ -5,10 +5,11 @@ import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingFilmOutputSettings, KlingFilmStatus, KlingFilmShotStatus } from "./film-types";
 import type { VideoPromptSettings } from "@/lib/shot-video-prompt";
 import type { ProjectCreativeProfile } from "@/lib/creative-profiles";
+import type { TideweCopyDocument } from "@/lib/tidewe/types";
 
 export interface KlingFilmData {
   scriptRevision: string;
-  scriptSnapshot: { shots: Shot[]; characters?: ScriptCharacter[] };
+  scriptSnapshot: { shots: Shot[]; characters?: ScriptCharacter[]; copyDocument?: TideweCopyDocument | null };
   model: KlingVideoModelDescriptor;
   output: KlingFilmOutputSettings;
   promptSettings?: VideoPromptSettings;

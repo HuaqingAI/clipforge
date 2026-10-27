@@ -18,6 +18,10 @@ import { contentHash } from "./inputs";
 import { KlingError } from "./errors";
 import { klingFilmRuns, klingFilmShots, type KlingFilmRun, type KlingFilmShot } from "./film-schema";
 import { assertKlingFilmLease } from "./film-repository";
+import { isTideweNativeSpeech, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { resolveNarrationVoice } from "@/lib/narration-voice";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { assertTideweMediaDuration } from "@/lib/tidewe/visual-policy";
 
 interface FilmQuality { width: number; height: number; duration: number; hasAudio: boolean }
 export interface KlingFilmCompositionResult {
@@ -75,6 +79,19 @@ function loadPlan(runId: string): { run: KlingFilmRun; shots: KlingFilmShot[]; c
   const compositionId = run.data.compositionId;
   if (!compositionId || ![run.id, run.projectId, compositionId].every((id) => SAFE_ID.test(id))) throw failure("KLING_FILM_COMPOSITION_NOT_PREPARED", "整片合成记录尚未准备完成，请刷新任务后恢复。");
   const settings = run.data.output;
+  if (isTideweOutdoorProfile(run.data.creativeProfile)) {
+    const nativeSpeech = isTideweNativeSpeech(run.data.creativeProfile);
+    try {
+      assertTideweScript(run.data.scriptSnapshot);
+      if (!nativeSpeech) resolveNarrationVoice(run.data.creativeProfile, settings.voice);
+    } catch (error) { throw failure("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 口播快照无效"); }
+    if (settings.audioStrategy !== (nativeSpeech ? "native" : "edge-tts") || settings.narrationMode !== undefined) {
+      throw failure("TIDEWE_OUTPUT_POLICY", nativeSpeech
+        ? "TIDEWE 真人口播必须保留视频原生英语声音，不能重复添加 TTS，请重新预览计划。"
+        : "TIDEWE 画外音整片必须添加已确认英文旁白并替换源人声，请重新预览计划。");
+    }
+    if (run.data.scriptSnapshot.shots.some((shot) => Boolean(shot.narration?.trim()))) throw failure("TIDEWE_COPY_DOCUMENT_REQUIRED", "TIDEWE 不能使用 legacy narration 覆盖规范原文。");
+  }
   if (!["720p", "1080p"].includes(settings.resolution) || !["9:16", "16:9", "1:1"].includes(settings.aspectRatio) ||
     !["edge-tts", "edge-tts-mix", "native"].includes(settings.audioStrategy) || typeof settings.subtitles !== "boolean" ||
     typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice) ||
@@ -167,6 +184,8 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
   const beforeRender = () => { assertOwned(); hooks?.beforeRender?.(); };
   assertOwned();
   const { run, shots, compositionId, fingerprint } = loadPlan(runId);
+  const tidewe = isTideweOutdoorProfile(run.data.creativeProfile);
+  const tideweNative = isTideweNativeSpeech(run.data.creativeProfile);
   const db = getDb();
   const outputPath = join(getOutputDir(), run.projectId, `kling-film-${compositionId}.mp4`);
   const timelinePath = outputPath + ".timeline.json";
@@ -213,21 +232,29 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
         const mix = run.data.output.audioStrategy === "edge-tts-mix";
         const narrationDisabled = run.data.output.narrationMode === "none";
         if (native && stripPauseMarks(shot.data.shot.voiceover ?? "").trim() && !source.probe.hasAudio) {
-          throw failure("KLING_FILM_NATIVE_AUDIO_MISSING", `镜头 ${shot.shotId} 有台词但视频没有原生音轨，不能按原生音轨策略合成。请使用带音轨的素材，或创建使用免费配音的新计划。`);
+          throw failure("KLING_FILM_NATIVE_AUDIO_MISSING", tideweNative
+            ? `镜头 ${shot.shotId} 有英语口播但视频没有原生音轨，请重新生成或上传带原生英语声音的视频；不能用 TTS 代替真人口播。`
+            : `镜头 ${shot.shotId} 有台词但视频没有原生音轨，不能按原生音轨策略合成。请使用带音轨的素材，或创建使用免费配音的新计划。`);
         }
-        const speech = native || narrationDisabled ? undefined : await narration(shot, run.data.output.voice, workDir);
+        const speech = native || narrationDisabled ? undefined : await narration(shot, resolveNarrationVoice(run.data.creativeProfile, run.data.output.voice), workDir);
         assertOwned();
         const duration = native ? source.probe.duration : Math.max(shot.data.shot.duration, mix ? source.probe.duration : 0, speech ? speech.duration + 0.45 : 0);
+        if (tidewe) assertTideweMediaDuration(shot.shotId, duration, source.probe.duration);
         rendered.push({ shot, clip: { type: "video", filePath: source.path, sourceDuration: source.probe.duration, duration,
-          transition: shot.data.shot.transition, hasAudio: (native || mix) && source.probe.hasAudio,
+          transition: tideweNative ? "direct_concat" : shot.data.shot.transition, hasAudio: (native || mix) && source.probe.hasAudio,
+          ...(tidewe ? { strictSourceDuration: true } : {}),
+          ...(tideweNative && stripPauseMarks(shot.data.shot.voiceover ?? "").trim() ? { preserveNativeSpeech: true } : {}),
           ...(speech ? { audioPath: speech.path, ...(mix && source.probe.hasAudio ? { mixNativeAudio: true } : {}) } : {}) },
           voiceSec: speech?.duration, words: speech?.words });
       }
       const durations = padDurationsForFade(rendered.map((item) => ({ duration: item.clip.duration, transition: item.clip.transition, hasVoice: Boolean(item.clip.hasAudio || item.clip.audioPath) })));
-      rendered.forEach((item, index) => { item.clip.duration = durations[index]; });
+      rendered.forEach((item, index) => {
+        item.clip.duration = durations[index];
+        if (tidewe) assertTideweMediaDuration(item.shot.shotId, item.clip.duration, item.clip.sourceDuration ?? 0);
+      });
       const timeline = buildSubtitleTimeline(rendered.map((item) => {
         const premiumCg = run.data.output.narrationMode !== undefined;
-        const overlay = premiumCg ? undefined : item.shot.data.shot.textOverlay;
+        const overlay = premiumCg || tidewe ? undefined : item.shot.data.shot.textOverlay;
         return { duration: item.clip.duration, transition: item.clip.transition,
           voiceover: !premiumCg && run.data.output.subtitles ? stripPauseMarks(item.shot.data.shot.voiceover ?? "") : undefined,
           voiceSec: item.voiceSec, words: item.words,
@@ -246,6 +273,7 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
       // Sidecar first, final rename second: a crash after publication can always be recovered without re-rendering.
       await writeFile(timelinePath + ".part", JSON.stringify({ version: 1, runId, compositionId, fingerprint, planHash: run.data.planHash,
         audioStrategy: run.data.output.audioStrategy, audioRequired, total: timeline.total, boundaries: segmentBoundaries(config.clips),
+        ...(tideweNative ? { speechMode: "on_camera", captionTiming: "segment-estimate" } : {}),
         shots: rendered.map((item) => ({ shotId: item.shot.shotId, assetId: item.shot.assetId, sourceHash: item.shot.data.sourceFileHash,
           duration: item.clip.duration, transition: item.clip.transition })), cues: timeline.cues }), "utf8");
       assertOwned();

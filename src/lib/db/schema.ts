@@ -16,6 +16,7 @@ import type {
 } from "@/lib/generation-quality";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
 import type { ScriptGenerationMetadata } from "@/lib/script-engine/provenance";
+import type { ProductFacts, TideweCopyDocument, TideweShotFields } from "@/lib/tidewe/types";
 import type {
   ProjectCreativeProfile,
   ProjectCreativeProfileDrafts,
@@ -44,6 +45,7 @@ export const projects = sqliteTable("projects", {
   affiliateCode: text("affiliate_code"),
   productImages: text("product_images", { mode: "json" }).$type<string[]>().default([]),
   productAnalysis: text("product_analysis"), // LLM visual analysis result
+  productFacts: text("product_facts", { mode: "json" }).$type<ProductFacts>(),
   productId: text("product_id"), // Linked product library entry (optional; can also be filled in directly)
   brandId: text("brand_id"), // Linked brand settings
   templateId: text("template_id"), // Script template in use
@@ -75,11 +77,12 @@ export const scripts = sqliteTable("scripts", {
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   version: integer("version").notNull().default(1),
   styleType: text("style_type", {
-    enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "premium_product_cg", "custom"],
+    enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "premium_product_cg", "tidewe_outdoor", "custom"],
   }).notNull(),
   title: text("title"),
   totalDuration: integer("total_duration"), // Total duration in seconds
   shots: text("shots", { mode: "json" }).$type<Shot[]>().default([]),
+  copyDocument: text("copy_document", { mode: "json" }).$type<TideweCopyDocument>(),
   // Nullable for existing and manually imported scripts; never store LLM credentials here.
   generationMetadata: text("generation_metadata", { mode: "json" }).$type<ScriptGenerationMetadata>(),
   // Immutable creative context for this script version. It remains inspectable after a
@@ -409,7 +412,7 @@ export const settings = sqliteTable("settings", {
 export type VideoMode =
   | "product_closeup"   // Product close-up: original product image + motion effects, highest realism
   | "graphic_montage"   // Graphic montage: product image + text cards + transition animations
-  | "scene_demo"        // Scene demo: AI-generated usage scenario (no faces)
+  | "scene_demo"        // Usage scenes; the creative profile controls on-camera people and presentation.
   | "live_presenter";   // Live presenter: on-screen character explains the product (requires a character or user-uploaded footage)
 
 /**
@@ -429,6 +432,7 @@ export interface ScriptCharacter {
 }
 
 export interface Shot {
+  tidewe?: TideweShotFields;
   shotId: number;
   type: "hook" | "pain_point" | "product_reveal" | "demo" | "social_proof" | "cta";
   duration: number; // Seconds

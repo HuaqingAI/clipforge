@@ -51,6 +51,8 @@ import { realFaceLine } from "@/lib/presenters";
 import { modelSupportsLastFrame } from "@/lib/video-composer/transitions";
 import {
   sanitizeVideoControlSummary,
+  sanitizeVideoSourceContext,
+  type VideoSourceContext,
 } from "@/lib/video-control-plan";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
 import { useT, useLocale } from "@/lib/i18n";
@@ -69,7 +71,9 @@ import {
   type CreativeIntent,
   type VisualBible,
 } from "@/lib/production-system";
-import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 
 // shot type labels (label changed to i18n key in the assets namespace, resolved per locale)
 const shotTypeLabels: Record<Shot["type"], { key: string; color: string }> = {
@@ -124,7 +128,13 @@ interface PreparedMotion extends BatchMotionDraft {
 
 function motionAssetKey(asset: AssetItem) {
   return JSON.stringify([asset.assetId, asset.thumbnailUrl, asset.status, asset.isVideo,
-    asset.type, asset.duration, asset.camera, asset.description, asset.prompt, asset.characterId, asset.visualSource]);
+    asset.type, asset.duration, asset.camera, asset.description, asset.prompt, asset.voiceover, asset.characterId, asset.visualSource, asset.tidewe]);
+}
+
+function sameTideweScene(first: AssetItem | undefined, second: AssetItem | undefined) {
+  return Boolean(first?.tidewe?.sceneId && first.tidewe.sceneId === second?.tidewe?.sceneId
+    && first.tidewe.productVisible === second.tidewe.productVisible
+    && first.tidewe.personVisible === second.tidewe.personVisible);
 }
 
 // shot types that "feature the product": when product fidelity is enabled, these AI shots use image-to-image (redraw with product photo to lock in the subject)
@@ -136,6 +146,7 @@ export default function AssetsPage() {
 
 function AssetsPageContent() {
   const t = useT("assets");
+  const tw = useT("tidewe");
   const tc = useT("common");
   const tm = useT("materials");
   const locale = useLocale();
@@ -195,7 +206,7 @@ function AssetsPageContent() {
   const [preparingBatchMotion, setPreparingBatchMotion] = useState(false);
   const [batchMotionBusy, setBatchMotionBusy] = useState(false);
   const batchMotionLock = useRef(false);
-  const motionContext = useRef<{ scriptId: string; configurationKey: string; assets: AssetItem[] }>({ scriptId: "", configurationKey: "", assets: [] });
+  const motionContext = useRef<{ scriptId: string; scriptHash: string; configurationKey: string; assets: AssetItem[] }>({ scriptId: "", scriptHash: "", configurationKey: "", assets: [] });
   // Batch generation must await confirmation instead of replacing one pending dialog with another.
   const motionDraftDone = useRef<(() => void) | null>(null);
   const motionPreparation = useRef<AbortController | null>(null);
@@ -213,6 +224,8 @@ function AssetsPageContent() {
   // per-shot camera editing (preset picker + inline free text): edits persist into the
   // selected script's shots via the scripts PATCH, so the next (re)generation uses them
   const [scriptId, setScriptId] = useState<string>("");
+  const [scriptHash, setScriptHash] = useState("");
+  const [creativeConfigRevision, setCreativeConfigRevision] = useState(0);
   const [scriptTitle, setScriptTitle] = useState("");
   const [editingCameraShot, setEditingCameraShot] = useState<number | null>(null);
   const [cameraDraft, setCameraDraft] = useState("");
@@ -225,7 +238,10 @@ function AssetsPageContent() {
   // grid and film passes as an identity reference so the person stops morphing
   const { characters: presenterLib } = useCharacterStore();
   const [presenterId, setPresenterId] = useState("");
-  const presenterSheet = presenterLib.find((c) => c.id === presenterId)?.referenceImages?.[0];
+  const boundPresenter = isTideweOutdoorProfile(projectCreativeProfile) ? projectCreativeProfile.presenter : undefined;
+  const presenterSheet = isTideweOutdoorProfile(projectCreativeProfile)
+    ? tidewePresenterReference(projectCreativeProfile)
+    : presenterLib.find((c) => c.id === presenterId)?.referenceImages?.[0];
 
   const doneCount = assets.filter((a) => a.status === "done").length;
   const allDone = assets.length > 0 && doneCount === assets.length;
@@ -248,13 +264,15 @@ function AssetsPageContent() {
   const klingCapacityBlocked = Boolean(klingConcurrency && (klingConcurrency.blockedByUnknownSubmission || klingConcurrency.active >= klingConcurrency.max));
   const klingCapacityMessage = klingConcurrency?.blockedByUnknownSubmission ? "此账号有提交结果不明的任务，请先核对原任务再继续。" : `当前账号已占用全部 ${KLING_MAX_CONCURRENT_SHOTS} 个生成名额，请等待镜头完成后再提交。`;
   const klingEnabled = providers["kling-cli"]?.enabled === true;
-  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, productSafe, productImages, presenterSheet, presenterLib });
+  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, productSafe, productImages, presenterSheet, presenterLib: isTideweOutdoorProfile(projectCreativeProfile) ? undefined : presenterLib });
   const premiumCg = isPremiumProductCgProfile(projectCreativeProfile);
+  const tidewe = isTideweOutdoorProfile(projectCreativeProfile);
+  const tideweNative = isTideweNativeSpeech(projectCreativeProfile);
   const premiumCgVisualOnly = premiumCg && projectCreativeProfile.narrationMode === "none";
   // Premium CG always starts from the supplied product reference. Sales users may still
   // choose a freer text-to-image treatment through the existing toggle.
-  const productReferenceLocked = premiumCg || productSafe;
-  motionContext.current = { scriptId, configurationKey: videoConfigurationKey, assets };
+  const productReferenceLocked = premiumCg || tidewe || productSafe;
+  motionContext.current = { scriptId, scriptHash, configurationKey: videoConfigurationKey, assets };
   const batchMotionValid = Boolean(batchMotion && batchMotion.scriptId === scriptId && batchMotion.configurationKey === videoConfigurationKey);
 
   const motionDraftValid = Boolean(motionDraft && motionDraft.selectionKey === defaultVideoModel
@@ -300,10 +318,11 @@ function AssetsPageContent() {
           setContentType(typeof project.contentType === "string" ? project.contentType : "");
           setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
           setProjectCreativeProfile(project.creativeProfile);
+          setCreativeConfigRevision(project.creativeConfigRevision ?? 0);
           setProjectCreativeIntent(sanitizeCreativeIntent(project.creativeIntent));
           setProjectVisualBible(sanitizeVisualBible(project.visualBible));
           const requestedPresenter = new URLSearchParams(window.location.search).get("presenter");
-          setPresenterId(requestedPresenter || (typeof project.characterId === "string" ? project.characterId : ""));
+          setPresenterId(isTideweOutdoorProfile(project.creativeProfile) ? project.creativeProfile.presenter?.id ?? "" : requestedPresenter || (typeof project.characterId === "string" ? project.characterId : ""));
           if (Array.isArray(project.productionWorkflow)) {
             const motionStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "motion");
             if (motionStage) setAutoMotion(motionStage.enabled !== false);
@@ -318,6 +337,7 @@ function AssetsPageContent() {
 
         if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
           setScriptId("");
+          setScriptHash("");
           setScriptTitle("");
           lastFrameByShot.current.clear();
           setAssets([]);
@@ -326,6 +346,7 @@ function AssetsPageContent() {
         }
         // remember which script row the view came from — camera edits PATCH back into it
         setScriptId(typeof selected.id === "string" ? selected.id : "");
+        setScriptHash(typeof selected.scriptHash === "string" ? selected.scriptHash : "");
         setScriptTitle(typeof selected.title === "string" ? selected.title.trim() : "");
 
         // selected script shots + persisted assets → view rows (shared pure function used by "refresh after filling visuals")
@@ -358,12 +379,15 @@ function AssetsPageContent() {
     if (request !== assetsRequest.current) return;
     const imgs: string[] = project && Array.isArray(project.productImages) ? project.productImages : [];
     setProjectCreativeProfile(project?.creativeProfile);
+    setCreativeConfigRevision(project?.creativeConfigRevision ?? 0);
+    setProductImages(imgs);
     const selected = Array.isArray(scripts)
       ? scripts.find((s: { selected?: boolean }) => s.selected)
       : null;
     if (selected && Array.isArray(selected.shots) && selected.shots.length > 0) {
       setLoadError(null);
       setScriptId(typeof selected.id === "string" ? selected.id : "");
+      setScriptHash(typeof selected.scriptHash === "string" ? selected.scriptHash : "");
       setScriptTitle(typeof selected.title === "string" ? selected.title.trim() : "");
       const rows = buildAssetRows(selected.shots as Shot[], Array.isArray(savedAssets) ? savedAssets : [], imgs);
       lastFrameByShot.current.clear();
@@ -371,6 +395,7 @@ function AssetsPageContent() {
       setAssets(rows);
     } else {
       setScriptId("");
+      setScriptHash("");
       setScriptTitle("");
       lastFrameByShot.current.clear();
       setAssets([]);
@@ -453,13 +478,14 @@ function AssetsPageContent() {
         const res = await fetch(`/api/project/${id}/scripts`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scriptId, shotTexts: [{ shotId, camera: trimmed }] }),
+          body: JSON.stringify({ scriptId, ...(tidewe && { expectedScriptHash: scriptHash, expectedCreativeConfigRevision: creativeConfigRevision }), shotTexts: [{ shotId, camera: trimmed }] }),
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           throw new Error(d.error || t("cameraSaveFailed"));
         }
-        setAssets((prev) => prev.map((a) => (a.shotId === shotId ? { ...a, camera: trimmed || undefined } : a)));
+        if (tidewe) await reloadAssets();
+        else setAssets((prev) => prev.map((a) => (a.shotId === shotId ? { ...a, camera: trimmed || undefined } : a)));
       } catch (e) {
         setAssets((prev) =>
           prev.map((a) => (a.shotId === shotId ? { ...a, error: e instanceof Error ? e.message : t("cameraSaveFailed") } : a))
@@ -468,7 +494,7 @@ function AssetsPageContent() {
         setSavingCameraShot(null);
       }
     },
-    [assets, scriptId, id, t]
+    [assets, scriptId, scriptHash, creativeConfigRevision, tidewe, reloadAssets, id, t]
   );
 
   // Apply a named camera preset; sentence language follows the script.
@@ -512,7 +538,7 @@ function AssetsPageContent() {
   const applyLocalMaterial = async (material: PublicLocalMaterial, shotId: number) => {
     const res = await fetch(`/api/project/${id}/assets`, {
       method: "POST", headers: { "Content-Type": "application/json", "Accept-Language": locale },
-      body: JSON.stringify({ shotId, sourceUrl: material.url, type: "user_upload", provider: "local", prompt: [material.originalName, ...material.tags].join(" ") }),
+      body: JSON.stringify({ scriptId, ...(tidewe && { expectedScriptHash: scriptHash }), shotId, sourceUrl: material.url, type: "user_upload", provider: "local", prompt: [material.originalName, ...material.tags].join(" ") }),
     });
     if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || t("uploadFailed")); }
     await reloadAssets();
@@ -540,7 +566,7 @@ function AssetsPageContent() {
         const up = await fetch("/api/upload", { method: "POST", body: fd, signal: controller.signal });
         const data = await up.json().catch(() => ({}));
         if (!up.ok || !data.paths?.[0]) throw new Error(data.error || t("uploadFailed"));
-        const res = await fetch(`/api/project/${id}/assets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shotId, sourceUrl: data.paths[0], type: "user_upload" }) });
+        const res = await fetch(`/api/project/${id}/assets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scriptId, ...(tidewe && { expectedScriptHash: scriptHash }), shotId, sourceUrl: data.paths[0], type: "user_upload" }) });
         if (!res.ok) throw new Error(t("uploadFailed"));
         await reloadAssets();
       }
@@ -612,12 +638,14 @@ function AssetsPageContent() {
   // keyframeUrl = the static first frame the i2v ran from: persisted as thumbnailPath so the
   // keyframe survives the upsert — it powers the per-shot motion re-run and keyframe chaining
   const saveVideoAsset = useCallback(
-    async (shotId: number, url: string, prompt: string | undefined, provider: string, model: string, keyframeUrl?: string, generationPlan?: GenerationControlSummary | null) => {
+    async (shotId: number, url: string, prompt: string | undefined, provider: string, model: string, keyframeUrl?: string, generationPlan?: GenerationControlSummary | null, sourceContext?: VideoSourceContext) => {
       const saveRes = await fetch(`/api/project/${id}/assets`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          scriptId, shotId, type: "ai_generate", sourceUrl: url, prompt, provider, model,
+          scriptId: sourceContext?.sourceScriptId ?? scriptId,
+          ...(tidewe && { expectedScriptHash: sourceContext?.sourceRevision ?? scriptHash }),
+          shotId, type: "ai_generate", sourceUrl: url, prompt, provider, model,
           ...(keyframeUrl && { thumbnailPath: keyframeUrl }),
           ...(generationPlan && { generationPlan }),
         }),
@@ -634,10 +662,13 @@ function AssetsPageContent() {
         // the server extracted this clip's REAL last frame — remember it for tail-chaining
         if (typeof saved.lastFrameUrl === "string") {
           savedLastFrame = saved.lastFrameUrl;
-          lastFrameByShot.current.set(shotId, saved.lastFrameUrl);
         }
       }
-      if (motionContext.current.scriptId !== scriptId) return;
+      const sourceScriptId = sourceContext?.sourceScriptId ?? scriptId;
+      const sourceHash = sourceContext?.sourceRevision ?? scriptHash;
+      if (motionContext.current.scriptId !== sourceScriptId
+        || (tidewe && motionContext.current.scriptHash !== sourceHash)) return;
+      if (savedLastFrame) lastFrameByShot.current.set(shotId, savedLastFrame);
       setAssets((prev) =>
         prev.map((a) =>
           a.shotId === shotId
@@ -657,7 +688,7 @@ function AssetsPageContent() {
         )
       );
     },
-    [id, scriptId]
+    [id, scriptId, scriptHash, tidewe]
   );
 
   // resume a persisted cloud task: query (and wait for) its status, then save the result
@@ -699,10 +730,12 @@ function AssetsPageContent() {
             if (!finalizeRes.ok) throw new Error(finalized.error || t("taskResumeFailed"));
             await reloadAssets();
           } else if (task.shotId != null) {
+            const sourceContext = sanitizeVideoControlSummary(task.controlPlan)?.sourceContext;
+            if (tidewe && !sourceContext) throw new Error(`该历史任务没有原始文案版本，结果已保留但不能自动采用。请查看结果并确认后手动上传：${data.videoUrls[0]}`);
             const asset = assets.find((a) => a.shotId === task.shotId);
             // best-effort keyframe provenance: the task was submitted from the shot's static frame
             const keyframe = asset && !asset.isVideo ? asset.thumbnailUrl : asset?.keyframeUrl;
-            await saveVideoAsset(task.shotId, data.videoUrls[0], task.prompt, task.provider, task.model, keyframe, task.controlPlan);
+            await saveVideoAsset(task.shotId, data.videoUrls[0], task.prompt, task.provider, task.model, keyframe, task.controlPlan, sourceContext);
           }
           setTaskMsg(t("taskResumeDone"));
         } else if (data.status === "failed" || data.status === "cancelled") {
@@ -724,7 +757,7 @@ function AssetsPageContent() {
         });
       }
     },
-    [providers, assets, saveVideoAsset, reloadAssets, reloadPendingTasks, id, t]
+    [providers, assets, saveVideoAsset, reloadAssets, reloadPendingTasks, id, tidewe, t]
   );
 
   // convert to motion shot: use the already-generated image for this shot as the first frame, call the image-to-video model, and save the result as the shot's asset (video).
@@ -753,28 +786,32 @@ function AssetsPageContent() {
         return;
       }
       // chain target: explicit override wins (null = explicitly no chain); otherwise the next shot's static keyframe
+      const assetIndex = assets.findIndex((item) => item.shotId === shotId);
+      const previousAsset = assetIndex > 0 ? assets[assetIndex - 1] : undefined;
+      const nextAsset = assets[assetIndex + 1];
       const chainFrame =
         chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
           ? undefined
           : lastFrameOverride ??
             // demo-type shots skip auto-chaining (their ending IS the content); explicit override still chains
-            (chainByDefault(asset?.type) ? nextChainKeyframe(assets, shotId) : undefined);
+            (chainByDefault(asset?.type) && (!tidewe || sameTideweScene(asset, nextAsset)) ? nextChainKeyframe(assets, shotId) : undefined);
       // tail mode: the previous shot's REAL last frame (extracted server-side after its save)
       // becomes this shot's first frame — pixel-continuous seam; falls back to own keyframe
       let tailFirstFrame: string | undefined;
-      if (chainMode === "tail" && !firstFrameOverride) {
-        const idx = assets.findIndex((a) => a.shotId === shotId);
-        const prev = idx > 0 ? assets[idx - 1] : undefined;
-        if (prev) tailFirstFrame = prev.lastFrameUrl ?? lastFrameByShot.current.get(prev.shotId);
+      if (chainMode === "tail" && !firstFrameOverride && previousAsset
+        && (!tidewe || sameTideweScene(previousAsset, asset))) {
+        tailFirstFrame = previousAsset.lastFrameUrl ?? lastFrameByShot.current.get(previousAsset.shotId);
       }
       const effectiveFirstFrame = tailFirstFrame ?? firstFrame;
-      const assetIndex = assets.findIndex((item) => item.shotId === shotId);
-      const previousAsset = assetIndex > 0 ? assets[assetIndex - 1] : undefined;
-      const previousTail = previousAsset?.lastFrameUrl ?? (previousAsset ? lastFrameByShot.current.get(previousAsset.shotId) : undefined);
-      const characterReference = !premiumCg && asset?.characterId
+      const previousTail = (!tidewe || sameTideweScene(previousAsset, asset))
+        ? previousAsset?.lastFrameUrl ?? (previousAsset ? lastFrameByShot.current.get(previousAsset.shotId) : undefined)
+        : undefined;
+      const characterReference = tidewe
+        ? (asset?.tidewe?.personVisible !== false || (tideweNative && asset?.voiceover?.trim()) ? presenterSheet : undefined)
+        : !premiumCg && asset?.characterId
         ? presenterLib.find((character) => character.id === asset.characterId)?.referenceImages?.[0] ?? presenterSheet
         : undefined;
-      const productReference = productReferenceLocked && (premiumCg || asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
+      const productReference = productReferenceLocked && (tidewe ? asset?.tidewe?.productVisible !== false : premiumCg || asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
         ? productImages[0]
         : undefined;
       const expectedAssetKey = motionAssetKey(asset);
@@ -789,9 +826,9 @@ function AssetsPageContent() {
         settings: { visualLook, motionIntensity, motionRealism },
         ...(videoParams.negativePrompt && { negativePrompt: videoParams.negativePrompt }),
         chainToNext: !!chainFrame, locale, batch, retake,
-        generateAudio: videoModelTarget.provider === "kling-cli" ? false : !batch && !premiumCgVisualOnly && videoParams.audioEnabled !== false,
+        generateAudio: tideweNative || (videoModelTarget.provider !== "kling-cli" && !tidewe && !batch && !premiumCgVisualOnly && videoParams.audioEnabled !== false),
         controlInputs: {
-          supportsAudio: batch || premiumCgVisualOnly || videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
+          supportsAudio: tideweNative ? videoModelTarget.supportsAudio : tidewe || batch || premiumCgVisualOnly || videoModelTarget.provider === "kling-cli" || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
           firstFrameUrl: effectiveFirstFrame, lastFrameUrl: chainFrame,
           characterReferenceUrl: premiumCg ? undefined : characterReference,
           productReferenceUrl: productReference,
@@ -803,7 +840,7 @@ function AssetsPageContent() {
       if (!validate()) throw new Error("脚本、素材或生成设置已更改，请重新打开视频生成确认。");
       const finalPrompt = preview.prompt;
       const controlPlan = preview.controlPlan;
-      const consistencyFailure = checkPromptConsistency(finalPrompt, projectVisualBible).find((issue) => issue.severity === "fail");
+      const consistencyFailure = tidewe ? undefined : checkPromptConsistency(finalPrompt, projectVisualBible).find((issue) => issue.severity === "fail");
       if (consistencyFailure) {
         setAssets((prev) => prev.map((item) => item.shotId === shotId ? { ...item, error: t("visualBibleBlocked", { anchor: consistencyFailure.anchor }) } : item));
         return;
@@ -816,9 +853,9 @@ function AssetsPageContent() {
         videoOptions.negativePrompt = preview.negativePrompt;
       }
       if (asset?.duration) {
-        videoOptions.duration = Math.min(15, Math.max(4, Math.round(asset.duration)));
+        videoOptions.duration = Math.min(15, Math.max(4, tideweNative ? Math.ceil(asset.duration) : Math.round(asset.duration)));
       }
-      if (batch || premiumCgVisualOnly) {
+      if ((tidewe && !tideweNative) || (batch && !tideweNative) || premiumCgVisualOnly) {
         // Keep the browser-side confirmation honest. The route derives the same policy from the
         // persisted project profile and remains authoritative if a request is forged.
         videoOptions.audioEnabled = false;
@@ -828,8 +865,12 @@ function AssetsPageContent() {
         delete videoOptions.audioReferenceUrl;
         delete videoOptions.tts;
         delete videoOptions.ttsEnabled;
-      } else if (controlPlan.audioMode === "native") {
+      } else if (tideweNative || controlPlan.audioMode === "native") {
         videoOptions.audioEnabled = true;
+        delete videoOptions.audioUrl;
+        delete videoOptions.audioReferenceUrl;
+        delete videoOptions.tts;
+        delete videoOptions.ttsEnabled;
         if (asset?.voiceover?.trim()) videoOptions.voiceover = asset.voiceover.trim();
         if (controlPlan.audioPrompt) videoOptions.audioPrompt = controlPlan.audioPrompt;
       }
@@ -890,7 +931,7 @@ function AssetsPageContent() {
         // save as this shot's asset (video will be downloaded locally); compose processes it as a video clip (including native audio track detection).
         // Persist the motion prompt actually sent AND the source keyframe (provenance + re-run/chaining)
         try {
-          await saveVideoAsset(shotId, url, finalPrompt, videoModelTarget.provider, data.modelId || videoModelTarget.model, effectiveFirstFrame, controlSummary);
+          await saveVideoAsset(shotId, url, finalPrompt, videoModelTarget.provider, data.modelId || videoModelTarget.model, effectiveFirstFrame, controlSummary, sanitizeVideoSourceContext(data.sourceContext));
         } catch (failure) {
           throw new VideoGenerationFailure(failure instanceof Error ? failure.message : "视频保存失败，请勿重复生成。", true, data.taskId ? String(data.taskId) : undefined);
         }
@@ -922,7 +963,7 @@ function AssetsPageContent() {
             },
       };
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, klingCapacityBlocked, klingCapacityMessage, pendingTasks, unresolvedMotionShots, scriptId, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, premiumCg, premiumCgVisualOnly, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, klingCapacityBlocked, klingCapacityMessage, pendingTasks, unresolvedMotionShots, scriptId, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, premiumCg, premiumCgVisualOnly, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
   );
 
   const generateMotion = useCallback(async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom) => {
@@ -990,7 +1031,20 @@ function AssetsPageContent() {
       if (!asset) return undefined;
 
       // product image shot: use the product photo directly, no AI call needed (persisted for the composer to read)
-      if (asset.visualSource === "product_image") {
+      if (asset.visualSource === "product_image" && !(tideweNative && asset.voiceover?.trim())) {
+        if (tidewe) {
+          try {
+            if (!productImages[0] || asset.tidewe?.productVisible === false) throw new Error("该镜头缺少匹配的产品画面，请按分镜生成或上传素材。");
+            const saved = await fetch(`/api/project/${id}/assets`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scriptId, expectedScriptHash: scriptHash, shotId, type: "product_image", sourceUrl: productImages[0] }),
+            });
+            if (!saved.ok) { const failure = await saved.json().catch(() => ({})); throw new Error(failure.error || "素材保存失败，请刷新后重试。"); }
+          } catch (error) {
+            setAssets(previous => previous.map(row => row.shotId === shotId ? { ...row, status: "failed", error: error instanceof Error ? error.message : "素材保存失败" } : row));
+            return undefined;
+          }
+        }
         setAssets((prev) =>
           prev.map((a) =>
             a.shotId === shotId ? {
@@ -1001,7 +1055,7 @@ function AssetsPageContent() {
           )
         );
         if (productImages[0]) {
-          fetch(`/api/project/${id}/assets`, {
+          if (!tidewe) fetch(`/api/project/${id}/assets`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ shotId, type: "product_image", sourceUrl: productImages[0] }),
@@ -1028,9 +1082,12 @@ function AssetsPageContent() {
 
       // product fidelity: AI shot featuring product + product image available + toggle on → redraw with product image (image-to-image, locks in the product subject)
       const useProductSafe =
-        productReferenceLocked && !!productImages[0] && (premiumCg || PRODUCT_SHOT_TYPES.has(asset.type));
-      const genModel = useProductSafe ? toEditVariant(modelTarget.model) : modelTarget.model;
-      const genMode = useProductSafe ? "image-to-image" : "text-to-image";
+        productReferenceLocked && !!productImages[0] && (tidewe ? asset.tidewe?.productVisible !== false : premiumCg || PRODUCT_SHOT_TYPES.has(asset.type));
+      const characterReference = tidewe && (asset.tidewe?.personVisible !== false || (tideweNative && asset.voiceover?.trim())) ? presenterSheet : undefined;
+      const referenceImageUrls = tidewe ? [...new Set([...(characterReference ? [characterReference] : []), ...(useProductSafe ? productImages : [])])] : [];
+      const hasImageReferences = useProductSafe || referenceImageUrls.length > 0;
+      const genModel = hasImageReferences ? toEditVariant(modelTarget.model) : modelTarget.model;
+      const genMode = hasImageReferences ? "image-to-image" : "text-to-image";
       const basePrompt = asset.prompt || asset.description;
       // cast shots: pin the anti-"AI face" realism constraint onto the keyframe too,
       // so the person is ordinary-looking from the very first frame the i2v runs on
@@ -1054,8 +1111,8 @@ function AssetsPageContent() {
         continuity: [...(projectCreativeIntent.continuity ?? []), ...projectVisualBible.characterAnchors, ...projectVisualBible.wardrobeAnchors, ...projectVisualBible.environmentAnchors, ...projectVisualBible.lightingAnchors],
         productConstraints: [...(projectCreativeIntent.productConstraints ?? []), ...projectVisualBible.productAnchors],
       });
-      const genPrompt = projectDirection.prompt ? `${shotPrompt}. Project direction: ${projectDirection.prompt}` : shotPrompt;
-      const consistencyFailure = checkPromptConsistency(genPrompt, projectVisualBible).find((issue) => issue.severity === "fail");
+      const genPrompt = tidewe ? compileTideweVisualPrompt(asset, "image", tideweNative ? "on_camera" : "voiceover", boundPresenter).prompt : projectDirection.prompt ? `${shotPrompt}. Project direction: ${projectDirection.prompt}` : shotPrompt;
+      const consistencyFailure = tidewe ? undefined : checkPromptConsistency(genPrompt, projectVisualBible).find((issue) => issue.severity === "fail");
       if (consistencyFailure) {
         setAssets((prev) => prev.map((item) => item.shotId === shotId ? { ...item, status: "failed", error: t("visualBibleBlocked", { anchor: consistencyFailure.anchor }) } : item));
         return undefined;
@@ -1075,11 +1132,11 @@ function AssetsPageContent() {
             projectId: id,
             scriptId,
             shotId,
-            ...(useProductSafe && { imageUrl: productImages[0] }),
+            ...(tidewe ? referenceImageUrls.length > 0 && { imageUrl: referenceImageUrls[0], referenceImageUrls } : useProductSafe && { imageUrl: productImages[0] }),
             // user-defined image parameters (aspect ratio → dimensions / count / steps / guidance / seed / negative prompt)
             options: (() => {
               const options = buildImageOptions(imageParams);
-              if (projectDirection.negativePrompt) options.negativePrompt = [options.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
+              if (!tidewe && projectDirection.negativePrompt) options.negativePrompt = [options.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
               return options;
             })(),
           }),
@@ -1095,15 +1152,19 @@ function AssetsPageContent() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              shotId, type: "ai_generate", sourceUrl: url,
+              scriptId, ...(tidewe && { expectedScriptHash: scriptHash }), shotId, type: "ai_generate", sourceUrl: url,
               prompt: genPrompt, provider: modelTarget.provider, model: genModel,
             }),
           });
           if (saveRes.ok) {
             const saved = await saveRes.json();
             if (saved.filePath) savedUrl = saved.filePath;
+          } else if (tidewe) {
+            const failure = await saveRes.json().catch(() => ({}));
+            throw new Error(failure.error || "生成结果尚未保存，请先刷新核对，避免重复生成。");
           }
-        } catch {
+        } catch (error) {
+          if (tidewe) throw error;
           // persist failure doesn't affect the preview (the composer will fall back to the product image as a safety net)
         }
         setAssets((prev) =>
@@ -1125,7 +1186,7 @@ function AssetsPageContent() {
         return undefined;
       }
     },
-    [assets, id, scriptId, modelTarget, productImages, productSafe, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, visualLook, generateMotion, t]
+    [assets, id, scriptId, scriptHash, modelTarget, productImages, productReferenceLocked, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, tidewe, tideweNative, boundPresenter, presenterSheet, visualLook, generateMotion, t]
   );
 
   // storyboard grid: ONE image generation renders every shot as a 3x3 grid cell (person /
@@ -1201,18 +1262,21 @@ function AssetsPageContent() {
         if (row.isVideo) continue; // already a motion/stock video — don't re-bill
         // tail mode: sequential continuation — the previous shot's real tail frame (captured at
         // save time in this very loop) beats the shot's own keyframe as the first frame
-        const tailFrame = chainMode === "tail" && i > 0 ? assets[i - 1].lastFrameUrl ?? lastFrameByShot.current.get(assets[i - 1].shotId) : undefined;
+        const previous = assets[i - 1];
+        const tailFrame = chainMode === "tail" && previous && (!tidewe || sameTideweScene(previous, row))
+          ? previous.lastFrameUrl ?? lastFrameByShot.current.get(previous.shotId) : undefined;
         const firstFrame = tailFrame ?? staticFrameOf(row);
         if (!firstFrame) continue;
         const next = assets[i + 1];
         // pin mode pins the next keyframe as the last frame; tail/off modes never pin
-        const lastFrame = chainMode === "pin" && next && chainByDefault(row.type) ? staticFrameOf(next) : undefined;
+        const lastFrame = chainMode === "pin" && next && chainByDefault(row.type)
+          && (!tidewe || sameTideweScene(row, next)) ? staticFrameOf(next) : undefined;
         // null = explicitly no chain (last shot / next frame unavailable)
         await generateMotion(row.shotId, firstFrame, lastFrame ?? null);
       }
     }
     setIsBatchGenerating(false);
-  }, [assets, generateOne, generateMotion, autoMotion, videoModelTarget, isKlingDefault, chainMode]);
+  }, [assets, generateOne, generateMotion, autoMotion, videoModelTarget, isKlingDefault, chainMode, tidewe]);
 
   return (
     <div className="min-h-screen grid-bg">
@@ -1252,7 +1316,7 @@ function AssetsPageContent() {
         onRefreshTasks={async () => { await Promise.all([reloadKlingJobs(), reloadPendingTasks()]); }}
       />}
       <KlingJobDetail jobId={klingJobId} open={klingJobId !== null} onOpenChange={(open) => { if (!open) { setKlingJobId(null); clearTaskQuery("job"); } }} onChanged={() => { void reloadKlingJobs(); void reloadAssets(); }} />
-      <StoryboardFilmPanel open={klingFilmOpen && !!scriptId} onOpenChange={(open) => { setKlingFilmOpen(open); if (!open) { setFilmTaskId(undefined); setKlingFilmRunId(undefined); clearTaskQuery("film"); } }}
+      <StoryboardFilmPanel creativeProfile={projectCreativeProfile} open={klingFilmOpen && !!scriptId} onOpenChange={(open) => { setKlingFilmOpen(open); if (!open) { setFilmTaskId(undefined); setKlingFilmRunId(undefined); clearTaskQuery("film"); } }}
         projectId={id} scriptId={scriptId} presenterId={premiumCg ? undefined : presenterId}
         initialRunId={klingFilmRunId} initialTaskId={filmTaskId} onAssetsChanged={reloadAssets} />
 
@@ -1279,6 +1343,15 @@ function AssetsPageContent() {
               {t("viewScript")}
               <LuArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
             </Link>
+          </section>
+        )}
+        {!loading && tidewe && (
+          <section aria-label={tw("presenterLabel")} className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/10 p-3 text-sm">
+            <div>
+              <p className="font-medium">{tw("presenterLabel")}：{boundPresenter?.name ?? tw("presenterDefault")}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{boundPresenter ? tw("presenterAssetsBound") : tw("presenterAssetsDefault")}</p>
+            </div>
+            <Link href={`/project/${id}/script`} className="text-xs text-primary underline">{tw("presenterEditSettings")}</Link>
           </section>
         )}
         <ModelCatalogStatus statuses={catalog.statuses} pending={catalog.pending} onRetry={catalog.retry} />
@@ -1423,7 +1496,7 @@ function AssetsPageContent() {
           </Link>
           {/* Presenter picker: characters from the library; ones with a multi-view sheet
               anchor the person's identity through the grid and film passes */}
-          {!premiumCg && presenterLib.length > 0 && (
+          {!premiumCg && !tidewe && presenterLib.length > 0 && (
             <div
               className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1.5 h-8"
               title={t("presenterTip")}

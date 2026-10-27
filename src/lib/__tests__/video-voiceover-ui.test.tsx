@@ -2,6 +2,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import VideoPage from "@/app/project/[id]/video/page";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { AD_TEMPLATES, adTemplateStorageKey, adTemplateAppliedKey } from "@/lib/ad-templates";
 
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "project-1" }) }));
 vi.mock("@/lib/i18n", () => ({ useT: () => (key: string) => key, useLocale: () => "zh" }));
@@ -37,6 +39,7 @@ function expectNoFreeBgm(body: object) {
 async function mount() { await act(async () => root.render(<VideoPage />)); }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
@@ -58,6 +61,47 @@ afterEach(async () => {
 });
 
 describe("composition voiceover modes", () => {
+  it("waits for the loaded profile before consuming a template and restores the TIDEWE compose snapshot", async () => {
+    const template = AD_TEMPLATES.find((item) => item.compose.captionPreset === "karaoke" || item.compose.captionPreset === "bold")!;
+    expect(template).toBeTruthy();
+    localStorage.setItem(adTemplateStorageKey("project-1"), template.id);
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let resolveProject!: (response: Response) => void;
+    const projectResponse = new Promise<Response>((resolve) => { resolveProject = resolve; });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1" ? projectResponse : normalFetch(url, init));
+    await mount();
+    expect(localStorage.getItem(adTemplateStorageKey("project-1"))).toBe(template.id);
+    expect(localStorage.getItem(adTemplateAppliedKey("project-1"))).toBeNull();
+    await act(async () => resolveProject(Response.json({ name: "TIDEWE", creativeProfile: createTideweOutdoorProfile({ speechMode: "voiceover", composeSnapshot: { subtitles: false, captionPreset: "minimal", quality: "fast", bgmVolume: 0.1 } }) })));
+    expect(localStorage.getItem(adTemplateStorageKey("project-1"))).toBeNull();
+    expect(localStorage.getItem(adTemplateAppliedKey("project-1"))).toBeNull();
+    expect(switchFor("subtitleEnableLabel").getAttribute("aria-checked")).toBe("false");
+    expect(switchFor("ttsEnableLabel").disabled).toBe(true);
+    expect(container.textContent).not.toContain("matrixTitle");
+    await click(button("composeStart"));
+    const body = composeBodies().at(-1);
+    expect(body).toMatchObject({ subtitles: false, voiceoverMode: "replace", freeTts: { enabled: true, voice: "en-US-GuyNeural" }, renderPreset: "fast", aspectRatio: "9:16" });
+    expect(body).not.toHaveProperty("ctaText");
+    expect(body).not.toHaveProperty("productCard");
+    await click(switchFor("subtitleEnableLabel"));
+    await click(button("composeStart"));
+    expect(composeBodies().at(-1)).toMatchObject({ subtitles: true, captionPreset: "minimal" });
+  });
+  it("keeps on-camera TIDEWE speech as native audio without TTS controls or a duplicate narration request", async () => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1"
+      ? Promise.resolve(Response.json({ name: "TIDEWE", creativeProfile: createTideweOutdoorProfile() }))
+      : normalFetch(url, init));
+    await mount();
+    expect(container.textContent).toContain("nativeSpeechHint");
+    expect(switchFor("ttsEnableLabel")).toBeNull();
+    expect(switchFor("ttsReplaceLabel")).toBeNull();
+    expect(container.textContent).not.toContain("ttsFreeBadge");
+    await click(button("composeStart"));
+    const body = composeBodies().at(-1);
+    expect(body).toMatchObject({ nativeAudio: true, ttsEnabled: false, subtitles: true });
+    for (const field of ["freeTts", "ttsConfig", "voiceoverMode"]) expect(body).not.toHaveProperty(field);
+  });
   it("starts with both modes off and keeps switches mutually exclusive", async () => {
     await mount();
     const replace = switchFor("ttsReplaceLabel");

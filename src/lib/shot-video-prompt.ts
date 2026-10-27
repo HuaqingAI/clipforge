@@ -9,7 +9,8 @@ import {
 } from "@/lib/motion-prompt";
 import { compileCreativePrompt, sanitizeCreativeIntent, sanitizeVisualBible } from "@/lib/production-system";
 import { joinVideoPromptParts } from "@/lib/video-prompt";
-import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 
 /** Browser settings frozen into a video preview; never read browser state on the server. */
 export interface VideoPromptSettings {
@@ -43,7 +44,7 @@ export function normalizeVideoPromptSettings(raw?: unknown): VideoPromptSettings
 }
 
 export interface ShotVideoPromptInput {
-  shot?: Partial<Pick<Shot, "type" | "camera" | "description" | "visualIntent" | "visualSource" | "characterId" | "voiceover" | "narration">>;
+  shot?: Partial<Pick<Shot, "type" | "camera" | "description" | "visualIntent" | "visualSource" | "characterId" | "voiceover" | "narration" | "tidewe">>;
   ordinal: number;
   settings?: Partial<VideoPromptSettings>;
   category?: string | null;
@@ -62,6 +63,7 @@ const PRODUCT_SHOT_TYPES = new Set(["product_reveal", "demo", "cta"]);
 /** Shared visual direction for single-shot and full-film generation. Audio is added by the caller. */
 export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: string; negativePrompt: string } {
   const shot = input.shot;
+  if (isTideweOutdoorProfile(input.creativeProfile)) return compileTideweVisualPrompt(shot ?? {}, "video", input.creativeProfile.speechMode, input.creativeProfile.presenter);
   const settings = normalizeVideoPromptSettings(input.settings);
   const look = getLookPreset(settings.visualLook);
   const premiumProfile = isPremiumProductCgProfile(input.creativeProfile)

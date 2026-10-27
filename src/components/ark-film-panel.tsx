@@ -9,6 +9,7 @@ import { useCharacterStore, type Character } from "@/lib/stores/project-store";
 import { characterSheetRequest, hasCharacterSheetInput, hasSameCharacterSheetInput } from "@/lib/character-reference";
 import { buildImageOptions, buildVideoOptions, resolveDefaultModelTarget, toEditVariant, type GenModelTarget } from "@/lib/gen-params";
 import { isKlingVideoSelection } from "@/lib/assets-view";
+import { isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 
 interface FilmPreview {
   prompt: string; model: string; shotCount: number; seconds: number; scriptSeconds: number;
@@ -17,7 +18,7 @@ interface FilmPreview {
   dialogueWarnings: { index: number; seconds: number; count: number; limit: number }[];
   estimate?: { unitUsd: number; seconds: number; minUsd: number; maxUsd: number; tierMultiplier: number };
 }
-interface ProjectContext { productImages?: string[]; characterId?: string }
+interface ProjectContext { productImages?: string[]; characterId?: string; creativeProfile?: unknown }
 interface SavedTask { id: string; taskId: string; provider: string; model: string; shotId: number | null; mode?: string; error?: string }
 
 function configuration(scriptId: string, presenterId?: string) {
@@ -60,6 +61,7 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
   const invalidated = Boolean(preview && currentConfig !== frozen.current);
   const hasTask = Boolean(taskId || uncertain || videoUrl || savedTasks.length);
   const productImages = project?.productImages?.filter((url) => typeof url === "string" && url.trim()) ?? [];
+  const tidewe = isTideweOutdoorProfile(project?.creativeProfile);
 
   useEffect(() => { configurationEpoch.current++; setConfirmed(false); setOverCapAck(false); }, [currentConfig]);
 
@@ -103,7 +105,7 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
     })) as FilmPreview;
   }
   async function previewPlan() {
-    if (lock.current || hasTask || !recordsLoaded || !project) return;
+    if (tidewe || lock.current || hasTask || !recordsLoaded || !project) return;
     lock.current = true; setBusy(true); setError(""); setConfirmed(false); setOverCapAck(false); setStage("正在预览整片计划…");
     const signature = configuration(scriptId, presenterId);
     const epoch = configurationEpoch.current;
@@ -204,11 +206,12 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
   }
 
   const overCap = Boolean(preview?.estimate && settings.spendCapUsd > 0 && preview.estimate.maxUsd > settings.spendCapUsd);
-  const blocked = invalidated || !preview || preview.durationOverflow || preview.referenceQuota?.ok === false || (overCap && !overCapAck) || hasTask;
+  const blocked = tidewe || invalidated || !preview || preview.durationOverflow || preview.referenceQuota?.ok === false || (overCap && !overCapAck) || hasTask;
   return <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl" showCloseButton={!busy}>
       <DialogHeader><DialogTitle>整片自动编排</DialogTitle></DialogHeader>
       <p className="text-sm text-muted-foreground">按脚本准备关键帧，再由当前模型一次生成整片。先预览并确认费用，生成结果会保存到项目。</p>
+      {tidewe && <p role="status" className="text-sm">{isTideweNativeSpeech(project?.creativeProfile) ? "TIDEWE 请逐镜生成真人英语口播视频，再到「合成视频」保留镜头原声，或在设置选择 Kling 整片编排。当前一次调用整片模式暂不可用。" : "TIDEWE 请逐镜生成后到「合成视频」添加英语旁白，或在设置选择 Kling 整片编排。当前一次调用整片模式暂不可用。"}</p>}
       <p className="break-all text-sm">{hasTask ? "原任务模型" : "默认视频模型"}：{target?.model ?? (hasTask ? savedTasks.find((task) => task.taskId === initialTaskId)?.model ?? savedTasks[0]?.model : undefined) ?? (settings.defaultVideoModel || "未设置")} <Link href="/settings?tab=video" className="text-primary underline">前往设置修改</Link></p>
       {error && <p role="alert" className="rounded border border-destructive/40 p-3 text-sm text-destructive">{error}</p>}
       {invalidated && !hasTask && <p role="status" className="text-sm text-amber-600">默认模型或参数已变化，请重新预览后确认。</p>}
@@ -219,7 +222,7 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
         {savedTasks.map((task) => <div key={task.id} className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-xs"><span>{task.model} · 原任务 {task.taskId}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void recoverTask(task)}>查看 / 恢复原任务</Button></div>)}
         {(taskId || uncertain) && <p className="text-sm text-amber-600">{taskId ? `原任务 ${taskId} 已保存。` : "提交结果待核对。"}请在素材页查询原任务，避免重复提交。<Link href={`/project/${projectId}/assets`} className="ml-1 underline">查看 / 恢复原任务</Link></p>}
       </section>
-      {!hasTask && <Button variant="outline" disabled={busy || !recordsLoaded || !project || !scriptId || isKlingVideoSelection(settings.defaultVideoModel)} onClick={() => void previewPlan()}>预览整片计划（不生成、不计费）</Button>}
+      {!hasTask && <Button variant="outline" disabled={tidewe || busy || !recordsLoaded || !project || !scriptId || isKlingVideoSelection(settings.defaultVideoModel)} onClick={() => void previewPlan()}>预览整片计划（不生成、不计费）</Button>}
       {preview && !hasTask && <section aria-label="整片计划" className="space-y-3 rounded border p-3">
         <p className="text-sm">{preview.model} · {preview.shotCount} 个镜头 · {preview.seconds}s · {preview.referenceImages} 张参考图 · {settings.videoParams.aspectRatio} · {settings.videoParams.resolution}</p>
         {productImages.length > 0 && <div className="space-y-2"><p className="text-xs text-muted-foreground">已关联 {productImages.length} 张商品图</p><div className="flex flex-wrap gap-2">{productImages.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`商品参考图 ${index + 1}`} className="h-20 w-16 rounded object-contain" />)}</div></div>}

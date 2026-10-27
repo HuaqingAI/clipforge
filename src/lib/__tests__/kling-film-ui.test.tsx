@@ -7,6 +7,7 @@ import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 
 const api = vi.hoisted(() => ({ request: vi.fn(), imageTarget: vi.fn() }));
 vi.mock("@/lib/kling/client", () => ({ klingFetch: api.request, klingErrorMessage: (body: { error?: string }) => body.error ?? "Kling 操作失败" }));
@@ -50,8 +51,8 @@ async function select(label: string, value: string) {
   const input = container.querySelector(`[aria-label="${label}"]`) as HTMLSelectElement;
   await act(async () => { input.value = value; input.dispatchEvent(new Event("change", { bubbles: true })); });
 }
-async function mount(initialRunId?: string, presenterId?: string, defaultModel = model.selectionKey) {
-  await act(async () => root.render(<KlingFilmPanel open onOpenChange={onOpenChange} projectId="project" scriptId="script" profileId="profile" defaultModel={defaultModel} initialRunId={initialRunId} presenterId={presenterId} onAssetsChanged={onAssetsChanged} onOpenJob={onOpenJob} />));
+async function mount(initialRunId?: string, presenterId?: string, defaultModel = model.selectionKey, creativeProfile?: unknown) {
+  await act(async () => root.render(<KlingFilmPanel open onOpenChange={onOpenChange} projectId="project" scriptId="script" profileId="profile" defaultModel={defaultModel} initialRunId={initialRunId} presenterId={presenterId} onAssetsChanged={onAssetsChanged} onOpenJob={onOpenJob} creativeProfile={creativeProfile} />));
 }
 
 beforeEach(() => {
@@ -72,6 +73,21 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initialSettings); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
 
 describe("Kling full-film orchestration UI", () => {
+  it.each([
+    { speechMode: "on_camera", strategy: "native" },
+    { speechMode: "voiceover", strategy: "edge-tts" },
+  ] as const)("locks TIDEWE $speechMode to the matching audio strategy without changing historical narration", async ({ speechMode, strategy }) => {
+    const profile = createTideweOutdoorProfile({ speechMode });
+    preview.output = { ...preview.output, audioStrategy: strategy, voice: "en-US-GuyNeural" };
+    await mount(undefined, undefined, model.selectionKey, profile);
+    const audio = container.querySelector('[aria-label="整片声音策略"]') as HTMLSelectElement;
+    expect(audio.value).toBe(strategy);
+    expect(audio.disabled).toBe(true);
+    expect(container.querySelector('[aria-label="整片配音音色"]') === null).toBe(speechMode === "on_camera");
+    await click("预览整片计划");
+    const request = api.request.mock.calls.find(([url]) => url.endsWith("/preview"));
+    expect(JSON.parse(request![1].body).output).toMatchObject({ audioStrategy: strategy, aspectRatio: "9:16" });
+  });
   it("passes the same global visual look, motion intensity and realism settings to the film preview", async () => {
     const promptSettings = { visualLook: "phone_raw", motionIntensity: "strong", motionRealism: "constraints" } as const;
     useSettingsStore.setState(promptSettings);

@@ -22,6 +22,7 @@ import { mapWithConcurrency } from "@/lib/concurrency";
 import type { StockSourceId, StockMediaType, StockOrientation } from "@/lib/providers/stock-types";
 import { apiError } from "@/lib/api-error";
 import { isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
+import { isTideweNativeSpeech, isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -89,6 +90,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return apiError(req, "该项目还没有脚本，请先生成脚本", "This project has no script yet; please generate a script first", 404);
   }
   const shots = (script.shots ?? []) as Shot[];
+  const creativeProfile = resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode });
   if (shots.length === 0) {
     return apiError(req, "脚本没有分镜", "The script has no shots");
   }
@@ -159,6 +161,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const skipOf = (shot: Shot): ShotFillResult | null => {
     const sid = shot.shotId;
     if (!force && already.has(sid)) return { shotId: sid, ok: false, query: "", reason: "already has asset, skipped" };
+    // A stock clip with ambience cannot supply the frozen English line or the
+    // presenter's mouth movements, even when the product itself is off screen.
+    if (isTideweNativeSpeech(creativeProfile) && shot.voiceover?.trim()) return { shotId: sid, ok: false, query: "", reason: "TIDEWE 真人口播镜头已跳过，请生成或上传带本镜英文台词的原声视频。" };
+    if (isTideweOutdoorProfile(creativeProfile) && shot.tidewe?.productVisible !== false) return { shotId: sid, ok: false, query: "", reason: "TIDEWE 产品镜头已跳过，库存素材仅用于环境镜。" };
     // Product-image shots do not receive free stock: the compose step uses the product image for fidelity, and free stock would overwrite it
     if (shot.visualSource === "product_image") return { shotId: sid, ok: false, query: "", reason: "product-image shot, skipped" };
     if (!shotQuery(shot)) return { shotId: sid, ok: false, query: "", reason: "no search query" };

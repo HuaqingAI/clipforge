@@ -34,6 +34,8 @@ import {
   checkCreativeProfileContext,
   isPremiumProductCgProfile,
   isPremiumProductCgProject,
+  isTideweOutdoorProfile,
+  resolveCreativeProfile,
 } from "@/lib/creative-profiles";
 import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
@@ -140,6 +142,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (body.action === "recover") {
       const [project] = await getDb().select().from(projects).where(eq(projects.id, id));
       if (!project) return apiError(req, "Project not found", "Project not found", 404);
+      if (isTideweOutdoorProfile(resolveCreativeProfile(project.creativeProfile))) {
+        return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成，或 Kling 整片编排；此原生整片路径不能可靠添加规范英语旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 409 });
+      }
       if (isPremiumProductCgProject(project)) {
         return NextResponse.json(
           {
@@ -212,6 +217,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 409 });
     }
     const creativeProfile = context.projectProfile;
+    if (isTideweOutdoorProfile(creativeProfile)) {
+      return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成，或 Kling 整片编排；当前非 Kling 一次调用整片路径不支持规范英语后期旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 422 });
+    }
     const premiumCgProfile = isPremiumProductCgProfile(creativeProfile) ? creativeProfile : undefined;
     const premiumCg = !!premiumCgProfile;
     const filmOptions = controlledFilmOptions(options, premiumCgProfile?.narrationMode);
@@ -369,7 +377,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }
     }
 
-    const referenceImageUrls = (await Promise.all(refInputs.map(toRemoteUsableImage))).filter(
+    const referenceImageUrls = (await Promise.all(refInputs.map((ref) => toRemoteUsableImage(ref)))).filter(
       (u): u is string => !!u
     );
 

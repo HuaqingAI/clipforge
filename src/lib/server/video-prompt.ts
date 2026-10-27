@@ -4,7 +4,10 @@ import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import { resolveCurrentScript } from "@/lib/current-script";
-import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { getVideoModelCapabilities } from "@/lib/model-capabilities";
+import { assertTideweScript } from "@/lib/tidewe/validation";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { buildShotVideoPrompt, normalizeVideoPromptSettings } from "@/lib/shot-video-prompt";
@@ -89,19 +92,40 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
   if (!shot) throw new VideoPromptError("SHOT_NOT_FOUND", "镜头不存在。", 404);
   const profile = creativeContext.projectProfile;
   const premiumCg = isPremiumProductCgProfile(profile);
+  const tidewe = isTideweOutdoorProfile(profile);
+  const tideweNative = isTideweNativeSpeech(profile);
+  const frozenPresenter = tidewe && (shot.tidewe?.personVisible !== false || (tideweNative && shot.voiceover?.trim())) ? tidewePresenterReference(profile) : undefined;
+  if (tidewe) {
+    try { assertTideweScript(script, profile.presenter ?? null); }
+    catch (error) { throw new VideoPromptError("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 原文覆盖无效。", 409); }
+    if (request.controlInputs?.characterReferenceUrl && request.controlInputs.characterReferenceUrl !== frozenPresenter) throw new VideoPromptError("TIDEWE_PRESENTER_REFERENCE_INVALID", "TIDEWE 主播已随脚本冻结，请使用当前主播参考，或回到脚本设置更换并重新规划。");
+    if (tideweNative) {
+      if (request.generateAudio === false) throw new VideoPromptError("TIDEWE_NATIVE_AUDIO_REQUIRED", "TIDEWE 真人口播必须开启原生音频，不能静音或改用后期配音。");
+      // Do not accept a browser's capability flag as proof. Unknown/custom models
+      // are checked against the provider's exact catalog before paid submission.
+      if (request.provider !== "kling-cli" && getVideoModelCapabilities(request.model, undefined, request.provider).nativeAudio === false) throw new VideoPromptError("TIDEWE_NATIVE_AUDIO_UNSUPPORTED", "当前模型不支持原生音频，请选择支持英语真人口播的模型。");
+    } else if (request.generateAudio === true) throw new VideoPromptError("TIDEWE_VISUAL_AUDIO_FORBIDDEN", "此 TIDEWE 项目使用画外旁白，分镜保持静音并在合成时添加英语配音。");
+  }
   // Prompt templates use Chinese regardless of the UI language. Product facts remain verbatim.
   const locale = "zh" as const;
-  const silent = request.batch || request.generateAudio === false || (premiumCg && profile.narrationMode === "none");
+  const silent = tidewe ? !tideweNative : request.batch || request.generateAudio === false || (premiumCg && profile.narrationMode === "none");
   const controlPlan = buildVideoControlPlan({
     ...request.controlInputs,
+    ...(tidewe ? { characterReferenceUrl: frozenPresenter, motionReferenceUrl: undefined, audioReferenceUrl: undefined } : {}),
     provider: request.provider,
     modelId: request.model,
-    supportsAudio: silent || request.provider === "kling-cli" ? false : request.controlInputs?.supportsAudio,
+    supportsAudio: tideweNative ? true : silent || request.provider === "kling-cli" ? false : request.controlInputs?.supportsAudio,
     voiceover: silent ? "" : shot.narration?.trim() || shot.voiceover?.trim(),
-    speakerVisible: !silent && !premiumCg && Boolean(shot.characterId),
+    speakerVisible: tideweNative || (!silent && !premiumCg && Boolean(shot.characterId)),
     description: shot.description,
     locale,
   });
+  if (frozenPresenter && !controlPlan.referenceInputs.some((reference) => reference.role === "character")) {
+    const imageAssets = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, projectId), eq(assets.selected, true), eq(assets.status, "done"))).all(), script);
+    const frame = request.controlInputs?.firstFrameUrl;
+    const identityFrame = frame && imageAssets.some((asset) => asset.shotId === shot.shotId && asset.type !== "stock_footage" && [asset.filePath, asset.sourceKeyframeUrl, asset.thumbnailPath].includes(frame));
+    if (!identityFrame) throw new VideoPromptError("TIDEWE_PRESENTER_KEYFRAME_REQUIRED", "此视频模型只支持首帧，须先生成包含已选主播的当前分镜关键帧，不能仅用商品图替代人物身份。");
+  }
   let compiled: { prompt: string; negativePrompt: string };
   if (premiumCg) {
     if (lintCreativeProfileShot(profile, shot).length) throw new VideoPromptError("CREATIVE_POLICY_VIOLATION", "高端产品 CG 镜头不符合画面文字或旁白策略。");
@@ -115,7 +139,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     }
   } else {
     compiled = buildShotVideoPrompt({
-      shot: request.batch ? { ...shot, voiceover: "", narration: "" } : shot,
+      shot: request.batch && !tideweNative ? { ...shot, voiceover: "", narration: "" } : shot,
       ordinal: script.shots?.findIndex((item) => item.shotId === request.shotId) ?? 0,
       settings: request.settings,
       chainToNext: request.chainToNext,
@@ -125,14 +149,23 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
       creativeProfile: profile,
       locale,
     });
-    compiled.negativePrompt = [request.negativePrompt, compiled.negativePrompt].filter(Boolean).join(", ");
-    if (request.retake) compiled.prompt = applyRetakePatch(compiled.prompt, request.retake).prompt;
-    if (controlPlan.promptSuffix) compiled.prompt = joinVideoPromptParts([compiled.prompt, controlPlan.promptSuffix], locale, "\n");
-    compiled.prompt = withVideoAudioMode(compiled.prompt, request.provider === "kling-cli"
+    if (!tidewe) {
+      compiled.negativePrompt = [request.negativePrompt, compiled.negativePrompt].filter(Boolean).join(", ");
+      if (request.retake) compiled.prompt = applyRetakePatch(compiled.prompt, request.retake).prompt;
+    }
+    // Reference-role labels describe submitted files; they do not import the sales
+    // creative direction. Keep these labels for a reviewed TIDEWE reference pack.
+    // TIDEWE's compiler already binds the exact English line once. Keep reference
+    // labels, without appending a second spoken-copy instruction from the generic plan.
+    const controlSuffix = tideweNative && controlPlan.audioPrompt ? controlPlan.promptSuffix.replace(controlPlan.audioPrompt, "").trim().replace(/。$/, "") : controlPlan.promptSuffix;
+    if (controlSuffix) compiled.prompt = joinVideoPromptParts([compiled.prompt, controlSuffix], locale, "\n");
+    compiled.prompt = withVideoAudioMode(compiled.prompt, tidewe ? tideweNative ? "native" : "silent" : request.provider === "kling-cli"
       ? request.generateAudio && !request.batch ? "native" : "silent"
       : silent ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
-    const conflict = checkPromptConsistency(compiled.prompt, sanitizeVisualBible(project.visualBible)).find((issue) => issue.severity === "fail");
-    if (conflict) throw new VideoPromptError("VIDEO_PROMPT_CONSISTENCY_FAILED", `提示词违反项目一致性要求：${conflict.anchor}`);
+    if (!tidewe) {
+      const conflict = checkPromptConsistency(compiled.prompt, sanitizeVisualBible(project.visualBible)).find((issue) => issue.severity === "fail");
+      if (conflict) throw new VideoPromptError("VIDEO_PROMPT_CONSISTENCY_FAILED", `提示词违反项目一致性要求：${conflict.anchor}`);
+    }
   }
   const issues = validateVideoPrompt(compiled.prompt);
   if (issues.length) throw new VideoPromptError("VIDEO_PROMPT_INVALID", issues.map((issue) => issue.message).join(" "));
@@ -154,6 +187,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     creativeConfigRevision: project.creativeConfigRevision,
     scriptId: script.id,
     shots: script.shots,
+    ...(tidewe ? { copyDocument: script.copyDocument } : {}),
     snapshot: script.creativeProfileSnapshot,
     selectedAssets,
   })).digest("hex");

@@ -16,7 +16,11 @@ import {
   createCreativeProfileSnapshot,
   createPremiumProductCgProfile,
   createShortVideoSalesProfile,
+  createTideweOutdoorProfile,
 } from "@/lib/creative-profiles";
+import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
+import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
+import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 import type { StoryboardGridResolutionInfo } from "@/lib/storyboard-grid-resolution";
 
@@ -68,6 +72,7 @@ beforeAll(async () => {
     selected: true,
     styleType: "scene",
     shots: originalShots,
+    copyDocument: null,
   }).run();
   const uploads = join(directory, "uploads", projectId);
   await mkdir(uploads, { recursive: true });
@@ -110,6 +115,7 @@ beforeEach(async () => {
   db.update(schema.scripts).set({
     styleType: "scene",
     shots: originalShots,
+    copyDocument: null,
     creativeProfileSnapshot: createCreativeProfileSnapshot(salesProfile, 0),
   }).where(eq(schema.scripts.id, scriptId)).run();
   db.delete(schema.assets).run();
@@ -174,6 +180,43 @@ async function assertUploadedImages(expected: Buffer[]) {
   }
   return form;
 }
+
+function useTidewe(presenterImage = presenterPath, personVisible = true) {
+  const presenter: TidewePresenterSnapshot = { id: "saved-host", name: "Sam", appearance: "短发户外主播", referenceImages: [presenterImage] };
+  const profile = createTideweOutdoorProfile({ speechMode: "voiceover", presenter });
+  const segments = ["Take a look.", " See what fits."];
+  const text = segments.join("");
+  const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "other", items: [] };
+  const copyDocument: TideweCopyDocument = { version: 1, language: "en-US", text, translation: "看一眼，找到适合自己的。", angle: "scene", hookType: "scene", claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts), corpusVersion: profile.corpusVersion, compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 6 };
+  let start = 0;
+  const shots: schema.Shot[] = originalShots.map((shot, index) => {
+    const copySpan = { start, end: start + segments[index].length }; start = copySpan.end;
+    return { ...shot, characterId: presenter.id, description: personVisible ? `${tidewePresenterAnchor(presenter)}在树林边展示商品。` : "树林边静置商品的特写。", visualIntent: "展示户外商品", camera: "固定中景", voiceover: segments[index].trim(), prompt: personVisible ? "户外实拍主播展示商品。" : "户外实拍商品特写。", tidewe: { copySpan, translation: "查看商品。", shotGoal: "展示商品", productVisible: true, personVisible, presenter, sceneId: "woods", factRefs: [] } };
+  });
+  db.update(schema.projects).set({ creativeProfile: profile, creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+  db.update(schema.scripts).set({ styleType: "tidewe_outdoor", shots, copyDocument, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).where(eq(schema.scripts.id, scriptId)).run();
+}
+
+describe("TIDEWE frozen presenter grid references", () => {
+  it("uploads the frozen presenter and actual product bytes in prompt order", async () => {
+    useTidewe();
+    await generate({});
+    const form = await assertUploadedImages([presenterBytes, ...productBytes]);
+    expect(form.get("prompt")).toContain("Sam");
+  });
+  it("does not add the selected person to a silent product-only B-roll grid", async () => {
+    useTidewe(presenterPath, false);
+    await generate({});
+    await assertUploadedImages(productBytes);
+  });
+  it.each(["foreign", "unavailable"])("rejects %s identity references before provider generation", async (reason) => {
+    useTidewe(reason === "unavailable" ? `/api/files/${projectId}/missing-person.png` : presenterPath);
+    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, { method: "POST", body: JSON.stringify({ scriptId, provider: "openai", model: "gpt-image-2", apiKey: "test-key", ...(reason === "foreign" ? { characterSheetUrl: productPaths[0] } : {}) }) }), { params: Promise.resolve({ id: projectId }) });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: reason === "foreign" ? "TIDEWE_PRESENTER_REFERENCE_INVALID" : "TIDEWE_REFERENCE_UNAVAILABLE" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("storyboard grid uploaded product references", () => {
   it.each([

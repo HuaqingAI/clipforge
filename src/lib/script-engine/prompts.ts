@@ -15,6 +15,8 @@ import {
   type PremiumProductCgProfile,
 } from "@/lib/creative-profiles";
 import { getPremiumCgRecipeFromSnapshot } from "@/lib/premium-cg-recipes";
+import { buildTideweCopyPrompt, tideweProfileForInput } from "@/lib/tidewe/prompts";
+import type { ProductFacts } from "@/lib/tidewe/types";
 
 // ==================== System Role Prompt ====================
 
@@ -85,10 +87,12 @@ export type ScriptStyleType =
   | "product_pov"
   | "talking_head"
   | "premium_product_cg"
+  | "tidewe_outdoor"
   | "custom";
 
 /** Display name mapping for script styles */
 export const styleNameMap: Record<ScriptStyleType, string> = {
+  tidewe_outdoor: "TIDEWE 风格",
   pain_point: "痛点种草",
   scene: "场景安利",
   comparison: "对比测评",
@@ -117,6 +121,7 @@ export const styleFormGroups: { form: string; formEn: string; styles: ScriptStyl
 
 /** Structured prompt directives keyed by style */
 export const stylePrompts: Record<Exclude<ScriptStyleType, "custom">, string> = {
+  tidewe_outdoor: "TIDEWE uses the independent full-copy and semantic-storyboard compiler. Use buildTideweCopyPrompt, never the sales template.",
   pain_point: `
 【脚本风格：痛点种草型】
 结构要求：痛点引入 → 产品救星 → 效果证明 → 限时抢购
@@ -725,6 +730,9 @@ export const PRODUCT_ANALYSIS_PROMPT = `你是一位专业的电商选品分析�
 
 /** Input parameters for script generation */
 export interface ScriptGenerationInput {
+  productFacts?: ProductFacts;
+  copyText?: string;
+  count?: number;
   /** product name */
   productName: string;
   /** product category */
@@ -920,6 +928,7 @@ Return:
  * Combines all templates, strategies, and constraints into a single generation instruction
  */
 export function buildUserPrompt(input: ScriptGenerationInput): string {
+  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input, 1);
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgUserPrompt(input, premiumProfile);
 
@@ -1070,6 +1079,7 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
  * Builds a batch generation prompt (generates multiple scripts with different styles in one call)
  */
 export function buildBatchPrompt(input: ScriptGenerationInput, count: number = 3): string {
+  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input, count);
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgBatchPrompt(input, premiumProfile, count);
 

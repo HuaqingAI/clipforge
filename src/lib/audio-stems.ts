@@ -17,6 +17,7 @@ export interface AudioStemClip {
   filePath?: string;
   hasAudio?: boolean;
   mixNativeAudio?: boolean;
+  preserveNativeSpeech?: boolean;
 }
 
 export interface RenderAudioStemsInput {
@@ -61,6 +62,7 @@ function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): strin
       ttsInput,
       nativeInput,
       voiceGround: input.voiceGround !== false && hasTtsTrack,
+      preserveNativeSpeech: clip.preserveNativeSpeech,
     }));
   });
   let current = "v0";
