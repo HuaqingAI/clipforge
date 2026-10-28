@@ -61,7 +61,7 @@ function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): strin
       outputLabel: `v${index}`,
       ttsInput,
       nativeInput,
-      voiceGround: input.voiceGround !== false && hasTtsTrack,
+      voiceGround: input.voiceGround === true && hasTtsTrack,
       preserveNativeSpeech: clip.preserveNativeSpeech,
     }));
   });
@@ -76,7 +76,7 @@ function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): strin
     }
     current = next;
   }
-  if (input.voiceGround !== false) {
+  if (input.voiceGround === true) {
     filters.push(`${roomToneSource(hasTtsTrack ? undefined : 0.004)}[roomtone]`);
     filters.push(`[${current}][roomtone]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[voice_grounded]`);
     current = "voice_grounded";

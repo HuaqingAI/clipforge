@@ -19,7 +19,11 @@ afterEach(() => {
 });
 
 describe("Edge Read Aloud protocol", () => {
-  it("sends a matching v2 token/version and accepts framed audio and word timings", async () => {
+  it.each([
+    { voice: undefined, locale: "zh-CN" },
+    { voice: "en-US-JennyNeural", locale: "en-US" },
+    { voice: "en-US-RogerNeural", locale: "en-US" },
+  ])("uses $locale SSML for $voice with a matching token and real word timings", async ({ voice, locale }) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-19T03:10:00Z"));
     const connections: { url: string; messages: string[] }[] = [];
@@ -55,13 +59,15 @@ describe("Edge Read Aloud protocol", () => {
     }
     vi.stubGlobal("WebSocket", SynthesisSocket);
     const { generateSpeechFreeDetailed } = await import("@/lib/edge-tts");
-    const result = await generateSpeechFreeDetailed("你好");
+    const result = await generateSpeechFreeDetailed("你好", { voice });
 
     expect(connections).toHaveLength(1);
     const requestUrl = new URL(connections[0].url);
     expect(requestUrl.searchParams.get("Sec-MS-GEC-Version")).toBe("2-143.0.3650.75");
     expect(requestUrl.searchParams.get("Sec-MS-GEC")).toBe(generateSecMsGec(Date.now()));
     expect(connections[0].messages[0]).toContain("Mon Oct 19 2026 03:10:00 GMT+0000");
+    expect(connections[0].messages[1]).toContain(`xml:lang='${locale}'`);
+    expect(connections[0].messages[1]).toContain(`<voice name='${voice ?? "zh-CN-XiaoxiaoNeural"}'>`);
     expect(result).toEqual({ audio, words: [{ text: "你好", startSec: 0.1, endSec: 0.3 }] });
     expect(cache.writeTtsCache).toHaveBeenCalledWith("protocol-test", audio);
   });

@@ -477,9 +477,12 @@ export async function POST(
       }
     }
 
+    // Omitted switches retain the profile's automatic narration defaults. An
+    // explicit false is the user's choice to use only the source recording.
+    const ttsEnabled = body.ttsEnabled !== false;
     // 可选 TTS 配音配置（前端从设置带入）
     const ttsConfig: TTSConfig | undefined =
-      !premiumCg && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
+      !premiumCg && ttsEnabled && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
         ? body.ttsConfig
         : undefined;
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
@@ -488,15 +491,15 @@ export async function POST(
     // uses the keyless Edge voice without exposing provider/voice switches to
     // the request, and always replaces model-native speech when present.
     const usePremiumRestrainedTts = Boolean(premiumProfile && narrationMode === "restrained");
-    // TIDEWE always has an English narration fallback, including older native-only
-    // snapshots. Whether it is needed is decided from each clip's audible audio.
-    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && !ttsConfig && (tidewe || freeTts?.enabled === true));
+    // TIDEWE defaults to an English narration fallback. Whether it is needed is
+    // decided from the chosen mode and each clip's audible audio and intent.
+    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && ttsEnabled && !ttsConfig && (tidewe || freeTts?.enabled === true));
     // Both extra switches are off in auto mode: audible source audio takes priority.
-    const voiceoverMode = usePremiumRestrainedTts || (tidewe && !tideweNative)
+    const voiceoverMode = usePremiumRestrainedTts
       ? "replace"
-      : !premiumCg && !tideweNative && (body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
+      : !premiumCg && (body.voiceoverMode === "auto" || body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
         ? body.voiceoverMode
-        : "auto";
+        : tidewe && !tideweNative ? "replace" : "auto";
     let freeVoice: string;
     try { freeVoice = resolveNarrationVoice(activeProfile, freeTts?.voice); }
     catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "英语音色无效", code: "TIDEWE_VOICE_INVALID" }, { status: 400 }); }
@@ -696,7 +699,7 @@ export async function POST(
       // visual-only footage; restrained CG replaces it with the profile-owned
       // post-production narration. Ambient or music belongs in the explicit
       // BGM layer where it remains reviewable.
-      const keepNativeAudio = !premiumCg && (!tidewe || tideweNative) && nativeAudio && (!audioPath || voiceoverMode === "mix");
+      const keepNativeAudio = !premiumCg && nativeAudio && (!audioPath || voiceoverMode === "mix");
 
       // Effective duration (core fix for issue #14 "next segment starts before speech ends"):
       // 1) TTS narration → actual audio length + breathing gap (clamped 1.5–20s); when the probe
@@ -709,7 +712,7 @@ export async function POST(
       // silent video clips also get probed: the composer speed-fits a moderately-too-long clip into
       // its slot (preserving a keyframe-chained ending) and needs the real source length for that
       let sourceDuration: number | undefined;
-      if (tideweNative && isVideo && keepNativeAudio) {
+      if (tidewe && isVideo && keepNativeAudio && !audioPath) {
         sourceDuration = await probeDuration(local);
         duration = sourceDuration;
       } else if (audioPath) {
@@ -743,7 +746,7 @@ export async function POST(
         ...(audioPath && { audioPath }),
         ...(audioPath && keepNativeAudio && { mixNativeAudio: true }),
         ...(tidewe && isVideo ? { strictSourceDuration: true } : {}),
-        ...(tideweNative && keepNativeAudio && shot.voiceover?.trim() ? { preserveNativeSpeech: true } : {}),
+        ...(tideweNative && keepNativeAudio && !audioPath && shot.voiceover?.trim() ? { preserveNativeSpeech: true } : {}),
       };
       if (tidewe && isVideo) assertTideweMediaDuration(shot.shotId, duration, sourceDuration ?? await probeDuration(local));
       rendered.push({ shot, clip, duration, voiceSec, ...(vo?.words ? { words: vo.words } : {}) });
@@ -820,9 +823,9 @@ export async function POST(
       output: {
         ...outputCfg,
         ...(bgmLocal && { bgmPath: bgmLocal, bgmVolume: bgmMix.volume, bgmDuck: bgmMix.duck }),
-        // voice grounding (TTS de-broadcast + room-tone bed) defaults ON in the composer when a
-        // TTS track exists; body.voiceGround === false is the explicit opt-out for a clean read
-        ...((body.voiceGround === false || tideweNative) && { voiceGround: false }),
+        // Grounding is opt-in. TIDEWE source-only recordings retain their original
+        // sound; a generated voice is required before applying this option there.
+        voiceGround: body.voiceGround === true && (!tidewe || clips.some((clip) => Boolean(clip.audioPath))),
       },
       subtitle:
         subtitles && subtitleTexts.length > 0
@@ -918,7 +921,7 @@ export async function POST(
         // Keep explicit BGM provenance available to export credits and the release gate.
         await db
           .update(compositions)
-          .set({ outputPath, status: "done", ...(tideweNative ? { ttsEnabled: clips.some((clip) => Boolean(clip.audioPath)) } : {}), ...(thumbnailPath && { thumbnailPath }), ...(bgmLocal && { bgmPath: bgmLocal }) })
+          .set({ outputPath, status: "done", ...(tidewe ? { ttsEnabled: clips.some((clip) => Boolean(clip.audioPath)) } : {}), ...(thumbnailPath && { thumbnailPath }), ...(bgmLocal && { bgmPath: bgmLocal }) })
           .where(eq(compositions.id, comp.id));
         await db.update(projects).set({ status: "done", updatedAt: new Date() }).where(eq(projects.id, id));
       } catch (e) {

@@ -19,7 +19,7 @@ import { buildHookVariants } from "@/lib/script-engine/hook-variants";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
 import { sanitizeCreativeProfile, isTideweOutdoorProfile, isTideweNativeSpeech, type PremiumProductCgProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
-import { resolveNarrationVoice } from "@/lib/narration-voice";
+import { resolveNarrationVoice, TIDEWE_TTS_VOICES } from "@/lib/narration-voice";
 import { ProjectHeader } from "@/components/project-header";
 import { FreeVoicePreview } from "@/components/free-voice-preview";
 import { ShotVideoPicker, buildShotAssetSelections, selectedShotAsset, type ShotVideoAsset } from "@/components/shot-video-picker";
@@ -67,7 +67,7 @@ interface ComposeConfig {
   bgmDuck: boolean;
   /** 配乐强度（归一化 0..1，后端会再次做安全限制） */
   bgmVolume: number;
-  /** voice grounding: TTS de-broadcast chain + room-tone bed (default on; off = clean studio read) */
+  /** Optional TTS de-broadcast chain and room-tone bed; disabled by default. */
   voiceGround: boolean;
 }
 
@@ -171,10 +171,9 @@ export default function VideoPage() {
   const [tideweNativeSpeech, setTideweNativeSpeech] = useState(false);
   const tideweRef = useRef(false);
   const [loadedProfileProjectId, setLoadedProfileProjectId] = useState<string | null>(null);
-  const availableFreeVoices: { value: string; labelKey?: string; label?: string }[] = tidewe ? [
-    { value: "en-US-GuyNeural", label: "Guy · US English" },
-    { value: "en-US-AriaNeural", label: "Aria · US English" },
-  ] : freeVoiceOptions;
+  const availableFreeVoices: { value: string; labelKey?: string; label?: string }[] = tidewe
+    ? TIDEWE_TTS_VOICES.map((voice) => ({ value: voice.value, label: locale === "zh" ? voice.labelZh : voice.label }))
+    : freeVoiceOptions;
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
@@ -194,7 +193,7 @@ export default function VideoPage() {
     captionPreset: "standard",
     bgmDuck: true,
     bgmVolume: 0.18,
-    voiceGround: true,
+    voiceGround: false,
   });
 
   // 合成状态
@@ -207,7 +206,7 @@ export default function VideoPage() {
   const [bgm, setBgm] = useState<{ path: string; name: string } | null>(null);
   const [bgmUploading, setBgmUploading] = useState(false);
   // 是否已配置付费 TTS（否则配音走免费 Edge keyless TTS）
-  const paidTtsReady = isPaidTTSReady(tts, providers);
+  const paidTtsReady = !tidewe && isPaidTTSReady(tts, providers);
   const uploadBgm = async (file: File) => {
     setBgmUploading(true);
     try {
@@ -543,7 +542,7 @@ export default function VideoPage() {
             ...(!premiumCg && config.productCard && { productCard: true }),
             ...(!premiumCg && { captionPreset: combo.caption }),
             ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-            ...(!premiumCg && !config.voiceGround && { voiceGround: false }),
+            ...(!premiumCg && { voiceGround: config.voiceGround }),
             ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
             ...(!premiumCg && config.ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
             ...(!premiumCg && config.ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
@@ -612,19 +611,20 @@ export default function VideoPage() {
           renderPreset: config.renderPreset,
           aspectRatio: config.aspectRatio,
           subtitles: premiumCg ? false : config.subtitles,
-          ...(tideweNativeSpeech && { nativeAudio: true, ttsEnabled: true }),
+          ...(tidewe && { ttsEnabled: config.ttsEnabled }),
+          ...(tideweNativeSpeech && { nativeAudio: true }),
           ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
           ...(!premiumCg && config.productCard && { productCard: true }),
           ...(!premiumCg && config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
           ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-          ...(!premiumCg && !config.voiceGround && { voiceGround: false }),
+          ...(!premiumCg && { voiceGround: config.voiceGround }),
           // 开启配音时：已配付费 TTS 走付费；否则走免费 Edge keyless TTS（无需 Key），合成为每镜生成口播音轨
-          ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
-          ...(!premiumCg && !tideweNativeSpeech && config.ttsEnabled && paidTtsReady && {
+          ...(!premiumCg && config.ttsEnabled && (tidewe || config.voiceoverMode !== "auto") && { voiceoverMode: config.voiceoverMode }),
+          ...(!premiumCg && config.ttsEnabled && paidTtsReady && {
             // 解析后的完整配置（含平台、复用的 Key、默认 baseUrl/模型/音色、可选 GroupId）
             ttsConfig: resolveTTSConfig(tts, providers),
           }),
-          ...(!premiumCg && config.ttsEnabled && (tideweNativeSpeech || !paidTtsReady) && {
+          ...(!premiumCg && config.ttsEnabled && !paidTtsReady && {
             freeTts: { enabled: true, voice: config.freeVoice },
           }),
         }),
@@ -869,13 +869,7 @@ export default function VideoPage() {
             </Card>}
 
             {/* 配音设置 */}
-            {tideweNativeSpeech && <Card className="glass-card">
-              <CardContent className="p-4 space-y-3">
-                <Label className="text-sm font-medium">{tt("speechOnCamera")}</Label>
-                <p className="text-xs text-muted-foreground">{tt("nativeSpeechHint")}</p>
-              </CardContent>
-            </Card>}
-            {!premiumCg && !tideweNativeSpeech && <Card className="glass-card">
+            {!premiumCg && <Card className="glass-card">
               <CardContent className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">{t("ttsLabel")}</Label>
@@ -890,14 +884,14 @@ export default function VideoPage() {
                     role="switch"
                     aria-label={t("ttsEnableLabel")}
                     aria-checked={config.ttsEnabled}
-                    disabled={tidewe}
                     onClick={() => setConfig((c) => ({ ...c, ttsEnabled: !c.ttsEnabled }))}
                     className={`relative w-10 h-5 rounded-full transition-colors ${config.ttsEnabled ? "bg-primary" : "bg-muted"}`}
                   >
                     <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.ttsEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
                   </button>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t("ttsAutoHint")}</p>
+                <p className="text-[11px] text-muted-foreground">{tidewe ? t("ttsTideweHint") : t("ttsAutoHint")}</p>
+                {tideweNativeSpeech && config.ttsEnabled && config.voiceoverMode === "auto" && <p className="text-[11px] text-muted-foreground">{tt("nativeSpeechHint")}</p>}
                 <div className={`space-y-3 ${config.ttsEnabled ? "" : "opacity-50"}`}>
                   {([
                     { mode: "replace", label: "ttsReplaceLabel", hint: "ttsReplaceHint" },
@@ -914,7 +908,7 @@ export default function VideoPage() {
                         aria-label={t(label)}
                         aria-describedby={`voiceover-${mode}-hint`}
                         aria-checked={config.voiceoverMode === mode}
-                        disabled={tidewe || !config.ttsEnabled}
+                        disabled={!config.ttsEnabled}
                         onClick={() => setConfig((c) => ({ ...c, voiceoverMode: c.voiceoverMode === mode ? "auto" : mode }))}
                         className={`relative h-5 w-10 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed ${config.voiceoverMode === mode ? "bg-primary" : "bg-muted"}`}
                       >
@@ -931,7 +925,7 @@ export default function VideoPage() {
                 {config.ttsEnabled && !paidTtsReady && (
                   <div className="space-y-2">
                     <Select value={config.freeVoice} onValueChange={(v) => setConfig((c) => ({ ...c, freeVoice: v ?? c.freeVoice }))}>
-                      <SelectTrigger className="bg-muted/30 border-border/50 text-xs">
+                      <SelectTrigger aria-label={t("ttsVoiceLabel")} className="bg-muted/30 border-border/50 text-xs">
                         {/* Base UI 的 Select.Value 默认显示原始 value，用函数子节点映射为中文标签 */}
                         <SelectValue>
                           {(value: string) => {
@@ -963,6 +957,7 @@ export default function VideoPage() {
                     role="switch"
                     aria-label={t("voiceGroundLabel")}
                     aria-checked={config.voiceGround}
+                     disabled={!config.ttsEnabled}
                     onClick={() => setConfig((c) => ({ ...c, voiceGround: !c.voiceGround }))}
                     className={`relative w-10 h-5 rounded-full transition-colors ${config.voiceGround ? "bg-primary" : "bg-muted"}`}
                   >

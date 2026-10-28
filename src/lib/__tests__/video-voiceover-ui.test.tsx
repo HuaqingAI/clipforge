@@ -9,7 +9,9 @@ const settingsState = vi.hoisted(() => ({ paidTts: false }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "project-1" }) }));
 vi.mock("@/lib/i18n", () => ({ useT: () => (key: string) => key, useLocale: () => "zh" }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
-vi.mock("@/components/free-voice-preview", () => ({ FreeVoicePreview: () => null }));
+vi.mock("@/components/free-voice-preview", () => ({
+  FreeVoicePreview: ({ voice, text }: { voice: string; text: string }) => <div data-testid="voice-preview" data-voice={voice}>{text}</div>,
+}));
 vi.mock("@/lib/stores/settings-store", () => ({
   useSettingsStore: () => ({
     defaultResolution: "1080p", defaultAspectRatio: "9:16", providers: {},
@@ -38,6 +40,12 @@ function expectNoFreeBgm(body: object) {
   expect(body).not.toHaveProperty("bgmMood");
 }
 async function mount() { await act(async () => root.render(<VideoPage />)); }
+function loadTidewe(speechMode: "on_camera" | "voiceover" = "on_camera") {
+  const normalFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1"
+    ? Promise.resolve(Response.json({ name: "TIDEWE", creativeProfile: createTideweOutdoorProfile({ speechMode }) }))
+    : normalFetch(url, init));
+}
 
 beforeEach(() => {
   settingsState.paidTts = false;
@@ -78,11 +86,13 @@ describe("composition voiceover modes", () => {
     expect(localStorage.getItem(adTemplateStorageKey("project-1"))).toBeNull();
     expect(localStorage.getItem(adTemplateAppliedKey("project-1"))).toBeNull();
     expect(switchFor("subtitleEnableLabel").getAttribute("aria-checked")).toBe("false");
-    expect(switchFor("ttsEnableLabel").disabled).toBe(true);
+    expect(switchFor("ttsEnableLabel").disabled).toBe(false);
+    expect(switchFor("ttsReplaceLabel").getAttribute("aria-checked")).toBe("true");
+    expect(switchFor("voiceGroundLabel").getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).not.toContain("matrixTitle");
     await click(button("composeStart"));
     const body = composeBodies().at(-1);
-    expect(body).toMatchObject({ subtitles: false, voiceoverMode: "replace", freeTts: { enabled: true, voice: "en-US-GuyNeural" }, renderPreset: "fast", aspectRatio: "9:16" });
+    expect(body).toMatchObject({ subtitles: false, ttsEnabled: true, voiceoverMode: "replace", voiceGround: false, freeTts: { enabled: true, voice: "en-US-GuyNeural" }, renderPreset: "fast", aspectRatio: "9:16" });
     expect(body).not.toHaveProperty("ctaText");
     expect(body).not.toHaveProperty("productCard");
     await click(switchFor("subtitleEnableLabel"));
@@ -91,19 +101,79 @@ describe("composition voiceover modes", () => {
   });
   it.each([false, true])("requests English fallback and prefers native audio even with paid TTS configured: %s", async paidTts => {
     settingsState.paidTts = paidTts;
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1"
-      ? Promise.resolve(Response.json({ name: "TIDEWE", creativeProfile: createTideweOutdoorProfile() }))
-      : normalFetch(url, init));
+    loadTidewe();
     await mount();
-    expect(container.textContent).toContain("nativeSpeechHint");
-    expect(switchFor("ttsEnableLabel")).toBeNull();
-    expect(switchFor("ttsReplaceLabel")).toBeNull();
-    expect(container.textContent).not.toContain("ttsFreeBadge");
+    expect(switchFor("ttsEnableLabel").disabled).toBe(false);
+    expect(switchFor("ttsEnableLabel").getAttribute("aria-checked")).toBe("true");
+    expect(switchFor("ttsReplaceLabel").disabled).toBe(false);
+    expect(switchFor("ttsReplaceLabel").getAttribute("aria-checked")).toBe("false");
+    expect(switchFor("ttsMixLabel").getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("ttsFreeBadge");
     await click(button("composeStart"));
     const body = composeBodies().at(-1);
-    expect(body).toMatchObject({ nativeAudio: true, ttsEnabled: true, subtitles: true, freeTts: { enabled: true, voice: "en-US-GuyNeural" } });
-    for (const field of ["ttsConfig", "voiceoverMode"]) expect(body).not.toHaveProperty(field);
+    expect(body).toMatchObject({ nativeAudio: true, ttsEnabled: true, voiceoverMode: "auto", subtitles: true, freeTts: { enabled: true, voice: "en-US-GuyNeural" } });
+    expect(body).not.toHaveProperty("ttsConfig");
+  });
+  it.each(["on_camera", "voiceover"] as const)("allows all narration modes and disabling TTS for TIDEWE %s", async speechMode => {
+    loadTidewe(speechMode);
+    await mount();
+    const replace = switchFor("ttsReplaceLabel");
+    const mix = switchFor("ttsMixLabel");
+    expect(replace.getAttribute("aria-checked")).toBe(String(speechMode === "voiceover"));
+    if (speechMode === "on_camera") await click(replace);
+    await click(button("composeStart"));
+    expect(composeBodies().at(-1)).toMatchObject({ ttsEnabled: true, voiceoverMode: "replace", freeTts: { enabled: true } });
+
+    await click(mix);
+    expect(replace.getAttribute("aria-checked")).toBe("false");
+    expect(mix.getAttribute("aria-checked")).toBe("true");
+    await click(button("composeStart"));
+    expect(composeBodies().at(-1)).toMatchObject({ ttsEnabled: true, voiceoverMode: "mix", freeTts: { enabled: true } });
+    await click(mix);
+    await click(button("composeStart"));
+    expect(composeBodies().at(-1)).toMatchObject({ ttsEnabled: true, voiceoverMode: "auto", freeTts: { enabled: true } });
+
+    await click(switchFor("ttsEnableLabel"));
+    expect(replace.disabled).toBe(true);
+    expect(mix.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="voice-preview"]')).toBeNull();
+    await click(button("composeStart"));
+    const disabled = composeBodies().at(-1);
+    expect(disabled).toMatchObject({ ttsEnabled: false });
+    for (const field of ["ttsConfig", "freeTts", "voiceoverMode"]) expect(disabled).not.toHaveProperty(field);
+    await click(switchFor("ttsEnableLabel"));
+    expect(replace.disabled).toBe(false);
+    expect(mix.disabled).toBe(false);
+  });
+  it.each([
+    { speechMode: "on_camera", paidTts: false },
+    { speechMode: "on_camera", paidTts: true },
+    { speechMode: "voiceover", paidTts: false },
+    { speechMode: "voiceover", paidTts: true },
+  ] as const)("uses the chosen English voice for preview and $speechMode composition with paid TTS=$paidTts", async ({ speechMode, paidTts }) => {
+    settingsState.paidTts = paidTts;
+    loadTidewe(speechMode);
+    await mount();
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="ttsVoiceLabel"]')!;
+    expect(trigger).not.toBeNull();
+    await click(trigger);
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.length).toBeGreaterThan(2);
+    expect(options.some(option => option.textContent?.includes("Guy"))).toBe(true);
+    expect(options.some(option => option.textContent?.includes("Aria"))).toBe(true);
+    const selected = options.find(option => option.textContent?.includes("Jenny"));
+    expect(selected).toBeTruthy();
+    expect(options.some(option => /晓晓|Xiaoxiao|云希|Yunxi|日本語|한국어|Español/.test(option.textContent ?? ""))).toBe(false);
+    await act(async () => selected!.focus());
+    await click(selected!);
+    expect(trigger.textContent).toContain("Jenny");
+    const preview = container.querySelector('[data-testid="voice-preview"]')!;
+    expect(preview.getAttribute("data-voice")).toBe("en-US-JennyNeural");
+    expect(preview.textContent).toMatch(/cold morning/i);
+    await click(button("composeStart"));
+    const body = composeBodies().at(-1);
+    expect(body).toMatchObject({ ttsEnabled: true, voiceoverMode: speechMode === "on_camera" ? "auto" : "replace", freeTts: { enabled: true, voice: "en-US-JennyNeural" } });
+    expect(body).not.toHaveProperty("ttsConfig");
   });
   it("starts with both modes off and keeps switches mutually exclusive", async () => {
     await mount();
@@ -244,19 +314,23 @@ describe("composition without automatic background music", () => {
     expect(container.textContent).not.toContain("bgmUpbeat");
     expect(container.querySelector('[aria-label="bgmVolumeLabel"]')).toBeNull();
     const grounding = switchFor("voiceGroundLabel");
-    expect(grounding.getAttribute("aria-checked")).toBe("true");
-    await click(grounding);
+    expect(grounding.getAttribute("aria-checked")).toBe("false");
     await click(switchFor("ttsMixLabel"));
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).toMatchObject({ voiceGround: false, voiceoverMode: "mix", freeTts: { enabled: true } });
+
+    await click(grounding);
+    expect(grounding.getAttribute("aria-checked")).toBe("true");
+    await click(button("composeStart"));
+    expect(composeBodies().at(-1)).toMatchObject({ voiceGround: true, voiceoverMode: "mix", freeTts: { enabled: true } });
 
     await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
     expect(container.textContent).not.toContain("matrixBgms");
     expect(button("upbeat")).toBeUndefined();
     expect(button("emotional")).toBeUndefined();
     await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(2);
-    expect(composeBodies().at(-1)).toMatchObject({ voiceGround: false, voiceoverMode: "mix", freeTts: { enabled: true } });
+    expect(composeBodies()).toHaveLength(3);
+    expect(composeBodies().at(-1)).toMatchObject({ voiceGround: true, voiceoverMode: "mix", freeTts: { enabled: true } });
     for (const body of composeBodies()) {
       expectNoFreeBgm(body);
       expect(body).not.toHaveProperty("bgmPath");

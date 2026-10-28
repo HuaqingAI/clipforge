@@ -338,7 +338,7 @@ export interface ComposeConfig {
     /** x264 -crf quality (default 18); clamped to a valid range */
     crf?: number;
     /**
-     * Voice grounding (default ON when any clip has a TTS track; pass false to opt out):
+     * Voice grounding (off by default; pass true to enable):
      * de-broadcast chain on TTS narration + a room-tone bed under the whole timeline, so the
      * voice-over sits in a real room instead of a digital vacuum. Native model audio
      * (Seedance 2.x speaks with its own room tone) is never touched.
@@ -572,13 +572,11 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
 
   // Audio defaults to TTS > native > silence; explicitly requested native/TTS mixes use both.
   const audioParts: string[] = [];
-  // voice grounding defaults ON whenever a TTS track exists (quality features default into every
-  // chain); voiceGround:false opts out. Native model audio never passes through the chain.
+  // Voice grounding is opt-in. Native model audio never passes through the TTS chain.
   const hasTtsTrack = config.clips.some((c) => c.audioPath);
-  const voiceGround = config.output.voiceGround !== false && hasTtsTrack;
-  // the room-tone bed now covers native-audio timelines too (fainter: native clips carry their
-  // own ambience — the bed only unifies the space across cuts and silent segments)
-  const roomTone = config.output.voiceGround !== false && hasAnyAudio;
+  const voiceGround = config.output.voiceGround === true && hasTtsTrack;
+  // An explicitly enabled room-tone bed also covers native-audio timelines at a fainter level.
+  const roomTone = config.output.voiceGround === true && hasAnyAudio;
   if (hasAnyAudio) {
     config.clips.forEach((clip, i) => {
       let ttsInput: string | undefined;

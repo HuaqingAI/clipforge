@@ -85,6 +85,7 @@ describe("TIDEWE composition enforces frozen English narration", () => {
     expect(config.clips[0].audioPath).toBeTruthy();
     expect(config.clips[0].duration).toBeGreaterThan(2);
     expect(config.clips[0].duration).toBeLessThan(5);
+    expect(config.output.voiceGround).toBe(false);
   });
   it("fails the specific short video instead of trimming narration or freezing a tail", async () => {
     state.tts.mockResolvedValue({ audio: longAudio, words: [] });
@@ -146,10 +147,10 @@ describe("TIDEWE native on-camera speech composition", () => {
       audioTracks: [{ id: "A2", role: "native" }] });
   });
 
-  it.each(["silent.mp4", "muted.mp4"])("automatically narrates %s despite legacy native-only compose flags", async fileName => {
+  it.each(["silent.mp4", "muted.mp4"])("automatically narrates %s when the enable switch is omitted", async fileName => {
     nativeProject();
     db.update(schema.assets).set({ filePath: `/api/files/tidewe-project/${fileName}` }).run();
-    const response = await request({ nativeAudio: true, ttsEnabled: false, freeTts: { enabled: false } });
+    const response = await request({ nativeAudio: true, freeTts: { enabled: false } });
     expect(response.status).toBe(202);
     const row = await completed((await response.json()).compositionId);
     expect(row).toMatchObject({ status: "done", ttsEnabled: true });
@@ -213,7 +214,7 @@ describe("TIDEWE native on-camera speech composition", () => {
 
   it.each([
     { ttsEnabled: true }, { freeTts: { enabled: true } }, { ttsConfig: { voice: "en-US-GuyNeural" } },
-    { voiceoverMode: "replace" }, { voiceoverMode: "mix" },
+    { voiceoverMode: "auto" },
   ])("accepts narration fallback settings while preserving audible native speech: %j", async body => {
     nativeProject();
     const response = await request(body);
@@ -236,7 +237,7 @@ describe("TIDEWE native on-camera speech composition", () => {
     const updated = db.update(schema.scripts).set({ shots, creativeProfileSnapshot: createCreativeProfileSnapshot(nativeProfile, 1) }).returning().get()!;
     db.update(schema.assets).set(assetScopeForShot(updated, shots[0])).run();
     db.insert(schema.assets).values({ id: "silent-take", projectId: "tidewe-project", shotId: 2, selected: true, status: "done", type: "ai_generated", filePath: "/api/files/tidewe-project/silent.mp4", ...assetScopeForShot(updated, shots[1]) }).run();
-    const response = await request({ ttsEnabled: false, nativeAudio: true });
+    const response = await request({ nativeAudio: true });
     expect(response.status).toBe(202);
     const row = await completed((await response.json()).compositionId);
     expect(row).toMatchObject({ status: "done", ttsEnabled: true });
@@ -248,5 +249,76 @@ describe("TIDEWE native on-camera speech composition", () => {
     expect(config.clips[1]).toMatchObject({ hasAudio: false, sourceDuration: 5 });
     expect(config.clips[1].audioPath).toBeTruthy();
     expect(config.clips[1].preserveNativeSpeech).toBeUndefined();
+  });
+});
+
+describe.each(["on_camera", "voiceover"] as const)("TIDEWE %s narration controls", speechMode => {
+  beforeEach(() => { if (speechMode === "on_camera") nativeProject(); });
+
+  it.each(["auto", "replace", "mix"] as const)("honors the explicitly selected %s mode with audible footage", async mode => {
+    const response = await request({ ttsEnabled: true, voiceoverMode: mode });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("done");
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    const clip = config.clips[0];
+    expect(clip).toMatchObject({ strictSourceDuration: true, sourceDuration: 5 });
+    if (mode === "auto") {
+      expect(row.ttsEnabled).toBe(false);
+      expect(state.tts).not.toHaveBeenCalled();
+      expect(clip).toMatchObject({ hasAudio: true, duration: 5 });
+      expect(clip.audioPath).toBeUndefined();
+    } else {
+      expect(row.ttsEnabled).toBe(true);
+      expect(state.tts).toHaveBeenCalledExactlyOnceWith(text, { voice: "en-US-GuyNeural", rate: undefined });
+      expect(clip.audioPath).toBeTruthy();
+      expect(clip.hasAudio).toBe(mode === "mix");
+      expect(clip.mixNativeAudio).toBe(mode === "mix" ? true : undefined);
+      expect(clip.preserveNativeSpeech).toBeUndefined();
+      if (mode === "mix") expect(clip.duration).toBe(5);
+      else expect(clip.duration).toBeCloseTo(2.45, 1);
+    }
+  });
+
+  it.each(["ambient.mp4", "silent.mp4"])("honors disabled TTS with %s despite enabled provider options", async fileName => {
+    db.update(schema.assets).set({ filePath: `/api/files/tidewe-project/${fileName}`, generationPlan: { ...postNarrationPlan, referenceRoles: ["keyframe"], warnings: [] } }).run();
+    const response = await request({ ttsEnabled: false, voiceoverMode: "replace", freeTts: { enabled: true, voice: "en-US-AriaNeural" },
+      ttsConfig: { baseUrl: "https://example.invalid", apiKey: "fixture", model: "tts-1", voice: "alloy" }, voiceGround: true });
+    expect(response.status).toBe(202);
+    expect(await completed((await response.json()).compositionId)).toMatchObject({ status: "done", ttsEnabled: false });
+    expect(state.tts).not.toHaveBeenCalled();
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips[0]).toMatchObject({ hasAudio: fileName === "ambient.mp4", sourceDuration: 5, duration: 5 });
+    expect(config.clips[0].audioPath).toBeUndefined();
+    expect(config.output.voiceGround).toBe(false);
+  });
+
+  it("generates the frozen English copy with the selected English voice", async () => {
+    db.update(schema.assets).set({ filePath: "/api/files/tidewe-project/silent.mp4" }).run();
+    const response = await request({ ttsEnabled: true, voiceoverMode: "auto", freeTts: { enabled: true, voice: "en-US-AriaNeural" } });
+    expect(response.status).toBe(202);
+    expect(await completed((await response.json()).compositionId)).toMatchObject({ status: "done", ttsEnabled: true });
+    expect(state.tts).toHaveBeenCalledExactlyOnceWith(text, { voice: "en-US-AriaNeural", rate: undefined });
+  });
+
+  it.each([false, true])("honors voice grounding=%s when TTS is mixed with native audio", async voiceGround => {
+    const response = await request({ ttsEnabled: true, voiceoverMode: "mix", voiceGround });
+    expect(response.status).toBe(202);
+    expect((await completed((await response.json()).compositionId)).status).toBe("done");
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.output.voiceGround).toBe(voiceGround);
+    expect(config.clips[0]).toMatchObject({ hasAudio: true, mixNativeAudio: true, duration: 5, sourceDuration: 5 });
+    expect(config.clips[0].audioPath).toBeTruthy();
+    expect(config.clips[0].preserveNativeSpeech).toBeUndefined();
+  });
+
+  it("rejects a mixed voice track longer than its footage without truncating speech", async () => {
+    state.tts.mockResolvedValue({ audio: longAudio, words: [] });
+    const response = await request({ ttsEnabled: true, voiceoverMode: "mix" });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("failed");
+    expect(await readCompositionError("tidewe-project", row.id)).toContain("视频可用时长");
+    expect(state.render).not.toHaveBeenCalled();
   });
 });

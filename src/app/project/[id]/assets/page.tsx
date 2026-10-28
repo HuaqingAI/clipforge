@@ -156,7 +156,7 @@ function AssetsPageContent() {
   const searchParams = useSearchParams();
   const requestedJob = searchParams.get("klingJob");
   const requestedFilm = searchParams.get("klingFilm") || searchParams.get("film");
-  const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, motionIntensity, setMotionIntensity, motionRealism, setMotionRealism, chainMode, setChainMode, visualLook, setVisualLook } = useSettingsStore();
+  const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, motionIntensity, setMotionIntensity, motionRealism, setMotionRealism, chainMode, visualLook, setVisualLook } = useSettingsStore();
   // beginner/director split: simple mode hides the director panel, the storyboard-grid button
   // and per-shot camera tooling — beginners see shots + generate, nothing else
   const uiMode = useSettingsStore((st) => st.uiMode);
@@ -1635,28 +1635,6 @@ function AssetsPageContent() {
                   }`}
                 >
                   {t(`motionRealism_${v}`)}
-                </button>
-              ))}
-            </div>
-          )}
-          {videoModelTarget && (isKlingDefault || modelSupportsLastFrame(videoModelTarget.model)) && (
-            <div
-              className="flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1 h-8"
-              title={t("chainModeTip")}
-            >
-              <span className="text-xs font-medium text-muted-foreground mr-1">{t("chainMode")}</span>
-              {(["pin", "tail", "off"] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setChainMode(v)}
-                  className={`rounded-full px-2 h-6 text-xs font-medium transition-all ${
-                    chainMode === v
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t(`chainMode_${v}`)}
                 </button>
               ))}
             </div>

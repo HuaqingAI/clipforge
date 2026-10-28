@@ -3,6 +3,11 @@ import { DEFAULT_FREE_VOICE, FREE_TTS_VOICES } from "@/lib/tts-voices";
 
 export const TIDEWE_DEFAULT_VOICE = "en-US-GuyNeural";
 
+/** Client-safe choices shared by TIDEWE controls, previews and composition. */
+export const TIDEWE_TTS_VOICES = FREE_TTS_VOICES
+  .filter((voice) => voice.lang === "en-US")
+  .map((voice) => ({ ...voice, labelZh: voice.labelZh ?? voice.label }));
+
 /** Resolve Edge narration consistently in the UI, pipeline and both composers. */
 export function resolveNarrationVoice(profile: unknown, explicitVoice?: string | null): string {
   const voice = explicitVoice?.trim();
