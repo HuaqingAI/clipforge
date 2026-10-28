@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
 import { resolveCurrentScript } from "@/lib/current-script";
-import { assetScopeForShot, scriptRevision, type ScriptContext } from "@/lib/asset-context";
+import { assetMatchesScript, assetScopeForShot, scriptRevision, type ScriptContext } from "@/lib/asset-context";
 import { generationAssetId, persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence";
 import { recordAiTask, updateAiTaskByProviderTaskId } from "@/lib/ai-tasks";
 import { createProvider } from "@/lib/providers";
@@ -15,6 +15,7 @@ import { klingJobs } from "@/lib/kling/job-schema";
 import { createKlingJob, retryKlingImport, startKlingJobRunner } from "@/lib/kling/jobs";
 import { getKlingJob, getKlingOutputs } from "@/lib/kling/repository";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
+import { generationRuns } from "@/lib/generation-schema";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -28,9 +29,13 @@ const attention = (message: string) => new GenerationExecutionError(message, "GE
 export async function executeGenerationItem(item: GenerationExecutionItem, save: GenerationCheckpoint): Promise<RecordValue> {
   let checkpoint: RecordValue = { ...item.checkpoint };
   return withGenerationContext({ itemId: item.id, checkpoint, snapshot: item.payload.snapshot,
-    deferPolling: item.kind === "video" || item.kind === "image",
+    deferPolling: item.kind === "video" || item.kind === "image" || item.kind === "keyframe_refine",
     beforeSubmission: () => {
-      if (item.kind === "video" || item.kind === "image") assertSourceCurrent(item);
+      if (getDb().select({ cancelRequested: generationRuns.cancelRequested }).from(generationRuns).where(eq(generationRuns.id, item.runId)).get()?.cancelRequested) {
+        generationCheckpoint({ submissionState: "not_submitted", cancelledBeforeSubmission: true, stage: "cancelled" });
+        throw new GenerationExecutionError("任务已在付费提交前取消。", "GENERATION_CANCELLED");
+      }
+      if (item.kind === "video" || item.kind === "image" || item.kind === "keyframe_refine") assertSourceCurrent(item);
       else assertGenerationInputs(item.payload.snapshot?.referenceInputs);
     },
     save: (value) => { save(value); checkpoint = value; } }, async () => {
@@ -38,6 +43,7 @@ export async function executeGenerationItem(item: GenerationExecutionItem, save:
     const request: RecordValue = { ...item.payload.request, projectId: item.projectId,
       ...(item.scriptId && { scriptId: item.scriptId }), ...(item.shotId !== null && { shotId: item.shotId }) };
     if (item.kind === "script" || item.kind === "storyboard_grid") return executeDocument(item, request, () => checkpoint);
+    if (item.kind === "keyframe_refine") return executeRefinement(item, request, () => checkpoint);
     if (request.provider === "kling-cli") return executeKling(item, request, () => checkpoint);
 
     const urls = () => [...new Set(strings(checkpoint.resultUrls).concat(strings(checkpoint.videoUrls), strings(checkpoint.imageUrls)))];
@@ -91,6 +97,9 @@ export async function executeGenerationItem(item: GenerationExecutionItem, save:
     if (taskId) await updateAiTaskByProviderTaskId(String(request.provider), taskId, { status: "completed", resultUrls, importState: "imported", assetId: String(first.assetId), error: null });
     generationCheckpoint({ completedResult: result, assetId: first.assetId, stage: "ready" });
     return result;
+  }).catch((error) => {
+    if (checkpoint.cancelledBeforeSubmission) throw new GenerationExecutionError("任务已在付费提交前取消。", "GENERATION_CANCELLED");
+    throw error;
   });
 }
 
@@ -110,6 +119,62 @@ function assertSourceCurrent(item: GenerationExecutionItem): void {
     || (frozenScript && scriptRevision(current) !== scriptRevision(frozenScript))) {
     throw new GenerationExecutionError("等待期间项目或脚本内容已变化，已阻止首次付费生成。请按当前内容重新确认。", "GENERATION_SOURCE_CHANGED");
   }
+  if (item.kind === "keyframe_refine") {
+    const frozenSource = item.payload.snapshot?.refinement?.source;
+    const source = frozenSource && db.select().from(assets).where(eq(assets.id, String(frozenSource.id))).get();
+    if (!frozenSource || !source || source.status !== "done" || source.projectId !== item.projectId || source.shotId !== item.shotId
+      || !assetMatchesScript(source, current) || ["filePath", "sourceScriptId", "sourceShotKey", "sourceRevision", "derivedFromAssetId", "type"].some((key) => source[key as keyof typeof source] !== frozenSource[key])) {
+      throw new GenerationExecutionError("等待期间精修源图已变化，已阻止首次付费生成。请重新选择并确认源图。", "GENERATION_SOURCE_CHANGED");
+    }
+  }
+}
+
+async function executeRefinement(item: GenerationExecutionItem, request: RecordValue, checkpoint: () => RecordValue): Promise<RecordValue> {
+  const urls = () => [...new Set([...strings(checkpoint().imageUrls), ...strings(checkpoint().resultUrls)])];
+  const providerName = String(request.provider);
+  const taskId = () => string(checkpoint().taskId);
+  // A plan is persisted before submission; never rebuild it from edited inputs after payment.
+  if ((taskId() || urls().length) && !checkpoint().refinementPlan) throw attention("原精修任务缺少已确认的导入信息，请核对服务商记录后人工恢复。");
+  if (!urls().length && taskId()) {
+    const provider = createProvider({ name: providerName, apiKey: string(request.apiKey) ?? "", baseUrl: string(request.baseUrl) ?? "" });
+    let status;
+    try { status = await provider.getTaskStatus(taskId()!); }
+    catch (error) { throw new GenerationExecutionError(error instanceof Error ? error.message : "查询精修任务失败", "GENERATION_QUERY_FAILED", true); }
+    if (status.status === "failed" || status.status === "cancelled") {
+      await updateAiTaskByProviderTaskId(providerName, taskId()!, { status: "failed", error: status.error ?? "云端精修失败" });
+      throw new GenerationExecutionError(status.error ?? "云端精修失败", "GENERATION_PROVIDER_FAILED");
+    }
+    const outputs = strings(record(status.result).imageUrls);
+    if (!outputs.length) {
+      if (status.status === "completed") throw new GenerationExecutionError("精修任务已完成，后台将继续查询原任务的图片地址。", "GENERATION_RESULT_NOT_READY", true);
+      return pending();
+    }
+    generationCheckpoint({ imageUrls: outputs, resultUrls: outputs, stage: "importing", submissionState: "acknowledged" });
+    await updateAiTaskByProviderTaskId(providerName, taskId()!, { status: "completed", resultUrls: outputs, error: null });
+  }
+  if (!urls().length) {
+    if (checkpoint().submissionState === "submitting" || checkpoint().submissionState === "acknowledged") throw attention("上次精修的付费提交结果不明，已停止自动重试，请先核对服务商任务记录。");
+    assertSourceCurrent(item);
+  }
+  const response = await (await import("@/app/api/project/[id]/keyframe-refine/route")).POST(
+    internalRequest(`/api/project/${item.projectId}/keyframe-refine`, request), { params: Promise.resolve({ id: item.projectId }) });
+  const result = record(await response.json());
+  if (checkpoint().cancelledBeforeSubmission) throw new GenerationExecutionError("任务已在付费提交前取消。", "GENERATION_CANCELLED");
+  if (string(result.taskId)) generationCheckpoint({ taskId: result.taskId, submissionState: "acknowledged" });
+  if (taskId()) await recordAiTask({ projectId: item.projectId, shotId: item.shotId ?? undefined, provider: providerName,
+    model: String(checkpoint().modelId ?? request.model ?? ""), mediaType: "image", mode: "image-to-image", taskId: taskId()!, prompt: string(record(checkpoint().refinementPlan).prompt) });
+  if (!response.ok) {
+    if (response.status === 429 && checkpoint().submissionState === "not_submitted") return pending("provider_rate_limited", 30_000);
+    if (urls().length) throw new GenerationExecutionError(string(result.error) ?? "精修结果导入未完成", "GENERATION_IMPORT_FAILED", true);
+    if (taskId()) return pending("recovering");
+    if (checkpoint().submissionState === "submitting" || checkpoint().submissionState === "acknowledged") throw attention(string(result.error) ?? "精修受理情况不明，请核对原任务。");
+    throw new GenerationExecutionError(string(result.error) ?? "精修请求被拒绝", string(result.code) ?? "GENERATION_REJECTED");
+  }
+  if (result.pending === true || response.status === 202) return pending();
+  if (!record(result.asset).id) throw attention("平台未返回可恢复的精修素材，请核对原任务。");
+  if (taskId()) await updateAiTaskByProviderTaskId(providerName, taskId()!, { status: "completed", resultUrls: urls(), importState: "imported", assetId: String(record(result.asset).id), error: null });
+  generationCheckpoint({ completedResult: result, assetId: record(result.asset).id, stage: "ready" });
+  return result;
 }
 
 async function executeDocument(item: GenerationExecutionItem, request: RecordValue, checkpoint: () => RecordValue): Promise<RecordValue> {

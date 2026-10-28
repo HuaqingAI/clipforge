@@ -118,6 +118,25 @@ describe("project background run recovery", () => {
 });
 
 describe("generation run history panel", () => {
+  it("links completed refinement candidates from historical scripts without adopting them", async () => {
+    const refined = run("refinement", "A", { kind: "keyframe_refine_batch", status: "completed", done: 1, items: [{ id: "candidate", kind: "keyframe_refine", scriptId: "historical-script", shotId: 3, status: "completed", result: { asset: { filePath: "/api/files/A/refined%20frame.png" } } }] });
+    request.mockResolvedValue(Response.json({ runs: [refined] }));
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
+    expect(container.textContent).toContain("批量关键帧精修");
+    expect(container.textContent).toContain("historical-script");
+    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "查看精修候选");
+    expect(link?.getAttribute("href")).toBe("/api/files/A/refined%20frame.png");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  });
+
+  it.each(["https://elsewhere.invalid/candidate.png", "//elsewhere.invalid/candidate.png", "/api/files/../secret", "/api/files/%2e%2e/secret", "/api/files/%252e%252e/secret", "/api/files/%5c..%5csecret", "javascript:alert(1)"])("does not expose unsafe refinement candidate paths: %s", async (filePath) => {
+    request.mockResolvedValue(Response.json({ runs: [run("refinement", "A", { kind: "keyframe_refine", status: "completed", done: 1, items: [{ id: "candidate", kind: "keyframe_refine", status: "completed", result: { asset: { filePath } } }] })] }));
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
+    expect(container.textContent).toContain("关键帧精修");
+    expect(container.textContent).not.toContain("查看精修候选");
+  });
+
   it("opens a historical deep link and refreshes saved results without selecting its old script", async () => {
     window.history.replaceState(null, "", "/project/A/assets?runId=old-batch");
     const old = run("old-batch", "A", { status: "completed", done: 1, items: [{ id: "old-shot", kind: "video", scriptId: "historical-script", shotId: 7, status: "completed", result: { childJobId: "child-job" } }] });

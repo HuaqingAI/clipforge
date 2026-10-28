@@ -7,8 +7,22 @@ import Link from "next/link";
 import { generationRunActive, useGenerationRuns, type GenerationRun, type GenerationStatus } from "@/lib/hooks/use-generation-runs";
 
 const statusLabels: Record<GenerationStatus, string> = { queued: "排队中", running: "生成中", waiting: "等待平台", importing: "保存中", completed: "已完成", failed: "失败", needs_attention: "需要处理", cancelled: "已取消" };
-const kindLabels = { video_batch: "批量转动态", video: "镜头视频", image: "镜头图片", storyboard_grid: "九宫格分镜", script: "脚本文案" };
+const kindLabels = { video_batch: "批量转动态", video: "镜头视频", image: "镜头图片", storyboard_grid: "九宫格分镜", script: "脚本文案", keyframe_refine: "关键帧精修", keyframe_refine_batch: "批量关键帧精修" };
 const stageLabels: Record<string, string> = { starting: "准备生成", submitting: "提交平台", cloud_running: "平台生成中", importing: "保存素材", queued: "等待开始", waiting: "等待平台", completed: "已完成" };
+
+function refinementCandidatePath(value: unknown): string | null {
+  if (typeof value !== "string" || !value.startsWith("/api/files/")) return null;
+  let decoded = value;
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+  } catch { return null; }
+  if (!decoded.startsWith("/api/files/") || /[\\?#\u0000-\u001f]/.test(decoded) || decoded.split("/").some((segment) => segment === "." || segment === "..") || /%[0-9a-f]{2}/i.test(decoded)) return null;
+  return value;
+}
 
 export function GenerationRunsPanel({ projectId, onCompleted }: { projectId: string; onCompleted?(run: GenerationRun): void | Promise<void> }) {
   const { runs, loading, error, refresh, cancelRun, retryImport } = useGenerationRuns(projectId);
@@ -54,7 +68,9 @@ export function GenerationRunsPanel({ projectId, onCompleted }: { projectId: str
       <summary className="cursor-pointer text-sm"><span>{run.label || kindLabels[run.kind]} · {statusLabels[run.status]} · {run.done}/{run.total}</span>{run.failed > 0 && <span className="ml-2 text-amber-600">失败 {run.failed}</span>}</summary>
       <div className="mt-3 space-y-2">{run.items.map((item) => {
         const jobId = item.result?.childJobId || item.result?.jobId;
-        return <div key={item.id} className="rounded bg-muted/30 p-2 text-xs"><p>{item.shotId != null ? `镜头 ${item.shotId}` : kindLabels[item.kind]} · {statusLabels[item.status]}{item.stage && stageLabels[item.stage] ? ` · ${stageLabels[item.stage]}` : ""}</p>{item.scriptId && <p className="text-muted-foreground">脚本版本：{item.scriptId}</p>}{item.error && <p role="alert" className="text-amber-600">{item.error}</p>}{typeof jobId === "string" && <Link className="text-primary underline" href={`/project/${encodeURIComponent(projectId)}/assets?klingJob=${encodeURIComponent(jobId)}`}>查看原镜头任务</Link>}</div>;
+        const asset = item.result?.asset as { filePath?: unknown } | undefined;
+        const candidate = item.kind === "keyframe_refine" && item.status === "completed" ? refinementCandidatePath(asset?.filePath) : null;
+        return <div key={item.id} className="rounded bg-muted/30 p-2 text-xs"><p>{item.shotId != null ? `镜头 ${item.shotId}` : kindLabels[item.kind]} · {statusLabels[item.status]}{item.stage && stageLabels[item.stage] ? ` · ${stageLabels[item.stage]}` : ""}</p>{item.scriptId && <p className="text-muted-foreground">脚本版本：{item.scriptId}</p>}{item.error && <p role="alert" className="text-amber-600">{item.error}</p>}{typeof jobId === "string" && <Link className="text-primary underline" href={`/project/${encodeURIComponent(projectId)}/assets?klingJob=${encodeURIComponent(jobId)}`}>查看原镜头任务</Link>}{candidate && <a className="block text-primary underline" href={candidate} target="_blank" rel="noopener noreferrer">查看精修候选</a>}</div>;
       })}
         <div className="flex gap-2">{generationRunActive(run) && <Button size="sm" variant="outline" disabled={busy === run.id} onClick={() => void actOn(run, "cancel")}>停止未提交镜头</Button>}{["needs_attention", "failed"].includes(run.status) && <Button size="sm" variant="outline" disabled={busy === run.id} onClick={() => void actOn(run, "retry_import")}>恢复保存</Button>}</div>
       </div>

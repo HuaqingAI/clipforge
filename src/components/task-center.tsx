@@ -26,6 +26,7 @@ export function TaskCenter({ collapsed = false }: { collapsed?: boolean }) {
       case "generation": {
         const title = row.generationKind === "script" ? (locale === "en" ? "Script" : "脚本与分镜规划")
           : row.generationKind === "storyboard_grid" ? (locale === "en" ? "Storyboard grid" : "分镜图")
+          : row.generationKind === "keyframe_refine" || row.generationKind === "keyframe_refine_batch" ? (locale === "en" ? "Keyframe refinement" : "关键帧精修")
           : row.generationKind === "image" ? (locale === "en" ? "Image" : "图片") : (locale === "en" ? "Shot videos" : "镜头视频");
         const state = row.status === "completed" ? (locale === "en" ? "Completed" : "已完成")
           : ["failed", "needs_attention"].includes(row.status ?? "") ? (locale === "en" ? "Needs attention" : "需要处理")

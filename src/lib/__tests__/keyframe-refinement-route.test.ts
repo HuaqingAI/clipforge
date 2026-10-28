@@ -19,6 +19,11 @@ import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 import { ProviderError } from "@/lib/providers/base";
 import { OpenAIProvider } from "@/lib/providers/openai";
 import * as mediaProbe from "@/lib/media-probe";
+import { executeGenerationItem } from "@/lib/generation-executor";
+import { generationCheckpoint, generationContextCheckpoint, generationContextDefersPolling, GenerationTaskPending } from "@/lib/generation-context";
+import { captureGenerationInputs } from "@/lib/generation-inputs";
+import type { GenerationExecutionItem } from "@/lib/generation-types";
+import { generationRuns } from "@/lib/generation-schema";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
@@ -42,6 +47,18 @@ function request(extra: Record<string, unknown> = {}) {
   return new NextRequest(`http://localhost/api/project/${projectId}/keyframe-refine`, { method: "POST", body: JSON.stringify({ scriptId, shotId: 1, sourceAssetId: "original", provider: "openai", model: "gpt-image-2", apiKey: "fixture-secret-key", baseUrl: "https://fixture-image.test/v1", issues: ["hands", "anatomy", "duplicates", "product", "details"], resolution: "4k", ...extra }) });
 }
 function sourceScope() { db.update(schema.assets).set(assetScopeForShot(currentScript(), currentScript().shots![0])).where(eq(schema.assets.id, "original")).run(); }
+async function workerItem(presenterReference?: string): Promise<GenerationExecutionItem> {
+  const project = db.select().from(schema.projects).get()!;
+  const source = db.select().from(schema.assets).where(eq(schema.assets.id, "original")).get()!;
+  const script = currentScript();
+  return { id: "refine-worker-item", runId: "refine-run", projectId, scriptId, shotId: 1, kind: "keyframe_refine", checkpoint: null,
+    payload: { request: await request().json(), snapshot: { project: structuredClone(project) as unknown as Record<string, unknown>,
+      script: structuredClone(script) as unknown as Record<string, unknown>, refinement: { source: structuredClone(source) as unknown as Record<string, unknown>, presenterReference },
+      referenceInputs: captureGenerationInputs({ source: source.filePath, products: project.productImages, presenterReference }) } } };
+}
+function runWorker(input: GenerationExecutionItem) {
+  return executeGenerationItem(input, (value) => { input.checkpoint = structuredClone(value); });
+}
 function tideweFixture(projectRevision = 1) {
   const presenter = { id: "tom", name: "Tom", appearance: "短发成年户外主播", referenceImages: [presenterPath] };
   const profile = createTideweOutdoorProfile({ speechMode: "on_camera", presenter });
@@ -68,7 +85,147 @@ beforeAll(async () => {
   [cropBytes, productBytes, presenterBytes, outputBytes] = await Promise.all(["crop", "product", "presenter", "output"].map((name) => readFile(join(uploads, `${name}.png`))));
 });
 
+describe("durable keyframe refinement execution", () => {
+  it("honors cancellation during async source preparation before any paid provider submission", async () => {
+    const input = await workerItem();
+    db.insert(generationRuns).values({ id: input.runId, projectId, clientRequestId: "cancel-during-preparation", requestHash: "test", kind: "keyframe_refine", createdAt: Date.now(), updatedAt: Date.now() }).run();
+    const originalProbe = mediaProbe.probeMedia;
+    const probe = vi.spyOn(mediaProbe, "probeMedia").mockImplementationOnce(async (path) => {
+      const result = await originalProbe(path);
+      db.update(generationRuns).set({ cancelRequested: true }).where(eq(generationRuns.id, input.runId)).run();
+      return result;
+    });
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_CANCELLED", retryable: false });
+      expect(input.checkpoint).toMatchObject({ submissionState: "not_submitted", cancelledBeforeSubmission: true, stage: "cancelled", refinementPlan: { sourceKeyframeUrl: sourcePath } });
+      expect(fetchMock).not.toHaveBeenCalled(); expect(allAssets()).toHaveLength(1);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("checkpoints the frozen plan before payment, saves an alternative, and replays completion without paying again", async () => {
+    const input = await workerItem();
+    fetchMock.mockImplementation(async () => {
+      expect(generationContextCheckpoint()).toMatchObject({ submissionState: "submitting", refinementPlan: { sourceKeyframeUrl: sourcePath, model: "gpt-image-2" } });
+      return Response.json({ data: [{ b64_json: outputBytes.toString("base64") }] });
+    });
+    const result = await runWorker(input);
+    expect(result).toMatchObject({ asset: { selected: false, derivedFromAssetId: "original" }, assetIds: [result.assetId], imageUrls: [((result.asset as { filePath: string }).filePath)] });
+    expect(await runWorker(input)).toEqual(result);
+    expect(fetchMock).toHaveBeenCalledOnce(); expect(allAssets()).toHaveLength(2);
+    expect(allAssets().filter((asset) => asset.selected).map((asset) => asset.id)).toEqual(["original"]);
+  });
+
+  it("releases async work and recovers its known task after the original source and shot were removed", async () => {
+    const input = await workerItem();
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockImplementationOnce(async () => {
+      expect(generationContextDefersPolling()).toBe(true);
+      generationCheckpoint({ taskId: "paid-refinement", submissionState: "acknowledged" });
+      throw new GenerationTaskPending("paid-refinement");
+    });
+    const query = vi.spyOn(OpenAIProvider.prototype, "getTaskStatus").mockResolvedValueOnce({ taskId: "paid-refinement", status: "processing" })
+      .mockResolvedValueOnce({ taskId: "paid-refinement", status: "completed", result: { taskId: "paid-refinement", modelId: "gpt-image-2", imageUrls: [`data:image/png;base64,${outputBytes.toString("base64")}`] } });
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true });
+      db.update(schema.scripts).set({ shots: [] }).run();
+      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile(), productImages: [] }).run();
+      db.delete(schema.assets).run();
+      expect(await runWorker(input)).toMatchObject({ pending: true });
+      const result = await runWorker(input);
+      expect(result).toMatchObject({ asset: { selected: false, sourceKeyframeUrl: sourcePath, derivedFromAssetId: "original" } });
+      expect(allAssets()).toMatchObject([{ sourceScriptId: scriptId, derivedFromAssetId: "original", selected: false }]);
+      expect(generate).toHaveBeenCalledOnce(); expect(query).toHaveBeenCalledTimes(2); expect(fetchMock).not.toHaveBeenCalled();
+    } finally { generate.mockRestore(); query.mockRestore(); }
+  });
+
+  it("retries an interrupted download from the saved paid URL without regenerating", async () => {
+    const input = await workerItem();
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockResolvedValueOnce({ taskId: "paid-download", modelId: "gpt-image-2", imageUrls: ["https://fixture-image.test/paid.png"] });
+    fetchMock.mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(outputBytes), { headers: { "content-type": "image/png" } }));
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+      db.update(schema.scripts).set({ shots: [{ ...shot, description: "Edited after payment" }] }).run();
+      const result = await runWorker(input);
+      expect(result.assetId).toBeTruthy(); expect(generate).toHaveBeenCalledOnce(); expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(allAssets()).toHaveLength(2); expect(allAssets().filter((asset) => asset.selected)).toMatchObject([{ id: "original" }]);
+      expect(allAssets().find((asset) => asset.id === result.assetId)?.sourceRevision).toBe((input.payload.snapshot!.refinement!.source).sourceRevision);
+    } finally { generate.mockRestore(); }
+  });
+
+  it("reuses a saved alternative after the completion checkpoint is interrupted", async () => {
+    const input = await workerItem();
+    await expect(executeGenerationItem(input, (value) => {
+      if (value.completedResult) throw new Error("worker stopped after asset insert");
+      input.checkpoint = structuredClone(value);
+    })).rejects.toThrow("worker stopped after asset insert");
+    const savedId = allAssets().find((asset) => asset.id !== "original")!.id;
+    expect(await runWorker(input)).toMatchObject({ assetId: savedId });
+    expect(fetchMock).toHaveBeenCalledOnce(); expect(allAssets()).toHaveLength(2);
+  });
+
+  it("retains every paid output and retries a failed asset save without downloading or billing again", async () => {
+    const input = await workerItem();
+    fetchMock.mockResolvedValueOnce(Response.json({ data: [{ b64_json: outputBytes.toString("base64") }, { b64_json: presenterBytes.toString("base64") }] }));
+    sqlite.exec("CREATE TRIGGER refinement_save_failure BEFORE INSERT ON assets WHEN NEW.id != 'original' BEGIN SELECT RAISE(FAIL, 'refinement asset write interrupted'); END");
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+    } finally { sqlite.exec("DROP TRIGGER refinement_save_failure"); }
+    const firstPath = (input.checkpoint!.localPaths as Record<string, string>)["0"];
+    db.update(schema.scripts).set({ selected: false }).run();
+    db.insert(schema.scripts).values({ id: "new-script", projectId, selected: true, styleType: "scene", shots: [{ ...shot, description: "New alternative" }] }).run();
+    const result = await runWorker(input);
+    expect(result.assetIds).toHaveLength(2);
+    expect((result.imageUrls as string[])[0]).toBe(firstPath);
+    expect(allAssets()).toHaveLength(3); expect(fetchMock).toHaveBeenCalledOnce();
+    expect(allAssets().filter((asset) => asset.id !== "original")).toMatchObject([
+      { selected: false, sourceScriptId: scriptId, derivedFromAssetId: "original" },
+      { selected: false, sourceScriptId: scriptId, derivedFromAssetId: "original" },
+    ]);
+  });
+
+  it("requires attention after an unknown paid submission and never resubmits it automatically", async () => {
+    const input = await workerItem();
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockRejectedValueOnce(new ProviderError("connection lost after sending image edit", "NETWORK_ERROR", "openai"));
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION", retryable: false });
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION" });
+      expect(generate).toHaveBeenCalledOnce(); expect(allAssets()).toHaveLength(1);
+    } finally { generate.mockRestore(); }
+  });
+
+  it("backs off a definitely rejected429 and keeps the confirmed repair request", async () => {
+    const input = await workerItem();
+    const error = new ProviderError("rate limited before acceptance", "RATE_LIMIT", "openai", 429); error.submissionRejected = true;
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockRejectedValueOnce(error)
+      .mockResolvedValueOnce({ taskId: "paid-after-backoff", modelId: "gpt-image-2", imageUrls: [`data:image/png;base64,${outputBytes.toString("base64")}`] });
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true, stage: "provider_rate_limited", retryAfterMs: 30000 });
+      expect(input.checkpoint?.submissionState).toBe("not_submitted");
+      expect(await runWorker(input)).toHaveProperty("assetId");
+      expect(generate).toHaveBeenCalledTimes(2); expect(generate.mock.calls[0]).toEqual(generate.mock.calls[1]);
+    } finally { generate.mockRestore(); }
+  });
+
+  it.each(["source", "script"])("blocks the first payment if the confirmed %s changed while queued", async (changed) => {
+    const input = await workerItem();
+    if (changed === "source") db.update(schema.assets).set({ filePath: `/api/files/${projectId}/output.png` }).run();
+    else db.update(schema.scripts).set({ shots: [{ ...shot, description: "Changed while queued" }] }).run();
+    await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_SOURCE_CHANGED" });
+    expect(fetchMock).not.toHaveBeenCalled(); expect(allAssets()).toHaveLength(1);
+  });
+
+  it("uses the confirmed presenter image after the character library was edited", async () => {
+    db.insert(schema.characters).values({ id: "saved-host", name: "Host", referenceImages: [presenterPath] }).run();
+    db.update(schema.projects).set({ characterId: "saved-host" }).run();
+    const input = await workerItem(presenterPath);
+    db.update(schema.characters).set({ referenceImages: [`/api/files/${projectId}/output.png`] }).run();
+    expect(await runWorker(input)).toHaveProperty("assetId");
+    expect((await uploads()).bytes).toEqual([cropBytes, presenterBytes, productBytes]);
+  });
+});
+
 beforeEach(() => {
+  db.delete(generationRuns).run();
   db.delete(schema.assets).run(); db.delete(schema.scripts).run(); db.delete(schema.projects).run(); db.delete(schema.characters).run();
   const profile = createShortVideoSalesProfile({ styleType: "scene" });
   db.insert(schema.projects).values({ id: projectId, name: "Keyframe repair", productImages: [productPath], creativeProfile: profile, creativeConfigRevision: 1 }).run();

@@ -8,11 +8,12 @@ export interface GenerationPayload {
     project?: Record<string, unknown>;
     script?: Record<string, unknown>;
     kling?: { profileId: string; principalKey: string; region: string; model: KlingVideoModelDescriptor };
+    refinement?: { source: Record<string, unknown>; presenterReference?: string };
     referenceInputs?: Array<{ url: string; hash: string }>;
   };
 }
 
-export type GenerationKind = "video" | "image" | "script" | "storyboard_grid";
+export type GenerationKind = "video" | "image" | "script" | "storyboard_grid" | "keyframe_refine";
 
 export interface GenerationExecutionItem {
   id: string;

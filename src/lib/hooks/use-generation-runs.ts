@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TASK_FEED_REFRESH_EVENT } from "@/lib/task-feed";
 
 export type GenerationStatus = "queued" | "running" | "waiting" | "importing" | "completed" | "failed" | "needs_attention" | "cancelled";
-export type GenerationItemKind = "video" | "image" | "script" | "storyboard_grid";
+export type GenerationItemKind = "video" | "image" | "script" | "storyboard_grid" | "keyframe_refine";
 export interface GenerationRunItem {
   id: string;
   kind: GenerationItemKind;
@@ -18,7 +18,7 @@ export interface GenerationRunItem {
 export interface GenerationRun {
   id: string;
   projectId: string;
-  kind: GenerationItemKind | "video_batch";
+  kind: GenerationItemKind | "video_batch" | "keyframe_refine_batch";
   label?: string | null;
   status: GenerationStatus;
   items: GenerationRunItem[];

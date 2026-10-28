@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, lte } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { projects, scripts } from "@/lib/db/schema";
+import { assets, characters, projects, scripts } from "@/lib/db/schema";
+import { assetMatchesScript } from "@/lib/asset-context";
 import { resolveCurrentScript } from "@/lib/current-script";
 import { generationRuns, generationItems } from "@/lib/generation-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
@@ -9,10 +10,15 @@ import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation
 import { captureGenerationInputs } from "@/lib/generation-inputs";
 import type { GenerationKind, GenerationPayload } from "@/lib/generation-types";
 import { executeGenerationItem } from "@/lib/generation-executor";
+import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-context";
+import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { tidewePresenterReference } from "@/lib/tidewe/presenter";
+import { resolveCharacterReferenceModel } from "@/lib/character-reference-model";
+import { KEYFRAME_REPAIR_ISSUES } from "@/lib/keyframe-refinement";
 
 const ACTIVE = ["queued", "running", "waiting", "importing"];
-const RUN_KINDS = ["video_batch", "video", "image", "script", "storyboard_grid"];
-const ITEM_KINDS = ["video", "image", "script", "storyboard_grid"];
+const RUN_KINDS = ["video_batch", "video", "image", "script", "storyboard_grid", "keyframe_refine", "keyframe_refine_batch"];
+const ITEM_KINDS = ["video", "image", "script", "storyboard_grid", "keyframe_refine"];
 type Item = typeof generationItems.$inferSelect;
 
 export class GenerationRunError extends Error {
@@ -92,7 +98,7 @@ export function listGenerationRuns(projectId?: string) {
 export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
   if (!input || typeof input.projectId !== "string" || !input.projectId || typeof input.clientRequestId !== "string" || !input.clientRequestId || input.clientRequestId.length > 200 || !RUN_KINDS.includes(input.kind)
     || !Array.isArray(input.items) || !input.items.length || input.items.length > 500) throw new GenerationRunError("请提供项目、请求编号和完整镜头清单（最多 500 项）。");
-  if (input.kind !== "video_batch" && input.items.length !== 1) throw new GenerationRunError("此任务类型一次只能提交一项。");
+  if (!["video_batch", "keyframe_refine_batch"].includes(input.kind) && input.items.length !== 1) throw new GenerationRunError("此任务类型一次只能提交一项。");
   const hash = createHash("sha256").update(canonical(input)).digest("hex");
   const db = getDb();
   const runId = db.transaction((tx) => {
@@ -109,13 +115,14 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
     const id = randomUUID();
     const seen = new Set<string>();
     const values = input.items.map((inputItem, index) => {
-      if (!inputItem || !ITEM_KINDS.includes(inputItem.kind) || (input.kind === "video_batch" ? inputItem.kind !== "video" : inputItem.kind !== input.kind)
+      const expectedKind = input.kind === "video_batch" ? "video" : input.kind === "keyframe_refine_batch" ? "keyframe_refine" : input.kind;
+      if (!inputItem || !ITEM_KINDS.includes(inputItem.kind) || inputItem.kind !== expectedKind
         || !inputItem.request || typeof inputItem.request !== "object" || Array.isArray(inputItem.request)) throw new GenerationRunError("任务条目无效。");
       const scriptId = inputItem.scriptId ?? (typeof inputItem.request.scriptId === "string" ? inputItem.request.scriptId : currentScript?.id) ?? null;
       const script = scriptId ? projectScripts.find((s) => s.id === scriptId) : null;
       if (scriptId && !script) throw new GenerationRunError("源脚本不属于该项目。", 409);
       const shotId = inputItem.shotId ?? (typeof inputItem.request.shotId === "number" ? inputItem.request.shotId : null);
-      if ((inputItem.kind === "video" || inputItem.kind === "image") && (!script || !Number.isSafeInteger(shotId) || !script.shots?.some((s) => s.shotId === shotId))) throw new GenerationRunError("镜头不在源脚本中，请刷新后确认。", 409);
+      if (["video", "image", "keyframe_refine"].includes(inputItem.kind) && (!script || !Number.isSafeInteger(shotId) || !script.shots?.some((s) => s.shotId === shotId))) throw new GenerationRunError("镜头不在源脚本中，请刷新后确认。", 409);
       if (inputItem.kind === "storyboard_grid" && !script) throw new GenerationRunError("请先生成分镜脚本。", 409);
       const dedupeKey = `${inputItem.kind}:${scriptId}:${shotId}`;
       if (seen.has(dedupeKey)) throw new GenerationRunError("同一批次不能重复包含一个镜头。");
@@ -127,6 +134,38 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
       const itemId = randomUUID();
       const request: Record<string, unknown> = { ...inputItem.request, projectId: input.projectId, ...(scriptId ? { scriptId } : {}), ...(shotId !== null ? { shotId } : {}), ...(inputItem.kind === "script" ? { requestId: itemId } : {}) };
       const payload: GenerationPayload = { request, ...(inputItem.asset ? { asset: { ...inputItem.asset } } : {}), snapshot: { project: JSON.parse(JSON.stringify(project)), ...(script ? { script: JSON.parse(JSON.stringify(script)) } : {}) } };
+      if (inputItem.kind === "keyframe_refine") {
+        if (!script || script.id !== currentScript?.id) throw new GenerationRunError("当前脚本已切换，请刷新后重新确认精修。", 409, "SCRIPT_CONTEXT_CHANGED");
+        const source = typeof request.sourceAssetId === "string" ? tx.select().from(assets).where(eq(assets.id, request.sourceAssetId)).get() : null;
+        if (!source || source.projectId !== project.id || source.shotId !== shotId || !assetMatchesScript(source, script)) throw new GenerationRunError("精修源图不属于当前项目、脚本或分镜。", 409, "SOURCE_CONTEXT_MISMATCH");
+        if (source.status !== "done" || !source.filePath?.startsWith(`/api/files/${project.id}/`) || !/\.(?:png|jpe?g|webp|avif|bmp)$/i.test(source.filePath)) throw new GenerationRunError("精修源图不是可用的本地静态关键帧。", 409, "SOURCE_IMAGE_UNAVAILABLE");
+        if (request.sourceImageUrl !== undefined && request.sourceImageUrl !== source.filePath) throw new GenerationRunError("精修源图已变化，请刷新后重新确认。", 409, "SOURCE_CONTEXT_MISMATCH");
+        if (request.resolution !== "2k" && request.resolution !== "4k") throw new GenerationRunError("请选择 2K 或 4K 精修分辨率。");
+        const issues = new Set<string>(KEYFRAME_REPAIR_ISSUES.map((issue) => issue.id));
+        if (!Array.isArray(request.issues) || !request.issues.every((issue) => typeof issue === "string" && issues.has(issue))) throw new GenerationRunError("精修项目无效，请重新选择。");
+        if ((request.instructions !== undefined && typeof request.instructions !== "string") || (typeof request.instructions === "string" && request.instructions.length > 2000)
+          || (!request.issues.length && !(typeof request.instructions === "string" && request.instructions.trim()))) throw new GenerationRunError("请选择精修项目或填写有效的修复说明（最多 2000 字）。");
+        if (typeof request.provider !== "string" || typeof request.model !== "string" || typeof request.apiKey !== "string" || !request.apiKey.trim()) throw new GenerationRunError("请配置图片精修平台、模型与 API Key。");
+        const context = checkKeyframeRefinementContext(project, script);
+        if (!context.ok) throw new GenerationRunError("创作设置或商品事实已变化，请先按当前配置生成脚本再精修。", 409, context.code);
+        const shot = script.shots!.find((item) => item.shotId === shotId)!;
+        const profile = context.scriptProfile;
+        const tidewe = isTideweOutdoorProfile(profile), premiumCg = isPremiumProductCgProfile(profile);
+        let presenterReference = tidewe && shot.tidewe?.personVisible !== false ? tidewePresenterReference(profile) : undefined;
+        if (!tidewe && !premiumCg) {
+          for (const id of [...new Set([shot.characterId, project.characterId])]) {
+            if (!id) continue;
+            const character = tx.select().from(characters).where(eq(characters.id, id)).get();
+            presenterReference = character?.referenceImages?.find((reference) => typeof reference === "string" && Boolean(reference.trim()));
+            if (presenterReference) break;
+          }
+        }
+        const productRefs = tidewe && shot.tidewe?.productVisible === false ? [] : project.productImages ?? [];
+        const editModel = resolveCharacterReferenceModel(request.provider, request.model, 1 + (presenterReference ? 1 : 0) + productRefs.length);
+        if (!editModel.ok) throw new GenerationRunError(editModel.error, 400, "KEYFRAME_EDIT_MODEL_UNSUPPORTED");
+        request.model = editModel.modelId;
+        payload.snapshot!.refinement = { source: JSON.parse(JSON.stringify(source)), ...(presenterReference ? { presenterReference } : {}) };
+      }
       if (request.provider === "kling-cli") {
         const profile = typeof request.profileId === "string" ? tx.select().from(klingProfiles).where(eq(klingProfiles.id, request.profileId)).get()?.data : null;
         const model = profile?.catalogSnapshot.find((candidate) => candidate.selectionKey === request.selectionKey);
@@ -136,7 +175,8 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
         payload.snapshot!.kling = { profileId: profile.id, principalKey: profile.principalKey, region: profile.region, model: JSON.parse(JSON.stringify(model)) };
       }
       try {
-        payload.snapshot!.referenceInputs = captureGenerationInputs({ request, productImages: project.productImages, creativeProfile: project.creativeProfile, characters: script?.characters });
+        payload.snapshot!.referenceInputs = captureGenerationInputs({ request, productImages: project.productImages, creativeProfile: project.creativeProfile, characters: script?.characters,
+          ...(payload.snapshot!.refinement ? { sourceImageUrl: payload.snapshot!.refinement.source.filePath, presenterReference: payload.snapshot!.refinement.presenterReference } : {}) });
       } catch (error) {
         throw new GenerationRunError(error instanceof Error ? error.message : "生成参考素材不可用，请重新确认。", 409, (error as { code?: string }).code ?? "GENERATION_REFERENCE_UNREADABLE");
       }
@@ -256,9 +296,10 @@ async function executeClaimedItem(item: Item) {
       result: progress, error: null, errorCode: null, nextRunAt: Date.now() + Math.max(1000, Math.min(300_000, Number(result.retryAfterMs) || 5000)), updatedAt: Date.now() }).where(fence).run();
   } catch (error) {
     const coded = error as Error & { code?: string; retryable?: boolean };
+    const cancelled = coded.code === "GENERATION_CANCELLED";
     const exhaustedImport = coded.retryable && coded.code === "GENERATION_IMPORT_FAILED" && item.attempts >= 6;
-    if (!lost) db.update(generationItems).set({ status: exhaustedImport ? "needs_attention" : coded.retryable ? "waiting" : coded.code === "GENERATION_NEEDS_ATTENTION" ? "needs_attention" : "failed",
-      stage: coded.retryable ? "retry_wait" : "needs_attention", error: redactError(error, payload), errorCode: coded.code ?? "GENERATION_FAILED",
+    if (!lost) db.update(generationItems).set({ status: cancelled ? "cancelled" : exhaustedImport ? "needs_attention" : coded.retryable ? "waiting" : coded.code === "GENERATION_NEEDS_ATTENTION" ? "needs_attention" : "failed",
+      stage: cancelled ? "cancelled" : coded.retryable ? "retry_wait" : "needs_attention", error: cancelled ? null : redactError(error, payload), errorCode: cancelled ? null : coded.code ?? "GENERATION_FAILED",
       nextRunAt: Date.now() + Math.min(300_000, 5000 * 2 ** Math.min(item.attempts, 6)), updatedAt: Date.now() }).where(fence).run();
   } finally {
     clearInterval(heartbeat);

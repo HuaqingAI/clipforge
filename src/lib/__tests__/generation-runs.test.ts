@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -9,7 +9,7 @@ import type { GenerationExecutionItem } from "@/lib/generation-types";
 import type { KlingProfile, KlingVideoModelDescriptor } from "@/lib/kling/types";
 
 const state = vi.hoisted(() => ({ directory: "", sqlite: null as Database.Database | null, execute: vi.fn() }));
-vi.mock("@/lib/paths", () => ({ getDataDir: () => state.directory }));
+vi.mock("@/lib/paths", () => ({ getDataDir: () => state.directory, getUploadsDir: () => `${state.directory}/uploads` }));
 vi.mock("@/lib/db", async () => {
   const { default: Sqlite } = await import("better-sqlite3");
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
@@ -21,7 +21,8 @@ vi.mock("@/lib/db", async () => {
 });
 vi.mock("@/lib/generation-executor", () => ({ executeGenerationItem: (...args: unknown[]) => state.execute(...args) }));
 import { getDb } from "@/lib/db";
-import { projects, scripts } from "@/lib/db/schema";
+import { assets, characters, projects, scripts } from "@/lib/db/schema";
+import { assetScopeForShot } from "@/lib/asset-context";
 import { generationItems, generationRuns } from "@/lib/generation-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation-secrets";
@@ -36,12 +37,26 @@ function input(projectId = "A", count = 1): EnqueueGenerationRunInput {
   return { projectId, clientRequestId: `request-${projectId}`, kind: "video_batch", items: Array.from({ length: count }, (_, i) => ({ kind: "video", scriptId: `script-${projectId}`, shotId: i + 1,
     request: { provider: "mock", apiKey: "frozen-secret", model: "original", prompt: `shot ${i + 1}`, options: { duration: 5 } }, asset: { type: "ai_generated", shotId: i + 1 } })) };
 }
+function refinementInput(projectId = "A", count = 1): EnqueueGenerationRunInput {
+  const db = getDb();
+  const script = db.select().from(scripts).where(eq(scripts.id, `script-${projectId}`)).get()!;
+  const directory = path.join(state.directory, "uploads", projectId);
+  mkdirSync(directory, { recursive: true });
+  return { projectId, clientRequestId: `refine-${projectId}`, kind: count === 1 ? "keyframe_refine" : "keyframe_refine_batch", items: Array.from({ length: count }, (_, index) => {
+    const shot = script.shots![index], sourceAssetId = `source-${projectId}-${shot.shotId}`;
+    const sourceImageUrl = `/api/files/${projectId}/${sourceAssetId}.png`;
+    writeFileSync(path.join(directory, `${sourceAssetId}.png`), `source bytes ${index}`);
+    db.insert(assets).values({ id: sourceAssetId, projectId, shotId: shot.shotId, type: "ai_generated", filePath: sourceImageUrl, status: "done", ...assetScopeForShot(script, shot) }).run();
+    return { kind: "keyframe_refine", scriptId: script.id, shotId: shot.shotId, request: { scriptId: script.id, shotId: shot.shotId, sourceAssetId, sourceImageUrl,
+      provider: "openai", model: "gpt-image-2", apiKey: "refinement-secret", issues: ["hands"], resolution: "2k" } };
+  }) };
+}
 async function settled(id: string) { await vi.waitFor(() => expect(["completed", "failed", "needs_attention", "waiting"].includes(getGenerationRun(id).status)).toBe(true)); }
 beforeAll(() => { state.directory = mkdtempSync(path.join(tmpdir(), "clipforge-generation-test-")); });
 afterAll(() => { stopGenerationRunner(); state.sqlite?.close(); rmSync(state.directory, { recursive: true, force: true }); });
 beforeEach(() => {
   vi.stubEnv("NEXT_PHASE", "phase-production-build"); state.execute.mockReset();
-  const db = getDb(); db.delete(generationItems).run(); db.delete(generationRuns).run(); db.delete(klingProfiles).run(); db.delete(scripts).run(); db.delete(projects).run();
+  const db = getDb(); db.delete(generationItems).run(); db.delete(generationRuns).run(); db.delete(klingProfiles).run(); db.delete(assets).run(); db.delete(characters).run(); db.delete(scripts).run(); db.delete(projects).run();
   db.insert(klingProfiles).values({ id: "profile-1", data: klingProfile() }).run();
   for (const id of ["A", "B"]) {
     db.insert(projects).values({ id, name: `Project ${id}`, productName: `Product ${id}` }).run();
@@ -52,6 +67,66 @@ beforeEach(() => {
 afterEach(() => { stopGenerationRunner(); vi.unstubAllEnvs(); });
 
 describe("durable cross-project generation", () => {
+  it.each([1, 4])("atomically registers %s refinement shots with durable source snapshots", (count) => {
+    const request = refinementInput("A", count);
+    const run = enqueueGenerationRun(request);
+    expect(run.kind).toBe(count === 1 ? "keyframe_refine" : "keyframe_refine_batch");
+    expect(run.total).toBe(count);
+    expect(run.items.every((item) => item.kind === "keyframe_refine" && item.status === "queued")).toBe(true);
+    for (const saved of getDb().select().from(generationItems).all()) {
+      const payload = decryptGenerationValue<GenerationExecutionItem["payload"]>(saved.payload);
+      expect(payload.snapshot?.refinement?.source).toMatchObject({ id: `source-A-${saved.shotId}`, projectId: "A", sourceScriptId: "script-A" });
+      expect(payload.snapshot?.referenceInputs).toEqual([expect.objectContaining({ url: `/api/files/A/source-A-${saved.shotId}.png`, hash: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+      expect(saved.payload).not.toContain("refinement-secret");
+    }
+  });
+  it("rejects an entire refinement batch when one source belongs to another shot", () => {
+    const request = refinementInput("A", 3);
+    request.items[2].request.sourceAssetId = "source-A-1";
+    expect(() => enqueueGenerationRun(request)).toThrow("精修源图不属于");
+    expect(listGenerationRuns()).toEqual([]);
+    expect(getDb().select().from(generationItems).all()).toEqual([]);
+  });
+  it("rejects stale or missing refinement source files before accepting a batch", () => {
+    const request = refinementInput("A", 2);
+    request.items[1].request.sourceImageUrl = "/api/files/A/changed.png";
+    expect(() => enqueueGenerationRun(request)).toThrow("精修源图已变化");
+    request.items[1].request.sourceImageUrl = "/api/files/A/source-A-2.png";
+    rmSync(path.join(state.directory, "uploads", "A", "source-A-2.png"));
+    expect(() => enqueueGenerationRun(request)).toThrow("本地参考素材不存在");
+    expect(listGenerationRuns()).toEqual([]);
+  });
+  it("freezes the resolved presenter reference and source row independently from later library edits", () => {
+    const db = getDb();
+    const request = refinementInput();
+    const presenter = "/api/files/A/presenter.png";
+    writeFileSync(path.join(state.directory, "uploads", "A", "presenter.png"), "original presenter");
+    db.insert(characters).values({ id: "presenter", name: "Presenter", referenceImages: [presenter] }).run();
+    db.update(projects).set({ characterId: "presenter" }).where(eq(projects.id, "A")).run();
+    enqueueGenerationRun(request);
+    db.update(characters).set({ referenceImages: ["https://example.test/new.png"] }).where(eq(characters.id, "presenter")).run();
+    db.update(assets).set({ filePath: "/api/files/A/edited.png" }).where(eq(assets.id, "source-A-1")).run();
+    const payload = decryptGenerationValue<GenerationExecutionItem["payload"]>(db.select().from(generationItems).get()!.payload);
+    expect(payload.snapshot?.refinement).toMatchObject({ source: { filePath: "/api/files/A/source-A-1.png" }, presenterReference: presenter });
+    expect(payload.snapshot?.referenceInputs?.map((input) => input.url)).toEqual(expect.arrayContaining(["/api/files/A/source-A-1.png", presenter]));
+  });
+  it("deduplicates lost refinement acknowledgements and prevents overlapping batches", () => {
+    const request = refinementInput("A", 2);
+    const run = enqueueGenerationRun(request);
+    expect(enqueueGenerationRun(structuredClone(request)).id).toBe(run.id);
+    request.clientRequestId = "another-refinement";
+    expect(() => enqueueGenerationRun(request)).toThrow("已有未结束任务");
+    expect(generationRunAction(run.id, "cancel").status).toBe("cancelled");
+    expect(enqueueGenerationRun(request).total).toBe(2);
+  });
+  it("cancels queued refinement while preserving acknowledged refinement for recovery", () => {
+    const run = enqueueGenerationRun(refinementInput("A", 2));
+    const [paid] = getDb().select().from(generationItems).all();
+    getDb().update(generationItems).set({ status: "needs_attention", checkpoint: encryptGenerationValue({ submissionState: "acknowledged", taskId: "paid-refinement" }) }).where(eq(generationItems.id, paid.id)).run();
+    const cancelled = generationRunAction(run.id, "cancel");
+    expect(cancelled.items.filter((item) => item.status === "cancelled")).toHaveLength(1);
+    expect(generationRunAction(run.id, "retry_import").items.find((item) => item.id === paid.id)?.status).toBe("waiting");
+  });
   it("atomically accepts all 15 shots without a Kling account slot cap", () => {
     const request = input("A", 15); request.items.forEach((item) => { Object.assign(item.request, { provider: "kling-cli", profileId: "profile-1", selectionKey: klingModel.selectionKey }); });
     const run = enqueueGenerationRun(request);
@@ -153,6 +228,13 @@ describe("durable cross-project generation", () => {
     await runGenerationTick();
     expect(getGenerationRun(run.id).status).toBe("cancelled");
     expect(state.execute).toHaveBeenCalledOnce();
+  });
+  it("marks a running preparation cancelled when the final pre-submission guard stops it", async () => {
+    const run = enqueueGenerationRun(refinementInput());
+    state.execute.mockRejectedValue(Object.assign(new Error("cancelled before payment"), { code: "GENERATION_CANCELLED" }));
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    await vi.waitFor(() => expect(getGenerationRun(run.id).status).toBe("cancelled"));
+    expect(getGenerationRun(run.id).items[0]).toMatchObject({ status: "cancelled", stage: "cancelled", error: null, errorCode: null });
   });
   it("allows recovery of paid script output after saving fails without accepting an empty output", () => {
     const run = enqueueGenerationRun({ projectId: "A", clientRequestId: "script-save", kind: "script", items: [{ kind: "script", request: {} }] });

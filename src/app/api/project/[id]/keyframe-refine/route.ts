@@ -4,8 +4,8 @@ import { join, sep } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, characters, projects, scripts } from "@/lib/db/schema";
-import { assetMatchesScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
-import { AssetContextConflictError, persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence";
+import { assetMatchesScript, assetScopeForShot, scriptRevision, type AssetScope } from "@/lib/asset-context";
+import { AssetContextConflictError, generationAssetId, persistAssetSource, saveAssetCandidate } from "@/lib/asset-persistence";
 import { resolveCurrentScript } from "@/lib/current-script";
 import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-context";
@@ -26,6 +26,7 @@ import { redactKlingCliText } from "@/lib/kling/cli-diagnostics";
 import { storyboardGridTargetDimensions, withStoryboardGridResolution } from "@/lib/storyboard-grid-resolution";
 import { buildKeyframeRefinementPrompt } from "@/lib/keyframe-refinement-prompt";
 import { KEYFRAME_REPAIR_ISSUES, type KeyframeRefinementCandidate, type KeyframeRepairIssue } from "@/lib/keyframe-refinement";
+import { beforeGenerationSubmission, generationCheckpoint, generationContextCheckpoint, generationContextItemId, generationContextSnapshot, GenerationTaskPending } from "@/lib/generation-context";
 
 export const runtime = "nodejs";
 
@@ -33,6 +34,49 @@ type RouteParams = { params: Promise<{ id: string }> };
 type Asset = typeof assets.$inferSelect;
 const inFlightSources = new Set<string>();
 const STATIC_IMAGE = /\.(?:png|jpe?g|webp|avif|bmp)$/i;
+
+interface RefinementPlan {
+  provider: string;
+  model: string;
+  prompt: string;
+  sourceKeyframeUrl: string;
+  scope: AssetScope;
+  resolution: "2k" | "4k";
+  target: { width: number; height: number };
+}
+
+const imageUrls = (value: unknown): string[] => Array.isArray(value) ? value.filter((url): url is string => typeof url === "string" && Boolean(url)) : [];
+
+/** Resume imports using only the frozen paid plan, even after its script was edited. */
+async function importWorkerRefinements(projectId: string, shotId: number, plan: RefinementPlan) {
+  const itemId = generationContextItemId()!;
+  const checkpoint = generationContextCheckpoint()!;
+  const outputs = [...new Set([...imageUrls(checkpoint.imageUrls), ...imageUrls(checkpoint.resultUrls)])];
+  const saved = [];
+  const resolutions = [];
+  const localPaths = { ...(checkpoint.localPaths as Record<string, string> | undefined) };
+  generationCheckpoint({ stage: "importing" });
+  for (const [index, output] of outputs.entries()) {
+    if (!/^(?:https?:\/\/|data:image\/)/i.test(output)) fail("KEYFRAME_OUTPUT_INVALID", "生图服务未返回可保存的新图片", "The image provider did not return a new image that can be saved.", 502);
+    const idempotencyKey = `${itemId}:${index}`;
+    const existing = getDb().select().from(assets).where(eq(assets.id, generationAssetId(projectId, idempotencyKey))).get();
+    const filePath = existing?.filePath ?? localPaths[String(index)] ?? await persistAssetSource(projectId, output, shotId, "keyframe-refine");
+    localPaths[String(index)] = filePath;
+    generationCheckpoint({ localPaths });
+    const outputPath = resolveUploadFilePath(filePath);
+    if (!outputPath || !STATIC_IMAGE.test(filePath)) fail("KEYFRAME_OUTPUT_INVALID", "生图服务返回的不是有效静态图片", "The provider output is not a valid still image.", 502);
+    const actual = await probeMedia(outputPath);
+    if (actual.width <= 0 || actual.height <= 0 || actual.duration > 0) fail("KEYFRAME_OUTPUT_INVALID", "无法读取精修图片的实际尺寸", "The repaired image dimensions could not be read.", 502);
+    const asset = existing ?? await saveAssetCandidate({ idempotencyKey, projectId, shotId, filePath, provider: plan.provider, model: plan.model, prompt: plan.prompt,
+      sourceKeyframeUrl: plan.sourceKeyframeUrl, scope: plan.scope, selectedPolicy: { mode: "alternative" }, allowHistoricalScope: true });
+    saved.push(candidate(asset));
+    resolutions.push({ requested: plan.resolution, width: actual.width, height: actual.height,
+      limited: actual.width + 16 < plan.target.width || actual.height + 16 < plan.target.height });
+  }
+  if (!saved.length) fail("KEYFRAME_OUTPUT_EMPTY", "生图服务未返回精修图片", "The image provider returned no repaired image.", 502);
+  return { asset: saved[0], assets: saved, assetId: saved[0].id, assetIds: saved.map((asset) => asset.id),
+    imageUrls: saved.map((asset) => asset.filePath), resolution: resolutions[0] };
+}
 
 class RefinementError extends Error {
   constructor(readonly code: string, readonly zh: string, readonly en: string, readonly status = 400) { super(zh); }
@@ -83,7 +127,8 @@ function errorResponse(req: NextRequest, error: unknown, apiKey?: string, possib
   if (apiKey) detail = detail.split(apiKey).join("[已脱敏]");
   detail = redactKlingCliText(detail).replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/gi, "[image data]").slice(0, 3000);
   console.error("Keyframe refinement failed:", detail);
-  return NextResponse.json({ error: detail || errText(req, "关键帧精修失败", "Keyframe refinement failed"), code: error instanceof ProviderError ? error.code : "KEYFRAME_REFINEMENT_FAILED", ...generationInfo }, { status: error instanceof ProviderError ? 502 : 500 });
+  const rejectedStatus = generationContextItemId() && error instanceof ProviderError && error.submissionRejected ? error.statusCode : undefined;
+  return NextResponse.json({ error: detail || errText(req, "关键帧精修失败", "Keyframe refinement failed"), code: error instanceof ProviderError ? error.code : "KEYFRAME_REFINEMENT_FAILED", ...generationInfo }, { status: rejectedStatus ?? (error instanceof ProviderError ? 502 : 500) });
 }
 
 /** Reopening the dialog restores all usable still candidates, including the original crop. */
@@ -129,8 +174,24 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     if ((body.instructions !== undefined && typeof body.instructions !== "string") || (instructions?.length ?? 0) > 2000) fail("INVALID_INSTRUCTIONS", "补充修复说明不能超过 2000 字", "Repair notes must be text no longer than 2000 characters.");
     if (!issues.length && !instructions) fail("REPAIR_REQUEST_REQUIRED", "请选择需要修复的问题或填写修复说明", "Choose a repair issue or describe the defect.");
 
-    const { db, project, script, shot, profile } = contextFor(id, scriptId, shotId);
-    const source = db.select().from(assets).where(and(eq(assets.id, sourceAssetId), eq(assets.projectId, id), eq(assets.shotId, shotId))).get();
+    const workerId = generationContextItemId();
+    const checkpoint = generationContextCheckpoint();
+    if (workerId && checkpoint?.refinementPlan && (imageUrls(checkpoint.imageUrls).length || imageUrls(checkpoint.resultUrls).length)) {
+      generationStarted = true;
+      return NextResponse.json(await importWorkerRefinements(id, shotId, checkpoint.refinementPlan as unknown as RefinementPlan));
+    }
+    const live = contextFor(id, scriptId, shotId);
+    const snapshot = generationContextSnapshot();
+    if (workerId && (!snapshot?.project || !snapshot.script || !snapshot.refinement?.source)) fail("GENERATION_SNAPSHOT_INVALID", "后台精修缺少已确认的源图信息", "The confirmed refinement snapshot is missing.", 409);
+    const { db } = live;
+    const project = workerId ? snapshot!.project as unknown as typeof live.project : live.project;
+    const script = workerId ? snapshot!.script as unknown as typeof live.script : live.script;
+    const shot = script.shots?.find((item) => item.shotId === shotId);
+    if (!shot) fail("SHOT_NOT_FOUND", "已确认脚本中没有此分镜", "Shot not found in the confirmed script", 409);
+    const profileCheck = checkKeyframeRefinementContext(project, script);
+    if (!profileCheck.ok) fail(profileCheck.code, "已确认的精修上下文无效", "The confirmed refinement context is invalid.", 409);
+    const profile = profileCheck.scriptProfile;
+    const source = workerId ? snapshot!.refinement!.source as unknown as Asset : db.select().from(assets).where(and(eq(assets.id, sourceAssetId), eq(assets.projectId, id), eq(assets.shotId, shotId))).get();
     if (!source || !assetMatchesScript(source, script)) fail("SOURCE_CONTEXT_MISMATCH", "源图不属于当前脚本的此分镜，请刷新后重新选择", "The source image does not belong to this shot in the current script.", 409);
     const premiumCg = isPremiumProductCgProfile(profile), tidewe = isTideweOutdoorProfile(profile);
     if (premiumCg && !hasTrustedPremiumCgAssetProvenance(source, id, script)) fail("PREMIUM_CG_ASSET_PROVENANCE_REQUIRED", "高端产品 CG 只能精修本项目可信流程生成的关键帧", "Premium product CG can only refine keyframes generated by this project's trusted workflow.", 409);
@@ -141,8 +202,8 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       if (policyIssues.length) fail("CREATIVE_POLICY_VIOLATION", "当前分镜不符合高端产品 CG 创作设置，请先修正脚本", "This shot violates the premium product CG policy.");
     }
     const revision = scriptRevision(script);
-    let presenterRef = tidewe && shot.tidewe?.personVisible !== false ? tidewePresenterReference(profile) : undefined;
-    if (!tidewe && !premiumCg) {
+    let presenterRef = workerId ? snapshot!.refinement!.presenterReference : tidewe && shot.tidewe?.personVisible !== false ? tidewePresenterReference(profile) : undefined;
+    if (!workerId && !tidewe && !premiumCg) {
       // Dialogue cast ids are not necessarily library ids. Prefer the shot's
       // saved character, then the project's saved presenter when no image exists.
       for (const characterId of [...new Set([shot.characterId, project.characterId])]) {
@@ -180,10 +241,19 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       fail("SCRIPT_CONTEXT_CHANGED", "准备精修期间源图已变化，请刷新后重新选择", "The source image changed while preparing the repair. Refresh and choose it again.", 409);
     }
     const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
+    const plan: RefinementPlan = { provider: providerName, model: editModel.modelId, prompt, sourceKeyframeUrl: source.filePath!,
+      scope: assetScopeForShot(script, shot, source.id), resolution, target: { width: target.width, height: target.height } };
+    generationCheckpoint({ refinementPlan: plan, submissionState: "not_submitted" });
+    beforeGenerationSubmission();
     generationStarted = true;
     const result = await provider.generateImage({ ...options, modelId: editModel.modelId, mode: "image-to-image", prompt,
       referenceImageUrl: referenceImageUrls[0], referenceImageUrls,
       ...(premiumCg ? { negativePrompt: PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } : tidewe ? { negativePrompt: TIDEWE_VISUAL_NEGATIVE_PROMPT } : {}) });
+    if (workerId) {
+      generationCheckpoint({ ...(result.taskId && { taskId: result.taskId }), imageUrls: result.imageUrls, resultUrls: result.imageUrls,
+        modelId: editModel.modelId, submissionState: "acknowledged", stage: "importing" });
+      return NextResponse.json(await importWorkerRefinements(id, shotId, plan));
+    }
     const output = result.imageUrls?.[0];
     if (!output) fail("KEYFRAME_OUTPUT_EMPTY", "生图服务未返回精修图片", "The image provider returned no repaired image.", 502);
     if (!/^(?:https?:\/\/|data:image\/)/i.test(output)) fail("KEYFRAME_OUTPUT_INVALID", "生图服务未返回可保存的新图片", "The image provider did not return a new image that can be saved.", 502);
@@ -197,6 +267,13 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       expectedCurrentScript: { scriptId: script.id, scriptRevision: revision, creativeConfigRevision: project.creativeConfigRevision } });
     return NextResponse.json({ asset: candidate(saved), resolution: { requested: resolution, width: actual.width, height: actual.height,
       limited: actual.width + 16 < target.width || actual.height + 16 < target.height } });
-  } catch (error) { return errorResponse(req, error, apiKey, generationStarted); }
+  } catch (error) {
+    if (generationContextItemId()) {
+      if (error instanceof GenerationTaskPending) return NextResponse.json({ pending: true, taskId: error.taskId, stage: "cloud_running" }, { status: 202 });
+      if (error instanceof ProviderError && error.taskId) generationCheckpoint({ taskId: error.taskId, submissionState: "acknowledged" });
+      else if (error instanceof ProviderError && error.submissionRejected) generationCheckpoint({ submissionState: "not_submitted", stage: "rejected" });
+    }
+    return errorResponse(req, error, apiKey, generationStarted);
+  }
   finally { if (lockKey) inFlightSources.delete(lockKey); }
 }
