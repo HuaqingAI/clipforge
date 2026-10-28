@@ -14,7 +14,7 @@ import { videoParameterLabel, videoParameterValueLabel } from "@/lib/video-param
 import { validateVideoPrompt } from "@/lib/video-prompt";
 
 type RowStatus = "pending" | "submitting" | "submitted" | "completed" | "failed" | "uncertain";
-type Row = BatchMotionShot & { selected: boolean; state: RowStatus; message?: string; taskId?: string };
+type Row = BatchMotionShot & { selected: boolean; state: RowStatus; message?: string; taskId?: string; reviewing?: boolean; frameError?: string };
 const stateLabel: Record<RowStatus, string> = { pending: "待提交", submitting: "正在提交", submitted: "已提交", completed: "已完成", failed: "提交失败", uncertain: "提交结果待核对" };
 
 function verifiedCatalog(status: KlingPublicStatus, profileId: string | undefined, selectionKey: string) {
@@ -49,6 +49,8 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const session = useRef("");
+  const frameReviewSession = useRef(0);
+  const frameReviewShots = useRef(new Set<number>());
   const lock = useRef(false);
   const alive = useRef(true);
   const isKling = provider === "kling-cli";
@@ -58,10 +60,11 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   useEffect(() => {
-    if (!open) { session.current = ""; return; }
+    if (!open) { session.current = ""; frameReviewSession.current++; frameReviewShots.current.clear(); return; }
     const key = JSON.stringify([projectId, scriptId, selectionKey, profileId, provider]);
     if (session.current === key || lock.current) return;
     session.current = key;
+    frameReviewSession.current++; frameReviewShots.current.clear();
     setRows(shots.map((shot) => ({ ...shot, selected: Boolean(shot.draft && !shot.disabledReason), state: "pending" })));
     setConfirmed(false); setError(null);
   }, [open, projectId, scriptId, selectionKey, profileId, provider, shots]);
@@ -119,6 +122,8 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
   const unresolved = rows.some((row) => row.state === "uncertain");
   function rowIssue(row: Row) {
     if (row.disabledReason) return row.disabledReason;
+    if (row.reviewing) return "正在更新首尾帧提示词…";
+    if (row.frameError) return row.frameError;
     if (!row.draft?.firstFrameUrl) return "请先生成此分镜的关键帧";
     if (isKling && model) return prepareBatchMotionKling(row.draft, model).error;
     return validateVideoPrompt(row.draft.prompt).map((issue) => issue.message).join(" ");
@@ -126,13 +131,30 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
   const eligible = rows.filter((row) => ["pending", "failed"].includes(row.state) && !rowIssue(row));
   const selected = eligible.filter((row) => row.selected);
   const capacityBlocked = isKling && (!capacity || capacity.blockedByUnknownSubmission || selected.length > remaining);
-  const canSubmit = Boolean(valid && scriptId && selected.length && confirmed && modelReady && !loading && !busy && !capacityBlocked && !unresolved);
+  const reviewing = rows.some((row) => row.reviewing);
+  const canSubmit = Boolean(valid && scriptId && selected.length && confirmed && modelReady && !loading && !busy && !reviewing && !capacityBlocked && !unresolved);
   const successCount = rows.filter((row) => row.state === "submitted" || row.state === "completed").length;
   const failedCount = rows.filter((row) => row.state === "failed" || row.state === "uncertain").length;
   const started = rows.some((row) => row.state !== "pending");
 
   function updateRow(shotId: number, update: Partial<Row>) {
     setRows((previous) => previous.map((row) => row.asset.shotId === shotId ? { ...row, ...update } : row));
+  }
+
+  async function changeFrames(row: Row, firstFrameUrl: string, lastFrameUrl?: string) {
+    if (lock.current || frameReviewShots.current.has(row.asset.shotId) || !row.draft?.refreshFrames) return;
+    const requestSession = frameReviewSession.current;
+    frameReviewShots.current.add(row.asset.shotId);
+    setConfirmed(false);
+    updateRow(row.asset.shotId, { reviewing: true, frameError: undefined });
+    try {
+      const draft = await row.draft.refreshFrames(firstFrameUrl, lastFrameUrl);
+      if (alive.current && frameReviewSession.current === requestSession) updateRow(row.asset.shotId, { draft, reviewing: false });
+    } catch (failure) {
+      if (alive.current && frameReviewSession.current === requestSession) updateRow(row.asset.shotId, { reviewing: false, frameError: failure instanceof Error ? failure.message : "更新首尾帧失败，请重试。" });
+    } finally {
+      if (frameReviewSession.current === requestSession) frameReviewShots.current.delete(row.asset.shotId);
+    }
   }
 
   async function submit() {
@@ -156,7 +178,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
               provider: "kling-cli", profileId: model.profileId, clientRequestId, executionScope: "single-shot", projectId, scriptId,
               shotId: row.asset.shotId, selectionKey: model.selectionKey, mode: model.tool === "image_to_video" ? "image-to-video" : "text-to-video", prompt: prepared.prompt, options: prepared.options,
               ...(draft.promptContext && { promptContext: draft.promptContext }),
-              imageUrl: prepared.images[0], ...(prepared.images.length > 1 && { referenceImageUrls: prepared.images.slice(1) }),
+              imageUrl: prepared.images[0],
               ...(prepared.lastImageUrl && { lastImageUrl: prepared.lastImageUrl }), expectedSelectedAssetId: row.asset.assetId ?? null,
               billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: clientRequestId },
             };
@@ -212,6 +234,12 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
         const selectable = ["pending", "failed"].includes(row.state) && !issue;
         const prepared = isKling && row.draft && model ? prepareBatchMotionKling(row.draft, model) : undefined;
         const parameters = prepared?.options ?? row.draft?.options ?? {};
+        const frameChoices = row.draft ? [
+          { label: "当前镜头原始关键帧", url: row.asset.isVideo ? row.asset.keyframeUrl ?? row.draft.firstFrameUrl : row.asset.thumbnailUrl ?? row.draft.firstFrameUrl },
+          ...(row.draft.frameChoices ?? []),
+          { label: "已选首帧", url: row.draft.firstFrameUrl },
+          ...(row.draft.lastFrameUrl ? [{ label: "已选尾帧", url: row.draft.lastFrameUrl }] : []),
+        ].filter((item, index, choices) => item.url && choices.findIndex((candidate) => candidate.url === item.url) === index) : [];
         return <div key={row.asset.shotId} className="rounded-lg border p-3" data-shot-id={row.asset.shotId}>
           <div className="flex gap-3"><input aria-label={`选择分镜 ${row.asset.shotId}`} type="checkbox" className="mt-1" checked={row.selected && selectable} disabled={busy || !selectable || unresolved} onChange={(event) => { updateRow(row.asset.shotId, { selected: event.target.checked }); setConfirmed(false); }} />
             {row.draft?.firstFrameUrl && <img src={row.draft.firstFrameUrl} alt={`分镜 ${row.asset.shotId} 当前关键帧`} className="h-24 w-16 shrink-0 rounded bg-muted object-contain" />}
@@ -219,13 +247,17 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
               {(issue || row.message) && <p role="alert" className="text-xs text-destructive">{row.message || issue}</p>}{row.taskId && <p className="break-all text-xs text-muted-foreground">任务 ID：{row.taskId}</p>}
               {prepared?.warnings.map((warning) => <p key={warning} className="text-xs text-amber-600">{warning}</p>)}
             </div></div>
-          {row.draft && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">查看本分镜提示词与参考图</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.draft.prompt}</p><div className="mt-2 flex flex-wrap gap-2">{[...new Set([row.draft.lastFrameUrl, ...row.draft.referenceImages].filter((url): url is string => Boolean(url) && url !== row.draft!.firstFrameUrl))].map((url, index) => <img key={url} src={url} alt={`分镜 ${row.asset.shotId} 参考图片 ${index + 1}`} className="h-16 max-w-24 rounded object-contain" />)}</div></details>}
+          {isKling && row.draft && <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1 text-xs">首帧<select aria-label={`分镜 ${row.asset.shotId} 首帧`} className="h-9 w-full rounded-md border bg-background px-2" value={row.draft.firstFrameUrl} disabled={busy || row.reviewing || !["pending", "failed"].includes(row.state) || unresolved || !row.draft.refreshFrames} onChange={(event) => void changeFrames(row, event.target.value, row.draft?.lastFrameUrl)}>{frameChoices.map((choice) => <option key={choice.url} value={choice.url}>{choice.label}</option>)}</select></label>
+            <label className="space-y-1 text-xs">尾帧<select aria-label={`分镜 ${row.asset.shotId} 尾帧`} className="h-9 w-full rounded-md border bg-background px-2" value={row.draft.lastFrameUrl ?? ""} disabled={busy || row.reviewing || !["pending", "failed"].includes(row.state) || unresolved || !row.draft.refreshFrames} onChange={(event) => void changeFrames(row, row.draft!.firstFrameUrl, event.target.value || undefined)}><option value="">不使用图片</option>{frameChoices.map((choice) => <option key={choice.url} value={choice.url}>{choice.label}</option>)}</select>{row.draft.lastFrameUrl && <img src={row.draft.lastFrameUrl} alt={`分镜 ${row.asset.shotId} 尾帧预览`} className="h-24 max-w-full rounded object-contain" />}</label>
+          </div>}
+          {row.draft && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">查看本分镜提示词{!isKling && "与参考图"}</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.draft.prompt}</p>{!isKling && <div className="mt-2 flex flex-wrap gap-2">{[...new Set([row.draft.lastFrameUrl, ...row.draft.referenceImages].filter((url): url is string => Boolean(url) && url !== row.draft!.firstFrameUrl))].map((url, index) => <img key={url} src={url} alt={`分镜 ${row.asset.shotId} 参考图片 ${index + 1}`} className="h-16 max-w-24 rounded object-contain" />)}</div>}</details>}
         </div>;
       })}</div>
       {!rows.length && <p className="text-sm text-muted-foreground">暂无可转动态的分镜，请先生成关键帧。</p>}
       {started && <p role="status" className="text-sm">已提交或完成 {successCount} 个，失败或待核对 {failedCount} 个。{busy && "正在处理所选分镜，请勿重复操作…"}</p>}
       {unresolved ? <div className="space-y-2"><p className="text-sm text-amber-600">请先通过任务恢复入口核对原任务，避免重复提交。</p><Button variant="outline" disabled={busy} onClick={() => void onRefreshTasks().catch(() => setError("任务列表刷新失败，请稍后重试。"))}>核对任务列表</Button></div> : <>
-        <label className="flex items-start gap-2 rounded-md border border-amber-500/30 p-3 text-sm"><input aria-label="确认批量生成费用" type="checkbox" className="mt-1" checked={confirmed} disabled={busy || !selected.length} onChange={(event) => setConfirmed(event.target.checked)} />我已核对所选分镜、模型和参考图，确认本次生成可能产生费用。</label>
+        <label className="flex items-start gap-2 rounded-md border border-amber-500/30 p-3 text-sm"><input aria-label="确认批量生成费用" type="checkbox" className="mt-1" checked={confirmed} disabled={busy || reviewing || !selected.length} onChange={(event) => setConfirmed(event.target.checked)} />我已核对所选分镜、模型和参考图，确认本次生成可能产生费用。</label>
         <Button disabled={!canSubmit} onClick={() => void submit()}>{busy ? <><Loader2 className="size-4 animate-spin" />批量提交中…</> : `确认提交 ${selected.length} 个分镜转动态`}</Button>
       </>}
     </DialogContent>

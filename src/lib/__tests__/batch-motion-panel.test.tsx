@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BatchMotionPanel } from "@/components/batch-motion-panel";
 import { VideoGenerationFailure } from "@/components/video-generation-dialog";
-import { prepareBatchMotionKling, silentBatchMotionOptions, type BatchMotionShot } from "@/lib/batch-motion";
+import { prepareBatchMotionKling, silentBatchMotionOptions, type BatchMotionDraft, type BatchMotionShot } from "@/lib/batch-motion";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 
@@ -26,7 +26,9 @@ const status = (overrides: Record<string, unknown> = {}) => ({ configured: true,
 const json = (value: unknown, code = 200) => new Response(JSON.stringify(value), { status: code });
 function shot(shotId: number): BatchMotionShot {
   const asset = { assetId: `asset-${shotId}`, shotId, type: "hook" as const, duration: 6, description: `Product ${shotId}`, prompt: "Static image", visualSource: "ai_generate" as const, status: "done" as const, thumbnailUrl: `/frame-${shotId}.png` };
-  return { asset, draft: { asset, prompt: "Camera slowly moves forward. Preserve the product.", promptContext: { scriptId: "script", shotId, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, batch: true, generateAudio: false, contextKey: `server-context-${shotId}` }, firstFrameUrl: `/frame-${shotId}.png`, referenceImages: ["/product.png"], options: { duration: 6, resolution: "720p", audioEnabled: false }, klingParameters: { duration: 6, audioEnabled: true, voiceover: "must never submit", tts: true }, generate: vi.fn().mockResolvedValue(undefined) } };
+  const draft: BatchMotionDraft = { asset, prompt: "Camera slowly moves forward. Preserve the product.", promptContext: { scriptId: "script", shotId, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, batch: true, generateAudio: false, contextKey: `server-context-${shotId}` }, firstFrameUrl: `/frame-${shotId}.png`, referenceImages: ["/product.png"], frameChoices: [{ label: "另一个分镜的关键帧", url: "/alternate.png" }], options: { duration: 6, resolution: "720p", audioEnabled: false }, klingParameters: { duration: 6, audioEnabled: true, voiceover: "must never submit", tts: true }, generate: vi.fn().mockResolvedValue(undefined) };
+  draft.refreshFrames = vi.fn(async (firstFrameUrl, lastFrameUrl) => ({ ...draft, firstFrameUrl, lastFrameUrl, prompt: `Reviewed frames: ${firstFrameUrl} / ${lastFrameUrl ?? "none"}`, promptContext: { ...draft.promptContext!, contextKey: `review-${firstFrameUrl}-${lastFrameUrl ?? "none"}`, controlInputs: { firstFrameUrl, lastFrameUrl } } }));
+  return { asset, draft };
 }
 let root: Root;
 let container: HTMLDivElement;
@@ -57,14 +59,18 @@ describe("batch shot animation", () => {
     expect(checkbox("选择分镜 1").checked).toBe(true);
     expect(checkbox("选择分镜 3").disabled).toBe(true);
     expect(button("确认提交").disabled).toBe(true);
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelectorAll('select[aria-label^="分镜 1 "]')).toHaveLength(2);
+    expect((container.querySelector('select[aria-label="分镜 1 首帧"]') as HTMLSelectElement).value).toBe("/frame-1.png");
+    expect((container.querySelector('select[aria-label="分镜 1 尾帧"]') as HTMLSelectElement).selectedOptions[0].textContent).toBe("不使用图片");
+    expect(container.textContent).not.toMatch(/输入图片[ 1234]/);
     expect(container.textContent).not.toContain("配音设置"); expect(container.textContent).not.toContain("字幕设置");
     await act(async () => checkbox("选择分镜 1").click());
     expect(videoRequests()).toHaveLength(0);
     await confirmAndSubmit();
     expect(videoRequests()).toHaveLength(1);
     expect(videoRequests()[0]).toMatchObject({ shotId: 2, imageUrl: "/frame-2.png", expectedSelectedAssetId: "asset-2", executionScope: "single-shot", selectionKey: model.selectionKey, options: { duration: 6, enable_audio: "false" } });
-    expect(videoRequests()[0].referenceImageUrls).toEqual(["/product.png"]);
+    expect(videoRequests()[0]).not.toHaveProperty("referenceImageUrls");
+    expect(videoRequests()[0]).not.toHaveProperty("lastImageUrl");
     expect(videoRequests()[0].options).not.toHaveProperty("voiceover");
     expect(videoRequests()[0].prompt).toBe(shots[1].draft!.prompt);
     expect(videoRequests()[0].promptContext).toEqual(shots[1].draft!.promptContext);
@@ -95,6 +101,40 @@ describe("batch shot animation", () => {
     expect(container.textContent).toContain("已提交或完成 2 个");
     expect(onBusyChange.mock.calls).toEqual([[true], [false]]);
     await act(async () => button("全选").click()); expect(button("确认提交").disabled).toBe(true);
+  });
+
+  it("refreshes the reviewed prompt when first or tail is selected and sends no hidden references", async () => {
+    shots = [shot(1)];
+    await mount();
+    await act(async () => checkbox("确认批量生成费用").click());
+    const first = container.querySelector('select[aria-label="分镜 1 首帧"]') as HTMLSelectElement;
+    await act(async () => { first.value = "/alternate.png"; first.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(shots[0].draft!.refreshFrames).toHaveBeenCalledWith("/alternate.png", undefined);
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    const tail = container.querySelector('select[aria-label="分镜 1 尾帧"]') as HTMLSelectElement;
+    await act(async () => { tail.value = "/frame-1.png"; tail.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(container.querySelector("details p")?.textContent).toBe("Reviewed frames: /alternate.png / /frame-1.png");
+    await confirmAndSubmit();
+    expect(videoRequests()[0]).toMatchObject({ imageUrl: "/alternate.png", lastImageUrl: "/frame-1.png", prompt: "Reviewed frames: /alternate.png / /frame-1.png", promptContext: { contextKey: "review-/alternate.png-/frame-1.png", controlInputs: { firstFrameUrl: "/alternate.png", lastFrameUrl: "/frame-1.png" } } });
+    expect(videoRequests()[0]).not.toHaveProperty("referenceImageUrls");
+  });
+
+  it("blocks paid submission until frame review finishes and supports removing a selected tail", async () => {
+    shots = [shot(1)];
+    let finishReview!: (draft: BatchMotionDraft) => void;
+    const original = shots[0].draft!.refreshFrames!;
+    shots[0].draft!.refreshFrames = vi.fn(() => new Promise<BatchMotionDraft>((resolve) => { finishReview = resolve; }));
+    await mount();
+    await act(async () => checkbox("确认批量生成费用").click());
+    const tail = container.querySelector('select[aria-label="分镜 1 尾帧"]') as HTMLSelectElement;
+    await act(async () => { tail.value = "/alternate.png"; tail.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(button("确认提交").disabled).toBe(true);
+    expect(checkbox("确认批量生成费用").disabled).toBe(true);
+    await act(async () => finishReview(await original("/frame-1.png", "/alternate.png")));
+    await act(async () => { tail.value = ""; tail.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => finishReview(await original("/frame-1.png", undefined)));
+    await confirmAndSubmit();
+    expect(videoRequests()[0]).not.toHaveProperty("lastImageUrl");
   });
 
   it("continues after a definite rejection and retries only the failed shot", async () => {
@@ -157,12 +197,13 @@ describe("batch shot animation", () => {
     expect(button("确认提交").disabled).toBe(true); expect(videoRequests()).toHaveLength(0);
   });
 
-  it("submits batch frames and references to any selected Kling tool despite unsupported metadata", async () => {
+  it("submits only selected first and tail frames to any Kling tool despite unsupported metadata", async () => {
     api.request.mockImplementation((url: string, init?: RequestInit) => Promise.resolve(url === "/api/ai/video" ? json({ jobId: `job-${JSON.parse(String(init?.body)).shotId}` }, 202) : json(status({ models: [{ ...model, available: false, tool: "text_to_video", inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } }] }))));
     await mount();
     await confirmAndSubmit();
     expect(videoRequests()).toHaveLength(2);
-    expect(videoRequests()[0]).toMatchObject({ mode: "text-to-video", imageUrl: "/frame-1.png", referenceImageUrls: ["/product.png"] });
+    expect(videoRequests()[0]).toMatchObject({ mode: "text-to-video", imageUrl: "/frame-1.png" });
+    expect(videoRequests()[0]).not.toHaveProperty("referenceImageUrls");
     expect(container.textContent).not.toContain("图生视频模型");
   });
 
@@ -238,15 +279,15 @@ describe("batch request preparation", () => {
     expect(silentBatchMotionOptions({ duration: 6, audioEnabled: true, voiceover: "hi", audioPrompt: "hello", audioUrl: "/voice", tts: true, subtitles: true, captions: true, music: "song" })).toEqual({ duration: 6, audioEnabled: false });
     const prepared = prepareBatchMotionKling(shots[0].draft!, model);
     expect(prepared.options).toEqual({ duration: 6, enable_audio: "false" });
-    expect(prepared.images).toEqual(["/frame-1.png", "/product.png"]);
+    expect(prepared.images).toEqual(["/frame-1.png"]);
   });
 
-  it("passes all selected references and tail without declaring unsupported inputs from model metadata", () => {
+  it("omits extra reference images while passing the selected first and tail frames", () => {
     const multi = { ...model, inputSlots: [{ name: "image", required: true, role: "image" as const }, { name: "reference", required: true, role: "image" as const }, { name: "tail", required: true, role: "tailImage" as const }] };
     const draft = { ...shots[0].draft!, lastFrameUrl: "/tail.png", referenceImages: ["/product.png", "/unused.png"] };
-    expect(prepareBatchMotionKling(draft, multi)).toMatchObject({ images: ["/frame-1.png", "/product.png", "/unused.png"], lastImageUrl: "/tail.png", error: "" });
+    expect(prepareBatchMotionKling(draft, multi)).toMatchObject({ images: ["/frame-1.png"], lastImageUrl: "/tail.png", error: "" });
     expect(prepareBatchMotionKling({ ...draft, lastFrameUrl: undefined }, multi).error).toBe("");
-    expect(prepareBatchMotionKling(draft, { ...multi, inputSlots: [], parameters: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } })).toMatchObject({ images: ["/frame-1.png", "/product.png", "/unused.png"], lastImageUrl: "/tail.png", error: "" });
+    expect(prepareBatchMotionKling(draft, { ...multi, inputSlots: [], parameters: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } })).toMatchObject({ images: ["/frame-1.png"], lastImageUrl: "/tail.png", error: "" });
   });
 
   it("keeps reviewed native speech enabled in batch requests and preserves the exact prompt", () => {

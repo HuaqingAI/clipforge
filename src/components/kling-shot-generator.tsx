@@ -13,6 +13,9 @@ import { videoParameterLabel, videoParameterDescription, videoParameterValueLabe
 import { KLING_MAX_CONCURRENT_SHOTS } from "@/lib/kling/concurrency";
 import { validateVideoPrompt } from "@/lib/video-prompt";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
+import type { BatchMotionDraft } from "@/lib/batch-motion";
+
+const FRAME_INPUTS = [{ name: "firstFrame", label: "首帧" }, { name: "tailFrame", label: "尾帧" }] as const;
 
 function mergeStatus(previous: KlingPublicStatus | null, next: KlingPublicStatus): KlingPublicStatus {
   if (!previous || previous.profile?.id !== next.profile?.id || previous.profile?.authRevision !== next.profile?.authRevision || previous.profile?.catalogRevision !== next.profile?.catalogRevision) return next;
@@ -30,11 +33,13 @@ function hasVerifiedCatalog(status: KlingPublicStatus, profileId?: string, selec
     && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision));
 }
 
-export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, promptContext, negativePrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, onSubmitted, onRefreshTasks }: {
+export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, promptContext, negativePrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, frameChoices, onFramesChange, onSubmitted, onRefreshTasks }: {
   open: boolean; onOpenChange(open: boolean): void; projectId: string; scriptId: string; profileId?: string; defaultModel?: string;
   preparedPrompt: string; firstFrameUrl?: string; lastFrameUrl?: string;
   promptContext?: VideoPromptContext; negativePrompt?: string;
   defaultParameters?: Record<string, unknown>;
+  frameChoices?: Array<{ label: string; url: string }>;
+  onFramesChange?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft>;
   asset: AssetItem | null; referenceImages: string[]; onSubmitted(jobId: string): void; onRefreshTasks(): Promise<void>;
 }) {
   const [status, setStatus] = useState<KlingPublicStatus | null>(null);
@@ -48,21 +53,18 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
+  const [frameReview, setFrameReview] = useState<BatchMotionDraft | null>(null);
+  const [reviewingFrames, setReviewingFrames] = useState(false);
+  const [frameReviewFailed, setFrameReviewFailed] = useState(false);
+  const frameReviewVersion = useRef(0);
   const submitLock = useRef(false);
   const model = status?.models.find((item) => item.selectionKey === defaultModel);
   const sourceFrame = firstFrameUrl;
-  const imageChoices = useMemo(() => [...new Set([sourceFrame, lastFrameUrl, ...referenceImages].filter((value): value is string => Boolean(value)))], [sourceFrame, lastFrameUrl, referenceImages]);
-  const inputSlots = useMemo(() => {
-    if (!model) return [];
-    const slots = [...model.inputSlots];
-    const images = imageChoices.filter((url) => url === sourceFrame || url !== lastFrameUrl);
-    const declaredImageCount = slots.filter((slot) => slot.role === "image").length;
-    for (let index = declaredImageCount; index < images.length; index++) {
-      slots.push({ name: `__reference_${index}`, role: "image", required: false });
-    }
-    if (lastFrameUrl && !slots.some((slot) => slot.role === "tailImage")) slots.push({ name: "__tail", role: "tailImage", required: false });
-    return slots;
-  }, [model, imageChoices, sourceFrame, lastFrameUrl]);
+  const imageChoices = useMemo(() => [...new Map([
+    ...(sourceFrame ? [{ label: "当前镜头原始关键帧", url: sourceFrame }] : []),
+    ...(frameChoices ?? []),
+    ...[lastFrameUrl, ...referenceImages].filter((value): value is string => Boolean(value)).map((url, index) => ({ label: `可选图片 ${index + 1}`, url })),
+  ].map((choice) => [choice.url, choice])).values()], [sourceFrame, lastFrameUrl, referenceImages, frameChoices]);
 
   useEffect(() => {
     if (!open || !asset) return;
@@ -135,47 +137,64 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
     if (!model) { setConfirmed(false); return; }
     const mapped = klingModelOptions(model, { ...defaultParameters, audioEnabled: undefined });
     setOptions(mapped.options); setParameterWarnings(mapped.warnings);
-    const inputs: Record<string, string> = {};
-    let imageIndex = 0;
-    for (const slot of inputSlots) {
-      inputs[slot.name] = slot.role === "tailImage" ? lastFrameUrl ?? "" : imageChoices.filter((url) => url === sourceFrame || url !== lastFrameUrl)[imageIndex++] ?? "";
+    frameReviewVersion.current++;
+    setInputUrls({ firstFrame: sourceFrame ?? "", tailFrame: "" });
+    setFrameReview(null); setReviewingFrames(false); setFrameReviewFailed(false); setConfirmed(false);
+    return () => { frameReviewVersion.current++; };
+  }, [model, sourceFrame, defaultParameters, open]);
+
+  async function changeFrame(name: "firstFrame" | "tailFrame", value: string) {
+    const next = { ...inputUrls, [name]: value };
+    setInputUrls(next); setConfirmed(false); setFrameReviewFailed(false); setError(null);
+    const version = ++frameReviewVersion.current;
+    if (!onFramesChange || !next.firstFrame) return;
+    setReviewingFrames(true);
+    try {
+      const reviewed = await onFramesChange(next.firstFrame, next.tailFrame || undefined);
+      if (version === frameReviewVersion.current) { setFrameReview(reviewed); setConfirmed(false); }
+    } catch (failure) {
+      if (version === frameReviewVersion.current) {
+        setFrameReviewFailed(true);
+        setError(failure instanceof Error ? failure.message : "更新首尾帧提示词失败，请重新选择图片。");
+      }
+    } finally {
+      if (version === frameReviewVersion.current) setReviewingFrames(false);
     }
-    setInputUrls(inputs); setConfirmed(false);
-  }, [model, inputSlots, imageChoices, lastFrameUrl, sourceFrame, defaultParameters]);
+  }
 
   function changeParameter(name: string, value: string | number | boolean | undefined) {
     setOptions((previous) => { const next = { ...previous }; if (value === undefined) delete next[name]; else next[name] = value; return next; }); setConfirmed(false);
   }
 
   const audioParameters = model?.parameters.filter((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)) ?? [];
-  const generateAudio = promptContext?.generateAudio ?? defaultParameters?.audioEnabled !== false;
+  const reviewedContext = frameReview?.promptContext ?? promptContext;
+  const reviewedNegativePrompt = frameReview?.negativePrompt ?? negativePrompt;
+  const generateAudio = reviewedContext?.generateAudio ?? defaultParameters?.audioEnabled !== false;
   const audioSettings = model
     ? klingModelOptions({ ...model, parameters: audioParameters.filter((parameter) => klingAudioParameterValue(parameter, generateAudio) !== undefined) }, { audioEnabled: generateAudio })
     : { options: {}, warnings: [], unsupportedSettings: [] };
-  const negativeSettings = model && negativePrompt !== undefined
-    ? klingModelOptions({ ...model, parameters: model.parameters.filter((parameter) => ["negative_prompt", "negativePrompt"].includes(parameter.name)) }, { negativePrompt: negativePrompt })
+  const negativeSettings = model && reviewedNegativePrompt !== undefined
+    ? klingModelOptions({ ...model, parameters: model.parameters.filter((parameter) => ["negative_prompt", "negativePrompt"].includes(parameter.name)) }, { negativePrompt: reviewedNegativePrompt })
     : { options: {}, warnings: [], unsupportedSettings: [] };
   const submissionOptions = { ...Object.fromEntries(Object.entries(options).filter(([name]) => !KLING_AUDIO_PARAMETER_NAMES.includes(name))), ...negativeSettings.options, ...audioSettings.options };
-  const submissionPrompt = preparedPrompt;
+  const submissionPrompt = frameReview?.prompt ?? preparedPrompt;
   const promptIssues = validateVideoPrompt(submissionPrompt);
   const warnings = [...parameterWarnings, ...negativeSettings.warnings, ...audioSettings.warnings];
-  const missingInput = model?.tool === "image_to_video" && !inputSlots.some((slot) => slot.role === "image" && inputUrls[slot.name]?.trim());
+  const missingInput = !inputUrls.firstFrame?.trim();
   const capacity = status?.concurrency;
   const capacityBlocked = Boolean(capacity && (capacity.blockedByUnknownSubmission || capacity.active >= capacity.max));
-  const canSubmit = Boolean(status?.loggedIn && status.configured !== false && !status.profile?.disabledAt && (!profileId || !status.profile?.id || status.profile.id === profileId) && model && confirmed && submissionPrompt && !promptIssues.length && !missingInput && scriptId && !submitting && !uncertain && !capacityBlocked);
+  const canSubmit = Boolean(status?.loggedIn && status.configured !== false && !status.profile?.disabledAt && (!profileId || !status.profile?.id || status.profile.id === profileId) && model && confirmed && submissionPrompt && !promptIssues.length && !missingInput && scriptId && !submitting && !reviewingFrames && !frameReviewFailed && !uncertain && !capacityBlocked);
 
   async function submit() {
     if (!canSubmit || !model || !asset || submitLock.current) return;
     submitLock.current = true; setSubmitting(true); setError(null);
     const clientRequestId = crypto.randomUUID();
-    const images = [...new Set(inputSlots.filter((slot) => slot.role === "image").map((slot) => inputUrls[slot.name]?.trim()).filter(Boolean))];
-    const tail = inputSlots.find((slot) => slot.role === "tailImage");
     const request: KlingSubmitRequest = {
       provider: "kling-cli", profileId: model.profileId, clientRequestId, executionScope: "single-shot", projectId, scriptId, shotId: asset.shotId,
       selectionKey: model.selectionKey, mode: model.tool === "image_to_video" ? "image-to-video" : "text-to-video", prompt: submissionPrompt, options: submissionOptions,
-      ...(promptContext && { promptContext }),
-      ...(images.length && { imageUrl: images[0] }), ...(images.length > 1 && { referenceImageUrls: images.slice(1) }),
-      ...(tail && inputUrls[tail.name]?.trim() && { lastImageUrl: inputUrls[tail.name].trim() }),
+      ...(reviewedContext && { promptContext: reviewedContext }),
+      imageUrl: inputUrls.firstFrame.trim(),
+      ...(inputUrls.tailFrame?.trim() && { lastImageUrl: inputUrls.tailFrame.trim() }),
       expectedSelectedAssetId: asset.assetId ?? null,
       billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: clientRequestId },
     };
@@ -215,10 +234,11 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
       {model && <>
         <p className="break-all text-xs text-muted-foreground">实际模型：{model.remoteModelId} · {model.tool}</p>
         {warnings.length > 0 && <ul className="space-y-1 text-xs text-amber-600">{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
-        {inputSlots.map((slot, index) => <div key={slot.name} className="space-y-2 rounded-md border p-3"><label className="space-y-1 text-sm"><span>{slot.role === "tailImage" ? "尾帧" : `输入图片 ${index + 1}`} · {slot.name}</span><select aria-label={`Kling 图片 ${slot.name}`} value={inputUrls[slot.name] ?? ""} className="w-full rounded-md border bg-background p-2" disabled={submitting || uncertain} onChange={(event) => { setInputUrls((previous) => ({ ...previous, [slot.name]: event.target.value })); setConfirmed(false); }}><option value="">不使用图片</option>{imageChoices.map((url, imageIndex) => <option key={url} value={url}>{url === sourceFrame ? "当前镜头原始关键帧" : `已关联参考图片 ${imageIndex + 1}`}</option>)}</select></label>{inputUrls[slot.name] && <img src={inputUrls[slot.name]} alt={`${slot.name} 已关联输入`} className="max-h-32 max-w-full rounded object-contain" />}</div>)}
-        <label className="space-y-1 text-sm"><span>实际提交的提示词</span><textarea aria-label="Kling 视频提示词" rows={12} className="min-h-64 w-full rounded-md border bg-background p-2 leading-relaxed" value={preparedPrompt} readOnly /></label>
+        {FRAME_INPUTS.map((slot) => <div key={slot.name} className="space-y-2 rounded-md border p-3"><label className="space-y-1 text-sm"><span>{slot.label}</span><select aria-label={`Kling ${slot.label}`} value={inputUrls[slot.name] ?? ""} className="w-full rounded-md border bg-background p-2" disabled={submitting || uncertain || reviewingFrames} onChange={(event) => { void changeFrame(slot.name, event.target.value); }}><option value="">不使用图片</option>{imageChoices.map(({ url, label }) => <option key={url} value={url}>{label}</option>)}</select></label>{inputUrls[slot.name] && <img src={inputUrls[slot.name]} alt={`${slot.label}图片`} className="max-h-32 max-w-full rounded object-contain" />}</div>)}
+        {reviewingFrames && <p role="status" className="text-xs text-muted-foreground">正在更新首尾帧对应的提示词…</p>}
+        <label className="space-y-1 text-sm"><span>实际提交的提示词</span><textarea aria-label="Kling 视频提示词" rows={12} className="min-h-64 w-full rounded-md border bg-background p-2 leading-relaxed" value={submissionPrompt} readOnly /></label>
         <div className="grid gap-3 sm:grid-cols-2">{model.parameters.filter((parameter) => !KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name) && (negativePrompt === undefined || !["negative_prompt", "negativePrompt"].includes(parameter.name))).map((parameter) => <label key={parameter.name} className="space-y-1 text-sm"><span>{videoParameterLabel(parameter.name)}</span>{parameter.allowedValues ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.allowedValues!.find((value) => String(value) === event.target.value) ?? (parameter.type === "number" ? Number(event.target.value) : event.target.value))}><option value="">使用平台默认值</option>{options[parameter.name] !== undefined && !parameter.allowedValues.includes(options[parameter.name]) && <option value={String(options[parameter.name])}>{videoParameterValueLabel(parameter.name, options[parameter.name])}</option>}{parameter.allowedValues.map((value) => <option key={String(value)} value={String(value)}>{videoParameterValueLabel(parameter.name, value)}</option>)}</select> : parameter.type === "boolean" ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={options[parameter.name] === undefined ? "" : String(options[parameter.name])} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : event.target.value === "true")}><option value="">使用平台默认值</option><option value="true">开启</option><option value="false">关闭</option></select> : <input aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" type={parameter.type === "number" ? "number" : "text"} value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.type === "number" ? Number(event.target.value) : event.target.value)} />}{videoParameterDescription(parameter) && <p className="text-xs text-muted-foreground">{videoParameterDescription(parameter)}</p>}</label>)}</div>
-        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm">此操作调用 Kling 官方账号生成视频，可能消耗积分。实际扣费以 Kling 为准；本应用未获得精确积分报价时不会把费用显示为免费。</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={confirmed} disabled={submitting || uncertain} onChange={(event) => setConfirmed(event.target.checked)} />我已核对当前镜头、模型、图片和参数，确认本次生成可能扣除 Kling 积分。</label></div>
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm">此操作调用 Kling 官方账号生成视频，可能消耗积分。实际扣费以 Kling 为准；本应用未获得精确积分报价时不会把费用显示为免费。</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={confirmed} disabled={submitting || uncertain || reviewingFrames} onChange={(event) => setConfirmed(event.target.checked)} />我已核对当前镜头、模型、图片和参数，确认本次生成可能扣除 Kling 积分。</label></div>
         {missingInput && <p className="text-xs text-amber-600">请为图生视频添加一张输入图片。</p>}
       </>}
       {uncertain ? <div className="space-y-2"><p className="text-sm text-amber-600">本机提交结果待核对，请先刷新任务列表，找到原任务后继续查询或恢复保存。</p><Button variant="outline" onClick={() => void onRefreshTasks()}>核对任务列表</Button></div> : <Button disabled={!canSubmit} onClick={() => void submit()}>{submitting ? "正在登记作业，请勿重复操作…" : "确认生成此镜头（消耗积分）"}</Button>}

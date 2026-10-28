@@ -9,6 +9,7 @@ import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 import { VIDEO_AUDIO_DIRECTIONS } from "@/lib/video-audio";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
+import type { BatchMotionDraft } from "@/lib/batch-motion";
 
 const api = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/lib/kling/client", () => ({ klingFetch: api.request, klingErrorMessage: (body: { error?: string | { message?: string } }) => typeof body.error === "string" ? body.error : body.error?.message ?? "Kling 操作失败" }));
@@ -43,9 +44,9 @@ const silentAudioDirection = `${VIDEO_AUDIO_DIRECTIONS.silent.en}.`;
 function serverPromptContext(generateAudio = false): VideoPromptContext {
   return { scriptId: "script", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio, contextKey: "server-context" };
 }
-async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; promptContext?: VideoPromptContext; negativePrompt?: string; referenceImages?: string[]; lastFrameUrl?: string } = {}) {
+async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; promptContext?: VideoPromptContext; negativePrompt?: string; referenceImages?: string[]; lastFrameUrl?: string; frameChoices?: Array<{ label: string; url: string }>; onFramesChange?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft> } = {}) {
   const preparedPrompt = overrides.preparedPrompt ?? `${originalPrompt}\n\n${silentAudioDirection}`;
-  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={preparedPrompt} promptContext={overrides.promptContext ?? serverPromptContext()} negativePrompt={overrides.negativePrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={overrides.referenceImages ?? []} lastFrameUrl={overrides.lastFrameUrl} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
+  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={preparedPrompt} promptContext={overrides.promptContext ?? serverPromptContext()} negativePrompt={overrides.negativePrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={overrides.referenceImages ?? []} lastFrameUrl={overrides.lastFrameUrl} frameChoices={overrides.frameChoices} onFramesChange={overrides.onFramesChange} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
 }
 function confirmCheckbox() { return container.querySelector('input[type="checkbox"]') as HTMLInputElement; }
 function submitButton() { return Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("确认生成此镜头"))!; }
@@ -53,14 +54,66 @@ function promptTextarea() { return container.querySelector('[aria-label="Kling �
 
 
 describe("Kling single-shot UI", () => {
-  it("retains extra images and a tail frame despite false capability metadata and missing catalog slots", async () => {
+  it("shows only first and tail frames and defaults to no tail without submitting hidden references", async () => {
+    const extraSlotsModel = { ...model, inputSlots: [...model.inputSlots, { name: "tail", role: "tailImage" as const, required: false }, { name: "image3", role: "image" as const, required: false }, { name: "image4", role: "image" as const, required: false }] };
+    api.request.mockImplementation((url: string) => Promise.resolve(url.includes("/status") ? json({ loggedIn: true, models: [extraSlotsModel] }) : json({ jobId: "job-1" }, 202)));
     await mountGenerator(model.selectionKey, undefined, { referenceImages: ["/api/files/person.jpg", "/api/files/product.jpg"], lastFrameUrl: "/api/files/end.jpg" });
+    expect(container.querySelectorAll('select[aria-label^="Kling "]:not([aria-label^="Kling 参数"])')).toHaveLength(2);
+    expect((container.querySelector('[aria-label="Kling 首帧"]') as HTMLSelectElement).value).toBe("/api/files/project/input.jpg");
+    expect((container.querySelector('[aria-label="Kling 尾帧"]') as HTMLSelectElement).value).toBe("");
+    expect(container.textContent).not.toMatch(/输入图片[1-4]/);
     await act(async () => confirmCheckbox().click());
     expect(submitButton().disabled).toBe(false);
     await act(async () => submitButton().click());
     const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
-    expect(request).toMatchObject({ imageUrl: "/api/files/project/input.jpg", referenceImageUrls: ["/api/files/person.jpg", "/api/files/product.jpg"], lastImageUrl: "/api/files/end.jpg" });
+    expect(request.imageUrl).toBe("/api/files/project/input.jpg");
+    expect(request).not.toHaveProperty("referenceImageUrls");
+    expect(request).not.toHaveProperty("lastImageUrl");
     expect(container.textContent).not.toContain("不支持");
+  });
+
+  it("submits an explicitly selected tail despite false capability metadata", async () => {
+    await mountGenerator(model.selectionKey, undefined, { lastFrameUrl: "/api/files/end.jpg" });
+    await act(async () => confirmCheckbox().click());
+    const tail = container.querySelector('[aria-label="Kling 尾帧"]') as HTMLSelectElement;
+    await act(async () => { tail.value = "/api/files/end.jpg"; tail.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(confirmCheckbox().checked).toBe(false);
+    expect(submitButton().disabled).toBe(true);
+    await act(async () => confirmCheckbox().click());
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request).toMatchObject({ imageUrl: "/api/files/project/input.jpg", lastImageUrl: "/api/files/end.jpg" });
+    expect(request).not.toHaveProperty("referenceImageUrls");
+  });
+
+  it("requires a fresh confirmation after server previewing changed frames and submits that reviewed context", async () => {
+    let resolveReview!: (draft: BatchMotionDraft) => void;
+    const onFramesChange = vi.fn(() => new Promise<BatchMotionDraft>((resolve) => { resolveReview = resolve; }));
+    await mountGenerator(model.selectionKey, undefined, { frameChoices: [{ label: "另一关键帧", url: "/api/files/alternate.jpg" }], onFramesChange });
+    await act(async () => confirmCheckbox().click());
+    const first = container.querySelector('[aria-label="Kling 首帧"]') as HTMLSelectElement;
+    await act(async () => { first.value = "/api/files/alternate.jpg"; first.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(onFramesChange).toHaveBeenCalledWith("/api/files/alternate.jpg", undefined);
+    expect(confirmCheckbox().checked).toBe(false);
+    expect(confirmCheckbox().disabled).toBe(true);
+    expect(submitButton().disabled).toBe(true);
+    await act(async () => { confirmCheckbox().click(); submitButton().click(); });
+    expect(api.request.mock.calls.some(([url]) => url === "/api/ai/video")).toBe(false);
+    const promptContext = { ...serverPromptContext(), contextKey: "reviewed-frames" };
+    await act(async () => resolveReview({
+      asset: { shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Product keyframe", visualSource: "ai_generate", status: "done" },
+      prompt: "Server reviewed motion for the alternate frame.", promptContext, firstFrameUrl: "/api/files/alternate.jpg",
+      referenceImages: [], options: {}, klingParameters: {}, generate: async () => undefined,
+    }));
+    expect(promptTextarea().value).toBe("Server reviewed motion for the alternate frame.");
+    expect(confirmCheckbox().checked).toBe(false);
+    expect(submitButton().disabled).toBe(true);
+    await act(async () => confirmCheckbox().click());
+    await act(async () => submitButton().click());
+    const request = JSON.parse(api.request.mock.calls.find(([url]) => url === "/api/ai/video")![1].body);
+    expect(request).toMatchObject({ imageUrl: "/api/files/alternate.jpg", prompt: "Server reviewed motion for the alternate frame.", promptContext });
+    expect(request).not.toHaveProperty("lastImageUrl");
+    expect(request).not.toHaveProperty("referenceImageUrls");
   });
 
   it("does not block generation on catalog-required extra images, tails, or scalar options", async () => {

@@ -107,20 +107,41 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     getDb().insert(assets).values({ id: "presenter-keyframe", projectId: "project-1", shotId: 1, type: "ai_generated", status: "done", selected: true, filePath: imageUrl, ...assetScopeForShot(script, presenterShot) }).run();
     return imageUrl;
   }
-  it("passes product and presenter references despite a cached single-image capability", async () => {
-    const { imageModel } = selectedPresenterContext();
-    const imageUrl = "/api/files/project-1/product.png";
-    const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl }, { firstFrameUrl: imageUrl }));
+  it("uses the chosen keyframe without silently adding a portrait despite single-image catalog metadata", async () => {
+    const { imageModel, shot: presenterShot } = selectedPresenterContext();
+    const imageUrl = presenterKeyframe(presenterShot);
+    const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, expectedSelectedAssetId: "presenter-keyframe" }, { firstFrameUrl: imageUrl }));
     expect(job.data.prompt).toContain(presenter.name);
-    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), [{ role: "image", sourceUrl: imageUrl }, { role: "image", sourceUrl: presenter.referenceImages[0] }]);
+    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), [{ role: "image", sourceUrl: imageUrl }]);
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("binds the actual frozen portrait to a multi-image Kling request", async () => {
+  it("rejects replacing a reviewed presenter keyframe with a product-only frame", async () => {
+    const { imageModel, shot: presenterShot } = selectedPresenterContext();
+    const imageUrl = presenterKeyframe(presenterShot);
+    const raw = reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, expectedSelectedAssetId: "presenter-keyframe" }, { firstFrameUrl: imageUrl });
+    await expect(createKlingJob({ ...raw, imageUrl: "/api/files/project-1/product.png" })).rejects.toMatchObject({ code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED", status: 409 });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("dispatches the chosen keyframe with optional tail=%s without adding presenter inputs", async (useTail) => {
     const { imageModel, shot: presenterShot } = selectedPresenterContext(true);
     const imageUrl = presenterKeyframe(presenterShot);
-    await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, expectedSelectedAssetId: "presenter-keyframe" }, { firstFrameUrl: imageUrl }));
-    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), [{ role: "image", sourceUrl: imageUrl }, { role: "image", sourceUrl: presenter.referenceImages[0] }]);
-    expect(state.cli).not.toHaveBeenCalled();
+    const lastImageUrl = useTail ? "/api/files/project-1/product.png" : undefined;
+    const refs = [{ role: "image" as const, sourceUrl: imageUrl }, ...(lastImageUrl ? [{ role: "tailImage" as const, sourceUrl: lastImageUrl }] : [])];
+    const inputs = await Promise.all(refs.map(async (ref, index) => {
+      const inputPath = path.join(state.directory, `presenter-motion-${index}.png`), bytes = Buffer.from(ref.sourceUrl);
+      await fs.writeFile(inputPath, bytes);
+      return { ...ref, path: inputPath, hash: contentHash(bytes), size: bytes.length };
+    }));
+    state.prepare.mockResolvedValueOnce(inputs);
+    const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, lastImageUrl, expectedSelectedAssetId: "presenter-keyframe" }, { firstFrameUrl: imageUrl, lastFrameUrl: lastImageUrl }));
+    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), refs);
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id).data.inputs).toEqual(inputs);
+    expect((state.cli.mock.calls[0][1] as string[]).filter((argument) => argument === "--image")).toHaveLength(1);
+    expect((state.cli.mock.calls[0][1] as string[]).includes("--tailImage")).toBe(useTail);
   });
   function useNativeSpeech() {
     const native = createTideweOutdoorProfile();

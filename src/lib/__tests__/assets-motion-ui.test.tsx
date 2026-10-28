@@ -450,10 +450,13 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each([false, true])("uses each selected presenter's own keyframe with single-image Kling and tail mode, batch=%s", async (batchMode) => {
+  it.each([
+    { batchMode: false, chainMode: "pin" as const }, { batchMode: true, chainMode: "pin" as const },
+    { batchMode: false, chainMode: "tail" as const }, { batchMode: true, chainMode: "tail" as const },
+  ])("defaults Kling to its own first frame and no tail with chain=$chainMode, batch=$batchMode", async ({ batchMode, chainMode }) => {
     const presenter = snapshotTidewePresenter(selectedPresenter)!;
     const { planned } = configureTideweAssets({ projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
-    useSettingsStore.setState({ chainMode: "tail" });
+    useSettingsStore.setState({ chainMode });
     const shots = [1, 2, 3].map((shotId): Shot => ({
       ...planned, shotId, characterId: presenter.id,
       tidewe: { ...planned.tidewe!, sceneId: "same-woods", personVisible: true, presenter },
@@ -480,9 +483,12 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     for (const request of requests) {
       expect(request).toMatchObject({
         provider: "kling-cli", model: kling.selectionKey,
-        controlInputs: { firstFrameUrl: `/api/files/presenter-frame-${request.shotId}.jpg`, characterReferenceUrl: "/api/files/frozen-presenter.png" },
+        controlInputs: { firstFrameUrl: `/api/files/presenter-frame-${request.shotId}.jpg` },
       });
+      expect(request.controlInputs?.characterReferenceUrl).toBeUndefined();
+      expect(request.controlInputs?.productReferenceUrl).toBeUndefined();
       expect(request.controlInputs?.lastFrameUrl).toBeUndefined();
+      expect(request.chainToNext).toBe(false);
       expect(request.controlInputs?.continuityReferenceUrl).toBeUndefined();
       expect(JSON.stringify(request)).not.toContain("previous.mp4.last.jpg");
     }
@@ -1159,7 +1165,7 @@ describe("assets uses the configured provider through one motion entry", () => {
   it.each([
     { locked: false, batchMode: false }, { locked: true, batchMode: false },
     { locked: false, batchMode: true }, { locked: true, batchMode: true },
-  ])("sends only reviewed Kling references with product lock=$locked and batch=$batchMode", async ({ locked, batchMode }) => {
+  ])("uses only first and optional tail with Kling product lock=$locked and batch=$batchMode", async ({ locked, batchMode }) => {
     useSettingsStore.setState({ uiMode: "pro" });
     const characterUrl = "/api/files/host.png";
     const productUrls = ["/api/files/product.jpg", "/api/files/product-side.jpg"];
@@ -1184,14 +1190,22 @@ describe("assets uses the configured provider through one motion entry", () => {
     await mount(kling.selectionKey);
     if (!locked) await click("productSafe");
     await click(batchMode ? "batchMotionButton" : "btnConvertMotion");
-    expect(previewRequests()[0].controlInputs?.productReferenceUrl).toBe(locked ? productUrls[0] : undefined);
-    const expectedReferences = [characterUrl, ...(locked ? productUrls : [])];
+    expect(previewRequests()[0].controlInputs?.productReferenceUrl).toBeUndefined();
+    expect(previewRequests()[0].controlInputs?.characterReferenceUrl).toBeUndefined();
+    expect(previewRequests()[0].controlInputs?.lastFrameUrl).toBeUndefined();
     if (batchMode) {
-      expect(batch.props!.shots[0].draft?.referenceImages).toEqual(expectedReferences);
+      const draft = batch.props!.shots[0].draft!;
+      expect(draft.referenceImages).toEqual([]);
+      expect(draft.frameChoices).toContainEqual({ label: "人物图片", url: characterUrl });
+      if (locked) expect(draft.frameChoices).toContainEqual({ label: "产品图片", url: productUrls[0] });
+      const refreshed = await draft.refreshFrames!(draft.firstFrameUrl, productUrls[0]);
+      expect(refreshed.lastFrameUrl).toBe(productUrls[0]);
+      expect(previewRequests().at(-1)).toMatchObject({ chainToNext: true, controlInputs: { firstFrameUrl: draft.firstFrameUrl, lastFrameUrl: productUrls[0] } });
+      expect(previewRequests().at(-1)?.controlInputs?.productReferenceUrl).toBeUndefined();
     } else {
       await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
       await click("确认生成此镜头");
-      expect(JSON.parse(submissions()[0][1].body).referenceImageUrls).toEqual(expectedReferences);
+      expect(JSON.parse(submissions()[0][1].body)).not.toHaveProperty("referenceImageUrls");
     }
   });
 

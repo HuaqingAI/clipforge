@@ -16,6 +16,7 @@ import { TIDEWE_VISUAL_NEGATIVE_PROMPT } from "@/lib/tidewe/visual-policy";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { shotKey, scriptRevision } from "@/lib/asset-context";
 import { sanitizeVideoControlSummary } from "@/lib/video-control-plan";
+import { assertReviewedVideoPrompt } from "@/lib/server/video-prompt";
 import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
 
 const state = vi.hoisted(() => ({ db: null as unknown, generate: vi.fn(), provider: vi.fn(), recordTask: vi.fn(), updateTask: vi.fn(), remoteImage: vi.fn() }));
@@ -87,14 +88,25 @@ function useTidewe(speechMode: "on_camera" | "voiceover" = "voiceover", presente
 }
 
 describe("authoritative TIDEWE video preview and dispatch", () => {
-  it.each(["kling-video-v2", "kling-video-v4_0", "future-model"])("preserves on-camera Kling speech and the frozen presenter despite false capabilities for %s", async (model) => {
+  it.each(["kling-video-v2", "kling-video-v4_0", "future-model"].flatMap((model) => [false, true].map((batch) => ({ model, batch }))))("preserves on-camera Kling speech and keyframe identity for $model with batch=$batch", async ({ model, batch }) => {
     const { shot } = useTidewe("on_camera", { id: "host", name: "Host", appearance: "Short brown hair", referenceImages: ["/api/files/host.png"] });
-    const { response, value } = await getPreview(input({ provider: "kling-cli", model, batch: true, generateAudio: true, controlInputs: { supportsAudio: false, firstFrameUrl: "/api/files/product.png" } }));
+    db.insert(schema.assets).values({ id: "presenter-keyframe", projectId, shotId: 1, type: "ai_generated", status: "done", filePath: "/api/files/keyframe.png", sourceScriptId: scriptId }).run();
+    const { response, value } = await getPreview(input({ provider: "kling-cli", model, batch, generateAudio: true, controlInputs: { supportsAudio: false, firstFrameUrl: "/api/files/keyframe.png", characterReferenceUrl: "/api/files/host.png" } }));
     expect(response.status).toBe(200);
-    expect(value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true, warnings: [] });
-    expect(value.controlPlan.referenceInputs).toContainEqual(expect.objectContaining({ role: "character", url: "/api/files/host.png" }));
+    expect(value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true, warnings: [], firstFrameUrl: "/api/files/keyframe.png", referenceInputs: [], referenceRoles: ["keyframe"], referenceCount: 1 });
+    expect(value.controlPlan.lastFrameUrl).toBeUndefined();
+    expect(value.prompt).toContain("Host");
     expect(value.prompt).toContain(shot.voiceover);
+    expect(value.prompt).not.toContain("参考映射：");
     expect(value.prompt).not.toContain("Do not generate an audio track");
+  });
+
+  it("requires a saved presenter keyframe without making a model capability claim", async () => {
+    useTidewe("on_camera", { id: "host", name: "Host", appearance: "Short brown hair", referenceImages: ["/api/files/host.png"] });
+    const { response, value } = await getPreview(input({ provider: "kling-cli", model: "future-model", generateAudio: true }));
+    expect(response.status).toBe(400);
+    expect(value).toMatchObject({ code: "TIDEWE_PRESENTER_KEYFRAME_REQUIRED" });
+    expect(JSON.stringify(value)).not.toContain("模型只支持首帧");
   });
 
   const presenter: TidewePresenterSnapshot = { id: "selected-host", name: "Selected host", appearance: "棕色短发", referenceImages: ["/api/files/selected-host.png"] };
@@ -249,6 +261,26 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
 });
 
 describe("authoritative dynamic prompt preview", () => {
+  it.each([false, true].flatMap((batch) => [undefined, "/api/files/end.png"].map((lastFrameUrl) => ({ batch, lastFrameUrl }))))("reviews only the selected Kling frames with batch=$batch and tail=$lastFrameUrl", async ({ batch, lastFrameUrl }) => {
+    const request = input({
+      provider: "kling-cli", model: "future-kling-model", batch, generateAudio: true,
+      controlInputs: {
+        firstFrameUrl: "/api/files/first.png", ...(lastFrameUrl && { lastFrameUrl }), supportsAudio: false,
+        characterReferenceUrl: "/api/files/person.png", productReferenceUrl: "/api/files/product.png",
+        continuityReferenceUrl: "/api/files/previous.png", motionReferenceUrl: "/api/files/motion.mp4", audioReferenceUrl: "/api/files/voice.mp3",
+      },
+    });
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.controlPlan).toMatchObject({ strategy: "keyframe", mode: "image-to-video", firstFrameUrl: "/api/files/first.png", referenceInputs: [], warnings: [], referenceCount: lastFrameUrl ? 2 : 1, referenceRoles: lastFrameUrl ? ["keyframe", "end-frame"] : ["keyframe"] });
+    expect(value.controlPlan.lastFrameUrl).toBe(lastFrameUrl);
+    expect(value.prompt).not.toContain("参考映射：");
+    const clean = await getPreview({ ...request, controlInputs: { firstFrameUrl: "/api/files/first.png", ...(lastFrameUrl && { lastFrameUrl }), supportsAudio: false } });
+    expect(clean.value.contextKey).toBe(value.contextKey);
+    const changedFrames = { ...request, contextKey: value.contextKey, controlInputs: { ...request.controlInputs, lastFrameUrl: "/api/files/new-end.png" } };
+    expect(() => assertReviewedVideoPrompt(projectId, changedFrames, value.prompt)).toThrow("提示词或生成设置已改变");
+  });
+
   it("preserves ordinary sales reference filtering when an optional reference is unavailable", async () => {
     const request = input();
     const { response, value } = await getPreview(request);

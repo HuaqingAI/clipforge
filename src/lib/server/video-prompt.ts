@@ -59,6 +59,15 @@ export function normalizeVideoPromptRequest(raw: unknown): VideoPromptRequest {
     }
     if (input.supportsAudio !== undefined && typeof input.supportsAudio !== "boolean") throw new VideoPromptError("VIDEO_PROMPT_INPUT_INVALID", "模型声音能力参数无效。");
     if (typeof input.supportsAudio === "boolean") controlInputs.supportsAudio = input.supportsAudio;
+    // The browser's Kling motion workflow submits only the selected start/end frames.
+    // Ignore legacy reference fields rather than turning them into hidden inputs.
+    if (value.provider === "kling-cli") {
+      controlInputs = {
+        ...(controlInputs.firstFrameUrl !== undefined && { firstFrameUrl: controlInputs.firstFrameUrl }),
+        ...(controlInputs.lastFrameUrl !== undefined && { lastFrameUrl: controlInputs.lastFrameUrl }),
+        ...(controlInputs.supportsAudio !== undefined && { supportsAudio: controlInputs.supportsAudio }),
+      };
+    }
   }
   return {
     scriptId: value.scriptId,
@@ -94,6 +103,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
   const premiumCg = isPremiumProductCgProfile(profile);
   const tidewe = isTideweOutdoorProfile(profile);
   const tideweNative = isTideweNativeSpeech(profile);
+  const klingFrames = request.provider === "kling-cli";
   // Kling always attempts the requested audio; catalog metadata does not downgrade it.
   const tideweGenerateAudio = tideweNative && request.generateAudio !== false && (request.provider === "kling-cli"
     ? true
@@ -110,7 +120,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
   const silent = tidewe ? !tideweGenerateAudio : request.batch || request.generateAudio === false || (premiumCg && profile.narrationMode === "none");
   const controlPlan = buildVideoControlPlan({
     ...request.controlInputs,
-    ...(tidewe ? { characterReferenceUrl: frozenPresenter, motionReferenceUrl: undefined, audioReferenceUrl: undefined } : {}),
+    ...(tidewe && !klingFrames ? { characterReferenceUrl: frozenPresenter, motionReferenceUrl: undefined, audioReferenceUrl: undefined } : {}),
     provider: request.provider,
     modelId: request.model,
     supportsAudio: tideweNative ? tideweGenerateAudio : silent ? false : request.controlInputs?.supportsAudio,
@@ -124,7 +134,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     const imageAssets = filterAssetsForScript(db.select().from(assets).where(and(eq(assets.projectId, projectId), eq(assets.selected, true), eq(assets.status, "done"))).all(), script);
     const frame = request.controlInputs?.firstFrameUrl;
     const identityFrame = frame && imageAssets.some((asset) => asset.shotId === shot.shotId && asset.type !== "stock_footage" && [asset.filePath, asset.sourceKeyframeUrl, asset.thumbnailPath].includes(frame));
-    if (!identityFrame) throw new VideoPromptError("TIDEWE_PRESENTER_KEYFRAME_REQUIRED", "此视频模型只支持首帧，须先生成包含已选主播的当前分镜关键帧，不能仅用商品图替代人物身份。");
+    if (!identityFrame) throw new VideoPromptError("TIDEWE_PRESENTER_KEYFRAME_REQUIRED", "须先生成包含已选主播的当前分镜关键帧，再将它选为首帧，不能仅用商品图替代人物身份。");
   }
   let compiled: { prompt: string; negativePrompt: string };
   if (premiumCg) {

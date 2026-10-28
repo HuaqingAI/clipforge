@@ -800,12 +800,13 @@ function AssetsPageContent() {
         );
         return;
       }
-      // chain target: explicit override wins (null = explicitly no chain); otherwise the next shot's static keyframe
+      const isKling = videoModelTarget.provider === "kling-cli";
+      // Kling animation uses only the two frames selected in its confirmation.
       const assetIndex = assets.findIndex((item) => item.shotId === shotId);
       const previousAsset = assetIndex > 0 ? assets[assetIndex - 1] : undefined;
       const nextAsset = assets[assetIndex + 1];
-      const chainFrame =
-        chainMode !== "pin" || lastFrameOverride === null || (videoModelTarget.provider !== "kling-cli" && !modelSupportsLastFrame(videoModelTarget.model))
+      const chainFrame = isKling ? lastFrameOverride || undefined :
+        chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
           ? undefined
           : lastFrameOverride ??
             // demo-type shots skip auto-chaining (their ending IS the content); explicit override still chains
@@ -814,7 +815,7 @@ function AssetsPageContent() {
       // is neither its presenter identity frame nor an allowed TIDEWE reference.
       // Other styles can use the previous real tail for pixel-continuous seams.
       let tailFirstFrame: string | undefined;
-      if (!tidewe && chainMode === "tail" && !firstFrameOverride && previousAsset) {
+      if (!isKling && !tidewe && chainMode === "tail" && !firstFrameOverride && previousAsset) {
         tailFirstFrame = previousAsset.lastFrameUrl ?? lastFrameByShot.current.get(previousAsset.shotId);
       }
       const effectiveFirstFrame = tailFirstFrame ?? firstFrame;
@@ -845,9 +846,9 @@ function AssetsPageContent() {
         controlInputs: {
           supportsAudio: tideweNative ? videoModelTarget.supportsAudio : tidewe || batch || premiumCgVisualOnly || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
           firstFrameUrl: effectiveFirstFrame, lastFrameUrl: chainFrame,
-          characterReferenceUrl: premiumCg ? undefined : characterReference,
-          productReferenceUrl: productReference,
-          continuityReferenceUrl: batch ? undefined : previousTail,
+          characterReferenceUrl: isKling || premiumCg ? undefined : characterReference,
+          productReferenceUrl: isKling ? undefined : productReference,
+          continuityReferenceUrl: isKling || batch ? undefined : previousTail,
         },
       };
       const preview = await fetchVideoPrompt(id, promptRequest, signal);
@@ -889,9 +890,9 @@ function AssetsPageContent() {
         if (asset?.voiceover?.trim()) videoOptions.voiceover = asset.voiceover.trim();
         if (controlPlan.audioPrompt) videoOptions.audioPrompt = controlPlan.audioPrompt;
       }
-      const referenceImageUrls = controlPlan.referenceInputs.filter((item) => item.mediaType === "image").map((item) => item.url);
-      const referenceVideoUrls = controlPlan.referenceInputs.filter((item) => item.mediaType === "video").map((item) => item.url);
-      const referenceAudioUrls = batch || premiumCgVisualOnly ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
+      const referenceImageUrls = isKling ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "image").map((item) => item.url);
+      const referenceVideoUrls = isKling ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "video").map((item) => item.url);
+      const referenceAudioUrls = isKling || batch || premiumCgVisualOnly ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
       const controlSummary = sanitizeVideoControlSummary(controlPlan);
       const generate = async () => {
         const promptIssues = validateVideoPrompt(finalPrompt);
@@ -957,6 +958,21 @@ function AssetsPageContent() {
             promptContext: preview.promptContext, negativePrompt: preview.negativePrompt,
             firstFrameUrl: effectiveFirstFrame, lastFrameUrl: controlPlan.lastFrameUrl,
             referenceImages: [...new Set(referenceImageUrls)],
+            ...(isKling && {
+              frameChoices: [
+                { label: "当前镜头原始关键帧", url: asset.isVideo ? asset.keyframeUrl ?? effectiveFirstFrame : asset.thumbnailUrl ?? effectiveFirstFrame },
+                ...assets.filter((item) => item.shotId !== shotId).flatMap((item) => {
+                  const url = item.isVideo ? item.keyframeUrl : item.thumbnailUrl;
+                  return url ? [{ label: `分镜 ${item.shotId} 关键帧`, url }] : [];
+                }),
+                ...[characterReference, productReference].filter((url): url is string => Boolean(url)).map((url, index) => ({ label: index === 0 && url === characterReference ? "人物图片" : "产品图片", url })),
+              ].filter((item, index, items) => items.findIndex((candidate) => candidate.url === item.url) === index),
+              refreshFrames: async (firstFrameUrl: string, lastFrameUrl?: string) => {
+                const refreshed = await prepareMotion(shotId, firstFrameUrl, lastFrameUrl ?? null, retake, batch);
+                if (!refreshed) throw new Error("未能更新首尾帧，请重新打开视频生成确认。");
+                return refreshed;
+              },
+            }),
             apiImages: [
               ...(controlPlan.firstFrameUrl ? [{ label: "首帧", url: controlPlan.firstFrameUrl }] : []),
               ...(controlPlan.lastFrameUrl ? [{ label: "尾帧", url: controlPlan.lastFrameUrl }] : []),
@@ -1318,6 +1334,8 @@ function AssetsPageContent() {
         lastFrameUrl={motionDraft?.lastFrameUrl}
         defaultParameters={motionDraft?.klingParameters}
         referenceImages={motionDraft?.referenceImages ?? []}
+        frameChoices={motionDraft?.frameChoices}
+        onFramesChange={motionDraft?.refreshFrames}
         onRefreshTasks={reloadKlingJobs}
         onSubmitted={(jobId) => { finishMotionDraft(); setKlingJobId(jobId); void reloadKlingJobs(); }}
       />

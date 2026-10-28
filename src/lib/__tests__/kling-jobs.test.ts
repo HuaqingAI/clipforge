@@ -31,7 +31,7 @@ vi.mock("@/lib/kling/cli-runner", () => ({
 vi.mock("@/lib/kling/inputs", async (original) => ({ ...await original<typeof import("@/lib/kling/inputs")>(), prepareKlingInputs: (...args: unknown[]) => state.prepare(...args) }));
 vi.mock("@/lib/kling/download", () => ({ downloadPublicFile: (...args: unknown[]) => state.download(...args) }));
 vi.mock("@/lib/media-probe", () => ({ probeMedia: (...args: unknown[]) => state.probe(...args) }));
-vi.mock("@/lib/video-composer/frame-extract", () => ({ extractFirstFrame: (...args: unknown[]) => state.poster(...args), extractLastFrame: (...args: unknown[]) => state.lastFrame(...args) }));
+vi.mock("@/lib/video-composer/frame-extract", () => ({ LAST_FRAME_SUFFIX: ".last.jpg", extractFirstFrame: (...args: unknown[]) => state.poster(...args), extractLastFrame: (...args: unknown[]) => state.lastFrame(...args) }));
 
 import { getDb } from "@/lib/db";
 import { projects, scripts, assets, aiTasks, type Shot } from "@/lib/db/schema";
@@ -44,7 +44,7 @@ import { createKlingJob, dispatchKlingJob, queryKlingJob, retryKlingImport, runK
 import { getKlingJob, getKlingOutputs, patchKlingJob, klingJobView, withKlingJobLease } from "@/lib/kling/repository";
 import { importKlingOutputs, selectKlingOutput } from "@/lib/kling/output-import";
 import { KlingError } from "@/lib/kling/errors";
-import { filterAssetsForScript } from "@/lib/asset-context";
+import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
 import { previewProjectVideoPrompt } from "@/lib/server/video-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
@@ -180,6 +180,37 @@ describe("Kling durable submission and recovery", () => {
     await expect(createKlingJob(request({ prompt: `${reviewed.prompt}\nExtra unreviewed instruction.`, promptContext: { ...context, contextKey: reviewed.contextKey } }))).rejects.toMatchObject({ code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED", status: 409 });
     expect(state.prepare).not.toHaveBeenCalled();
     expect(state.cli).not.toHaveBeenCalled();
+  });
+
+  it.each(["first", "tail", "missing-tail", "extra-reference"] as const)("rejects %s inputs that differ from the reviewed browser frames before preparing a paid job", async (mismatch) => {
+    const firstFrameUrl = "/api/files/project-1/first.png", lastFrameUrl = "/api/files/project-1/tail.png", other = "/api/files/project-1/other.png";
+    const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false, controlInputs: { firstFrameUrl, lastFrameUrl } };
+    const reviewed = previewProjectVideoPrompt("project-1", context);
+    await expect(createKlingJob(request({
+      prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey },
+      imageUrl: mismatch === "first" ? other : firstFrameUrl,
+      lastImageUrl: mismatch === "tail" ? other : mismatch === "missing-tail" ? undefined : lastFrameUrl,
+      ...(mismatch === "extra-reference" ? { referenceImageUrls: [other] } : {}),
+    }))).rejects.toMatchObject({ code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED", status: 409 });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+  });
+
+  it("rechecks the frozen reviewed frames before dispatch without regenerating the preview", async () => {
+    const firstFrameUrl = "/api/files/project-1/first.png";
+    const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false, controlInputs: { firstFrameUrl } };
+    const reviewed = previewProjectVideoPrompt("project-1", context);
+    const inputPath = path.join(state.directory, "reviewed-frame.png"), bytes = Buffer.from("reviewed frame snapshot");
+    await fs.writeFile(inputPath, bytes);
+    state.prepare.mockResolvedValueOnce([{ role: "image", sourceUrl: firstFrameUrl, path: inputPath, hash: createHash("sha256").update(bytes).digest("hex"), size: bytes.length }]);
+    const job = await createKlingJob(request({ prompt: reviewed.prompt, promptContext: { ...context, contextKey: reviewed.contextKey }, imageUrl: firstFrameUrl }));
+    const data = structuredClone(job.data);
+    data.inputs[0].sourceUrl = "/api/files/project-1/other.png";
+    getDb().update(klingJobs).set({ data }).where(eq(klingJobs.id, job.id)).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_VIDEO_PROMPT_CONTEXT_CHANGED" } } });
   });
 
   it("dispatches an authorized web job with an explicit migration directory", async () => {
@@ -520,7 +551,7 @@ describe("Kling durable submission and recovery", () => {
   it("blocks an already prepared premium CG job after the project changes creative type", async () => {
     configurePremiumCgContext();
     const imageModel = premiumCgImageModel();
-    const job = await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video" }));
+    const job = await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl: "/api/files/project-1/product.png" }));
     getDb().update(projects).set({ creativeProfile: createShortVideoSalesProfile() }).where(eq(projects.id, "project-1")).run();
 
     await dispatchKlingJob(job.id);
@@ -535,7 +566,7 @@ describe("Kling durable submission and recovery", () => {
     const input = Buffer.from("product reference");
     await fs.writeFile(inputPath, input);
     state.prepare.mockResolvedValueOnce([{ role: "image", sourceUrl: "/api/files/project-1/product.png", path: inputPath, hash: createHash("sha256").update(input).digest("hex"), size: input.length }]);
-    const job = await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video" }));
+    const job = await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl: "/api/files/project-1/product.png" }));
     getDb().update(projects).set({ creativeConfigRevision: 2 }).where(eq(projects.id, "project-1")).run();
 
     await dispatchKlingJob(job.id);
@@ -543,7 +574,7 @@ describe("Kling durable submission and recovery", () => {
     expect(state.cli).toHaveBeenCalledOnce();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "remote-1" });
   });
-  it("rebuilds a premium CG Kling request from the selected shot and project product image", async () => {
+  it("rejects a foreign premium CG frame before preparing or submitting a video", async () => {
     configurePremiumCgContext();
     getDb().update(projects).set({ productImages: ["/api/files/project-1/product.png"] }).where(eq(projects.id, "project-1")).run();
     const imageModel: KlingVideoModelDescriptor = {
@@ -555,21 +586,58 @@ describe("Kling durable submission and recovery", () => {
       capabilities: { ...model.capabilities, image: true },
     };
     state.profile!.catalogSnapshot = [imageModel];
-    state.prepare.mockResolvedValueOnce([{ role: "image", sourceUrl: "/api/files/project-1/product.png", path: "/fixture/product.png", hash: "a".repeat(64), size: 1 }]);
-
-    const job = await createKlingJob(request({
+    await expect(createKlingJob(request({
       selectionKey: imageModel.selectionKey,
       mode: "text-to-video",
       prompt: "Add a giant BUY NOW price card.",
       imageUrl: "https://example.test/foreign-sale-card.png",
       referenceImageUrls: ["https://example.test/foreign-reference.png"],
+    }))).rejects.toMatchObject({ code: "PREMIUM_CG_REFERENCE_INVALID" });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+  it.each(["none", "product", "other-shot"] as const)("preserves the premium CG dialog's chosen first frame and tail=%s through dispatch", async (tailChoice) => {
+    configurePremiumCgContext();
+    const imageModel = premiumCgImageModel();
+    const nextShot = { ...shot, shotId: 3, voiceover: "" };
+    const script = getDb().update(scripts).set({ shots: [{ ...shot, voiceover: "" }, { ...shot, shotId: 2, voiceover: "" }, nextShot] }).where(eq(scripts.id, "script-1")).returning().get()!;
+    const savedFrameUrl = "/api/files/project-1/kling/other-shot-frame.png";
+    const tailUrl = tailChoice === "product" ? "/api/files/project-1/product.png" : savedFrameUrl;
+    const useTail = tailChoice !== "none";
+    getDb().insert(assets).values({ id: "other-shot-keyframe", projectId: "project-1", shotId: 3, type: "ai_generated", status: "done", selected: true, provider: "kling-cli", filePath: savedFrameUrl, ...assetScopeForShot(script, nextShot) }).run();
+    const refs = [{ role: "image" as const, sourceUrl: "/api/files/project-1/product.png" }, ...(useTail ? [{ role: "tailImage" as const, sourceUrl: tailUrl }] : [])];
+    const inputs = await Promise.all(refs.map(async (ref, index) => {
+      const inputPath = path.join(state.directory, `premium-dialog-${index}.png`), bytes = Buffer.from(ref.sourceUrl);
+      await fs.writeFile(inputPath, bytes);
+      return { ...ref, path: inputPath, hash: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
     }));
-
+    state.prepare.mockResolvedValueOnce(inputs);
+    const job = await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video", prompt: "Add a giant BUY NOW price card.", imageUrl: refs[0].sourceUrl, ...(useTail ? { lastImageUrl: tailUrl } : {}) }));
+    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), refs);
     expect(job.data.prompt).toContain("高端产品三维动态影像");
     expect(job.data.prompt).not.toContain("BUY NOW");
-    expect(job.data.inputs).toEqual([expect.objectContaining({ role: "image", sourceUrl: "/api/files/project-1/product.png" })]);
-    expect(JSON.stringify(job.data)).not.toContain("foreign-sale-card.png");
-    expect(JSON.stringify(job.data)).not.toContain("foreign-reference.png");
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).data.error).toBeUndefined();
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id).data.inputs).toEqual(inputs);
+    expect((state.cli.mock.calls[0][1] as string[]).includes("--tailImage")).toBe(useTail);
+  });
+  it("does not add a default premium CG first frame when the dialog submitted none", async () => {
+    configurePremiumCgContext();
+    const imageModel = premiumCgImageModel();
+    await expect(createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video" }))).rejects.toMatchObject({ code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED" });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+  it("rejects a saved premium CG tail whose source is outside the trusted generation flow", async () => {
+    configurePremiumCgContext();
+    const imageModel = premiumCgImageModel();
+    const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
+    const untrusted = "/api/files/project-1/untrusted.jpg";
+    getDb().insert(assets).values({ id: "untrusted-frame", projectId: "project-1", shotId: 1, type: "ai_generated", status: "done", selected: true, filePath: untrusted, ...assetScopeForShot(script, script.shots![0]) }).run();
+    await expect(createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl: "/api/files/project-1/product.png", lastImageUrl: untrusted }))).rejects.toMatchObject({ code: "PREMIUM_CG_REFERENCE_INVALID" });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
   });
   it("does not claim a job whose authorization expired during identity checking", async () => {
     const job = await createKlingJob(request()); const now = Date.now(); const clock = vi.spyOn(Date, "now");
@@ -861,7 +929,7 @@ describe("Kling output persistence and selection", () => {
       role: "image", sourceUrl: "/api/files/project-1/product.png", path: inputPath,
       hash: createHash("sha256").update(input).digest("hex"), size: input.length,
     }]);
-    return acknowledge(await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video" })));
+    return acknowledge(await createKlingJob(request({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl: "/api/files/project-1/product.png" })));
   }
   async function completePremiumCgJob(job?: KlingJob) {
     const target = job ?? await preparePremiumCgJob();

@@ -13,6 +13,8 @@ export interface BatchMotionDraft {
   firstFrameUrl: string;
   lastFrameUrl?: string;
   referenceImages: string[];
+  frameChoices?: Array<{ label: string; url: string }>;
+  refreshFrames?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft>;
   options: Record<string, unknown>;
   klingParameters: Record<string, unknown>;
   validate?(): boolean;
@@ -40,7 +42,7 @@ export function prepareBatchMotionKling(draft: BatchMotionDraft, model: KlingVid
     ...(draft.negativePrompt !== undefined && { negativePrompt: draft.negativePrompt }),
   });
   const prompt = draft.prompt;
-  const images = [...new Set([draft.firstFrameUrl, ...draft.referenceImages.filter((url) => url !== draft.lastFrameUrl)].filter(Boolean))];
+  const images = draft.firstFrameUrl ? [draft.firstFrameUrl] : [];
   const error = !draft.firstFrameUrl
     ? "请先选择当前分镜的图片"
     : validateVideoPrompt(prompt).map((issue) => issue.message).join(" ");
