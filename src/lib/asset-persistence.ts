@@ -12,6 +12,8 @@ import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { resolveUploadFilePath } from "@/lib/remote-image";
 import { sanitizeGenerationControlSummary, type GenerationControlSummary } from "@/lib/video-repair-plan";
 import { extractLastFrame, LAST_FRAME_SUFFIX } from "@/lib/video-composer/frame-extract";
+import { createHash } from "node:crypto";
+import { scriptRevision } from "@/lib/asset-context";
 
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v)$/i;
@@ -70,6 +72,8 @@ export async function persistAssetSource(projectId: string, sourceUrl: string, s
 }
 
 export interface SaveAssetCandidateInput {
+  /** Internal execution identity: repeated imports of one output reuse the same take. */
+  idempotencyKey?: string;
   projectId: string;
   shotId: number;
   filePath: string;
@@ -83,6 +87,12 @@ export interface SaveAssetCandidateInput {
   scope?: AssetScope;
   selectedPolicy?: AssetSelectionPolicy;
   expectedCurrentScript?: { scriptId: string; scriptRevision?: string; creativeConfigRevision?: number };
+  /** A paid result retains its frozen provenance when its source shot has since been edited. */
+  allowHistoricalScope?: boolean;
+}
+
+export function generationAssetId(projectId: string, idempotencyKey: string): string {
+  return `asset-${createHash("sha256").update(JSON.stringify([projectId, idempotencyKey])).digest("hex")}`;
 }
 
 export class AssetContextConflictError extends Error {
@@ -95,12 +105,20 @@ export class AssetContextConflictError extends Error {
 export type AssetSelectionPolicy =
   | { mode: "select" }
   | { mode: "alternative" }
-  | { mode: "select-if-unchanged"; baseline: { scriptId: string; scriptRevision: string; selectedAssetId: string | null } };
+  | { mode: "select-if-unchanged"; baseline: { scriptId: string; scriptRevision: string; selectedAssetId: string | null; requireRevisionMatch?: boolean } };
 
 /** Insert a validated take and atomically make it the active composition input. */
 export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
   if (!SAFE_ID.test(input.projectId)) throw new Error("无效的项目ID");
   const db = getDb();
+  const stableId = input.idempotencyKey ? generationAssetId(input.projectId, input.idempotencyKey) : undefined;
+  if (stableId) {
+    const existing = db.select().from(assets).where(eq(assets.id, stableId)).get();
+    if (existing) {
+      if (existing.projectId !== input.projectId || existing.shotId !== input.shotId) throw new AssetContextConflictError();
+      return existing;
+    }
+  }
   let lastFrameUrl: string | undefined;
   if (VIDEO_EXT.test(input.filePath) && input.filePath.startsWith(`/api/files/${input.projectId}/`)) {
     const absolutePath = resolveUploadFilePath(input.filePath);
@@ -110,6 +128,10 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
   }
   const generationPlan = input.generationPlan ? sanitizeGenerationControlSummary(input.generationPlan) : null;
   const rows = db.transaction((transaction) => {
+    if (stableId) {
+      const existing = transaction.select().from(assets).where(eq(assets.id, stableId)).get();
+      if (existing) return [existing];
+    }
     const scriptRows = transaction.select().from(scripts).where(eq(scripts.projectId, input.projectId)).all();
     const currentScript = resolveCurrentScript(scriptRows);
     if (input.expectedCurrentScript) {
@@ -122,7 +144,7 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
       }
     }
     const targetScript = input.scope ? scriptRows.find((row) => row.id === input.scope!.sourceScriptId) : currentScript;
-    if (input.scope && !assetMatchesScript({ shotId: input.shotId, ...input.scope }, targetScript)) {
+    if (input.scope && !assetMatchesScript({ shotId: input.shotId, ...input.scope }, targetScript) && !input.allowHistoricalScope) {
       throw new AssetContextConflictError();
     }
     const candidates = transaction.select().from(assets).where(and(eq(assets.projectId, input.projectId), eq(assets.shotId, input.shotId))).all();
@@ -133,11 +155,13 @@ export async function saveAssetCandidate(input: SaveAssetCandidateInput) {
     if (policy.mode === "select-if-unchanged") {
       const currentSelected = scopedCandidates.find((row) => row.selected);
       selected = Boolean(currentScript && currentScript.id === policy.baseline.scriptId
+        && (!policy.baseline.requireRevisionMatch || scriptRevision(currentScript) === policy.baseline.scriptRevision)
         && (currentSelected?.id ?? null) === policy.baseline.selectedAssetId
         && (!input.scope || assetMatchesScript({ shotId: input.shotId, ...input.scope }, currentScript)));
     }
     if (selected) for (const row of scopedCandidates) transaction.update(assets).set({ selected: false }).where(eq(assets.id, row.id)).run();
     return transaction.insert(assets).values({
+      ...(stableId && { id: stableId }),
       projectId: input.projectId,
       shotId: input.shotId,
       type: input.type ?? "ai_generated",

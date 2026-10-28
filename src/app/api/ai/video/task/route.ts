@@ -49,17 +49,21 @@ export async function POST(req: NextRequest) {
 
       const result = status.result;
       const videoUrls = result && "videoUrls" in result ? result.videoUrls : undefined;
+      const imageUrls = result && "imageUrls" in result ? result.imageUrls : undefined;
+      const resultUrls = videoUrls ?? imageUrls;
+      const missingResult = status.status === "completed" && !resultUrls?.length;
 
       await updateAiTaskByProviderTaskId(providerName, taskId, {
-        status: toRowStatus(status.status),
-        ...(videoUrls && { resultUrls: videoUrls }),
-        error: status.error ?? null,
+        status: missingResult ? "unknown" : toRowStatus(status.status),
+        ...(resultUrls && { resultUrls }),
+        error: missingResult ? "任务已完成但未返回素材地址，请继续查询原任务。" : status.error ?? null,
       });
 
       return NextResponse.json({
         taskId,
         status: status.status,
         videoUrls,
+        imageUrls,
         error: status.error,
       });
     } catch (error) {

@@ -24,7 +24,7 @@ import { getKlingJob, getKlingOutputs, patchKlingJob, isKlingJobUnresolved, list
 import { importKlingOutputs, selectKlingOutput } from "./output-import";
 import type { KlingSubmitRequest } from "./job-types";
 import { klingFilmRuns } from "./film-schema";
-import { KLING_MAX_CONCURRENT_SHOTS, klingJobHasUnknownSubmission, klingJobOccupiesGenerationSlot } from "./concurrency";
+import { klingJobHasUnknownSubmission } from "./concurrency";
 import { cleanupDeletedKlingJobs } from "./delete-job";
 import { isKlingRuntimeEnabled } from "./runtime";
 import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
@@ -41,6 +41,8 @@ import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
 import { buildVideoControlPlan, sanitizeVideoControlSummary } from "@/lib/video-control-plan";
+import { generationContextItemId, generationContextSnapshot } from "@/lib/generation-context";
+import { projectGenerationSignature } from "@/lib/generation-source-context";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
@@ -249,18 +251,6 @@ function assertNoUnknownSubmission(rows: KlingJob[]): void {
   const error = new KlingError("KLING_REQUEST_CONFLICT", "此账号有提交结果不明的 Kling 任务，请先核对原任务：" + unknown.id, 409);
   Object.assign(error, { jobId: unknown.id }); throw error;
 }
-function concurrencyLimit(): KlingError {
-  return new KlingError("KLING_CONCURRENCY_LIMIT", `此 Kling 账号最多同时生成 ${KLING_MAX_CONCURRENT_SHOTS} 个镜头，请等待其中一个生成结束后再试。`, 409);
-}
-/** Prepared rows reserve capacity; existing remote work takes precedence over any legacy excess reservations. */
-function assertDispatchCapacity(job: KlingJob, rows: KlingJob[]): void {
-  assertNoUnknownSubmission(rows);
-  const occupying = rows.filter(klingJobOccupiesGenerationSlot);
-  const dispatched = occupying.filter((row) => row.submissionState !== "prepared").length;
-  const reservations = occupying.filter((row) => row.submissionState === "prepared")
-    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
-  if (!reservations.slice(0, Math.max(0, KLING_MAX_CONCURRENT_SHOTS - dispatched)).some((row) => row.id === job.id)) throw concurrencyLimit();
-}
 function requestPayload(raw: unknown): KlingSubmitRequest {
   const body = record(raw);
   if (body.provider !== "kling-cli" || body.executionScope !== "single-shot") throw new KlingError("KLING_SCOPE_UNSUPPORTED", "Kling CLI 当前仅支持单镜头生成", 422);
@@ -328,6 +318,17 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   }
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === request.selectionKey);
   if (!model) throw new KlingError("KLING_MODEL_UNAVAILABLE", "当前账号目录中没有此视频模型，请刷新模型目录", 422);
+  const frozenKling = generationContextSnapshot()?.kling;
+  if (frozenKling) {
+    if (frozenKling.profileId !== request.profileId || frozenKling.principalKey !== profile.principalKey || frozenKling.region !== profile.region) {
+      throw new KlingError("KLING_ACCOUNT_MISMATCH", "排队时确认的 Kling 账号已变化，已阻止付费生成。请切回原账号后重新确认。", 409);
+    }
+    // Reauthentication and unrelated catalog changes may change the catalog-wide revision;
+    // the selected model's actual descriptor must still match the accepted request.
+    if (canonicalJson({ ...model, catalogRevision: "" }) !== canonicalJson({ ...frozenKling.model, catalogRevision: "" })) {
+      throw new KlingError("KLING_MODEL_CHANGED", "排队时确认的 Kling 模型或参数目录已变化，已阻止付费生成。请重新确认模型。", 409);
+    }
+  }
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, request.projectId)).get();
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
@@ -424,6 +425,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   const args = buildKlingVideoArguments(model, prompt, options, inputs, id, premiumCg || tidewe && generationPlan?.audioMode !== "native");
   const now = Date.now();
   const data: KlingJobData = {
+    ...(generationContextItemId() ? { generationItemId: generationContextItemId(), generationProjectSignature: projectGenerationSignature(generationContextSnapshot()?.project ?? project as unknown as Record<string, unknown>) } : {}),
     scriptRevision: scriptRevision(script), shotKey: shotKey(script.id, shot), expectedSelectedAssetId: eligible[0]?.id ?? null,
     payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script), ...(linkage ? { linkage } : {}) }),
     model, prompt, options, inputs, args, accountLabel: profile.accountSummary?.displayName ?? profile.accountSummary?.id,
@@ -443,7 +445,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     }
     const films = tx.select().from(klingFilmRuns).all();
     if (!film && films.some((row) => !["draft", "completed", "cancelled"].includes(row.status) && (row.principalKey === profile.principalKey || row.projectId === request.projectId))) {
-      throw new KlingError("KLING_FILM_CONFLICT", "已有未完成整片编排，请先恢复或取消原整片", 409);
+      throw new KlingError("KLING_FILM_CONFLICT", "已有未完成的历史整片任务，请先在任务记录中取消原计划", 409);
     }
     if (film && !films.some((row) => row.id === film.filmRunId && row.projectId === request.projectId && row.principalKey === profile.principalKey)) {
       throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片父任务不存在或账号、项目不一致", 409);
@@ -455,7 +457,6 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
       const error = new KlingError("KLING_REQUEST_CONFLICT", "此镜头已有待处理的 Kling 任务，请先恢复原任务：" + conflict.id, 409);
       Object.assign(error, { jobId: conflict.id }); throw error;
     }
-    if (accountJobs.filter(klingJobOccupiesGenerationSlot).length >= KLING_MAX_CONCURRENT_SHOTS) throw concurrencyLimit();
     const latestProject = tx.select().from(projects).where(eq(projects.id, request.projectId)).get();
     const latestScript = resolveCurrentScript(tx.select().from(scripts).where(eq(scripts.projectId, request.projectId)).all());
     if (!latestScript || latestScript.id !== script.id || !latestScript.shots?.some((item) => item.shotId === request.shotId)) throw new KlingError("KLING_CONTEXT_CHANGED", "准备期间所选脚本或镜头已变化，请重新确认", 409);
@@ -613,7 +614,7 @@ async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promi
     try {
       // Also protect previously prepared jobs, whose stored text may predate current validation.
       assertValidKlingPrompt(job.data.prompt);
-      assertDispatchCapacity(job, getDb().select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
+      assertNoUnknownSubmission(getDb().select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
       await withKlingLease(getProfile(job.profileId), async (lease) => {
         const profile = await checkedProfile(job, lease);
         const live = profile.catalogSnapshot.find((model) => model.selectionKey === job.data.model.selectionKey);
@@ -625,7 +626,7 @@ async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promi
         assertKlingJobLease(jobId);
         const claimed = getDb().transaction((tx) => {
           assertKlingJobLease(jobId);
-          assertDispatchCapacity(job, tx.select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
+          assertNoUnknownSubmission(tx.select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
           // The profile check must happen in the same immediate transaction as the paid-dispatch claim.
           // A profile edit between the earlier preflight and this point invalidates the prepared job.
           assertCurrentContext(job);
@@ -684,7 +685,7 @@ async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promi
       const current = getKlingJob(jobId);
       const detail = failure(error);
       if (current.submissionState === "prepared") {
-        const waiting = ["KLING_PROFILE_BUSY", "KLING_CONCURRENCY_LIMIT"].includes(detail.code) || (detail.code === "KLING_REQUEST_CONFLICT" && typeof (error as { jobId?: unknown }).jobId === "string");
+        const waiting = detail.code === "KLING_PROFILE_BUSY" || (detail.code === "KLING_REQUEST_CONFLICT" && typeof (error as { jobId?: unknown }).jobId === "string");
         const cliDiagnostics = error instanceof KlingError && error.result ? createKlingCliDiagnostics(error.result, error, attemptStartedAt, {
           phase: "startup", outcome: "not_submitted", source: "cli", reason: "首次提交前的账号或模型检查失败，尚未提交视频生成。",
           timedOut: error.result.timedOut, aborted: error.result.aborted, exitCode: error.result.exitCode,

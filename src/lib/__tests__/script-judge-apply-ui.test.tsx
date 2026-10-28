@@ -12,6 +12,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
+vi.mock("@/components/generation-runs-panel", () => ({ GenerationRunsPanel: () => null }));
+vi.mock("@/lib/hooks/use-generation-runs", () => ({ useGenerationRuns: () => ({ runs: [], loading: false, error: null, submitRun: vi.fn() }), generationRunActive: () => false }));
 vi.mock("@/lib/i18n", () => {
   const t = (key: string) => key;
   return { useT: () => t, useLocale: () => "zh" };

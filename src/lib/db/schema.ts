@@ -24,6 +24,7 @@ import type {
 export { klingProfiles, klingAuthSessions } from "@/lib/kling/profile-schema";
 export { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
 export { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
+export { generationRuns, generationItems } from "@/lib/generation-schema";
 
 // Projects table
 export const projects = sqliteTable("projects", {
@@ -198,6 +199,8 @@ export const aiTasks = sqliteTable("ai_tasks", {
   // unknown = client lost contact (poll timeout / restart); the cloud task may still be running
   status: text("status", { enum: ["submitted", "processing", "completed", "failed", "unknown"] }).notNull().default("submitted"),
   resultUrls: text("result_urls", { mode: "json" }).$type<string[]>(),
+  assetId: text("asset_id"),
+  importState: text("import_state", { enum: ["pending", "imported", "failed"] }).notNull().default("pending"),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),

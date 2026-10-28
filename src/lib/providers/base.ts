@@ -15,6 +15,7 @@ import type {
   MediaType,
   TaskStatusEnum,
 } from './types'
+import { generationCheckpoint, generationContextDefersPolling, GenerationTaskPending } from '@/lib/provider-generation-hooks'
 
 /** API request error */
 export class ProviderError extends Error {
@@ -30,6 +31,8 @@ export class ProviderError extends Error {
    * silently dropping something the user already paid for (issue #16).
    */
   taskId?: string
+  /** Set only after an explicit upstream rejection that could not create paid work. */
+  submissionRejected?: boolean
   /** Upstream request identifier, when a provider returns one. */
   requestId?: string
   /** Upstream parameter name associated with the rejection. */
@@ -139,12 +142,14 @@ export abstract class BaseProvider implements AIProvider {
             await this.sleep(500 * Math.pow(2, attempt))
             continue
           }
-          throw new ProviderError(
+          const failure = new ProviderError(
             `API 请求失败: ${response.status} ${response.statusText} - ${errorBody}`,
             'API_ERROR',
             this.name,
             response.status
           )
+          if (!idempotent && [400, 401, 403, 429].includes(response.status)) failure.submissionRejected = true
+          throw failure
         }
 
         return (await response.json()) as T
@@ -209,6 +214,8 @@ export abstract class BaseProvider implements AIProvider {
       isTerminal?: (status: TaskStatusEnum) => boolean
     } = {}
   ): Promise<TaskStatus> {
+    generationCheckpoint({ taskId, provider: this.name, submissionState: 'acknowledged' })
+    if (generationContextDefersPolling()) throw new GenerationTaskPending(taskId)
     const {
       interval = 3000,
       maxAttempts = 200,

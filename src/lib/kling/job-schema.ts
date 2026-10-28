@@ -17,6 +17,9 @@ export interface KlingInputSnapshot {
   size: number;
 }
 export interface KlingJobData {
+  /** Trusted durable-worker provenance; never populated from browser JSON. */
+  generationItemId?: string;
+  generationProjectSignature?: string;
   scriptRevision: string;
   shotKey: string;
   expectedSelectedAssetId: string | null;

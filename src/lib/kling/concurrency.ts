@@ -1,8 +1,5 @@
 import type { KlingJobView } from "./job-types";
 
-/** Application limit shared by single-shot generation and film orchestration. */
-export const KLING_MAX_CONCURRENT_SHOTS = 10;
-
 type GenerationState = Pick<KlingJobView, "submissionState" | "remoteState"> & { data?: { deletedAt?: number } };
 
 export function klingJobHasUnknownSubmission(job: GenerationState): boolean {
@@ -25,6 +22,7 @@ export function klingJobHasUnresolvedWork(job: GenerationState & Pick<KlingJobVi
 
 export interface KlingConcurrencyStatus {
   active: number;
-  max: number;
+  /** No application-side cap; the provider may enforce its own account quota. */
+  max: null;
   blockedByUnknownSubmission: boolean;
 }

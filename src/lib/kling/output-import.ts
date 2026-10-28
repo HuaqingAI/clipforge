@@ -5,10 +5,11 @@ import { mkdir, stat, rename, unlink, copyFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { assets, projects, scripts } from "@/lib/db/schema";
+import { aiTasks, assets, projects, scripts } from "@/lib/db/schema";
 import { getUploadsDir } from "@/lib/paths";
 import { probeMedia } from "@/lib/media-probe";
-import { filterAssetsForScript, shotKey, assetMatchesScript } from "@/lib/asset-context";
+import { filterAssetsForScript, shotKey, assetMatchesScript, scriptRevision } from "@/lib/asset-context";
+import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { extractFirstFrame, extractLastFrame } from "@/lib/video-composer/frame-extract";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { klingJobOutputs, type KlingJob, type KlingJobOutput } from "./job-schema";
@@ -54,7 +55,10 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
       ? filterTrustedPremiumCgAssets(scopedRaw, job.projectId, selectedScript)
       : scopedRaw;
     const baselineMatches = (scoped[0]?.id ?? null) === job.data.expectedSelectedAssetId;
-    const contextMatches = Boolean(creativeContext?.ok && assetMatchesScript({
+    const contextMatches = Boolean(creativeContext?.ok
+      && (!job.data.generationItemId || (selectedScript && scriptRevision(selectedScript) === job.data.scriptRevision
+        && projectGenerationSignature(project as unknown as Record<string, unknown>) === job.data.generationProjectSignature))
+      && assetMatchesScript({
       shotId: job.shotId, sourceScriptId: job.scriptId,
       sourceRevision: job.data.scriptRevision, sourceShotKey: job.data.shotKey,
     }, selectedScript));
@@ -151,7 +155,13 @@ export async function importKlingOutputs(jobId: string): Promise<void> {
     }
     refreshKlingImportState(jobId);
     const current = getKlingJob(jobId);
-    if (current.importState === "completed") patchKlingJob(jobId, { nextQueryAt: null }, { error: undefined, blockedReason: undefined });
+    if (current.importState === "completed") {
+      patchKlingJob(jobId, { nextQueryAt: null }, { error: undefined, blockedReason: undefined });
+      const firstAsset = getKlingOutputs(jobId).find((output) => !output.data.deletedAt && output.assetId)?.assetId;
+      if (current.data.aiTaskId && firstAsset) getDb().update(aiTasks).set({ status: "completed", importState: "imported", assetId: firstAsset, error: null, updatedAt: new Date() }).where(eq(aiTasks.id, current.data.aiTaskId)).run();
+    } else if (current.data.aiTaskId && ["failed", "partial"].includes(current.importState)) {
+      getDb().update(aiTasks).set({ importState: "failed", updatedAt: new Date() }).where(eq(aiTasks.id, current.data.aiTaskId)).run();
+    }
   } finally { cleanupDeletedKlingJob(jobId); }
 }
 

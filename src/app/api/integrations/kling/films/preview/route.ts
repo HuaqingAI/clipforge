@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
-import { previewKlingFilm } from "@/lib/kling/film-plan";
 export const runtime = "nodejs";
 export async function POST(req: NextRequest) {
   try {
     await assertKlingLocalRequest(req);
-    return NextResponse.json(await previewKlingFilm(await req.json()), { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ error: { code: "KLING_FILM_REMOVED", message: "Kling 整片生成功能已移除，请使用单镜头生成后合成。历史整片任务仍可查看、暂停、取消或删除。", retryable: false } }, { status: 410, headers: { "Cache-Control": "no-store" } });
   } catch (error) { return klingRouteError(error); }
 }

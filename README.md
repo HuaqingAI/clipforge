@@ -459,7 +459,7 @@ open http://localhost:3000
 
 > 视频合成依赖本机 **FFmpeg**（需自行安装：`brew install ffmpeg` / `apt install ffmpeg`）。
 
-本机网页版现支持 **Kling 官方 CLI** 的独立登录、动态模型、单镜头生成、任务恢复、视频入库播放及整片自动编排。素材页的“Kling 整片自动编排”可复用已有视频，串行生成缺少的视频，再配音、加字幕并在本地合成。Windows 双击启动会自动准备固定版本 `@klingai/cli-global@0.2.0`；手动启动时请先安装该版本。登录、模型选择与任务恢复见 [Kling CLI 本机网页版使用说明](./Kling-CLI本机网页版使用说明.md)。Electron 暂不支持。
+本机网页版支持 **Kling 官方 CLI** 的独立登录、动态模型、单镜头与批量镜头视频生成、任务恢复及视频入库播放。多个项目可以在后台并行处理，切换项目或刷新后可查看原批次进度；应用不再限制同账号合计 10 个名额，平台限流仍有效。Kling 整片生成已移除，历史任务仍可查看和处理。Windows 双击启动会自动准备固定版本 `@klingai/cli-global@0.2.0`；手动启动时请先安装该版本。Kling CLI 在 Electron 中暂不支持。后台运行条件和恢复说明见 [任务状态与模型选择](docs/task-recovery.md)。
 
 ---
 

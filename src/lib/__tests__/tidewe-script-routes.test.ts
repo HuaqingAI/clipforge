@@ -248,7 +248,7 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect((await response.json()).scripts[0].creativeProfileSnapshot.profile.presenter).toEqual(presenterA);
   });
 
-  it("keeps inflight generation eligible after project presenter settings change", async () => {
+  it("archives inflight generation after project presenter settings change", async () => {
     const initial = createTideweOutdoorProfile({ presenter: presenterA });
     db.update(schema.projects).set({ creativeProfile: initial, characterId: presenterA.id }).where(eq(schema.projects.id, projectId)).run();
     const source = seedScript();
@@ -261,11 +261,11 @@ describe("TIDEWE generation, history and concurrency", () => {
       return [generated(copyText, presenterA)];
     });
     const response = await generate(req("/api/llm/script", generationBody("presenter-changed")));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(409);
     const rows = db.select().from(schema.scripts).all();
     expect(rows).toHaveLength(2);
-    expect(rows.find(row => row.id === source.id)?.selected).toBe(false);
-    expect(rows.find(row => row.id !== source.id)).toMatchObject({ selected: true,
+    expect(rows.find(row => row.id === source.id)?.selected).toBe(true);
+    expect(rows.find(row => row.id !== source.id)).toMatchObject({ selected: false,
       creativeProfileSnapshot: { creativeConfigRevision: 1, profile: { presenter: presenterA } } });
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeProfile).toMatchObject({ presenter: presenterB });
   });
@@ -349,18 +349,18 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect((await response.json()).scripts[0].id).toBe("other-worker-result");
     expect(db.select().from(schema.scripts).all()).toHaveLength(1);
   });
-  it("keeps generation eligible when the same source script is edited during generation", async () => {
+  it("archives generation when the same source script is edited during generation", async () => {
     const source = seedScript();
     calls.generate.mockImplementationOnce(async () => {
       db.update(schema.scripts).set({ title: "New title", shots: [{ ...source.shots![0], camera: "缓慢横移" }] }).where(eq(schema.scripts.id, source.id)).run();
       return [generated()];
     });
     const response = await generate(req("/api/llm/script", { ...generationBody(), sourceScriptId: source.id, expectedScriptHash: scriptRevision(source) }));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(409);
     const rows = db.select().from(schema.scripts).all();
     expect(rows).toHaveLength(2);
-    expect(rows.find(row => row.id === source.id)).toMatchObject({ selected: false, title: "New title", shots: [{ camera: "缓慢横移" }] });
-    expect(rows.find(row => row.id !== source.id)?.selected).toBe(true);
+    expect(rows.find(row => row.id === source.id)).toMatchObject({ selected: true, title: "New title", shots: [{ camera: "缓慢横移" }] });
+    expect(rows.find(row => row.id !== source.id)?.selected).toBe(false);
   });
   it("returns hashes and the canonical copy in script history", async () => {
     const source = seedScript();

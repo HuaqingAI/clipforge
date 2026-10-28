@@ -15,13 +15,14 @@ import { PATCH as updateScripts } from "@/app/api/project/[id]/scripts/route";
 import { POST as topicScript } from "@/app/api/topic/script/route";
 import { POST as dubScript } from "@/app/api/project/[id]/dub/route";
 import { POST as importScript } from "@/app/api/project/[id]/import-script/route";
+import { withGenerationContext } from "@/lib/generation-context";
 
-const generation = vi.hoisted(() => ({ commerce: vi.fn(), topic: vi.fn(), translate: vi.fn(), translateVoiceovers: vi.fn() }));
+const generation = vi.hoisted(() => ({ commerce: vi.fn(), topic: vi.fn(), analysis: vi.fn(), translate: vi.fn(), translateVoiceovers: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
 vi.mock("@/lib/script-engine/generator", () => ({
   generateScript: generation.commerce,
   generateTopicScript: generation.topic,
-  analyzeProduct: vi.fn(),
+  analyzeProduct: generation.analysis,
 }));
 vi.mock("@/lib/script-engine/translate", () => ({
   translateShots: generation.translate,
@@ -81,6 +82,36 @@ function expectMetadata(operation: "commerce-script" | "topic-script" | "transla
 }
 
 describe("script generation provenance", () => {
+  it("checkpoints before the first paid vision call and reuses completed analysis after interruption", async () => {
+    db.update(schema.projects).set({ productImages: ["https://example.test/product.png"] }).where(eq(schema.projects.id, projectId)).run();
+    let checkpoint: Record<string, unknown> = {};
+    generation.analysis.mockImplementationOnce(async () => {
+      expect(checkpoint.submissionState).toBe("submitting");
+      return "Frozen product observations";
+    });
+    generation.commerce.mockImplementationOnce(async () => { throw new Error("script request interrupted"); });
+    const body = { projectId, productName: "Portable blender", productImages: ["https://example.test/product.png"], insightMode: false, llmConfig, requestId: "durable-request-analysis" };
+    const execute = () => withGenerationContext({ itemId: "durable-script", checkpoint, save: (value) => { checkpoint = structuredClone(value); } }, () => commerceScript(request("/api/llm/script", body)));
+    const first = await execute();
+    expect(first.status).toBe(500);
+    expect(checkpoint).toMatchObject({ analysisComplete: true, productAnalysis: "Frozen product observations", submissionState: "submitting" });
+    // The worker does not retry an ambiguous script purchase. Once that purchase is reconciled,
+    // the route can still reuse its already-paid analysis rather than analyzing images again.
+    checkpoint.submissionState = "not_submitted";
+    expect((await execute()).status).toBe(200);
+    expect(generation.analysis).toHaveBeenCalledOnce();
+  });
+
+  it("saves an already generated script after a restart as history when the project changed", async () => {
+    const frozenProject = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
+    db.update(schema.projects).set({ productName: "Edited while offline" }).where(eq(schema.projects.id, projectId)).run();
+    let checkpoint: Record<string, unknown> = { generatedScripts: [generated], submissionState: "acknowledged", analysisComplete: true };
+    const response = await withGenerationContext({ itemId: "recover-doc", checkpoint, snapshot: { project: JSON.parse(JSON.stringify(frozenProject)) }, save: (value) => { checkpoint = value; } },
+      () => commerceScript(request("/api/llm/script", { projectId, productName: "Old product", llmConfig, requestId: "recovered-document" })));
+    expect(response.status).toBe(409);
+    expect(generation.commerce).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).all()).toMatchObject([{ selected: false, generationMetadata: { requestId: "recovered-document" } }]);
+  });
   it("whitelists non-secret identifiers and labels endpoints without a provider", () => {
     expect(scriptGenerationMetadata({ ...llmConfig, provider: undefined }, "commerce-script", new Date("2026-10-21T00:00:00.000Z")))
       .toEqual({
@@ -111,7 +142,7 @@ describe("script generation provenance", () => {
     expect((await response.json()).scripts[0].generationMetadata).toEqual(row.generationMetadata);
   });
 
-  it("appends an immutable script generation even if only the project configuration counter changes", async () => {
+  it("archives a late script when the project configuration counter changes", async () => {
     const first = await commerceScript(request("/api/llm/script", {
       projectId, productName: "Portable blender", productAnalysis: "Already analyzed", insightMode: false, llmConfig,
     }));
@@ -125,13 +156,13 @@ describe("script generation provenance", () => {
     const second = await commerceScript(request("/api/llm/script", {
       projectId, productName: "Portable blender", productAnalysis: "Already analyzed", insightMode: false, llmConfig,
     }));
-    expect(second.status).toBe(200);
+    expect(second.status).toBe(409);
 
     const rows = db.select().from(schema.scripts).where(eq(schema.scripts.projectId, projectId)).all();
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.version).sort()).toEqual([1, 2]);
-    expect(rows.find((row) => row.id === original.id)).toMatchObject({ selected: false, title: "Original script" });
-    expect(rows.find((row) => row.selected)).toMatchObject({ version: 2, title: "Regenerated script" });
+    expect(rows.find((row) => row.id === original.id)).toMatchObject({ selected: true, title: "Original script" });
+    expect(rows.find((row) => row.id !== original.id)).toMatchObject({ selected: false, version: 2, title: "Regenerated script" });
     expect(rows.find((row) => row.id === original.id)?.creativeProfileSnapshot)
       .toEqual(original.creativeProfileSnapshot);
     expect(rows.find((row) => row.selected)?.creativeProfileSnapshot?.creativeConfigRevision).toBe(0);

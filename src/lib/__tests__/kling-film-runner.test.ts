@@ -123,14 +123,14 @@ describe("durable Kling film runner", () => {
     expect(state.create).not.toHaveBeenCalled(); expect(state.dispatch).not.toHaveBeenCalled(); expect(state.compose).not.toHaveBeenCalled();
   });
 
-  it("acknowledges ten shots before any finish and releases a cloud slot before local import", async () => {
+  it("acknowledges all eleven shots before any finish without a local account cap", async () => {
     useElevenShots();
     await start(); await runKlingFilmTick();
-    expect(state.create).toHaveBeenCalledTimes(10); expect(state.dispatch).toHaveBeenCalledTimes(10);
-    expect(getKlingFilmShots("film").slice(0, 10).map((shot) => getKlingJob(shot.jobId!).remoteState)).toEqual(Array(10).fill("processing"));
-    expect(getKlingFilmShots("film")[10].jobId).toBeNull();
+    expect(state.create).toHaveBeenCalledTimes(11); expect(state.dispatch).toHaveBeenCalledTimes(11);
+    expect(getKlingFilmShots("film").map((shot) => getKlingJob(shot.jobId!).remoteState)).toEqual(Array(11).fill("processing"));
+    expect(getKlingFilmShots("film")[10].jobId).toBe("job-11-0");
     await runKlingFilmTick();
-    expect(state.create).toHaveBeenCalledTimes(10); expect(getKlingFilm("film").status).toBe("running");
+    expect(state.create).toHaveBeenCalledTimes(11); expect(getKlingFilm("film").status).toBe("running");
 
     patchKlingJob("job-1-0", { remoteState: "completed", importState: "pending" });
     await runKlingFilmTick();
@@ -149,30 +149,30 @@ describe("durable Kling film runner", () => {
     expect(getKlingFilm("film").status).toBe("needs_attention");
     expect(getKlingFilmShots("film")[1].status).toBe("ready");
     expect(getKlingJob("job-3-0").remoteGenerationId).toBe("remote-job-3-0");
-    expect(getKlingFilmShots("film")[10].jobId).toBeNull();
-    expect(state.dispatch).toHaveBeenCalledTimes(10);
+    expect(getKlingFilmShots("film")[10].jobId).toBe("job-11-0");
+    expect(state.dispatch).toHaveBeenCalledTimes(11);
   });
 
-  it("treats a full reservation limit as waiting and retries on a later tick", async () => {
+  it("waits for a busy CLI profile and retries on a later tick", async () => {
     useElevenShots();
-    state.create.mockRejectedValueOnce(new KlingError("KLING_CONCURRENCY_LIMIT", "同时最多生成 10 个镜头", 409));
+    state.create.mockRejectedValueOnce(new KlingError("KLING_PROFILE_BUSY", "账号正在准备其他命令", 409));
     await start(); await runKlingFilmTick();
     expect(getKlingFilm("film").status).toBe("running"); expect(state.dispatch).not.toHaveBeenCalled();
     await runKlingFilmTick();
-    expect(state.dispatch).toHaveBeenCalledTimes(10); expect(getKlingFilm("film").status).toBe("running");
+    expect(state.dispatch).toHaveBeenCalledTimes(11); expect(getKlingFilm("film").status).toBe("running");
   });
 
-  it("keeps a prepared child waiting when dispatch temporarily exhausts concurrency", async () => {
+  it("keeps a prepared child waiting while the CLI profile is temporarily busy", async () => {
     useElevenShots();
-    state.dispatch.mockImplementationOnce(async (id: string) => patchKlingJob(id, {}, { error: { code: "KLING_CONCURRENCY_LIMIT", message: "请等待其他镜头", retryable: true } }));
+    state.dispatch.mockImplementationOnce(async (id: string) => patchKlingJob(id, {}, { error: { code: "KLING_PROFILE_BUSY", message: "请等待账号命令完成", retryable: true } }));
     await start(); await runKlingFilmTick();
     expect(getKlingFilm("film").status).toBe("running");
     expect(getKlingFilmShots("film")[0].status).toBe("generating");
-    expect(state.create).toHaveBeenCalledTimes(10);
+    expect(state.create).toHaveBeenCalledTimes(11);
     await runKlingFilmTick();
-    expect(state.create).toHaveBeenCalledTimes(10);
+    expect(state.create).toHaveBeenCalledTimes(11);
     expect(getKlingJob("job-1-0").submissionState).toBe("acknowledged");
-    expect(getKlingFilmShots("film")[10].jobId).toBeNull();
+    expect(getKlingFilmShots("film")[10].jobId).toBe("job-11-0");
   });
 
   it("stops new paid dispatches when paused during the first acknowledgement", async () => {
@@ -206,20 +206,20 @@ describe("durable Kling film runner", () => {
     expect(state.create).toHaveBeenCalledTimes(2); expect(state.dispatch).toHaveBeenCalledTimes(2);
   });
 
-  it("resumes ten original cloud IDs after a restart without generating replacements", async () => {
+  it("resumes all eleven original cloud IDs after a restart without generating replacements", async () => {
     useElevenShots();
     await start(); await runKlingFilmTick();
-    const originalIds = Array.from({ length: 10 }, (_, index) => `job-${index + 1}-0`);
+    const originalIds = Array.from({ length: 11 }, (_, index) => `job-${index + 1}-0`);
     for (const id of originalIds) patchKlingJob(id, { autoQueryPaused: true });
     patchKlingFilm("film", {}, { authorizationBootId: "earlier-server-boot" });
     await runKlingFilmTick();
     expect(getKlingFilm("film").status).toBe("paused");
-    expect(state.dispatch).toHaveBeenCalledTimes(10);
+    expect(state.dispatch).toHaveBeenCalledTimes(11);
     state.query.mockImplementation(async (id: string) => patchKlingJob(id, { autoQueryPaused: false }));
     await klingFilmAction("film", "resume", confirmation()); await runKlingFilmTick();
     expect(state.query.mock.calls.map(([id]) => id)).toEqual(originalIds);
-    expect(state.create).toHaveBeenCalledTimes(10); expect(state.dispatch).toHaveBeenCalledTimes(10);
-    expect(getKlingFilmShots("film")[10].jobId).toBeNull();
+    expect(state.create).toHaveBeenCalledTimes(11); expect(state.dispatch).toHaveBeenCalledTimes(11);
+    expect(getKlingFilmShots("film")[10].jobId).toBe("job-11-0");
   });
 
   it("never creates another job for an unknown submission", async () => {

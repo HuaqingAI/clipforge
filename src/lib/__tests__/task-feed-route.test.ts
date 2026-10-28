@@ -28,6 +28,8 @@ const sqlite = new Database(":memory:");
 const db = drizzle(sqlite, { schema });
 beforeAll(() => { state.db = db; migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") }); });
 beforeEach(() => {
+  db.delete(schema.generationItems).run();
+  db.delete(schema.generationRuns).run();
   db.delete(klingFilmShots).run();
   db.delete(klingFilmRuns).run();
   db.delete(schema.klingJobOutputs).run();
@@ -73,6 +75,17 @@ function job(overrides: Partial<Pick<KlingJob, "remoteState" | "importState" | "
 }
 
 describe("任务发现和恢复状态", () => {
+  it.each(["queued", "running", "waiting", "importing", "needs_attention"])("keeps a project's files while its durable task is %s", async (status) => {
+    const now = Date.now();
+    db.insert(schema.generationRuns).values({ id: "durable-run", projectId: "project-a", clientRequestId: "request-durable", requestHash: "hash", kind: "video_batch", createdAt: now, updatedAt: now }).run();
+    db.insert(schema.generationItems).values({ id: "durable-item", runId: "durable-run", projectId: "project-a", kind: "video", scriptId: "script-a", shotId: 1, status,
+      payload: "encrypted-input", nextRunAt: now, createdAt: now, updatedAt: now }).run();
+    const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE" }), { params: Promise.resolve({ id: "project-a" }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "PROJECT_HAS_UNRESOLVED_GENERATION_TASKS", blockingTasks: [{ kind: "generation", id: "durable-run", href: "/project/project-a/assets?runId=durable-run" }] });
+    expect(db.select().from(schema.projects).all()).toHaveLength(2);
+    expect(state.remove).not.toHaveBeenCalled();
+  });
   it("中断任务落库后多次刷新仍保留，接替任务成功后移除", async () => {
     run({ id: "orphan", status: "running", stage: "stock_fill" });
     for (let i = 0; i < 3; i++) {
@@ -215,7 +228,7 @@ describe("任务发现和恢复状态", () => {
     const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE" }), { params: Promise.resolve({ id: "project-a" }) });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      error: "项目仍有待恢复的 Kling 任务，请先处理原任务，避免丢失已生成视频",
+      error: "项目仍有未完成或待恢复的生成任务，请先处理原任务，避免丢失结果",
       code: "PROJECT_HAS_UNRESOLVED_KLING_TASKS",
       blockingTasks: [{ kind: "kling_film", id: "film-run", href: "/project/project-a/assets?klingFilm=film-run" }],
     });
@@ -235,7 +248,7 @@ describe("任务发现和恢复状态", () => {
     const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE", headers: { "accept-language": "en" } }), { params: Promise.resolve({ id: "project-a" }) });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      error: "Resolve this project's Kling tasks before deleting it",
+      error: "Resolve this project's generation tasks before deleting it",
       code: "PROJECT_HAS_UNRESOLVED_KLING_TASKS",
       blockingTasks: [{ kind: "kling_job", id: "job-run", href: "/project/project-a/assets?klingJob=job-run" }],
     });

@@ -87,7 +87,7 @@ describe("OpenAI image reference contract", () => {
     const fetchMock = mockImageResponse();
     await expect(provider().generateImage({
       modelId: "gpt-image-2", mode: "image-to-image", prompt: "A sofa", referenceImageUrls: ["", " "],
-    })).rejects.toMatchObject({ code: "BAD_REFERENCE", message: "图生图缺少参考图" });
+    })).rejects.toMatchObject({ code: "BAD_REFERENCE", message: "图生图缺少参考图", submissionRejected: true });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -107,7 +107,7 @@ describe("OpenAI image reference contract", () => {
     const fetchMock = mockImageResponse();
     await expect(provider().generateImage({
       modelId: "dall-e-2", mode: "image-to-image", prompt: "A sofa", referenceImageUrls: [presenter, product],
-    })).rejects.toMatchObject({ code: "NOT_SUPPORTED" });
+    })).rejects.toMatchObject({ code: "NOT_SUPPORTED", submissionRejected: true });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -115,7 +115,7 @@ describe("OpenAI image reference contract", () => {
     const fetchMock = mockImageResponse();
     await expect(provider().generateImage({
       modelId: "dall-e-3", mode: "text-to-image", prompt: "A sofa", referenceImageUrls: [product],
-    })).rejects.toMatchObject({ code: "NOT_SUPPORTED" });
+    })).rejects.toMatchObject({ code: "NOT_SUPPORTED", submissionRejected: true });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -207,6 +207,51 @@ describe("OpenAI image canvas resolution", () => {
 
 describe("OpenAI image API transport", () => {
   const edit = { modelId: "gpt-image-2", mode: "image-to-image" as const, prompt: "A sofa", referenceImageUrls: [presenter, product] };
+
+  it.each([400, 401, 403, 429].flatMap((status) => [
+    { status, body: JSON.stringify({ error: { message: "Rejected before processing" } }), contentType: "application/json" },
+    { status, body: "<html>Request rejected</html>", contentType: "text/html" },
+  ]))("preserves definite HTTP $status rejection with $contentType and never repeats the edit", async ({ status, body, contentType }) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status, headers: { "Content-Type": contentType } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(provider().generateImage(edit)).rejects.toMatchObject({ submissionRejected: true, statusCode: status });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+  });
+
+  it.each([
+    { status: 500, body: JSON.stringify({ error: { message: "Internal error" } }) },
+    { status: 503, body: "<html>Gateway unavailable</html>" },
+    { status: 200, body: "Invalid JSON after generation" },
+    { status: 200, body: JSON.stringify({ created: 123, data: [] }) },
+  ])("keeps HTTP $status malformed or unsuccessful paid responses ambiguous", async ({ status, body }) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    const failure = await provider().generateImage(edit).catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.submissionRejected).not.toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([new TypeError("Connection reset after POST"), new DOMException("Timed out", "AbortError")])("does not classify a paid transport interruption as a rejection: %s", async (failure) => {
+    const fetchMock = vi.fn().mockRejectedValue(failure); vi.stubGlobal("fetch", fetchMock);
+    const error = await provider().generateImage(edit).catch((value) => value);
+    expect(error.submissionRejected).not.toBe(true);
+    expect(error.code).toBe(failure.name === "AbortError" ? "TIMEOUT" : "NETWORK_ERROR");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["network", "download", "body"])("marks a reference %s failure as unsubmitted because the paid POST has not started", async (scenario) => {
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      if (scenario === "network") throw new TypeError("Reference connection failed");
+      if (scenario === "download") return new Response("Missing reference", { status: 404 });
+      return { ok: true, blob: async () => { throw new TypeError("Reference body interrupted"); } };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(provider().generateImage({ ...edit, referenceImageUrls: ["https://reference.example.test/image.png"] })).rejects.toMatchObject({ code: "BAD_REFERENCE", submissionRejected: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]).toEqual(["https://reference.example.test/image.png"]);
+  });
 
   it.each([
     ["  https://images.example.com/v1///  ", "https://images.example.com/v1"],

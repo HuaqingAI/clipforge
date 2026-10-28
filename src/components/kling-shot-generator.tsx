@@ -10,7 +10,6 @@ import type { KlingPublicStatus } from "@/lib/kling/types";
 import type { KlingSubmitRequest } from "@/lib/kling/job-types";
 import { KLING_AUDIO_PARAMETER_NAMES, klingAudioParameterValue, klingModelOptions } from "@/lib/kling/model-options";
 import { videoParameterLabel, videoParameterDescription, videoParameterValueLabel } from "@/lib/video-parameter-copy";
-import { KLING_MAX_CONCURRENT_SHOTS } from "@/lib/kling/concurrency";
 import { validateVideoPrompt } from "@/lib/video-prompt";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
 import type { BatchMotionDraft } from "@/lib/batch-motion";
@@ -33,7 +32,7 @@ function hasVerifiedCatalog(status: KlingPublicStatus, profileId?: string, selec
     && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision));
 }
 
-export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, promptContext, negativePrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, frameChoices, onFramesChange, onSubmitted, onRefreshTasks }: {
+export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, promptContext, negativePrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, frameChoices, onFramesChange, onSubmitted, onRefreshTasks, onGenerateRequest }: {
   open: boolean; onOpenChange(open: boolean): void; projectId: string; scriptId: string; profileId?: string; defaultModel?: string;
   preparedPrompt: string; firstFrameUrl?: string; lastFrameUrl?: string;
   promptContext?: VideoPromptContext; negativePrompt?: string;
@@ -41,6 +40,7 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
   frameChoices?: Array<{ label: string; url: string }>;
   onFramesChange?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft>;
   asset: AssetItem | null; referenceImages: string[]; onSubmitted(jobId: string): void; onRefreshTasks(): Promise<void>;
+  onGenerateRequest?(request: Record<string, unknown>): Promise<void>;
 }) {
   const [status, setStatus] = useState<KlingPublicStatus | null>(null);
   const [options, setOptions] = useState<Record<string, string | number | boolean>>( {} );
@@ -182,7 +182,7 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
   const warnings = [...parameterWarnings, ...negativeSettings.warnings, ...audioSettings.warnings];
   const missingInput = !inputUrls.firstFrame?.trim();
   const capacity = status?.concurrency;
-  const capacityBlocked = Boolean(capacity && (capacity.blockedByUnknownSubmission || capacity.active >= capacity.max));
+  const capacityBlocked = Boolean(capacity?.blockedByUnknownSubmission);
   const canSubmit = Boolean(status?.loggedIn && status.configured !== false && !status.profile?.disabledAt && (!profileId || !status.profile?.id || status.profile.id === profileId) && model && confirmed && submissionPrompt && !promptIssues.length && !missingInput && scriptId && !submitting && !reviewingFrames && !frameReviewFailed && !uncertain && !capacityBlocked);
 
   async function submit() {
@@ -200,6 +200,11 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
     };
     let requiresReconciliation = true;
     try {
+      if (onGenerateRequest) {
+        await onGenerateRequest({ ...request });
+        onOpenChange(false);
+        return;
+      }
       const response = await klingFetch("/api/ai/video", { method: "POST", body: JSON.stringify(request) });
       const body = await response.json();
       if (!response.ok) {
@@ -219,9 +224,9 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
   }
 
   return <VideoGenerationDialog open={open} onOpenChange={onOpenChange} shotId={asset?.shotId} modelLabel={model ? `${model.displayName} · ${model.remoteModelId} · ${model.tool}` : defaultModel || "未设置默认视频模型"} busy={submitting}>
-      <p className="text-xs text-muted-foreground">本次生成当前镜头。同一 Kling 账号最多同时生成 {KLING_MAX_CONCURRENT_SHOTS} 个镜头；提交后可继续确认其他镜头。原素材保留，任务可恢复。</p>
-      {capacity && <p role="status" className="text-xs text-muted-foreground">当前账号生成名额：{capacity.active} / {capacity.max}（含待提交镜头）</p>}
-      {capacityBlocked && <p role="alert" className="text-sm text-amber-600">{capacity?.blockedByUnknownSubmission ? "此账号有提交结果不明的任务，请先核对原任务再继续。" : `当前账号已占用全部 ${capacity?.max} 个生成名额，请等待镜头完成后再提交。`}</p>}
+      <p className="text-xs text-muted-foreground">本次生成当前镜头；提交后可继续确认其他镜头。原素材保留，任务可恢复。</p>
+      {capacity && <p role="status" className="text-xs text-muted-foreground">当前账号进行中镜头：{capacity.active}（含待提交镜头）</p>}
+      {capacityBlocked && <p role="alert" className="text-sm text-amber-600">此账号有提交结果不明的任务，请先核对原任务再继续。</p>}
       {loading && <p role="status">正在读取当前账号可用模型…</p>}
       {catalogNotice && <p role="status" className="text-xs text-muted-foreground">{catalogNotice}</p>}
       {(error || statusError) && <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">{error || statusError}</p>}

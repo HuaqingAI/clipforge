@@ -11,7 +11,7 @@
 
 import { getDb } from "@/lib/db";
 import { aiTasks } from "@/lib/db/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne, or } from "drizzle-orm";
 import { sanitizeGenerationControlSummary, type GenerationControlSummary } from "@/lib/video-repair-plan";
 
 export type AiTaskStatus = "submitted" | "processing" | "completed" | "failed" | "unknown";
@@ -35,9 +35,10 @@ export interface RecordAiTaskInput {
 export async function recordAiTask(input: RecordAiTaskInput): Promise<string | null> {
   try {
     const db = getDb();
-    const [row] = await db
-      .insert(aiTasks)
-      .values({
+    return db.transaction((tx) => {
+      const existing = tx.select({ id: aiTasks.id }).from(aiTasks).where(and(eq(aiTasks.provider, input.provider), eq(aiTasks.taskId, input.taskId))).get();
+      if (existing) return existing.id;
+      const row = tx.insert(aiTasks).values({
         projectId: input.projectId ?? null,
         shotId: input.shotId ?? null,
         provider: input.provider,
@@ -48,9 +49,9 @@ export async function recordAiTask(input: RecordAiTaskInput): Promise<string | n
         taskId: input.taskId,
         controlPlan: sanitizeGenerationControlSummary(input.controlPlan),
         status: "submitted",
-      })
-      .returning({ id: aiTasks.id });
-    return row?.id ?? null;
+      }).returning({ id: aiTasks.id }).get();
+      return row?.id ?? null;
+    }, { behavior: "immediate" });
   } catch (error) {
     console.error("ai_tasks 落库失败（任务 ID 仍会随响应返回）:", error);
     return null;
@@ -60,7 +61,7 @@ export async function recordAiTask(input: RecordAiTaskInput): Promise<string | n
 /** Update status/result of a task row (matched by row id) */
 export async function updateAiTask(
   rowId: string | null,
-  patch: { status?: AiTaskStatus; resultUrls?: string[]; error?: string | null }
+  patch: { status?: AiTaskStatus; resultUrls?: string[]; error?: string | null; assetId?: string; importState?: "pending" | "imported" | "failed" }
 ): Promise<void> {
   if (!rowId) return;
   try {
@@ -71,6 +72,8 @@ export async function updateAiTask(
         ...(patch.status && { status: patch.status }),
         ...(patch.resultUrls && { resultUrls: patch.resultUrls }),
         ...(patch.error !== undefined && { error: patch.error }),
+        ...(patch.assetId !== undefined && { assetId: patch.assetId }),
+        ...(patch.importState !== undefined && { importState: patch.importState }),
         updatedAt: new Date(),
       })
       .where(eq(aiTasks.id, rowId));
@@ -83,7 +86,7 @@ export async function updateAiTask(
 export async function updateAiTaskByProviderTaskId(
   provider: string,
   taskId: string,
-  patch: { status?: AiTaskStatus; resultUrls?: string[]; error?: string | null }
+  patch: { status?: AiTaskStatus; resultUrls?: string[]; error?: string | null; assetId?: string; importState?: "pending" | "imported" | "failed" }
 ): Promise<void> {
   try {
     const db = getDb();
@@ -93,6 +96,8 @@ export async function updateAiTaskByProviderTaskId(
         ...(patch.status && { status: patch.status }),
         ...(patch.resultUrls && { resultUrls: patch.resultUrls }),
         ...(patch.error !== undefined && { error: patch.error }),
+        ...(patch.assetId !== undefined && { assetId: patch.assetId }),
+        ...(patch.importState !== undefined && { importState: patch.importState }),
         updatedAt: new Date(),
       })
       .where(and(eq(aiTasks.provider, provider), eq(aiTasks.taskId, taskId)));
@@ -105,7 +110,7 @@ export async function updateAiTaskByProviderTaskId(
 export async function listAiTasks(projectId: string, activeOnly: boolean) {
   const db = getDb();
   const where = activeOnly
-    ? and(eq(aiTasks.projectId, projectId), inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES))
+    ? and(eq(aiTasks.projectId, projectId), or(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES), and(eq(aiTasks.status, "completed"), ne(aiTasks.importState, "imported"))))
     : eq(aiTasks.projectId, projectId);
   return db.select().from(aiTasks).where(where);
 }
@@ -113,5 +118,5 @@ export async function listAiTasks(projectId: string, activeOnly: boolean) {
 /** All still-active paid tasks across every project — the global task center's "money at risk" view */
 export async function listActiveAiTasksAllProjects() {
   const db = getDb();
-  return db.select().from(aiTasks).where(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES));
+  return db.select().from(aiTasks).where(or(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES), and(eq(aiTasks.status, "completed"), ne(aiTasks.importState, "imported"))));
 }

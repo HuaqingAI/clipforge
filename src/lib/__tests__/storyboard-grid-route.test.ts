@@ -24,6 +24,7 @@ import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 import type { StoryboardGridResolutionInfo } from "@/lib/storyboard-grid-resolution";
+import { withGenerationContext } from "@/lib/generation-context";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
@@ -197,6 +198,21 @@ function useTidewe(presenterImage = presenterPath, personVisible = true) {
   db.update(schema.projects).set({ creativeProfile: profile, creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
   db.update(schema.scripts).set({ styleType: "tidewe_outdoor", shots, copyDocument, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).where(eq(schema.scripts.id, scriptId)).run();
 }
+
+describe("durable grid provider rejection", () => {
+  it.each([401, 429, 503])("records HTTP %i as unsubmitted only when rejection is definite", async (status) => {
+    fetchMock.mockResolvedValueOnce(Response.json({ error: "provider rejection" }, { status }));
+    let checkpoint: Record<string, unknown> = {};
+    const response = await withGenerationContext({ itemId: `grid-http-${status}`, checkpoint,
+      save: (value) => { checkpoint = structuredClone(value); } }, () => POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+        method: "POST", body: JSON.stringify({ scriptId, provider: "openai", model: "gpt-image-2", apiKey: "test-key", baseUrl: "https://image-provider.test/v1", productImageUrls: productPaths }),
+      }), { params: Promise.resolve({ id: projectId }) }));
+    expect(response.status).toBe(status === 429 ? 429 : 500);
+    expect(checkpoint.submissionState).toBe(status === 503 ? "submitting" : "not_submitted");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(db.select().from(schema.assets).all()).toHaveLength(1);
+  });
+});
 
 describe("TIDEWE frozen presenter grid references", () => {
   it("uploads the frozen presenter and actual product bytes in prompt order", async () => {
@@ -682,7 +698,20 @@ describe("storyboard grid uploaded product references", () => {
     await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps late grid results usable when the same script is edited during generation", async () => {
+  it("restores a downloaded grid after a worker restart without another paid request or duplicate takes", async () => {
+    let checkpoint: Record<string, unknown> = {};
+    const execute = () => withGenerationContext({ itemId: "durable-grid-restart", checkpoint, save: (value) => { checkpoint = structuredClone(value); } }, () => generate({ productImageUrls: productPaths }));
+    const first = await execute();
+    expect(checkpoint.gridPublicPath).toBe(first.gridPath);
+    const firstIds = db.select().from(schema.assets).all().map((asset) => asset.id).sort();
+    const second = await execute();
+    expect(second.cells).toEqual(first.cells);
+    expect(second.gridPath).toBe(first.gridPath);
+    expect(db.select().from(schema.assets).all().map((asset) => asset.id).sort()).toEqual(firstIds);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps late grid results as alternatives when the same script is edited during generation", async () => {
     const before = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
     fetchMock.mockImplementationOnce(async () => {
       db.update(schema.scripts).set({ shots: originalShots.map((shot) => ({ ...shot, description: "Changed during provider generation" })) }).where(eq(schema.scripts.id, scriptId)).run();
@@ -692,9 +721,9 @@ describe("storyboard grid uploaded product references", () => {
     const rows = db.select().from(schema.assets).all();
     const current = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
     const generated = rows.filter((row) => row.id !== "previous-take");
-    expect(rows.find((row) => row.id === "previous-take")?.selected).toBe(false);
+    expect(rows.find((row) => row.id === "previous-take")?.selected).toBe(true);
     expect(generated).toHaveLength(2);
-    expect(generated.every((row) => row.selected && assetMatchesScript(row, current))).toBe(true);
+    expect(generated.every((row) => !row.selected && assetMatchesScript(row, current))).toBe(true);
     expect(generated.map((row) => row.filePath).sort()).toEqual(result.cells.map((cell) => cell.filePath).sort());
     expect(generated.every((row) => row.sourceScriptId === scriptId && row.sourceRevision === scriptRevision(before))).toBe(true);
     expect(current.shots?.every((shot) => shot.description === "Changed during provider generation")).toBe(true);

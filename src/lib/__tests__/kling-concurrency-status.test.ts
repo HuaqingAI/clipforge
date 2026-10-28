@@ -55,7 +55,7 @@ describe("Kling account capacity status", () => {
     job(second, { submissionState: "submitting", remoteState: "not_started" });
     job(second);
     job(other);
-    expect(getPublicKlingStatus(first).concurrency).toEqual({ active: 3, max: 10, blockedByUnknownSubmission: false });
+    expect(getPublicKlingStatus(first).concurrency).toEqual({ active: 3, max: null, blockedByUnknownSubmission: false });
     expect(getPublicKlingStatus(second).concurrency?.active).toBe(3);
     expect(getPublicKlingStatus(other).concurrency?.active).toBe(1);
   });
@@ -64,12 +64,12 @@ describe("Kling account capacity status", () => {
     job(first, { remoteState: "failed" });
     job(first, { remoteState: "cancelled" });
     job(first, { submissionState: "not_submitted", remoteState: "not_started" });
-    expect(getPublicKlingStatus(first).concurrency).toEqual({ active: 0, max: 10, blockedByUnknownSubmission: false });
+    expect(getPublicKlingStatus(first).concurrency).toEqual({ active: 0, max: null, blockedByUnknownSubmission: false });
   });
   it("exposes an unknown-submission block without leaking other projects or task IDs", () => {
     job(second, { id: "private-job", projectId: "private-project", submissionState: "submission_unknown", remoteState: "unknown" });
     const status = getPublicKlingStatus(first);
-    expect(status.concurrency).toEqual({ active: 1, max: 10, blockedByUnknownSubmission: true });
+    expect(status.concurrency).toEqual({ active: 1, max: null, blockedByUnknownSubmission: true });
     expect(JSON.stringify(status)).not.toMatch(/private-job|private-project|private-credentials/);
     expect(getPublicKlingStatus(other).concurrency?.blockedByUnknownSubmission).toBe(false);
   });
@@ -79,7 +79,7 @@ describe("Kling account capacity status", () => {
     job(second, { submissionState: "submission_unknown", remoteState: "unknown", data: deleted });
     job(first, { submissionState: "submitting", remoteState: "not_started", data: deleted });
     job(second);
-    expect(getPublicKlingStatus(first).concurrency).toEqual({ active: 1, max: 10, blockedByUnknownSubmission: false });
-    expect(getPublicKlingStatus(second).concurrency).toEqual({ active: 1, max: 10, blockedByUnknownSubmission: false });
+    expect(getPublicKlingStatus(first).concurrency).toEqual({ active: 1, max: null, blockedByUnknownSubmission: false });
+    expect(getPublicKlingStatus(second).concurrency).toEqual({ active: 1, max: null, blockedByUnknownSubmission: false });
   });
 });

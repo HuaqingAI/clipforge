@@ -4,7 +4,10 @@ import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import type { TopicNarrationStyle } from "@/lib/script-engine/prompts";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
+import { generationContextSnapshot, generationContextCheckpoint, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
+import { projectGenerationSignature } from "@/lib/generation-source-context";
+import { scriptRevision } from "@/lib/asset-context";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
 import {
@@ -204,10 +207,28 @@ export async function POST(req: NextRequest) {
     projectId = created.id;
   }
 
+  const [liveProject] = await db.select().from(projects).where(eq(projects.id, projectId));
+  const recoveringGenerated = Array.isArray(generationContextCheckpoint()?.generatedScripts);
+  const frozenProject = generationContextSnapshot()?.project as typeof liveProject | undefined ?? liveProject;
+  if (!frozenProject || !liveProject || (!recoveringGenerated && projectGenerationSignature(frozenProject) !== projectGenerationSignature(liveProject))) {
+    return NextResponse.json({ error: "项目输入已变化，请重新提交脚本任务。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+  }
+  const existing = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId));
+  const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+  const replay = requestId ? existing.filter((row) => row.generationMetadata?.requestId === requestId) : [];
+  if (replay.length) return NextResponse.json({ projectId, scripts: replay });
+  const selectedBefore = generationContextSnapshot() ? generationContextSnapshot()?.script as typeof scriptsTable.$inferSelect | undefined : existing.find((row) => row.selected);
+  const frozenScript = generationContextSnapshot()?.script as typeof selectedBefore;
+  const liveSelected = existing.find((row) => row.selected);
+  if (!recoveringGenerated && frozenScript && (liveSelected?.id !== frozenScript.id || scriptRevision(liveSelected) !== scriptRevision(frozenScript))) {
+    return NextResponse.json({ error: "源脚本已变化，请重新提交脚本任务。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+  }
   // generate scripts
   let generated;
   try {
-    generated = await generateTopicScript({
+    const savedGenerated = generationContextCheckpoint()?.generatedScripts as Awaited<ReturnType<typeof generateTopicScript>> | undefined;
+    if (!savedGenerated) beforeGenerationSubmission();
+    generated = savedGenerated ?? await generateTopicScript({
       topic,
       narrationStyle,
       targetDuration,
@@ -215,6 +236,7 @@ export async function POST(req: NextRequest) {
       platforms,
       llmConfig: llmConfig as { baseUrl: string; apiKey: string; model: string },
     });
+    generationCheckpoint({ generatedScripts: generated, submissionState: "acknowledged", stage: "saving" });
   } catch (error) {
     // LLM failures carry an actionable bilingual message (bad key / dead free endpoint / rate limit)
     const { zh, en } = llmErrorPair(error);
@@ -223,25 +245,27 @@ export async function POST(req: NextRequest) {
   }
 
   // persist to DB: delete old scripts → insert new ones → select first by default → update project status to scripting
-  const generationMetadata = scriptGenerationMetadata({ provider: llmConfig.provider, model: llmConfig.model }, "topic-script");
+  const generationMetadata = { ...scriptGenerationMetadata({ provider: llmConfig.provider, model: llmConfig.model }, "topic-script"), ...(requestId && { requestId }) };
   let savedScripts = generated;
   try {
-    await db.delete(scriptsTable).where(eq(scriptsTable.projectId, projectId));
-    const rows = await db
-      .insert(scriptsTable)
-      .values(
-        generated.map((s, i) => ({
-          projectId,
-          version: 1,
-          styleType: "custom" as const, // topic videos always use custom style type
-          title: s.title,
-          totalDuration: s.totalDuration,
-          shots: s.shots,
-          generationMetadata,
-          selected: i === 0,
-        }))
-      )
-      .returning();
+    let contextChanged = false;
+    const rows = db.transaction((tx) => {
+      const currentProject = tx.select().from(projects).where(eq(projects.id, projectId)).get();
+      if (!currentProject) throw new Error("项目不存在");
+      const currentRows = tx.select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
+      const selectedNow = currentRows.find((row) => row.selected);
+      const prior = requestId ? currentRows.filter((row) => row.generationMetadata?.requestId === requestId) : [];
+      if (prior.length) return prior;
+      contextChanged = projectGenerationSignature(currentProject) !== projectGenerationSignature(frozenProject)
+        || (selectedBefore ? selectedNow?.id !== selectedBefore.id || scriptRevision(selectedNow) !== scriptRevision(selectedBefore) : Boolean(selectedNow));
+      const latest = tx.select({ version: scriptsTable.version }).from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).orderBy(desc(scriptsTable.version)).get();
+      if (!contextChanged) tx.update(scriptsTable).set({ selected: false }).where(eq(scriptsTable.projectId, projectId)).run();
+      return tx.insert(scriptsTable).values(generated.map((s, i) => ({
+        projectId, version: (latest?.version ?? 0) + 1, styleType: "custom" as const,
+        title: s.title, totalDuration: s.totalDuration, shots: s.shots,
+        generationMetadata, selected: !contextChanged && i === 0,
+      }))).returning().all();
+    }, { behavior: "immediate" });
     savedScripts = rows.map((r) => ({
       id: r.id,
       title: r.title ?? "",
@@ -251,6 +275,7 @@ export async function POST(req: NextRequest) {
       generationMetadata: r.generationMetadata,
       selected: r.selected ?? false,
     })) as typeof generated;
+    if (contextChanged) return NextResponse.json({ error: "项目或源脚本已变化，结果已保存为历史方案。", code: "SCRIPT_CONTEXT_CHANGED", scripts: savedScripts }, { status: 409 });
     await db
       .update(projects)
       .set({ status: "scripting", contentType: "topic", topic, updatedAt: new Date() })

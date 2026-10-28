@@ -21,6 +21,8 @@ import {
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
+import { ProviderError } from "@/lib/providers/base";
+import { beforeGenerationSubmission, generationCheckpoint, GenerationTaskPending } from "@/lib/generation-context";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -258,6 +260,7 @@ export async function POST(req: NextRequest) {
 
     const provider = createProvider({ name: providerName, apiKey, baseUrl });
 
+    beforeGenerationSubmission();
     const result = await provider.generateImage({
       ...providerOptions,
       modelId: model,
@@ -266,12 +269,15 @@ export async function POST(req: NextRequest) {
       referenceImageUrl,
       ...(referenceImageUrls?.length && { referenceImageUrls }),
     });
+    generationCheckpoint({ submissionState: "acknowledged", taskId: result.taskId, modelId: result.modelId, imageUrls: result.imageUrls, generationResult: result });
     return NextResponse.json(result);
   } catch (error) {
+    if (error instanceof GenerationTaskPending) return NextResponse.json({ taskId: error.taskId, modelId: model, status: "processing" }, { status: 202 });
+    if (error instanceof ProviderError && error.submissionRejected && !error.taskId) generationCheckpoint({ submissionState: "not_submitted" });
     console.error("生图失败:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : errText(req, "生图失败", "Image generation failed") },
-      { status: 500 }
+      { error: error instanceof Error ? error.message : errText(req, "生图失败", "Image generation failed"), ...(error instanceof ProviderError && { code: error.code, ...(error.taskId && { taskId: error.taskId }) }) },
+      { status: error instanceof ProviderError && error.statusCode === 429 ? 429 : 500 }
     );
   }
 }

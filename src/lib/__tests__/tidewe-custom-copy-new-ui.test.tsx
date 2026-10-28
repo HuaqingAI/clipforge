@@ -56,7 +56,7 @@ async function product() {
   await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
 }
 function generationBodies() {
-  return fetchMock.mock.calls.filter(([url]) => url === "/api/llm/script").map(([, init]) => JSON.parse(init.body));
+  return fetchMock.mock.calls.filter(([url]) => url === "/api/generation-runs").map(([, init]) => JSON.parse(init.body).items[0].request);
 }
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -69,8 +69,8 @@ beforeEach(() => {
     if (url === "/api/project") return Response.json({ id: "new-tidewe", creativeConfigRevision: 7 });
     if (url === "/api/upload") return Response.json({ paths: ["/uploads/product.png"] });
     if (url === "/api/project/new-tidewe") return Response.json({ id: "new-tidewe", creativeConfigRevision: 9 });
-    // A failed planner keeps this page mounted without introducing navigation timers.
-    if (url === "/api/llm/script") return Response.json({ error: "Planner is unavailable; try again." }, { status: 503 });
+    // A rejected registration keeps the original draft available for retry.
+    if (url === "/api/generation-runs") return Response.json({ error: "Task registration is unavailable; try again." }, { status: 503 });
     throw new Error(`Unexpected request: ${url}`);
   });
   window.history.replaceState(null, "", "/project/new?creationType=tidewe_outdoor");
@@ -171,23 +171,23 @@ describe("TIDEWE custom copy before project creation", () => {
     expect((container.querySelector("#tidewe-copy-input") as HTMLTextAreaElement).value).toBe(original);
   });
 
-  it("retains the original and allows retry when planning fails", async () => {
+  it("retains the original and allows retry when background registration fails", async () => {
     await act(async () => root.render(createElement(NewProjectPage)));
     await source("manual");
     await input("#tidewe-copy-input", original);
     await product();
     await click("copyInputGenerate");
-    expect(container.textContent).toContain("Planner is unavailable; try again.");
+    expect(container.textContent).toContain("Task registration is unavailable; try again.");
     expect((container.querySelector("#tidewe-copy-input") as HTMLTextAreaElement).value).toBe(original);
     expect(button("copyInputGenerate").disabled).toBe(false);
     await click("copyInputGenerate");
     expect(generationBodies().map((body) => body.copyText)).toEqual([original, original]);
   });
 
-  it("disables original editing and source changes while the planner is pending", async () => {
+  it("disables original editing and source changes while background registration is pending", async () => {
     let finish!: (response: Response) => void;
     const fallback = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/llm/script"
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs"
       ? new Promise<Response>((resolve) => { finish = resolve; })
       : fallback(url, init));
     await act(async () => root.render(createElement(NewProjectPage)));
@@ -201,7 +201,7 @@ describe("TIDEWE custom copy before project creation", () => {
     await source("ai");
     expect(textarea.value).toBe(original);
     expect((container.querySelector('input[value="manual"]') as HTMLInputElement).checked).toBe(true);
-    await act(async () => finish(Response.json({ error: "Retry the planner." }, { status: 503 })));
+    await act(async () => finish(Response.json({ error: "Retry background registration." }, { status: 503 })));
     expect(textarea.disabled).toBe(false);
   });
 });

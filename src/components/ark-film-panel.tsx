@@ -211,7 +211,7 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl" showCloseButton={!busy}>
       <DialogHeader><DialogTitle>整片自动编排</DialogTitle></DialogHeader>
       <p className="text-sm text-muted-foreground">按脚本准备关键帧，再由当前模型一次生成整片。先预览并确认费用，生成结果会保存到项目。</p>
-      {tidewe && <p role="status" className="text-sm">{isTideweNativeSpeech(project?.creativeProfile) ? "TIDEWE 请逐镜生成真人英语口播视频，再到「合成视频」保留镜头原声，或在设置选择 Kling 整片编排。当前一次调用整片模式暂不可用。" : "TIDEWE 请逐镜生成后到「合成视频」添加英语旁白，或在设置选择 Kling 整片编排。当前一次调用整片模式暂不可用。"}</p>}
+      {tidewe && <p role="status" className="text-sm">{isTideweNativeSpeech(project?.creativeProfile) ? "TIDEWE 请逐镜生成真人英语口播视频，再到「合成视频」保留镜头原声。当前一次调用整片模式暂不可用。" : "TIDEWE 请逐镜生成后到「合成视频」添加英语旁白。当前一次调用整片模式暂不可用。"}</p>}
       <p className="break-all text-sm">{hasTask ? "原任务模型" : "默认视频模型"}：{target?.model ?? (hasTask ? savedTasks.find((task) => task.taskId === initialTaskId)?.model ?? savedTasks[0]?.model : undefined) ?? (settings.defaultVideoModel || "未设置")} <Link href="/settings?tab=video" className="text-primary underline">前往设置修改</Link></p>
       {error && <p role="alert" className="rounded border border-destructive/40 p-3 text-sm text-destructive">{error}</p>}
       {invalidated && !hasTask && <p role="status" className="text-sm text-amber-600">默认模型或参数已变化，请重新预览后确认。</p>}

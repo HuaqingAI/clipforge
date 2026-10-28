@@ -21,6 +21,8 @@ import {
   type ProjectCreativeProfileDrafts,
 } from "@/lib/creative-profiles";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
+import { generationItems } from "@/lib/generation-schema";
+import { inArray } from "drizzle-orm";
 
 // Project ids are UUIDs; validate before using one in a filesystem path (guards the rm below against traversal)
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
@@ -402,6 +404,10 @@ export async function DELETE(
     // uploads/output directories. force:true ignores missing dirs; failures never block the delete.
     const blockingTasks = db.transaction((tx) => {
       const tasks = [
+        ...tx.select().from(generationItems).where(and(eq(generationItems.projectId, id), inArray(generationItems.status, ["queued", "running", "waiting", "importing", "needs_attention"]))).all().map((item) => ({
+          kind: "generation" as const, id: item.runId,
+          href: `/project/${encodeURIComponent(id)}/${item.kind === "script" ? "script" : "assets"}?runId=${encodeURIComponent(item.runId)}`,
+        })),
         ...listKlingFilms(id).filter(isKlingFilmUnresolved).map((run) => ({
           kind: "kling_film" as const, id: run.id,
           href: `/project/${encodeURIComponent(id)}/assets?klingFilm=${encodeURIComponent(run.id)}`,
@@ -416,8 +422,8 @@ export async function DELETE(
     }, { behavior: "immediate" });
     if (blockingTasks.length > 0) {
       return NextResponse.json({
-        error: errText(req, "项目仍有待恢复的 Kling 任务，请先处理原任务，避免丢失已生成视频", "Resolve this project's Kling tasks before deleting it"),
-        code: "PROJECT_HAS_UNRESOLVED_KLING_TASKS",
+        error: errText(req, "项目仍有未完成或待恢复的生成任务，请先处理原任务，避免丢失结果", "Resolve this project's generation tasks before deleting it"),
+        code: blockingTasks.some((task) => task.kind === "generation") ? "PROJECT_HAS_UNRESOLVED_GENERATION_TASKS" : "PROJECT_HAS_UNRESOLVED_KLING_TASKS",
         blockingTasks,
       }, { status: 409 });
     }

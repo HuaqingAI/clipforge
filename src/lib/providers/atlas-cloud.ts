@@ -354,7 +354,7 @@ export class AtlasCloudProvider extends BaseProvider {
    * and returns the provider task ID as soon as Atlas acknowledges the task so the
    * caller can persist it before polling (issue #16).
    */
-  async submitVideoTask(options: VideoOptions): Promise<{ taskId: string; modelId: string }> {
+  private async prepareVideoSubmission(options: VideoOptions): Promise<{ modelId: string; body: Record<string, unknown> }> {
     // mode-capability guard: never bill a text-to-video model for an image-to-video request
     const modelId = this.resolveVideoModel(options)
 
@@ -416,6 +416,22 @@ export class AtlasCloudProvider extends BaseProvider {
     if (options.minimumDuration !== undefined && (!Number.isFinite(options.minimumDuration) || options.minimumDuration <= 0 || !Number.isFinite(Number(body.duration)) || Number(body.duration) < options.minimumDuration)) {
       throw new ProviderError('当前模型参数无法覆盖脚本要求的完整口播时长，请更换模型或重新规划镜头。', 'MINIMUM_DURATION_UNSUPPORTED', this.name)
     }
+    return { modelId, body }
+  }
+
+  async submitVideoTask(options: VideoOptions): Promise<{ taskId: string; modelId: string }> {
+    let prepared: Awaited<ReturnType<AtlasCloudProvider['prepareVideoSubmission']>>
+    try {
+      prepared = await this.prepareVideoSubmission(options)
+    } catch (error) {
+      // Everything above the generateVideo POST is a definite no-submission failure.
+      const failure = error instanceof ProviderError ? error : new ProviderError(
+        `生成参数准备失败: ${error instanceof Error ? error.message : String(error)}`, 'PREFLIGHT_FAILED', this.name
+      )
+      failure.submissionRejected = true
+      throw failure
+    }
+    const { modelId, body } = prepared
 
     // Task-creating POST: base.request() will NOT auto-retry it on timeout/network errors
     // (money safety, issue #16). Longer timeout than the 30s default — a slow acknowledge

@@ -201,7 +201,7 @@ describe("context-aware asset persistence and reading", () => {
     const forgedSave = await POST(new NextRequest(`http://localhost/api/project/${projectId}/assets`, { method: "POST", body: JSON.stringify({ provider: "kling-cli", shotId: 1, sourceUrl: "https://arbitrary.test/video.mp4" }) }), context);
     expect(forgedSave.status).toBe(409);
     const dryRun = await film(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-film`, { method: "POST", body: JSON.stringify({ dryRun: true, model: JSON.stringify(["kling-cli", "image_to_video", "account-model"]) }) }), context);
-    expect(dryRun.status).toBe(403);
-    expect((await dryRun.json()).error.code).toBe("KLING_LOCAL_ACCESS_DENIED");
+    expect(dryRun.status).toBe(410);
+    expect((await dryRun.json()).error.code).toBe("KLING_FILM_REMOVED");
   });
 });

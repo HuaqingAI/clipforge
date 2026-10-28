@@ -13,9 +13,12 @@ import { ARK_AGENT_PLAN_BASE_URL } from "@/lib/ark-config";
 import { VolcEngineProvider } from "@/lib/providers/volcengine";
 import { ProviderError } from "@/lib/providers/base";
 
-const state = vi.hoisted(() => ({ db: null as unknown, record: vi.fn(), update: vi.fn() }));
+const state = vi.hoisted(() => ({ db: null as unknown, record: vi.fn(), update: vi.fn(), klingPreview: vi.fn(), klingStart: vi.fn(), klingGet: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
 vi.mock("@/lib/ai-tasks", () => ({ recordAiTask: state.record, updateAiTask: state.update }));
+vi.mock("@/lib/kling/film-plan", () => ({ previewKlingFilm: state.klingPreview }));
+vi.mock("@/lib/kling/films", () => ({ startKlingFilm: state.klingStart }));
+vi.mock("@/lib/kling/film-repository", () => ({ getKlingFilm: state.klingGet }));
 vi.mock("@/lib/providers/atlas-catalog", () => ({
   fetchAtlasCatalog: vi.fn().mockResolvedValue([]), getCachedAtlasEntry: () => undefined,
 }));
@@ -207,15 +210,23 @@ describe("film rejected input mapping and task recovery", () => {
   it.each([
     { provider: "kling-cli", model: "official" },
     { provider: "atlas-cloud", model: JSON.stringify(["kling-cli", "image_to_video", "official"]) },
-  ])("requires a protected local session for CLI film generation and preview before provider calls: %o", async (selection) => {
+    { provider: "atlas-cloud", selectionKey: JSON.stringify(["kling-cli", "image_to_video", "official"]) },
+  ])("rejects removed Kling film generation, preview, and recovery before downstream work: %o", async (selection) => {
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
-    for (const dryRun of [true, false]) {
-      const response = await request({ ...selection, dryRun });
-      expect(response.status).toBe(403);
-      expect((await response.json()).error.code).toBe("KLING_LOCAL_ACCESS_DENIED");
+    const readDb = vi.spyOn(db, "select");
+    for (const extra of [{ dryRun: true }, { dryRun: false, planId: "old-plan" }, { action: "recover", taskId: "old-task" }]) {
+      const response = await request({ ...selection, ...extra });
+      expect(response.status).toBe(410);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toMatchObject({ error: { code: "KLING_FILM_REMOVED", message: expect.stringContaining("Kling 整片生成功能已移除"), retryable: false } });
     }
+    expect(readDb).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.record).not.toHaveBeenCalled();
+    expect(state.update).not.toHaveBeenCalled();
+    expect(state.klingPreview).not.toHaveBeenCalled();
+    expect(state.klingStart).not.toHaveBeenCalled();
+    expect(state.klingGet).not.toHaveBeenCalled();
   });
   it("submits the exact previewed prompt without creating a task after image rejection", async () => {
     const fetchMock = rejectImage(1);

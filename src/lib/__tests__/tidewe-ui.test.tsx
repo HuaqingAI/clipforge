@@ -70,6 +70,7 @@ beforeEach(() => {
   useSettingsStore.setState({ ...settingsInitial, uiMode: "pro", llm: { provider: "fixture", baseUrl: "https://example.test", apiKey: "fixture-key", model: "fixture" } });
   useCharacterStore.setState({ ...charactersInitial, characters: [] });
   fetchMock.mockReset().mockImplementation(async (url: string) => {
+    if (url.startsWith("/api/generation-runs?")) return Response.json({ runs: [] });
     if (url === "/api/ad-template/mine") return Response.json({ templates: [] });
     if (url === "/api/project/tidewe-project") return Response.json(project);
     if (url === "/api/project/tidewe-project/scripts") return Response.json([script()]);
@@ -206,7 +207,7 @@ describe("TIDEWE creation and script editing", () => {
         if (body.expectedCreativeConfigRevision !== 1) return Response.json({ error: "Revision required" }, { status: 400 });
         return Response.json({ id: "new-tidewe", creativeConfigRevision: 2 });
       }
-      if (url === "/api/llm/script") return Response.json({ scripts: [script()] });
+      if (url === "/api/generation-runs") return Response.json({ id: "new-script-run" }, { status: 202 });
       throw new Error(`Unexpected request: ${url}`);
     });
     await act(async () => root.render(createElement(NewProjectPage)));
@@ -220,7 +221,9 @@ describe("TIDEWE creation and script editing", () => {
     expect(creation).toMatchObject({ productFacts: { items: [] }, creativeProfile: { creationType: "tidewe_outdoor", targetDuration: 40, speechMode: "on_camera" } });
     if (selected) expect(creation.creativeProfile.presenter).toEqual(snapshotTidewePresenter(hunter));
     else expect(creation.creativeProfile).not.toHaveProperty("presenter");
-    const generation = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/llm/script")![1].body);
+    const registered = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/generation-runs")![1].body);
+    expect(registered).toMatchObject({ projectId: "new-tidewe", kind: "script", items: [{ kind: "script" }] });
+    const generation = registered.items[0].request;
     expect(generation).toMatchObject({ expectedCreativeConfigRevision: 2, requestId: expect.any(String), platforms: "tiktok", styleType: "tidewe_outdoor", productImages: ["/uploads/product.png"] });
     expect(generation).not.toHaveProperty("templateId");
     expect(generation).not.toHaveProperty("customRequirements");
@@ -258,12 +261,13 @@ describe("TIDEWE creation and script editing", () => {
     await changeText("#tidewe-copy-text", changed);
     const updated = { ...copy, text: changed, translation: "我想按需要选择暖意。" };
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.endsWith("/scripts") && init?.method === "PATCH") return Response.json({ scripts: [script("copy-1", false), script("copy-2", true, 2, updated)] });
+      if (url.startsWith("/api/generation-runs?")) return Response.json({ runs: [] });
+      if (url === "/api/generation-runs" && init?.method === "POST") return Response.json({ id: "replan-run", projectId: "tidewe-project", kind: "script", status: "completed", items: [{ id: "replan-item", kind: "script", status: "completed", result: { scripts: [script("copy-1", false), script("copy-2", true, 2, updated)] } }] });
       throw new Error(`Unexpected request: ${url}`);
     });
     await click("saveAndReplan");
-    const request = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH");
-    expect(JSON.parse(request![1].body)).toMatchObject({ scriptId: "copy-1", expectedScriptHash: "hash-copy-1", expectedCreativeConfigRevision: 4, copyText: changed, requestId: expect.any(String), llmConfig: { apiKey: "fixture-key" } });
+    const request = fetchMock.mock.calls.find(([url, init]) => url === "/api/generation-runs" && init?.method === "POST");
+    expect(JSON.parse(request![1].body).items[0].request).toMatchObject({ generationEndpoint: "/api/project/tidewe-project/scripts", generationMethod: "PATCH", scriptId: "copy-1", expectedScriptHash: "hash-copy-1", expectedCreativeConfigRevision: 4, copyText: changed, requestId: expect.any(String), llmConfig: { apiKey: "fixture-key" } });
     expect(container.textContent).toContain(updated.translation);
     expect(container.textContent).toContain("TIDEWE copy-2");
   });

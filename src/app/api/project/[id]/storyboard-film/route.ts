@@ -29,7 +29,6 @@ import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { apiError, errText } from "@/lib/api-error";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import { isKlingVideoSelection } from "@/lib/assets-view";
-import { assertKlingLocalRequest, klingRouteError } from "@/lib/kling/local-access";
 import {
   checkCreativeProfileContext,
   isPremiumProductCgProfile,
@@ -139,11 +138,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
+    if (body.provider === "kling-cli" || isKlingVideoSelection(body.model) || isKlingVideoSelection(body.selectionKey)) {
+      return NextResponse.json({ error: { code: "KLING_FILM_REMOVED", message: "Kling 整片生成功能已移除，请使用单镜头生成后合成。历史整片任务仍可查看、暂停、取消或删除。", retryable: false } }, { status: 410, headers: { "Cache-Control": "no-store" } });
+    }
     if (body.action === "recover") {
       const [project] = await getDb().select().from(projects).where(eq(projects.id, id));
       if (!project) return apiError(req, "Project not found", "Project not found", 404);
       if (isTideweOutdoorProfile(resolveCreativeProfile(project.creativeProfile))) {
-        return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成，或 Kling 整片编排；此原生整片路径不能可靠添加规范英语旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 409 });
+        return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成；此原生整片路径不能可靠添加规范英语旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 409 });
       }
       if (isPremiumProductCgProject(project)) {
         return NextResponse.json(
@@ -155,19 +157,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         );
       }
       return await recoverFilm(req, id, body);
-    }
-    if (body.provider === "kling-cli" || isKlingVideoSelection(body.model)) {
-      try {
-        await assertKlingLocalRequest(req);
-        if (body.dryRun === true) {
-          const { previewKlingFilm } = await import("@/lib/kling/film-plan");
-          return NextResponse.json(await previewKlingFilm({ ...body, projectId: id, selectionKey: body.selectionKey ?? body.model }), { headers: { "Cache-Control": "no-store" } });
-        }
-        const { getKlingFilm } = await import("@/lib/kling/film-repository");
-        if (typeof body.planId !== "string" || getKlingFilm(body.planId).projectId !== id) return NextResponse.json({ error: { code: "KLING_FILM_CONFIRMATION_REQUIRED", message: "请先在本项目预览并确认 Kling 整片计划" } }, { status: 422 });
-        const { startKlingFilm } = await import("@/lib/kling/films");
-        return NextResponse.json({ run: await startKlingFilm(body) }, { headers: { "Cache-Control": "no-store" } });
-      } catch (error) { return klingRouteError(error); }
     }
     const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, dryRun, spendCapUsd, acknowledgeOverCap, expectedPrompt } = body as {
       scriptId?: string;
@@ -218,7 +207,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     const creativeProfile = context.projectProfile;
     if (isTideweOutdoorProfile(creativeProfile)) {
-      return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成，或 Kling 整片编排；当前非 Kling 一次调用整片路径不支持规范英语后期旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 422 });
+      return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成；当前一次调用整片路径不支持规范英语后期旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 422 });
     }
     const premiumCgProfile = isPremiumProductCgProfile(creativeProfile) ? creativeProfile : undefined;
     const premiumCg = !!premiumCgProfile;

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { AtlasCloudProvider } from "@/lib/providers/atlas-cloud";
 import { ProviderError } from "@/lib/providers/base";
+import { GenerationTaskPending, withGenerationContext } from "@/lib/generation-context";
 
 /**
  * Issue #16 regressions — paid-task money safety.
@@ -73,14 +74,21 @@ describe("非幂等付费 POST 的重试策略（issue #16 问题1）", () => {
   it("POST 429：服务端明确拒绝（未受理），可以安全重试（fetch 3 次）", async () => {
     const fn = stubStatusFetch(429);
     const p = new AtlasCloudProvider(cfg);
-    await expect(asAny(p).request("/model/generateVideo", { method: "POST", body: {} })).rejects.toThrow(ProviderError);
+    await expect(asAny(p).request("/model/generateVideo", { method: "POST", body: {} })).rejects.toMatchObject({ submissionRejected: true, statusCode: 429 });
     expect(fn.mock.calls.length).toBe(3);
   }, 15000);
+
+  it.each([400, 401, 403])("POST %s：明确拒绝未创建付费任务，供后台标记失败后修正配置", async (status) => {
+    const fn = stubStatusFetch(status);
+    const p = new AtlasCloudProvider(cfg);
+    await expect(asAny(p).request("/model/generateVideo", { method: "POST", body: {} })).rejects.toMatchObject({ submissionRejected: true, statusCode: status });
+    expect(fn).toHaveBeenCalledOnce();
+  });
 
   it("POST 500：服务端状态不明，不重试（fetch 仅 1 次）", async () => {
     const fn = stubStatusFetch(500);
     const p = new AtlasCloudProvider(cfg);
-    await expect(asAny(p).request("/model/generateVideo", { method: "POST", body: {} })).rejects.toThrow(ProviderError);
+    await expect(asAny(p).request("/model/generateVideo", { method: "POST", body: {} })).rejects.not.toHaveProperty("submissionRejected");
     expect(fn.mock.calls.length).toBe(1);
   });
 
@@ -95,6 +103,27 @@ describe("非幂等付费 POST 的重试策略（issue #16 问题1）", () => {
 });
 
 describe("模型能力校验与 i2v 映射（issue #16 问题4：转动态被计费为文生视频）", () => {
+  it.each(["network", "server", "missing-id"])("keeps a real Atlas paid POST %s failure ambiguous after successful preflight", async (scenario) => {
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      if (scenario === "network") throw new TypeError("Connection lost after task creation");
+      return Response.json(scenario === "server" ? { error: "Gateway failed" } : { data: {} }, { status: scenario === "server" ? 503 : 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AtlasCloudProvider(cfg);
+    const error = await provider.submitVideoTask({ modelId: "bytedance/seedance-2.0/text-to-video", mode: "text-to-video", prompt: "Original scene" }).catch((failure) => failure);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error.submissionRejected).not.toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(`${cfg.baseUrl}/model/generateVideo`);
+  });
+
+  it("marks missing references as a definite preflight failure without any network request", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const provider = new AtlasCloudProvider(cfg);
+    await expect(provider.submitVideoTask({ modelId: "bytedance/seedance-2.0/reference-to-video", mode: "video-to-video", prompt: "Match references" })).rejects.toMatchObject({ code: "MISSING_REFERENCE", submissionRejected: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("原生口播最短7秒时选择Veo的8秒档，超过8秒则在付费POST之前拒绝", async () => {
     const provider = new AtlasCloudProvider(cfg);
     const request = vi.spyOn(asAny(provider), "request").mockResolvedValue({ data: { id: "native-task" } });
@@ -102,7 +131,7 @@ describe("模型能力校验与 i2v 映射（issue #16 问题4：转动态被计
     await expect(provider.submitVideoTask(options)).resolves.toMatchObject({ taskId: "native-task" });
     expect(request.mock.calls[0][1]).toMatchObject({ body: { duration: 8, generate_audio: true } });
     request.mockClear();
-    await expect(provider.submitVideoTask({ ...options, duration: 9, minimumDuration: 8.1 })).rejects.toMatchObject({ code: "MINIMUM_DURATION_UNSUPPORTED" });
+    await expect(provider.submitVideoTask({ ...options, duration: 9, minimumDuration: 8.1 })).rejects.toMatchObject({ code: "MINIMUM_DURATION_UNSUPPORTED", submissionRejected: true });
     expect(request).not.toHaveBeenCalled();
   });
   it("默认 t2v 模型 + 首帧图 → 自动映射为同族 image-to-video 模型提交", async () => {
@@ -125,7 +154,7 @@ describe("模型能力校验与 i2v 映射（issue #16 问题4：转动态被计
     const req = vi.spyOn(asAny(p), "request").mockResolvedValue({ data: { id: "never" } });
     await expect(
       p.submitVideoTask({ modelId: "bytedance/seedance-2.0/text-to-video", mode: "image-to-video", prompt: "x" })
-    ).rejects.toMatchObject({ code: "MISSING_FIRST_FRAME" });
+    ).rejects.toMatchObject({ code: "MISSING_FIRST_FRAME", submissionRejected: true });
     expect(req).not.toHaveBeenCalled();
   });
 
@@ -134,7 +163,7 @@ describe("模型能力校验与 i2v 映射（issue #16 问题4：转动态被计
     const req = vi.spyOn(asAny(p), "request").mockResolvedValue({ data: { id: "never" } });
     await expect(
       p.submitVideoTask({ modelId: "alibaba/wan-2.6/image-to-video-flash", mode: "text-to-video", prompt: "x" })
-    ).rejects.toMatchObject({ code: "MODEL_MODE_MISMATCH" });
+    ).rejects.toMatchObject({ code: "MODEL_MODE_MISMATCH", submissionRejected: true });
     expect(req).not.toHaveBeenCalled();
   });
 
@@ -198,6 +227,16 @@ describe("模型能力校验与 i2v 映射（issue #16 问题4：转动态被计
 });
 
 describe("两阶段提交：先拿 task ID 再轮询（issue #16 问题2/3）", () => {
+  it("provider 的浏览器安全 hook 在后台上下文中先落盘任务编号，再将轮询交回 worker", async () => {
+    const provider = new AtlasCloudProvider(cfg);
+    const query = vi.spyOn(provider, "getTaskStatus");
+    const save = vi.fn();
+    await expect(withGenerationContext({ itemId: "durable-item", checkpoint: null, save, deferPolling: true },
+      () => provider.waitForTask("already-paid", { interval: 1 }))).rejects.toBeInstanceOf(GenerationTaskPending);
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ taskId: "already-paid", submissionState: "acknowledged" }));
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it("submitVideoTask 只提交不轮询：返回 taskId，getTaskStatus 不被调用", async () => {
     const p = new AtlasCloudProvider(cfg);
     vi.spyOn(asAny(p), "request").mockResolvedValue({ data: { id: "task-3" } });

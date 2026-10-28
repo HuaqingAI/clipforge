@@ -23,6 +23,15 @@ export function TaskCenter({ collapsed = false }: { collapsed?: boolean }) {
 
   const rowTitle = (row: TaskRow): string => {
     switch (row.kind) {
+      case "generation": {
+        const title = row.generationKind === "script" ? (locale === "en" ? "Script" : "脚本与分镜规划")
+          : row.generationKind === "storyboard_grid" ? (locale === "en" ? "Storyboard grid" : "分镜图")
+          : row.generationKind === "image" ? (locale === "en" ? "Image" : "图片") : (locale === "en" ? "Shot videos" : "镜头视频");
+        const state = row.status === "completed" ? (locale === "en" ? "Completed" : "已完成")
+          : ["failed", "needs_attention"].includes(row.status ?? "") ? (locale === "en" ? "Needs attention" : "需要处理")
+          : row.status === "queued" ? (locale === "en" ? "Queued" : "排队中") : row.stage || (locale === "en" ? "Processing" : "处理中");
+        return `${title} · ${row.done ?? 0}/${row.total ?? 0} · ${state}`;
+      }
       case "transcript":
         return t("taskKindTranscript", { revision: row.revision ?? 0, progress: row.progress ?? 0 });
       case "transcript_failed":
@@ -42,7 +51,7 @@ export function TaskCenter({ collapsed = false }: { collapsed?: boolean }) {
       case "paid_unknown":
         return t("taskKindPaidUnknown");
       case "kling_film":
-        return `Kling · ${locale === "en" ? "Film" : "整片"} ${row.ready ?? 0}/${row.total ?? 0} · ${row.stage || (locale === "en" ? "View progress" : "查看进度")}`;
+        return `Kling · ${locale === "en" ? "Film history" : "历史整片"} ${row.ready ?? 0}/${row.total ?? 0} · ${row.stage || (locale === "en" ? "View record" : "查看记录")}`;
       case "kling":
         return `Kling · 镜头 ${row.shotId ?? ""} · ${row.submissionState === "submission_unknown" ? "提交结果待核对" : row.importState === "failed" || row.importState === "partial" ? "视频保存待恢复" : row.blockedReason ? "需要处理" : row.remoteState === "completed" ? "等待保存" : row.remoteState === "processing" ? "生成中" : row.submissionState === "prepared" ? "待提交" : row.label ?? row.model ?? "单镜头视频任务"}`;
       case "batch":

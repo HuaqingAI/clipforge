@@ -298,7 +298,7 @@ describe("Kling local settings", () => {
     expect(container.textContent).toContain("积分信息尚未查询");
     expect(container.querySelector("#kling-default-model")).toBeNull();
     expect(container.querySelector('a[href="/settings?tab=video"]')).toBeTruthy();
-    expect(container.textContent).toContain("单镜头与整片自动编排使用同一个默认模型");
+    expect(container.textContent).toContain("单镜头生成与批量转动态使用同一个默认模型");
     expect(useSettingsStore.getState().defaultVideoModel).toBe("doubao-seedance-2.5");
   });
 });

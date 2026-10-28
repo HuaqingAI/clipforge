@@ -1,10 +1,11 @@
+import { listGenerationRuns } from "@/lib/generation-runs";
 import { NextResponse } from "next/server";
 import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { reconcileTranscriptRenders } from "@/lib/transcript-render-runner";
 import { getDb } from "@/lib/db";
-import { aiTasks, batchJobItems, batchJobs, compositions, mediaEdits, pipelineRuns, projects } from "@/lib/db/schema";
+import { batchJobItems, batchJobs, compositions, mediaEdits, pipelineRuns, projects } from "@/lib/db/schema";
 import { isPipelineRunActive } from "@/lib/pipeline-runner";
-import { ACTIVE_AI_TASK_STATUSES } from "@/lib/ai-tasks";
+import { listActiveAiTasksAllProjects } from "@/lib/ai-tasks";
 import { listLatestPipelineRuns } from "@/lib/pipeline-history";
 import { listKlingJobs, isKlingJobUnresolved } from "@/lib/kling/repository";
 import { listKlingFilms, getKlingFilmShots } from "@/lib/kling/film-repository";
@@ -25,6 +26,16 @@ export async function GET() {
     const active: Array<Record<string, unknown>> = [];
     const attention: Array<Record<string, unknown>> = [];
     const filmRecent: Array<Record<string, unknown>> = [];
+    for (const run of listGenerationRuns()) {
+      const row = { kind: "generation", id: run.id, projectId: run.projectId,
+        projectName: projectName.get(run.projectId) ?? "", generationKind: run.kind,
+        status: run.status, done: run.done, total: run.total, failed: run.failed,
+        stage: run.items.find((item) => ["running", "waiting", "importing"].includes(item.status))?.stage,
+        createdAt: run.updatedAt };
+      if (["queued", "running", "waiting", "importing"].includes(run.status)) active.push(row);
+      else if (["failed", "needs_attention"].includes(run.status)) attention.push(row);
+      else if (run.status === "completed" && new Date(run.updatedAt).getTime() > Date.now() - 24 * 3600 * 1000) filmRecent.push(row);
+    }
     const filmComposeIds = new Set<string>();
     const filmChildJobIds = new Set<string>();
     for (const run of listKlingFilms()) {
@@ -101,7 +112,7 @@ export async function GET() {
     }
 
     // 云端任务状态未知时提供恢复入口；提交状态不代表已结算扣费。
-    const paid = await db.select().from(aiTasks).where(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES));
+    const paid = await listActiveAiTasksAllProjects();
     for (const tsk of paid) {
       if (tsk.provider === "kling-cli") continue; // Its durable local job is the authoritative row.
       (tsk.status === "unknown" ? attention : active).push({

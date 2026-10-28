@@ -109,7 +109,7 @@ afterAll(async () => {
 });
 
 describe("offline real Kling film pipeline", () => {
-  it("runs ten original child jobs concurrently and starts the eleventh after a cloud completion", async () => {
+  it("runs all eleven original child jobs concurrently without waiting for a cloud slot", async () => {
     const expanded = Array.from({ length: 11 }, (_, index) => index + 1).map((shotId) => ({ ...shots[0], shotId, description: `Product detail ${shotId}` }));
     getDb().delete(assets).run();
     const script = getDb().update(scripts).set({ shots: expanded }).where(eq(scripts.id, "script")).returning().get()!;
@@ -135,13 +135,13 @@ describe("offline real Kling film pipeline", () => {
         billingAcknowledgement: { policyRevision: "film-credits-v1", acceptedForPlanHash: preview.planHash } });
       await runKlingFilmTick();
       const children = getDb().select().from(klingJobs).all();
-      expect(children).toHaveLength(10);
-      expect(children.map((job) => job.submissionState)).toEqual(Array(10).fill("acknowledged"));
-      expect(new Set(children.map((job) => job.remoteGenerationId))).toEqual(new Set(Array.from({ length: 10 }, (_, index) => `parallel-original-${index + 1}`)));
+      expect(children).toHaveLength(11);
+      expect(children.map((job) => job.submissionState)).toEqual(Array(11).fill("acknowledged"));
+      expect(new Set(children.map((job) => job.remoteGenerationId))).toEqual(new Set(Array.from({ length: 11 }, (_, index) => `parallel-original-${index + 1}`)));
       expect(getKlingFilm(preview.runId).status).toBe("running");
-      expect(getKlingFilmShots(preview.runId)[10].jobId).toBeNull();
+      expect(getKlingFilmShots(preview.runId)[10].jobId).toBeTruthy();
       await runKlingFilmTick();
-      expect(submitted).toBe(10);
+      expect(submitted).toBe(11);
       const first = children.find((job) => job.remoteGenerationId === "parallel-original-1")!;
       const firstTask = getDb().select().from(aiTasks).where(eq(aiTasks.id, first.data.aiTaskId!)).get()!;
       await withKlingLease(state.profile!, async () => {
@@ -154,9 +154,9 @@ describe("offline real Kling film pipeline", () => {
       expect(getDb().select().from(aiTasks).where(eq(aiTasks.id, firstTask.id)).get()).toMatchObject({ status: firstTask.status, error: firstTask.error });
       await runKlingFilmTick();
       expect(getKlingFilm(preview.runId).status).toBe("running");
-      expect(submitted).toBe(10);
-      expect(getKlingFilmShots(preview.runId).slice(0, 10).every((shot) => shot.status === "generating")).toBe(true);
-      expect(getKlingFilmShots(preview.runId)[10].jobId).toBeNull();
+      expect(submitted).toBe(11);
+      expect(getKlingFilmShots(preview.runId).every((shot) => shot.status === "generating")).toBe(true);
+      expect(getKlingFilmShots(preview.runId)[10].jobId).toBeTruthy();
       await queryKlingJob(first.id);
       await runKlingFilmTick();
       expect(submitted).toBe(11);

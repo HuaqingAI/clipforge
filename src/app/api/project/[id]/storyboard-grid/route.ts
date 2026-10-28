@@ -9,6 +9,7 @@ import { getDb } from "@/lib/db";
 import { scripts, assets, projects } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
+import { ProviderError } from "@/lib/providers/base";
 import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
 import { buildStoryboardGridPrompt, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
 import { readStoryboardGridCells, StoryboardGridLayoutError } from "@/lib/storyboard-grid-crop";
@@ -18,7 +19,9 @@ import { apiError, errText } from "@/lib/api-error";
 import { normalizeOpenAIBaseUrl } from "@/lib/openai-config";
 import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSignature, STORYBOARD_GRID_CROP_VERSION } from "@/lib/storyboard-grid-cache";
 import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
-import { saveAssetCandidate } from "@/lib/asset-persistence";
+import { generationContextSnapshot, generationContextCheckpoint, generationContextItemId, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
+import { generationAssetId } from "@/lib/asset-persistence";
+import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
 import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
@@ -157,19 +160,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const db = getDb();
-    const [script] = await db
+    const [liveScript] = await db
       .select()
       .from(scripts)
       .where(and(eq(scripts.id, scriptId), eq(scripts.projectId, id)));
-    if (!script) return apiError(req, "脚本不存在", "Script not found", 404);
+    if (!liveScript) return apiError(req, "脚本不存在", "Script not found", 404);
+    const [liveProject] = await db.select().from(projects).where(eq(projects.id, id));
+    if (!liveProject) return apiError(req, "项目不存在", "Project not found", 404);
+    const snapshot = generationContextSnapshot();
+    const script = snapshot?.script as typeof liveScript | undefined ?? liveScript;
+    const project = snapshot?.project as typeof liveProject | undefined ?? liveProject;
+    const savedGrid = generationContextCheckpoint()?.imageUrls;
+    const recoveringGrid = Array.isArray(savedGrid) && typeof savedGrid[0] === "string";
+    if (!recoveringGrid && (script.id !== liveScript.id || scriptRevision(script) !== scriptRevision(liveScript)
+      || project.id !== liveProject.id || projectGenerationSignature(project) !== projectGenerationSignature(liveProject))) {
+      return NextResponse.json({ error: "项目或源脚本已变化，请重新提交分镜任务。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+    }
     const shots = Array.isArray(script.shots) ? script.shots : [];
-    const [project] = await db.select({
-      creativeProfile: projects.creativeProfile,
-      videoMode: projects.videoMode,
-      creativeConfigRevision: projects.creativeConfigRevision,
-      productImages: projects.productImages,
-    }).from(projects).where(eq(projects.id, id));
-    if (!project) return apiError(req, "项目不存在", "Project not found", 404);
     const profileContext = checkCreativeProfileContext(project, script);
     if (!profileContext.ok) {
       return NextResponse.json({
@@ -257,7 +264,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const baselineAssets = premiumCg
       ? filterTrustedPremiumCgAssets(scopedBaselineAssets, id, script)
       : tidewe ? scopedBaselineAssets.filter((asset) => asset.type !== "stock_footage" || shots.find((shot) => shot.shotId === asset.shotId)?.tidewe?.productVisible === false) : scopedBaselineAssets;
-    const baselineByShot = new Map(shots.map((shot) => [shot.shotId, baselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null]));
+    const savedBaseline = generationContextCheckpoint()?.gridBaseline;
+    const baselineByShot = new Map(shots.map((shot) => [shot.shotId, savedBaseline && typeof savedBaseline === "object"
+      ? (savedBaseline as Record<string, string | null>)[String(shot.shotId)] ?? null
+      : baselineAssets.find((asset) => asset.shotId === shot.shotId)?.id ?? null]));
+    generationCheckpoint({ gridBaseline: Object.fromEntries(baselineByShot) });
     const preserved = new Map<number, { shotId: number; filePath: string }>();
     if (preserveExisting === true) {
       const usable = await Promise.all(baselineAssets.map(async (asset) => await usableSelectedMedia(asset) ? asset : undefined));
@@ -341,24 +352,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : scopedSelectedAssets;
       const cached = await reusableStoryboardGrid(id, signature, shots.map((shot) => shot.shotId), selectedAssets);
       if (cached) {
-        return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true,
+        return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true, savedAsAlternatives: 0,
           ...(cached.resolution && { resolution: cached.resolution }) });
       }
     }
-    const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
-    const result = await provider.generateImage({
-      ...generationOptions,
-      modelId: model,
-      mode: referenceImageUrls.length > 0 ? "image-to-image" : "text-to-image",
-      ...(primaryReferenceImageUrl && { referenceImageUrl: primaryReferenceImageUrl }),
-      ...(referenceImageUrls.length > 0 && { referenceImageUrls }),
-      prompt,
-    });
-    const gridUrl = result.imageUrls?.[0];
-    if (!gridUrl) throw new Error("生图未返回图片");
+    let gridUrl = recoveringGrid ? savedGrid[0] as string : undefined;
+    if (!gridUrl) {
+      const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
+      beforeGenerationSubmission();
+      const result = await provider.generateImage({
+        ...generationOptions, modelId: model,
+        mode: referenceImageUrls.length > 0 ? "image-to-image" : "text-to-image",
+        ...(primaryReferenceImageUrl && { referenceImageUrl: primaryReferenceImageUrl }),
+        ...(referenceImageUrls.length > 0 && { referenceImageUrls }), prompt,
+      });
+      gridUrl = result.imageUrls?.[0];
+      if (!gridUrl) throw new Error("生图未返回图片");
+      generationCheckpoint({ imageUrls: [gridUrl], stage: "importing", submissionState: "acknowledged" });
+    }
 
-    // 2) persist the grid, then crop each cell into that shot's keyframe
-    const { absPath, publicPath } = await persistGridImage(id, gridUrl);
+    // A restart after download uses the same local grid even if its cloud URL expires.
+    const storedPath = generationContextCheckpoint()?.gridPublicPath;
+    const storedAbsolute = typeof storedPath === "string" && storedPath.startsWith(`/api/files/${id}/`) ? resolveUploadFilePath(storedPath) : null;
+    const persisted = storedAbsolute && (await stat(storedAbsolute).catch(() => null))?.isFile()
+      ? { absPath: storedAbsolute, publicPath: storedPath as string }
+      : await persistGridImage(id, gridUrl);
+    const { absPath, publicPath } = persisted;
+    generationCheckpoint({ gridPublicPath: publicPath, stage: "importing" });
     const probe = await probeMedia(absPath);
     if (!probe.width || !probe.height) throw new Error("无法读取九宫格图片尺寸");
     // Validate the entire layout before saving/selecting any shot. Generated
@@ -381,6 +401,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     let alternatives = 0;
     for (let i = 0; i < shots.length; i++) {
       if (preserved.has(shots[i].shotId)) continue;
+      const executionId = generationContextItemId();
+      const stableAssetId = executionId ? generationAssetId(id, `${executionId}:grid:${shots[i].shotId}`) : undefined;
+      const existing = stableAssetId ? db.select().from(assets).where(eq(assets.id, stableAssetId)).get() : undefined;
+      if (existing?.filePath) {
+        if (!existing.selected) alternatives++;
+        saved.push({ shotId: shots[i].shotId, filePath: existing.filePath });
+        continue;
+      }
       const cell = cells[i];
       const fileName = `asset-${shots[i].shotId}-${Date.now()}-grid.png`;
       const outPath = join(dir, fileName);
@@ -394,19 +422,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ]);
       const filePath = `/api/files/${id}/${fileName}`;
       // Keep older takes for review/rollback while making this fresh grid cell active.
-      const asset = await saveAssetCandidate({
-        projectId: id,
-        shotId: shots[i].shotId,
-        type: "ai_generated",
-        filePath,
-        provider: providerName,
-        model,
-        prompt: `[storyboard-grid-v${STORYBOARD_GRID_CROP_VERSION} 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
-        scope: assetScopeForShot(script, shots[i]),
-        selectedPolicy: premiumCg
-          ? { mode: "select" }
-          : { mode: "select-if-unchanged", baseline: { scriptId, scriptRevision: revision, selectedAssetId: baselineByShot.get(shots[i].shotId) ?? null } },
-      });
+      const asset = db.transaction((tx) => {
+        const currentProject = tx.select().from(projects).where(eq(projects.id, id)).get();
+        if (!currentProject) throw new Error("项目已删除，无法保存分镜结果。");
+        const currentScript = resolveCurrentScript(tx.select().from(scripts).where(eq(scripts.projectId, id)).all());
+        const candidates = filterAssetsForScript(tx.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.shotId, shots[i].shotId))).all(), script);
+        const selected = Boolean(currentScript && currentScript.id === scriptId && scriptRevision(currentScript) === revision
+          && projectGenerationSignature(currentProject) === projectGenerationSignature(project)
+          && (candidates.find((item) => item.selected)?.id ?? null) === baselineByShot.get(shots[i].shotId));
+        if (selected) for (const candidate of candidates) tx.update(assets).set({ selected: false }).where(eq(assets.id, candidate.id)).run();
+        return tx.insert(assets).values({
+          ...(stableAssetId ? { id: stableAssetId } : {}),
+          projectId: id, shotId: shots[i].shotId, type: "ai_generated", filePath,
+          provider: providerName, model,
+          prompt: `[storyboard-grid-v${STORYBOARD_GRID_CROP_VERSION} 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
+          ...assetScopeForShot(script, shots[i]), selected, status: "done",
+        }).returning().get();
+      }, { behavior: "immediate" });
       if (!asset.selected) alternatives++;
       saved.push({ shotId: shots[i].shotId, filePath });
     }
@@ -427,15 +459,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .catch((error) => console.error("保存九宫格复用记录失败:", error));
     const responseCells = preserveExisting === true ? shots.map((shot) => preserved.get(shot.shotId) ?? saved.find((cell) => cell.shotId === shot.shotId)!) : saved;
     return NextResponse.json({ gridPath: publicPath, cells: responseCells, count: responseCells.length, reused: false, resolution: resolutionInfo,
-      ...(preserveExisting === true ? { preservedCount: preserved.size, generatedCount: saved.length, savedAsAlternatives: alternatives } : {}) });
+      savedAsAlternatives: alternatives,
+      ...(preserveExisting === true ? { preservedCount: preserved.size, generatedCount: saved.length } : {}) });
   } catch (error) {
+    if (error instanceof ProviderError && error.submissionRejected && !error.taskId) generationCheckpoint({ submissionState: "not_submitted" });
     if (error instanceof StoryboardGridLayoutError) {
       return NextResponse.json({ error: error.message, code: "STORYBOARD_GRID_LAYOUT_INVALID" }, { status: 422 });
     }
     console.error("九宫格分镜生成失败:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : errText(req, "九宫格分镜生成失败", "Storyboard grid failed") },
-      { status: 500 }
+      { error: error instanceof Error ? error.message : errText(req, "九宫格分镜生成失败", "Storyboard grid failed"), ...(error instanceof ProviderError && { code: error.code }) },
+      { status: error instanceof ProviderError && error.statusCode === 429 ? 429 : 500 }
     );
   }
 }

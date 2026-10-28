@@ -11,6 +11,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
+vi.mock("@/components/generation-runs-panel", () => ({ GenerationRunsPanel: () => null }));
+vi.mock("@/lib/hooks/use-generation-runs", async (original) => ({ ...await original<typeof import("@/lib/hooks/use-generation-runs")>(), useGenerationRuns: () => ({ runs: [], loading: false, error: null }) }));
 vi.mock("@/components/tidewe-project-settings", () => ({ TideweProjectSettings: () => null }));
 vi.mock("@/components/script-history-dialog", () => ({ ScriptHistoryDialog: ({ onRestore }: { onRestore(id: string): Promise<void> }) => createElement("button", { onClick: () => void onRestore("historic") }, "restoreSavedOriginal") }));
 vi.mock("@/lib/i18n", () => ({ useT: () => (key: string) => key, useLocale: () => "zh" }));
@@ -19,7 +21,7 @@ const settingsInitial = useSettingsStore.getInitialState();
 const fetchMock = vi.fn();
 const projectUrl = "/api/project/custom-copy-project";
 const scriptsUrl = `${projectUrl}/scripts`;
-const generationUrl = "/api/llm/script";
+const generationUrl = "/api/generation-runs";
 const presenter = { id: "employee-presenter", name: "Jerry", appearance: "An adult with a green cap", referenceImages: ["/api/files/jerry.png"] };
 const profile = createTideweOutdoorProfile({ presenter });
 const project = { name: "TIDEWE waders", productName: "TIDEWE waders", productImages: [], creativeProfile: profile, creativeConfigRevision: 7 };
@@ -56,12 +58,18 @@ async function enterCopy(text: string, selector = "#tidewe-custom-copy-text") {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-function generationCalls() { return fetchMock.mock.calls.filter(([url]) => url === generationUrl); }
+function generationCalls() { return fetchMock.mock.calls.filter(([url]) => url === generationUrl).map(([url, init]) => [url, { ...init, body: JSON.stringify(JSON.parse(init.body).items[0].request) }] as const); }
 async function submitReplacement() { await click("copyInputGenerate"); await click("copyInputGenerate", true); }
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    const response = await fetchMock(url, init);
+    if (url !== generationUrl || !response.ok) return response;
+    const result = await response.json();
+    return Response.json({ id: "run-script", projectId: "custom-copy-project", kind: "script", status: "completed", total: 1, done: 1, failed: 0,
+      items: [{ id: "item-script", kind: "script", status: "completed", result }] });
+  });
   useSettingsStore.setState({ ...settingsInitial, uiMode: "pro", llm: { provider: "fixture", baseUrl: "https://example.test", apiKey: "fixture-key", model: "fixture-model" } });
   fetchMock.mockReset().mockImplementation(async (url: string) => {
     if (url === projectUrl) return Response.json(project);
@@ -138,7 +146,12 @@ describe("TIDEWE employee copy on existing projects", () => {
         return Response.json({ scripts: [result] });
       }
       if (url === scriptsUrl) return Response.json([script()]);
-      if (url === generationUrl) return Response.json({ scripts: [script("edited-replanned", edited, 3)] });
+      if (url === generationUrl) {
+        const request = JSON.parse(init!.body as string).items[0].request;
+        const result = script(request.generationMethod === "PATCH" ? "edited" : "edited-replanned", edited, request.generationMethod === "PATCH" ? 2 : 3);
+        result.copyDocument.source = "user_provided";
+        return Response.json({ scripts: [result] });
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     await act(async () => root.render(createElement(ScriptPage)));
@@ -146,7 +159,7 @@ describe("TIDEWE employee copy on existing projects", () => {
     expect((container.querySelector('input[type="radio"][value="manual"]') as HTMLInputElement).checked).toBe(true);
     expect((container.querySelector("#tidewe-custom-copy-text") as HTMLTextAreaElement).value).toBe(edited);
     await submitReplacement();
-    expect(JSON.parse(generationCalls()[0][1].body)).toMatchObject({ copyText: edited, sourceScriptId: "edited", expectedScriptHash: "hash-edited" });
+    expect(JSON.parse(generationCalls()[1][1].body)).toMatchObject({ copyText: edited, sourceScriptId: "edited", expectedScriptHash: "hash-edited" });
   });
 
   it("accepts the first complete English script before any generated script exists", async () => {
@@ -156,7 +169,7 @@ describe("TIDEWE employee copy on existing projects", () => {
       if (url === projectUrl) return Response.json(project);
       if (url === scriptsUrl) return Response.json([]);
       if (url === generationUrl) {
-        posted = JSON.parse(init!.body as string);
+        posted = JSON.parse(init!.body as string).items[0].request;
         return Response.json({ scripts: [script("employee-first", employeeCopy)] });
       }
       throw new Error(`Unexpected request: ${url}`);

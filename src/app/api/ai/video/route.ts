@@ -26,6 +26,7 @@ import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import type { VideoOptions } from "@/lib/providers/types";
 import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
+import { beforeGenerationSubmission, generationCheckpoint, generationContextDefersPolling, GenerationTaskPending } from "@/lib/generation-context";
 
 export const runtime = "nodejs";
 
@@ -399,14 +400,18 @@ export async function POST(req: NextRequest) {
 
     // legacy single-phase path for providers without two-phase task support
     if (!provider.submitVideoTask || !provider.waitForTask) {
+      beforeGenerationSubmission();
       const result = await provider.generateVideo(videoOptions);
+      generationCheckpoint({ submissionState: "acknowledged", taskId: result.taskId, modelId: result.modelId, videoUrls: result.videoUrls, generationResult: result, ...(sourceContext && { sourceContext }) });
       return NextResponse.json({ ...result, ...(sourceContext && { sourceContext }) });
     }
 
     // Phase 1: submit. Mode/model capability is validated inside the provider BEFORE any
     // billable call; base.request() never auto-retries this POST on timeout (money safety).
     const startTime = Date.now();
+    beforeGenerationSubmission();
     const { taskId, modelId } = await provider.submitVideoTask(videoOptions);
+    generationCheckpoint({ taskId, modelId, provider: providerName, submissionState: "acknowledged", ...(sourceContext && { sourceContext }) });
 
     // Persist the paid task before polling starts — this row is the recovery handle.
     const rowId = await recordAiTask({
@@ -420,6 +425,10 @@ export async function POST(req: NextRequest) {
       taskId,
       ...(controlPlan && { controlPlan }),
     });
+    generationCheckpoint({ aiTaskRowId: rowId });
+    if (generationContextDefersPolling()) {
+      return NextResponse.json({ taskId, modelId, status: "processing", ...(sourceContext && { sourceContext }) }, { status: 202 });
+    }
 
     // Phase 2: wait. Transient status-query failures are tolerated inside waitForTask;
     // if it still fails, the task is marked "unknown"/"failed" but never dropped.
@@ -435,6 +444,7 @@ export async function POST(req: NextRequest) {
         );
       }
       await updateAiTask(rowId, { status: "completed", resultUrls: videoUrls, error: null });
+      generationCheckpoint({ taskId, modelId, videoUrls, ...(sourceContext && { sourceContext }) });
       return NextResponse.json({
         taskId,
         videoUrls,
@@ -467,11 +477,13 @@ export async function POST(req: NextRequest) {
       );
     }
   } catch (error) {
+    if (error instanceof GenerationTaskPending) return NextResponse.json({ taskId: error.taskId, modelId: model, status: "processing" }, { status: 202 });
+    if (error instanceof ProviderError && error.submissionRejected && !error.taskId) generationCheckpoint({ submissionState: "not_submitted" });
     if (error instanceof VideoPromptError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     console.error("生视频失败:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : errText(req, "生视频失败", "Video generation failed") },
-      { status: 500 }
+      { error: error instanceof Error ? error.message : errText(req, "生视频失败", "Video generation failed"), ...(error instanceof ProviderError && { code: error.code, ...(error.taskId && { taskId: error.taskId }) }) },
+      { status: error instanceof ProviderError && error.statusCode === 429 ? 429 : 500 }
     );
   }
 }

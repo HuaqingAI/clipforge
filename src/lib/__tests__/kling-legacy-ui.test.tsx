@@ -10,6 +10,8 @@ import type { Model } from "@/lib/providers/types";
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "project-1" }), useRouter: () => ({ push: navigation.push }) }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
+vi.mock("@/components/generation-runs-panel", () => ({ GenerationRunsPanel: () => null }));
+vi.mock("@/lib/hooks/use-generation-runs", async (original) => ({ ...await original<typeof import("@/lib/hooks/use-generation-runs")>(), useGenerationRuns: () => ({ runs: [], loading: false, error: null }) }));
 vi.mock("@/components/storyboard-film-panel", () => ({ StoryboardFilmPanel: ({ open }: { open: boolean }) => open ? <section aria-label="shared-film-panel">整片自动编排</section> : null }));
 vi.mock("@/lib/i18n", () => { const t = (key: string) => key; return { useT: () => t, useLocale: () => "zh" }; });
 vi.mock("@/lib/model-capabilities", () => ({ getVideoModelCapabilities: () => ({ referenceVideo: true }) }));
@@ -25,7 +27,14 @@ let container: HTMLDivElement;
 function button(part: string): HTMLButtonElement { return [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(part))!; }
 async function mount(component: Parameters<typeof root.render>[0]) { await act(async () => root.render(component)); }
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    const response = await fetchMock(url, init);
+    if (url !== "/api/generation-runs" || !response.ok) return response;
+    const result = await response.json();
+    return Response.json({ id: "run-script", projectId: "project-1", kind: "script", status: "completed", total: 1, done: 1, failed: 0,
+      items: [{ id: "item-script", kind: "script", status: "completed", result }] });
+  });
   navigation.push.mockReset();
   useSettingsStore.setState({ ...initial, locale: "zh", uiMode: "simple", providers: { "atlas-cloud": { enabled: true, apiKey: "test-atlas" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } }, defaultVideoModel: atlasModel });
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
@@ -98,13 +107,13 @@ describe("script regeneration progress", () => {
     let finishRefresh!: (response: Response) => void;
     let generated = false;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === "/api/llm/script") return new Promise<Response>((resolve) => { finishGeneration = resolve; });
+      if (url === "/api/generation-runs") return new Promise<Response>((resolve) => { finishGeneration = resolve; });
       if (url.endsWith("/scripts") && generated) return new Promise<Response>((resolve) => { finishRefresh = resolve; });
       return normalFetch(url, init);
     });
     await mount(createElement(ScriptPage));
     await act(async () => button("regenerate").click());
-    expect(fetchMock.mock.calls.some(([url]) => url === "/api/llm/script")).toBe(false);
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/generation-runs")).toBe(false);
     const confirm = button("regenConfirmOk");
     await act(async () => { confirm.click(); confirm.click(); });
     const busy = button("regenerating");
@@ -112,7 +121,7 @@ describe("script regeneration progress", () => {
     expect(busy.getAttribute("aria-busy")).toBe("true");
     expect(busy.querySelector(".animate-spin")).not.toBeNull();
     await act(async () => busy.click());
-    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/llm/script")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/generation-runs")).toHaveLength(1);
 
     await act(async () => { generated = true; finishGeneration(Response.json({ success: true })); });
     expect(button("regenerating")).toBe(busy);
@@ -128,7 +137,7 @@ describe("script regeneration progress", () => {
     useSettingsStore.setState({ uiMode });
     const normalFetch = fetchMock.getMockImplementation()!;
     let finishGeneration!: (response: Response) => void;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/llm/script"
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs"
       ? new Promise<Response>((resolve) => { finishGeneration = resolve; })
       : normalFetch(url, init));
     await mount(createElement(ScriptPage));
@@ -148,7 +157,7 @@ describe("script regeneration progress", () => {
     const normalFetch = fetchMock.getMockImplementation()!;
     let generated = false;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === "/api/llm/script") { generated = true; return Promise.resolve(Response.json({ success: true })); }
+      if (url === "/api/generation-runs") { generated = true; return Promise.resolve(Response.json({ success: true })); }
       if (url.endsWith("/scripts") && generated) return Promise.resolve(Response.json({}, { status: 503 }));
       return normalFetch(url, init);
     });

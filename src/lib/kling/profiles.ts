@@ -9,7 +9,7 @@ import { KLING_PACKAGE, KLING_VERSION, KLING_ADAPTER_VERSION, KLING_ENDPOINT, ty
 import { KlingError } from "./errors";
 import { getDefaultKlingPackagePath, inspectEnvironment } from "./environment";
 import { klingJobs } from "./job-schema";
-import { KLING_MAX_CONCURRENT_SHOTS, klingJobOccupiesGenerationSlot, klingJobHasUnknownSubmission } from "./concurrency";
+import { klingJobOccupiesGenerationSlot, klingJobHasUnknownSubmission } from "./concurrency";
 
 export function getProfile(id: string): KlingProfile {
   if (typeof id !== "string" || !/^[a-f\d-]{36}$/i.test(id)) throw new KlingError("KLING_PROFILE_NOT_FOUND", "Kling 配置不存在。", 404);
@@ -83,7 +83,7 @@ export function getPublicKlingStatus(profileId?: string): KlingPublicStatus {
   let publicProfile: KlingPublicStatus["profile"] = null;
   if (profile) { const { homePath: _private, ...rest } = profile; void _private; publicProfile = { ...rest, catalogSnapshot: models }; }
   const jobs = profile?.principalKey ? db.select().from(klingJobs).where(and(eq(klingJobs.principalKey, profile.principalKey), eq(klingJobs.region, profile.region))).all() : [];
-  const concurrency = { active: jobs.filter(klingJobOccupiesGenerationSlot).length, max: KLING_MAX_CONCURRENT_SHOTS, blockedByUnknownSubmission: jobs.some(klingJobHasUnknownSubmission) };
+  const concurrency = { active: jobs.filter(klingJobOccupiesGenerationSlot).length, max: null, blockedByUnknownSubmission: jobs.some(klingJobHasUnknownSubmission) };
   const defaultPackagePath = !profile ? getDefaultKlingPackagePath() : "";
   return { profile: publicProfile, profiles: profiles.map((p) => ({ id: p.id, label: p.label, authState: p.authState, disabled: !!p.disabledAt, ...(p.accountSummary ? { accountSummary: p.accountSummary } : {}) })), configured: profile?.environmentState === "ready", loggedIn: profile?.authState === "authenticated", models: profile?.authState === "authenticated" ? models : [], concurrency, ...(latest ? { authSession: latest } : {}), ...(defaultPackagePath ? { installationDefaults: { nodePath: process.execPath, packagePath: defaultPackagePath } } : {}) };
 }

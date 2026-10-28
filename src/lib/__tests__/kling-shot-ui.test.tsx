@@ -277,7 +277,7 @@ describe("Kling single-shot UI", () => {
       ? json(readyStatus({ concurrency: { active: 9, max: 10, blockedByUnknownSubmission: false } }))
       : url.includes("/refresh") ? busyResponse() : json({ jobId: "tenth-job" }, 202));
     await mountGenerator();
-    expect(container.textContent).toContain("当前账号生成名额：9 / 10");
+    expect(container.textContent).toContain("当前账号进行中镜头：9");
     expect(Array.from(container.querySelectorAll('[role="status"]')).some((element) => /重试|刷新/.test(element.textContent ?? ""))).toBe(true);
     expect(confirmCheckbox().checked).toBe(false);
     expect(submitButton().disabled).toBe(true);
@@ -422,7 +422,7 @@ describe("Kling single-shot UI", () => {
       ? json(readyStatus({ concurrency: { ...concurrency, max: 10 } })) : busyResponse());
     await mountGenerator();
     await act(async () => confirmCheckbox().click());
-    expect(submitButton().disabled).toBe(true);
+    expect(submitButton().disabled).toBe(concurrency.blockedByUnknownSubmission);
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(0);
   });
 
@@ -521,14 +521,14 @@ describe("Kling single-shot UI", () => {
   it("allows a tenth shot while nine cloud jobs are running", async () => {
     api.request.mockImplementation(async (url: string) => url.includes("/status") ? json({ loggedIn: true, models: [model], concurrency: { active: 9, max: 10, blockedByUnknownSubmission: false } }) : json({ jobId: "tenth-job" }, 202));
     await mountGenerator();
-    expect(container.textContent).toContain("当前账号生成名额：9 / 10");
-    expect(container.textContent).toContain("同一 Kling 账号最多同时生成 10 个镜头");
+    expect(container.textContent).toContain("当前账号进行中镜头：9");
+    expect(container.textContent).not.toContain("最多同时生成 10 个镜头");
     await act(async () => confirmCheckbox().click()); await act(async () => submitButton().click());
     expect(onSubmitted).toHaveBeenCalledWith("tenth-job");
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(1);
   });
 
-  it("blocks an eleventh shot and enables submission when polling finds a free slot without resetting edited options", async () => {
+  it("allows an eleventh shot and preserves edited options while polling ongoing jobs", async () => {
     vi.useFakeTimers();
     let active = 10;
     api.request.mockImplementation(async (url: string) => url.includes("/status") ? json({ loggedIn: true, models: [model], concurrency: { active, max: 10, blockedByUnknownSubmission: false } }) : json({ jobId: "next-job" }, 202));
@@ -538,8 +538,8 @@ describe("Kling single-shot UI", () => {
       select.value = "10"; select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await act(async () => confirmCheckbox().click());
-    expect(submitButton().disabled).toBe(true);
-    expect(container.textContent).toContain("已占用全部 10 个生成名额");
+    expect(submitButton().disabled).toBe(false);
+    expect(container.textContent).not.toContain("已占用全部 10 个生成名额");
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(0);
     active = 9;
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });

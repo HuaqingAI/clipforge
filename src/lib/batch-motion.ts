@@ -17,6 +17,9 @@ export interface BatchMotionDraft {
   refreshFrames?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft>;
   options: Record<string, unknown>;
   klingParameters: Record<string, unknown>;
+  /** Frozen provider input and asset-import metadata for server execution. */
+  request?: Record<string, unknown>;
+  assetPayload?: Record<string, unknown>;
   validate?(): boolean;
   generate(): Promise<void>;
 }

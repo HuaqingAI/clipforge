@@ -49,6 +49,7 @@ import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createSho
 import { previewProjectVideoPrompt } from "@/lib/server/video-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { VideoPromptRequest } from "@/lib/video-prompt-request";
+import { withGenerationContext } from "@/lib/generation-context";
 
 const shot: Shot = { shotId: 1, type: "demo", duration: 5, description: "Product on table", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "Product demo" };
 const model: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","text_to_video","model-1"]', provider: "kling-cli", profileId: "profile-1", region: "global", tool: "text_to_video", remoteModelId: "model-1", displayName: "Model 1", catalogRevision: "catalog-1", available: true, parameters: [], inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } };
@@ -147,6 +148,43 @@ afterEach(async () => { stopKlingJobRunner(); await new Promise<void>((resolve) 
 afterAll(async () => { stopKlingJobRunner(); state.sqlite?.close(); await fs.rm(state.directory, { recursive: true, force: true }); if (oldPhase === undefined) delete process.env.NEXT_PHASE; else process.env.NEXT_PHASE = oldPhase; });
 
 describe("Kling durable submission and recovery", () => {
+  it("blocks a queued request when the live profile's account differs from the accepted account snapshot", async () => {
+    const kling = { profileId: state.profile!.id, principalKey: state.profile!.principalKey!, region: state.profile!.region, model: structuredClone(model) };
+    state.profile!.principalKey = '["global","other-account"]';
+    await expect(withGenerationContext({ itemId: "durable-item", checkpoint: null, save: vi.fn(), snapshot: { kling } }, () => createKlingJob(request())))
+      .rejects.toMatchObject({ code: "KLING_ACCOUNT_MISMATCH" });
+    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+  });
+
+  it("checks the accepted account again after refreshing a queued request's stale profile", async () => {
+    const kling = { profileId: state.profile!.id, principalKey: state.profile!.principalKey!, region: state.profile!.region, model: structuredClone(model) };
+    state.profile!.catalogCheckedAt = Date.now() - 400_000;
+    state.refresh.mockResolvedValueOnce({ ...state.profile!, principalKey: '["global","refreshed-other-account"]' });
+    await expect(withGenerationContext({ itemId: "durable-item", checkpoint: null, save: vi.fn(), snapshot: { kling } }, () => createKlingJob(request())))
+      .rejects.toMatchObject({ code: "KLING_ACCOUNT_MISMATCH" });
+    expect(state.refresh).toHaveBeenCalledOnce(); expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+  });
+
+  it("blocks descriptor drift under the same model selection key before preparing inputs or generating", async () => {
+    const kling = { profileId: state.profile!.id, principalKey: state.profile!.principalKey!, region: state.profile!.region, model: structuredClone(model) };
+    state.profile!.catalogSnapshot[0].parameters = [{ name: "duration", type: "number", required: false, default: 10, allowedValues: [10] }];
+    await expect(withGenerationContext({ itemId: "durable-item", checkpoint: null, save: vi.fn(), snapshot: { kling } }, () => createKlingJob(request())))
+      .rejects.toMatchObject({ code: "KLING_MODEL_CHANGED" });
+    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+  });
+
+  it("allows reauthentication and catalog-wide revision changes when the accepted account and chosen descriptor are unchanged", async () => {
+    const kling = { profileId: state.profile!.id, principalKey: state.profile!.principalKey!, region: state.profile!.region, model: structuredClone(model) };
+    state.profile!.authRevision += 1; state.profile!.catalogRevision = "catalog-refreshed";
+    state.profile!.catalogSnapshot[0].catalogRevision = "catalog-refreshed";
+    const job = await withGenerationContext({ itemId: "durable-item", checkpoint: null, save: vi.fn(), snapshot: { kling } }, () => createKlingJob(request()));
+    expect(job).toMatchObject({ principalKey: kling.principalKey, data: { model: { catalogRevision: "catalog-refreshed" } } });
+    await acknowledge(job);
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+
   it("dispatches the frozen reviewed sales prompt after same-script content and direction edits", async () => {
     const context: VideoPromptRequest = { scriptId: "script-1", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio: false };
     const reviewed = previewProjectVideoPrompt("project-1", context);
@@ -698,18 +736,19 @@ describe("Kling durable submission and recovery", () => {
   });
 });
 
-describe("Kling ten-shot account concurrency", () => {
+describe("Kling account concurrency without an application slot cap", () => {
   const slotShotIds = Array.from({ length: 10 }, (_, index) => index + 1);
   const otherSlotShotIds = slotShotIds.map((id) => id + 10);
   beforeEach(() => { useMultipleShots(20); useDistinctAcknowledgements(); });
-  it("accepts and acknowledges ten different shots before any has finished, then rejects an eleventh without redirecting to another shot", async () => {
+  it("accepts and acknowledges an eleventh shot while the first ten are running", async () => {
     const jobs = await Promise.all(slotShotIds.map((id) => createKlingJob(shotRequest(id))));
     await Promise.all(jobs.map((job) => dispatchKlingJob(job.id)));
     for (const job of jobs) expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteState: "pending", importState: "not_ready" });
     expect(new Set(jobs.map((job) => getKlingJob(job.id).remoteGenerationId)).size).toBe(10);
-    const rejected = await createKlingJob(shotRequest(11)).catch((error) => error);
-    expect(rejected).toMatchObject({ code: "KLING_CONCURRENCY_LIMIT", status: 409 }); expect(rejected.jobId).toBeUndefined();
-    expect(state.cli).toHaveBeenCalledTimes(10);
+    const eleventh = await createKlingJob(shotRequest(11));
+    await dispatchKlingJob(eleventh.id);
+    expect(getKlingJob(eleventh.id).submissionState).toBe("acknowledged");
+    expect(state.cli).toHaveBeenCalledTimes(11);
     expect((await createKlingJob(shotRequest(1))).id).toBe(jobs[0].id);
   });
   it.each(["completed", "failed", "cancelled"] as const)("releases a slot when a cloud task is %s even if its local import has failed", async (remoteState) => {
@@ -722,15 +761,15 @@ describe("Kling ten-shot account concurrency", () => {
         .rejects.toMatchObject({ code: "KLING_REQUEST_CONFLICT", jobId: jobs[0].id });
     }
   });
-  it("reserves ten slots atomically across a burst of asynchronous creates", async () => {
+  it("persists all twenty distinct requests in an asynchronous burst", async () => {
     let release!: () => void; const preparation = new Promise<void>((resolve) => { release = resolve; });
     state.prepare.mockImplementation(async () => { await preparation; return []; });
     const pending = [...slotShotIds, ...otherSlotShotIds].map((id) => createKlingJob(shotRequest(id)));
     release(); const settled = await Promise.allSettled(pending);
-    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(10);
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(20);
     const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-    expect(failures).toHaveLength(10); for (const result of failures) expect(result.reason).toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
-    expect(getDb().select().from(klingJobs).all()).toHaveLength(10); expect(state.cli).not.toHaveBeenCalled();
+    expect(failures).toHaveLength(0);
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(20); expect(state.cli).not.toHaveBeenCalled();
   });
   it("keeps concurrent copies of the same request idempotent while preventing different requests for the same shot", async () => {
     const jobs = await Promise.all([createKlingJob(shotRequest(1)), createKlingJob(shotRequest(1))]);
@@ -738,27 +777,27 @@ describe("Kling ten-shot account concurrency", () => {
     await expect(createKlingJob(shotRequest(1, { clientRequestId: "another-1", billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: "another-1" } })))
       .rejects.toMatchObject({ code: "KLING_REQUEST_CONFLICT", jobId: jobs[0].id });
   });
-  it("shares slots across profiles of the same account", async () => {
+  it("allows more than ten shots across profiles of the same account", async () => {
     addProfile("profile-2");
     await Promise.all(slotShotIds.map((id) => createKlingJob(shotRequest(id))));
-    await expect(createKlingJob(shotRequest(11, { profileId: "profile-2" }))).rejects.toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
+    expect((await createKlingJob(shotRequest(11, { profileId: "profile-2" }))).submissionState).toBe("prepared");
   });
-  it("shares ten account slots across different projects and profiles", async () => {
+  it("allows more than ten shots across different projects and profiles", async () => {
     addProfile("profile-2");
     getDb().insert(projects).values({ id: "project-2", name: "Other fixture project" }).run();
     getDb().insert(scripts).values({ id: "script-2", projectId: "project-2", styleType: "scene", shots: Array.from({ length: 11 }, (_, index) => ({ ...shot, shotId: index + 1 })), selected: true }).run();
     await Promise.all(slotShotIds.slice(0, 5).map((id) => createKlingJob(shotRequest(id))));
     const otherProject = { profileId: "profile-2", projectId: "project-2", scriptId: "script-2" };
     await Promise.all(slotShotIds.slice(5).map((id) => createKlingJob(shotRequest(id, otherProject))));
-    await expect(createKlingJob(shotRequest(11, otherProject))).rejects.toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
-    expect(getDb().select().from(klingJobs).all()).toHaveLength(10);
+    expect((await createKlingJob(shotRequest(11, otherProject))).submissionState).toBe("prepared");
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(11);
     expect(state.cli).not.toHaveBeenCalled();
   });
   it("reserves a slot for a known task with an unrecognized remote status while allowing other free slots", async () => {
     const first = await createKlingJob(shotRequest(1)); await dispatchKlingJob(first.id);
     patchKlingJob(first.id, { remoteState: "unknown" });
     for (const id of slotShotIds.slice(1)) expect((await createKlingJob(shotRequest(id))).submissionState).toBe("prepared");
-    await expect(createKlingJob(shotRequest(11))).rejects.toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
+    expect((await createKlingJob(shotRequest(11))).submissionState).toBe("prepared");
   });
   it("allows a separate principal to reserve its own ten slots", async () => {
     addProfile("profile-2", { principalKey: '["global","user-2"]' });
@@ -807,13 +846,13 @@ describe("Kling ten-shot account concurrency", () => {
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: false, data: { authorizedUntil: authorization, error: { code: "KLING_PROFILE_BUSY" } } });
     await dispatchKlingJob(job.id); expect(getKlingJob(job.id).submissionState).toBe("acknowledged"); expect(state.cli).toHaveBeenCalledTimes(1);
   });
-  it("keeps the ten-slot reservation limit when catalog refresh is temporarily busy", async () => {
+  it("accepts an eleventh prepared shot when a cached catalog is temporarily busy", async () => {
     useMultipleShots(11);
     for (let shotId = 1; shotId <= 10; shotId++) await createKlingJob(shotRequest(shotId));
     state.profile!.catalogCheckedAt = Date.now() - 400_000;
     state.refresh.mockRejectedValueOnce(new KlingError("KLING_PROFILE_BUSY", "Another command owns this profile", 409));
-    await expect(createKlingJob(shotRequest(11))).rejects.toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
-    expect(getDb().select().from(klingJobs).all()).toHaveLength(10);
+    expect((await createKlingJob(shotRequest(11))).submissionState).toBe("prepared");
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(11);
     expect(state.cli).not.toHaveBeenCalled();
   });
   it("keeps unresolved account submission protection when catalog refresh is temporarily busy", async () => {
@@ -847,16 +886,16 @@ describe("Kling ten-shot account concurrency", () => {
     expect(getDb().select().from(aiTasks).where(eq(aiTasks.id, task.id)).get()?.status).toBe("processing");
     expect(state.cli).toHaveBeenCalledTimes(2);
   });
-  it("dispatches only available oldest reservations when legacy rows exceed ten slots", async () => {
+  it("dispatches legacy reservations beyond ten without a local capacity rejection", async () => {
     useMultipleShots(11);
     const jobs = await Promise.all(slotShotIds.map((id) => createKlingJob(shotRequest(id))));
     for (const [index, job] of jobs.entries()) getDb().update(klingJobs).set({ createdAt: 100 + index }).where(eq(klingJobs.id, job.id)).run();
     const legacy = getKlingJob(jobs[0].id);
     getDb().insert(klingJobs).values({ ...legacy, id: "legacy-extra", clientRequestId: "legacy-extra-request", shotId: 11, data: { ...legacy.data, videoPromptAudit: { version: legacy.data.videoPromptAudit!.version, sourceShot: { ...shot, shotId: 11 } } }, createdAt: 200 }).run();
-    await dispatchKlingJob("legacy-extra"); expect(state.cli).not.toHaveBeenCalled();
-    expect(getKlingJob("legacy-extra")).toMatchObject({ submissionState: "prepared", needsConfirmation: false, data: { error: { code: "KLING_CONCURRENCY_LIMIT" } } });
+    await dispatchKlingJob("legacy-extra"); expect(state.cli).toHaveBeenCalledTimes(1);
+    expect(getKlingJob("legacy-extra")).toMatchObject({ submissionState: "acknowledged", needsConfirmation: false });
     for (const job of jobs) await dispatchKlingJob(job.id);
-    expect(state.cli).toHaveBeenCalledTimes(10); await dispatchKlingJob("legacy-extra"); expect(state.cli).toHaveBeenCalledTimes(10);
+    expect(state.cli).toHaveBeenCalledTimes(11); await dispatchKlingJob("legacy-extra"); expect(state.cli).toHaveBeenCalledTimes(11);
     patchKlingJob(jobs[0].id, { remoteState: "failed" });
     await dispatchKlingJob("legacy-extra"); expect(getKlingJob("legacy-extra").submissionState).toBe("acknowledged");
   });
@@ -1240,7 +1279,7 @@ describe("Kling FilmRun child dispatch authorization", () => {
     await expect(createKlingFilmShotJob(request({ clientRequestId: "request-2", billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: "request-2" } }), { ...context, filmShotId: "film-shot-2" })).rejects.toMatchObject({ code: "KLING_REQUEST_CONFLICT" });
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("shares ten account reservations between different film shots and prevents an eleventh", async () => {
+  it("keeps legacy film child recovery free of the removed ten-shot cap", async () => {
     useMultipleShots(11);
     const parent = getDb().select().from(klingFilmRuns).where(eq(klingFilmRuns.id, context.filmRunId)).get()!;
     const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
@@ -1249,7 +1288,7 @@ describe("Kling FilmRun child dispatch authorization", () => {
       const job = await createKlingFilmShotJob(shotRequest(shotId), { ...context, filmShotId: `film-shot-${shotId}` });
       expect(job.submissionState).toBe("prepared");
     }
-    await expect(createKlingFilmShotJob(shotRequest(11), { ...context, filmShotId: "film-shot-11" })).rejects.toMatchObject({ code: "KLING_CONCURRENCY_LIMIT" });
+    expect((await createKlingFilmShotJob(shotRequest(11), { ...context, filmShotId: "film-shot-11" })).submissionState).toBe("prepared");
     expect(state.cli).not.toHaveBeenCalled();
   });
   it("rejects a current script shot absent from the confirmed film manifest", async () => {

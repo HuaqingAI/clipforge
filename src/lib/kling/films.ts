@@ -14,7 +14,7 @@ import { getKlingFilm, getKlingFilmShots, patchKlingFilm, patchKlingFilmShot, li
 import { assertKlingFilmContext, verifyKlingFilmFiles, buildFilmShotJobRequest } from "./film-plan";
 import { composeKlingFilm } from "./film-compose";
 import type { KlingFilmView } from "./film-types";
-import { KLING_MAX_CONCURRENT_SHOTS, klingJobOccupiesGenerationSlot } from "./concurrency";
+import { klingJobOccupiesGenerationSlot } from "./concurrency";
 import { isKlingRuntimeEnabled } from "./runtime";
 
 interface FilmRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; }
@@ -96,7 +96,7 @@ function reconcileShots(run: KlingFilmRun, dispatchingShotId?: string): void {
     } else if (job.remoteState === "failed" || job.remoteState === "cancelled" || job.submissionState === "not_submitted") {
       patchKlingFilmShot(shot.id, { status: "needs_attention" }, { error: job.data.error?.message ?? "原镜头任务未成功，请查看任务详情。" });
     } else if (job.submissionState === "prepared" && !job.needsConfirmation && !job.data.blockedReason &&
-      ["KLING_CONCURRENCY_LIMIT", "KLING_PROFILE_BUSY"].includes(job.data.error?.code ?? "")) {
+        job.data.error?.code === "KLING_PROFILE_BUSY") {
       patchKlingFilmShot(shot.id, { status: "generating" }, { error: undefined });
     } else if ((job.submissionState !== "prepared" || run.data.authorizationEpoch <= (job.data.filmAuthorizationEpoch ?? 0)) &&
       (job.data.blockedReason || job.data.error || job.needsConfirmation || job.importState === "failed" || job.importState === "partial")) {
@@ -214,8 +214,6 @@ async function processFilm(id: string): Promise<void> {
             const job = getKlingJob(next.jobId);
             if (job.submissionState !== "prepared") continue; // The job runner polls/imports every acknowledged task.
           } else {
-            const occupied = listKlingJobs().filter((job) => job.principalKey === run.principalKey && job.region === run.data.model.region && klingJobOccupiesGenerationSlot(job)).length;
-            if (occupied >= KLING_MAX_CONCURRENT_SHOTS) continue;
             await verifyKlingFilmFiles(id);
             authorization(run); assertKlingFilmContext(id);
             const context = { filmRunId: id, filmShotId: next.id, authorizationEpoch: run.data.authorizationEpoch,
@@ -247,7 +245,7 @@ async function processFilm(id: string): Promise<void> {
         const blocked = currentShots.find((shot) => shot.status === "needs_attention");
         if (blocked) { needsAttention(run, blocked.data.error ?? "请处理原任务", blocked.id); return; }
         const active = currentShots.filter((shot) => shot.jobId && klingJobOccupiesGenerationSlot(getKlingJob(shot.jobId))).length;
-        patchKlingFilm(id, {}, { stage: `正在生成镜头（${active}/${KLING_MAX_CONCURRENT_SHOTS} 并发；${currentShots.filter((shot) => shot.status === "ready").length}/${shots.length} 已就绪）` });
+        patchKlingFilm(id, {}, { stage: `正在生成镜头（${active} 个进行中；${currentShots.filter((shot) => shot.status === "ready").length}/${shots.length} 已就绪）` });
         return;
       }
       await verifyKlingFilmFiles(id);
@@ -262,7 +260,7 @@ async function processFilm(id: string): Promise<void> {
         compositionId: result.compositionId, videoUrl: result.url, thumbnailUrl: result.thumbnailUrl, quality: result.quality });
     } catch (error) {
       if (error instanceof KlingError && ["KLING_FILM_LEASE_LOST", "KLING_FILM_AUTHORIZATION_REVOKED"].includes(error.code)) return;
-      if (error instanceof KlingError && ["KLING_CONCURRENCY_LIMIT", "KLING_PROFILE_BUSY"].includes(error.code)) return;
+        if (error instanceof KlingError && error.code === "KLING_PROFILE_BUSY") return;
       needsAttention(run, error instanceof KlingError ? error.message : "整片编排失败，请查看原任务并恢复；已成功镜头会保留");
     }
   });

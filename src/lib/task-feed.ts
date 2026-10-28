@@ -1,8 +1,9 @@
 export interface TaskRow {
-  kind: "transcript" | "transcript_failed" | "batch" | "paid" | "paid_unknown" | "pipeline" | "pipeline_interrupted" | "pipeline_failed" | "compose" | "done" | "kling" | "kling_film";
+  kind: "generation" | "transcript" | "transcript_failed" | "batch" | "paid" | "paid_unknown" | "pipeline" | "pipeline_interrupted" | "pipeline_failed" | "compose" | "done" | "kling" | "kling_film";
   id: string;
   projectId?: string | null;
   projectName?: string;
+  generationKind?: string;
   progress?: number;
   revision?: number;
   sourceId?: string;
@@ -32,7 +33,7 @@ export const TASK_FEED_REFRESH_EVENT = "clipforge:task-feed-refresh";
 /** 失败响应或错误形状不能被解释为“没有任务”。 */
 export function parseTaskFeed(value: unknown): TaskFeed {
   const raw = value as Partial<TaskFeed> | null;
-  const kinds = new Set<TaskRow["kind"]>(["transcript", "transcript_failed", "batch", "paid", "paid_unknown", "pipeline", "pipeline_interrupted", "pipeline_failed", "compose", "done", "kling", "kling_film"]);
+  const kinds = new Set<TaskRow["kind"]>(["generation", "transcript", "transcript_failed", "batch", "paid", "paid_unknown", "pipeline", "pipeline_interrupted", "pipeline_failed", "compose", "done", "kling", "kling_film"]);
   if (!raw || ![raw.active, raw.attention, raw.recent].every((rows) => Array.isArray(rows)
     && rows.every((row) => row && typeof row.id === "string" && row.id.length > 0 && kinds.has(row.kind)))) {
     throw new Error("INVALID_TASK_FEED");
@@ -43,6 +44,7 @@ export function parseTaskFeed(value: unknown): TaskFeed {
 export function taskHref(row: TaskRow): string {
   const project = row.projectId ? `/project/${encodeURIComponent(row.projectId)}` : null;
   switch (row.kind) {
+    case "generation": return project ? `${project}/${row.generationKind === "script" ? "script" : "assets"}?runId=${encodeURIComponent(row.id)}` : "/projects";
     case "kling_film": return project ? project + "/assets?klingFilm=" + encodeURIComponent(row.filmRunId ?? row.id) : "/projects";
     case "kling": return project ? project + "/assets?klingJob=" + encodeURIComponent(row.jobId ?? row.id) : "/projects";
     case "batch": return "/batch";

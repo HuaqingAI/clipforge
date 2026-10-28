@@ -193,7 +193,7 @@ export function KlingCliSettings({ onCatalogChanged }: { onCatalogChanged?: () =
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <h3 className="text-sm font-semibold">Kling 官方 CLI</h3>
-            <p className="text-xs text-muted-foreground">使用本机安装的官方 CLI 与 Kling 账号生成视频，支持单镜头和整片自动编排。仅支持本机网页版，暂不支持 Electron。</p>
+            <p className="text-xs text-muted-foreground">使用本机安装的官方 CLI 与 Kling 账号生成视频，支持单镜头生成和批量转动态。仅支持本机网页版，暂不支持 Electron。</p>
           </div>
           <ToggleSwitch
             checked={enabled}
@@ -253,7 +253,7 @@ export function KlingCliSettings({ onCatalogChanged }: { onCatalogChanged?: () =
 
         {status?.loggedIn && <div className="space-y-2 border-t border-border/50 pt-3">
           <p className="text-xs text-muted-foreground">{status.models.length ? `当前账号提供 ${status.models.length} 个视频模型。` : "当前账号没有可用视频模型，请刷新目录。"}在 <a className="text-primary underline" href="/settings?tab=video">视频生成 → 默认视频模型</a> 中统一选择 Kling 或方舟模型。</p>
-          <p className="text-xs text-muted-foreground">单镜头与整片自动编排使用同一个默认模型；已有任务按提交时的模型恢复。</p>
+          <p className="text-xs text-muted-foreground">单镜头生成与批量转动态使用同一个默认模型；已有镜头任务按提交时的模型查询和保存。</p>
         </div>}
         {message && <p role="status" className="text-xs text-emerald-600 dark:text-emerald-400">{message}</p>}
         {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}

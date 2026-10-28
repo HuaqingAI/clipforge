@@ -89,8 +89,9 @@ describe("shared model-driven full-film interaction", () => {
     expect(button("确认生成整片")!.disabled).toBe(true);
     expect(generationCalls()).toHaveLength(0);
     await mount(false); await act(async () => useSettingsStore.getState().setDefaultVideoModel(model.selectionKey)); await mount();
-    expect(container.textContent).toContain("逐镜头生成");
-    expect(button("预览整片计划")).toBeTruthy();
+    expect(container.textContent).toBe("");
+    expect(button("预览整片计划")).toBeUndefined();
+    expect(api.kling).not.toHaveBeenCalled();
   });
 
   it("does not replace an unavailable default with another configured model", async () => {
@@ -178,24 +179,32 @@ describe("shared model-driven full-film interaction", () => {
     expect(generationCalls().filter(([url]) => url.endsWith("/storyboard-film"))).toHaveLength(1);
   });
 
-  it("opens a saved Kling run and resumes its original model even when the current default is Ark", async () => {
+  it("keeps an explicitly opened Kling run as history when the global model changes", async () => {
     await mount(true, "original-film");
+    expect(container.querySelector("h2")?.textContent).toBe("Kling 历史整片记录");
     expect(container.textContent).toContain("Chosen Kling Model");
     expect(container.textContent).toContain("chosen-model");
-    expect(button("确认恢复并继续")!.disabled).toBe(true);
-    await act(async () => checkbox("确认整片恢复计费").click()); await click("确认恢复并继续");
-    const resume = api.kling.mock.calls.find(([url]) => url.endsWith("/original-film/resume"))!;
-    expect(JSON.parse(resume[1].body)).toMatchObject({ planHash: "original-plan-hash", explicitConfirmation: true });
-    expect(api.kling.mock.calls.some(([url, init]) => url.endsWith("/preview") || (url.endsWith("/films") && init?.method === "POST"))).toBe(false);
+    expect(button("确认恢复并继续")).toBeUndefined();
+    expect(button("预览整片计划")).toBeUndefined();
+    await act(async () => useSettingsStore.getState().setDefaultVideoModel(model.selectionKey));
+    await act(async () => useSettingsStore.getState().setDefaultVideoModel(arkModel));
+    expect(container.querySelector("h2")?.textContent).toBe("Kling 历史整片记录");
+    expect(api.kling.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+    expect(api.kling.mock.calls.some(([url]) => url.includes("/status"))).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not auto-select the first available Kling model when the configured one is missing", async () => {
-    useSettingsStore.getState().setDefaultVideoModel('["kling-cli","image_to_video","missing-model"]');
+  it.each([model.selectionKey, '["kling-cli","image_to_video","missing-model"]'])("opens no new full-film surface and never falls back to Ark for Kling default %s", async (selection) => {
+    useSettingsStore.getState().setDefaultVideoModel(selection);
     await mount();
-    expect(container.textContent).toContain("设置中的默认视频模型不在当前账号目录中，请刷新目录后重新选择。");
-    expect(button("预览整片计划")!.disabled).toBe(true);
-    expect(api.kling.mock.calls.some(([url]) => url.endsWith("/preview"))).toBe(false);
+    expect(container.textContent).toBe("");
+    expect(button("预览整片计划")).toBeUndefined();
+    expect(api.kling).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(api.resolve).not.toHaveBeenCalled();
+    await act(async () => useSettingsStore.getState().setDefaultVideoModel(arkModel));
+    expect(container.textContent).toBe("");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([arkModel, model.selectionKey])("recovers an explicitly opened Ark task using its original model when the current default is %s", async (defaultModel) => {

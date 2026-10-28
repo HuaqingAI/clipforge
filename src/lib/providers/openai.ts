@@ -69,10 +69,9 @@ export class OpenAIProvider extends BaseProvider {
    * OpenAI Sora 的成片需鉴权下载，本应用素材落库走无鉴权直链，故暂未接入。
    */
   async generateVideo(): Promise<VideoResult> {
-    throw new ProviderError(
+    throw this.rejectedBeforeSubmission(
       'OpenAI 暂未接入视频生成（Sora），请改用 fal.ai / Replicate / 火山引擎 / 阿里百炼 等视频平台',
       'NOT_SUPPORTED',
-      this.name
     )
   }
 
@@ -160,17 +159,21 @@ export class OpenAIProvider extends BaseProvider {
   private async editImage(options: ImageOptions, references: string[]): Promise<ImageResult> {
     const model = options.modelId
     if (model.startsWith('dall-e-3')) {
-      throw new ProviderError('DALL·E 3 不支持图生图（图片编辑），请改用 gpt-image-1', 'NOT_SUPPORTED', this.name)
+      throw this.rejectedBeforeSubmission('DALL·E 3 不支持图生图（图片编辑），请改用 gpt-image-1', 'NOT_SUPPORTED')
     }
     if (references.length === 0) {
-      throw new ProviderError('图生图缺少参考图', 'BAD_REFERENCE', this.name)
+      throw this.rejectedBeforeSubmission('图生图缺少参考图', 'BAD_REFERENCE')
     }
 
     const isDalle2 = model.startsWith('dall-e-2')
     if (isDalle2 && references.length > 1) {
-      throw new ProviderError('DALL·E 2 仅支持一张参考图，请改用 GPT Image 系列以保留全部人物与商品参考', 'NOT_SUPPORTED', this.name)
+      throw this.rejectedBeforeSubmission('DALL·E 2 仅支持一张参考图，请改用 GPT Image 系列以保留全部人物与商品参考', 'NOT_SUPPORTED')
     }
-    const images = await Promise.all(references.map((reference) => this.fetchReferenceImage(reference)))
+    const images = await Promise.all(references.map((reference) => this.fetchReferenceImage(reference))).catch((error) => {
+      // Reference downloads happen before the task-creating image edit POST.
+      if (error instanceof ProviderError) { error.submissionRejected = true; throw error }
+      throw this.rejectedBeforeSubmission(`参考图读取失败: ${error instanceof Error ? error.message : String(error)}`, 'BAD_REFERENCE')
+    })
 
     const form = new FormData()
     form.append('model', model)
@@ -242,6 +245,7 @@ export class OpenAIProvider extends BaseProvider {
     const url = `${this.config.baseUrl}${path}`
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let submissionRejected = false
     try {
       const resp = await fetch(url, {
         method: 'POST',
@@ -249,6 +253,7 @@ export class OpenAIProvider extends BaseProvider {
         body: form,
         signal: controller.signal,
       })
+      submissionRejected = !resp.ok && [400, 401, 403, 429].includes(resp.status)
       const responseText = await resp.text()
       let response: T
       try {
@@ -281,16 +286,27 @@ export class OpenAIProvider extends BaseProvider {
       }
       return response
     } catch (e) {
-      if (e instanceof ProviderError) throw e
+      if (e instanceof ProviderError) {
+        if (submissionRejected) e.submissionRejected = true
+        throw e
+      }
       const isTimeout = e instanceof DOMException && e.name === 'AbortError'
-      throw new ProviderError(
+      const failure = new ProviderError(
         isTimeout ? `请求超时（${timeoutMs}ms）` : `网络请求异常: ${e instanceof Error ? e.message : String(e)}`,
         isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
         this.name
       )
+      if (submissionRejected) failure.submissionRejected = true
+      throw failure
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  private rejectedBeforeSubmission(message: string, code: string): ProviderError {
+    const failure = new ProviderError(message, code, this.name)
+    failure.submissionRejected = true
+    return failure
   }
 
   /** MIME → 文件扩展名 */

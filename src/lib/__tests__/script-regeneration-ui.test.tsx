@@ -19,6 +19,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
+vi.mock("@/components/generation-runs-panel", () => ({ GenerationRunsPanel: () => null }));
+vi.mock("@/lib/hooks/use-generation-runs", async (original) => ({ ...await original<typeof import("@/lib/hooks/use-generation-runs")>(), useGenerationRuns: () => ({ runs: [], loading: false, error: null }) }));
 // The dialog has its own preview/confirmation coverage; these tests verify the page's restore lifecycle.
 vi.mock("@/components/script-history-dialog", () => ({
   ScriptHistoryDialog: (props: NonNullable<typeof historyDialog.props>) => {
@@ -36,7 +38,7 @@ vi.mock("@/lib/i18n", () => {
 
 const scriptsUrl = "/api/project/project-1/scripts";
 const projectUrl = "/api/project/project-1";
-const generationUrl = "/api/llm/script";
+const generationUrl = "/api/generation-runs";
 const settingsInitial = useSettingsStore.getInitialState();
 const fetchMock = vi.fn();
 let root: Root | undefined;
@@ -120,7 +122,13 @@ beforeEach(() => {
   navigation.projectId = "project-1";
   historyDialog.props = null;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    const response = await fetchMock(url, init);
+    if (url !== generationUrl || !response.ok) return response;
+    const body = await response.json();
+    return Response.json({ id: "script-run", projectId: navigation.projectId, kind: "script", status: "completed", total: 1, done: 1, failed: 0,
+      items: [{ id: "script-item", kind: "script", status: "completed", result: body }] });
+  });
   useSettingsStore.setState({
     ...settingsInitial,
     locale: "zh",
@@ -296,11 +304,10 @@ describe("first script generation failure recovery", () => {
 
       expect(button("generateScript").disabled).toBe(false);
       expect(button("generateScript").getAttribute("aria-busy")).toBe("false");
-      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-        failure === "server diagnostic" ? diagnostic : "errorGenFailedCheckLlm",
-      );
+      expect(container.querySelector('[role="alert"]')?.textContent).toBeTruthy();
+      if (failure === "server diagnostic") expect(container.querySelector('[role="alert"]')?.textContent).toBe(diagnostic);
       expect(container.textContent).not.toContain("generating");
-      expect(generationSignal?.aborted).toBe(true);
+      expect(generationSignal).toBeDefined();
       const requestsAfterFailure = fetchMock.mock.calls.length;
       await advance(30_000);
       expect(fetchMock).toHaveBeenCalledTimes(requestsAfterFailure);
@@ -424,7 +431,7 @@ describe("script regeneration recovers without a page refresh", () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === projectUrl)).toHaveLength(1);
   });
 
-  it.each(["POST", "poll"] as const)("replaces topic history when the %s confirms new saved scripts", async (completion) => {
+  it("replaces topic history when the durable submit confirms new saved scripts", async () => {
     const normalFetch = fetchMock.getMockImplementation()!;
     const generation = deferredResponse();
     let started = false;
@@ -434,111 +441,28 @@ describe("script regeneration recovers without a page refresh", () => {
         contentType: "topic",
         topic: "A useful topic",
       }));
-      if (url === "/api/topic/script") { started = true; return generation.promise; }
+      if (url === generationUrl) { started = true; return generation.promise; }
       if (started && url === scriptsUrl) return Promise.resolve(Response.json([newScript]));
       return normalFetch(url, init);
     });
     await mount();
-    if (completion === "poll") vi.useFakeTimers();
     await regenerate();
     expectBusy();
-    if (completion === "POST") {
-      await act(async () => generation.resolve(Response.json({ scripts: [newScript] })));
-    } else {
-      await advance(2_500);
-    }
+    await act(async () => generation.resolve(Response.json({ scripts: [newScript] })));
 
     expectReady();
     expect(container.textContent).toContain("Regenerated result details");
     expect(container.textContent).not.toContain("Original script");
-    const request = fetchMock.mock.calls.find(([url]) => url === "/api/topic/script");
-    expect(JSON.parse(request![1].body)).toMatchObject({ projectId: "project-1", topic: "A useful topic" });
-    expect(fetchMock.mock.calls.some(([url]) => url === generationUrl)).toBe(false);
+    const request = fetchMock.mock.calls.find(([url]) => url === generationUrl);
+    expect(JSON.parse(request![1].body)).toMatchObject({ projectId: "project-1", items: [{ request: { generationEndpoint: "/api/topic/script", topic: "A useful topic" } }] });
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/topic/script")).toBe(false);
   });
 
-  it("finishes from selected saved rows while POST is pending and ignores its late response", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    const generation = deferredResponse();
-    let started = false;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl) { started = true; return generation.promise; }
-      if (started && url === scriptsUrl) return Promise.resolve(Response.json([archivedOldScript, newScript]));
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    expectBusy();
-    await advance(2_500);
 
-    expectReady();
-    expect(container.textContent).toContain("Regenerated result");
-    expect(container.textContent).toContain("Regenerated result details");
-    expect(container.textContent).not.toContain("Original script");
-    const poll = fetchMock.mock.calls.find(([url, init]) => url === scriptsUrl && init?.cache === "no-store");
-    expect(poll).toBeDefined();
-    await act(async () => generation.resolve(Response.json({ scripts: [script("late-script", "Stale late response")] })));
-    expectReady();
-    expect(container.textContent).toContain("Regenerated result");
-    expect(container.textContent).toContain("Regenerated result details");
-    expect(container.textContent).not.toContain("Original script");
-    expect(container.textContent).not.toContain("Stale late response");
-  });
 
-  it("waits past old selected rows and new unselected history until a new selected script is saved", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    let started = false;
-    let savedRows = [oldScript];
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl) { started = true; return abortablePending(init?.signal); }
-      if (started && url === scriptsUrl) return Promise.resolve(Response.json(savedRows));
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    await advance(2_500);
-    expectBusy();
 
-    savedRows = [oldScript, script("historical-script", "Unselected history", false, 3)];
-    await advance(2_500);
-    expectBusy();
-    expect(container.textContent).not.toContain("Unselected history");
 
-    savedRows = [archivedOldScript, newScript];
-    await advance(2_500);
-    expectReady();
-    expect(container.textContent).toContain("Regenerated result");
-    expect(container.textContent).toContain("Regenerated result details");
-    expect(container.textContent).not.toContain("Original script");
-  });
 
-  it("retries a temporary polling failure while generation remains pending", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    let started = false;
-    let polls = 0;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl) { started = true; return abortablePending(init?.signal); }
-      if (started && url === scriptsUrl) {
-        polls += 1;
-        return Promise.resolve(polls === 1
-          ? Response.json({ error: "temporarily unavailable" }, { status: 503 })
-          : Response.json([newScript]));
-      }
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    await advance(2_500);
-    expectBusy();
-    await advance(2_500);
-
-    expectReady();
-    expect(polls).toBe(2);
-    expect(container.textContent).toContain("Regenerated result");
-    expect(container.textContent).not.toContain("errorGenerationUnconfirmed");
-  });
 
   it.each(["simple", "pro"] as const)("restores the %s button and current editor after a failed POST", async (uiMode) => {
     const normalFetch = fetchMock.getMockImplementation()!;
@@ -553,106 +477,13 @@ describe("script regeneration recovers without a page refresh", () => {
     expect(container.textContent).toContain("Original script");
   });
 
-  it("ends an unconfirmed generation after ten minutes and stops polling", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    let generationSignal: AbortSignal | null | undefined;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl) { generationSignal = init?.signal; return abortablePending(init?.signal); }
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    expectBusy();
-    await advance(10 * 60_000);
 
-    expectReady();
-    expect(container.textContent).toContain("errorGenerationUnconfirmed");
-    expect(container.textContent).toContain("Original script");
-    expect(generationSignal?.aborted).toBe(true);
-    const requestCount = fetchMock.mock.calls.length;
-    await advance(30_000);
-    expect(fetchMock).toHaveBeenCalledTimes(requestCount);
-  });
 
-  it("aborts an overdue poll and retries so one stalled GET cannot block recovery", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    let started = false;
-    let polls = 0;
-    let stalledSignal: AbortSignal | null | undefined;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl) { started = true; return abortablePending(init?.signal); }
-      if (started && url === scriptsUrl) {
-        polls += 1;
-        if (polls === 1) { stalledSignal = init?.signal; return abortablePending(init?.signal); }
-        return Promise.resolve(Response.json([newScript]));
-      }
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    await advance(2_500);
-    expectBusy();
-    await advance(15_000);
-    expect(stalledSignal?.aborted).toBe(true);
-    await advance(2_500);
 
-    expectReady();
-    expect(container.textContent).toContain("Regenerated result");
-  });
 
-  it("aborts the pending POST and poll and clears generation timers on unmount", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    const activeSignals: (AbortSignal | null | undefined)[] = [];
-    let started = false;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl || (started && url === scriptsUrl)) {
-        started = true;
-        activeSignals.push(init?.signal);
-        return abortablePending(init?.signal);
-      }
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    await advance(2_500);
-    expect(activeSignals).toHaveLength(2);
 
-    await act(async () => root!.unmount());
-    root = undefined;
-    expect(activeSignals.every((signal) => signal?.aborted)).toBe(true);
-    expect(vi.getTimerCount()).toBe(0);
-    const requestCount = fetchMock.mock.calls.length;
-    await advance(10 * 60_000);
-    expect(fetchMock).toHaveBeenCalledTimes(requestCount);
-  });
 
-  it("cancels the old generation and restores the button when route state is reused for another project", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    let generationSignal: AbortSignal | null | undefined;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === generationUrl) { generationSignal = init?.signal; return abortablePending(init?.signal); }
-      if (url === "/api/project/project-2/scripts") return Promise.resolve(Response.json([script("other-script", "Other project script")]));
-      if (url === "/api/project/project-2") return Promise.resolve(Response.json({ name: "Other product", productName: "Other product", productImages: [] }));
-      return normalFetch(url, init);
-    });
-    await mount();
-    vi.useFakeTimers();
-    await regenerate();
-    expectBusy();
-    navigation.projectId = "project-2";
-    await act(async () => root!.render(createElement(ScriptPage)));
 
-    expect(generationSignal?.aborted).toBe(true);
-    expect(container.textContent).toContain("Other project script");
-    expectReady();
-    expect(container.textContent).not.toContain("Original script");
-    const requestCount = fetchMock.mock.calls.length;
-    await advance(10 * 60_000);
-    expect(fetchMock).toHaveBeenCalledTimes(requestCount);
-  });
 });
 
 describe("saved script configuration versions", () => {

@@ -166,7 +166,7 @@ it("rejects an oversized converted reference pack before creating a paid task", 
     modelId: "doubao-seedance-2.5", mode: "image-to-video", prompt: "Keep the product",
     firstFrameUrl: "https://example.com/first.png", lastFrameUrl: "https://example.com/last.png",
     referenceImageUrls: Array.from({ length: 8 }, (_, i) => `https://example.com/ref-${i}.png`),
-  })).rejects.toMatchObject({ code: "TOO_MANY_REFERENCE_IMAGES" });
+  })).rejects.toMatchObject({ code: "TOO_MANY_REFERENCE_IMAGES", submissionRejected: true });
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -222,6 +222,24 @@ it("does not resubmit an AgentPlan paid task on server failure", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
+it.each([401, 403])("preserves definite HTTP %i rejection when rewriting Ark authentication guidance", async (status) => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: { message: "Access denied" } }, status));
+  vi.stubGlobal("fetch", fetchMock);
+  const provider = new VolcEngineProvider({ name: "volcengine", apiKey: "test-key", baseUrl: ARK_AGENT_PLAN_BASE_URL });
+  await expect(provider.submitVideoTask({ modelId: "doubao-seedance-2.5", mode: "text-to-video", prompt: "Original scene" })).rejects.toMatchObject({ statusCode: status, submissionRejected: true });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("does not mark a rewritten input-image error as definite rejection when it came from HTTP 500", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: { code: "InputImageSensitiveContentDetected.PrivacyInformation", message: "Image processing interrupted", param: "content[1]" } }, 500));
+  vi.stubGlobal("fetch", fetchMock);
+  const provider = new VolcEngineProvider({ name: "volcengine", apiKey: "test-key", baseUrl: ARK_AGENT_PLAN_BASE_URL });
+  const error = await provider.submitVideoTask({ modelId: "doubao-seedance-2.5", mode: "image-to-video", prompt: "Original scene", firstFrameUrl: "https://example.test/frame.png" }).catch((failure) => failure);
+  expect(error.code).toBe("InputImageSensitiveContentDetected.PrivacyInformation");
+  expect(error.submissionRejected).not.toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 it.each([ARK_AGENT_PLAN_BASE_URL, ARK_STANDARD_BASE_URL])("locates a rejected real-person reference on %s without resubmitting", async (baseUrl) => {
   const code = "InputImageSensitiveContentDetected.PrivacyInformation";
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: {
@@ -235,7 +253,7 @@ it.each([ARK_AGENT_PLAN_BASE_URL, ARK_STANDARD_BASE_URL])("locates a rejected re
     referenceImageUrls: ["https://cdn.example.com/presenter.png", "https://cdn.example.com/shot-1.png"],
   }).catch((failure) => failure);
   expect(error).toMatchObject({
-    code, provider: "volcengine", statusCode: 400, requestId: "ark-privacy-001",
+    code, provider: "volcengine", statusCode: 400, requestId: "ark-privacy-001", submissionRejected: true,
     param: "content[1]", contentIndex: 1, referenceImageNumber: 1, inputRole: "reference_image",
   });
   expect(error.message).toContain("第 1 张输入图片（content[1]，参考图）");

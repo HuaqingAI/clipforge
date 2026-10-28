@@ -144,6 +144,7 @@ function explainInputImageRejection(error: ProviderError, body: unknown): Provid
   explained.contentIndex = contentIndex
   explained.referenceImageNumber = imageNumber
   explained.inputRole = inputRole
+  explained.submissionRejected = error.submissionRejected
   return explained
 }
 
@@ -177,12 +178,14 @@ export class VolcEngineProvider extends BaseProvider {
         const guidance = error.statusCode === 401
           ? `Check that your API key matches the ${accessMode} endpoint. Agent Plan keys use ${ARK_AGENT_PLAN_BASE_URL}; standard Ark keys use ${ARK_STANDARD_BASE_URL}. Access Key ID/Secret credentials are not API keys.`
           : `Check that your ${accessMode} API key has access to the requested model and project, and that its plan or quota is available. A successful connection test does not prove model access.`
-        throw new ProviderError(
+        const failure = new ProviderError(
           `${guidance} Current Base URL: ${this.config.baseUrl}. Upstream error: ${error.message}`,
           error.statusCode === 403 ? 'ARK_ACCESS_DENIED' : 'ARK_AUTH_ERROR',
           this.name,
           error.statusCode
         )
+        failure.submissionRejected = error.submissionRejected
+        throw failure
       }
       if (error instanceof ProviderError) {
         const explained = explainInputImageRejection(error, options.body)
@@ -271,11 +274,13 @@ export class VolcEngineProvider extends BaseProvider {
     const referenceMode = images.length > 0 || videos.length > 0 || audios.length > 0
     const frames = [options.firstFrameUrl, options.lastFrameUrl].filter(isUrl)
     if (referenceMode && frames.length + images.length > ARK_MAX_REFERENCE_IMAGES) {
-      throw new ProviderError(
+      const failure = new ProviderError(
         `方舟参考模式最多接收 ${ARK_MAX_REFERENCE_IMAGES} 张图片（包括转为参考图的首尾帧），请减少参考图片后再生成`,
         'TOO_MANY_REFERENCE_IMAGES',
         this.name
       )
+      failure.submissionRejected = true
+      throw failure
     }
     if (isUrl(options.firstFrameUrl)) {
       content.push({ type: 'image_url', image_url: { url: options.firstFrameUrl }, role: referenceMode ? 'reference_image' : 'first_frame' })

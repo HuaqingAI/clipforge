@@ -221,7 +221,7 @@ export default function ClonePage() {
    * the result is saved as a finished composition on the export page.
    */
   const handleModelReplicate = useCallback(async () => {
-    if (isKlingVideoSelection(useSettingsStore.getState().defaultVideoModel)) { setReplicateError("Kling CLI 暂不支持模型级复刻。请在项目中使用转动态或整片自动编排。"); return; }
+    if (isKlingVideoSelection(useSettingsStore.getState().defaultVideoModel)) { setReplicateError("Kling CLI 暂不支持模型级复刻。请在项目中使用单镜头生成或批量转动态。"); return; }
     if (isReplicating || !refAnalysis || !videoModelTarget) return;
     const refModel = referenceModelFor(videoModelTarget.model);
     if (!refModel) {
@@ -781,7 +781,7 @@ export default function ClonePage() {
                 {videoModelTarget && !referenceModelFor(videoModelTarget.model) && (
                   <p className="text-xs text-amber-600/90">{t("modelTierNeedSeedance")}</p>
                 )}
-                {klingDefault ? <p className="text-xs text-amber-600/90">Kling CLI 暂不支持模型级复刻。可先创建项目并编写脚本，再使用转动态或整片自动编排。</p> : !videoModelTarget && <p className="text-xs text-amber-600/90">{t("modelTierNeedModel")}</p>}
+                {klingDefault ? <p className="text-xs text-amber-600/90">Kling CLI 暂不支持模型级复刻。可先创建项目并编写脚本，再使用单镜头生成或批量转动态。</p> : !videoModelTarget && <p className="text-xs text-amber-600/90">{t("modelTierNeedModel")}</p>}
                 {replicateError && <p className="text-xs text-destructive">{replicateError}</p>}
                 {replicateResult ? (
                   <div className="space-y-2">

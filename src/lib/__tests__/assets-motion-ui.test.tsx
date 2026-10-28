@@ -15,7 +15,7 @@ import type { KeyframeRefinementDialogProps } from "@/components/keyframe-refine
 import { createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { Shot } from "@/lib/db/schema";
 
-const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, showMaterialLibrary: false }));
+const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, runs: [] as Array<Record<string, unknown>>, showMaterialLibrary: false }));
 const batch = vi.hoisted(() => ({ props: null as ComponentProps<typeof BatchMotionPanel> | null }));
 const refinement = vi.hoisted(() => ({ props: null as KeyframeRefinementDialogProps | null }));
 const navigation = vi.hoisted(() => ({ router: { replace: vi.fn() }, listeners: new Set<() => void>() }));
@@ -75,7 +75,11 @@ async function click(part: string) { await act(async () => button(part)!.click()
 async function mount(defaultModel: string) { useSettingsStore.getState().setDefaultVideoModel(defaultModel); await act(async () => root.render(<AssetsPage />)); }
 function changeUrl(url: string) { window.history.replaceState(null, "", url); navigation.listeners.forEach((listener) => listener()); }
 async function navigate(url: string) { await act(async () => changeUrl(url)); }
-function submissions() { return [...fetchMock.mock.calls, ...api.kling.mock.calls].filter(([url]) => url === "/api/ai/video"); }
+function runRequests() { return fetchMock.mock.calls.filter(([url, init]) => url === "/api/generation-runs" && init?.method === "POST").map(([, init]) => JSON.parse(String(init.body))); }
+function backgroundItems(kind: string) { return runRequests().flatMap(run => run.items.filter((item: { kind: string }) => item.kind === kind)); }
+function generationRequests(kind: string) { return backgroundItems(kind).map(item => [kind, { body: JSON.stringify(item.request) }] as const); }
+function submissions() { return generationRequests("video"); }
+function completeRuns() { api.runs = runRequests().map((run, i) => ({ ...run, id: `run-${i + 1}`, status: "completed", total: run.items.length, done: run.items.length, failed: 0, items: run.items.map((item: Record<string, unknown>, j: number) => ({ id: `item-${i}-${j}`, kind: item.kind, scriptId: item.scriptId, shotId: item.shotId, status: "completed", result: {} })) })); }
 const videoPromptUrl = "/api/project/project/video-prompt";
 const serverAudioPrompt = "Exact audio instruction from the backend.";
 function serverPrompt(shotId = 1) { return `Backend approved direction for shot ${shotId}.\nPreserve this exact wording and layout.`; }
@@ -110,9 +114,14 @@ beforeEach(() => {
   useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: ark, providers: { volcengine: { enabled: true, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
   useCharacterStore.setState({ ...initialCharacters, characters: [] });
   api.models = [{ id: ark, name: "Ark", provider: "volcengine", mediaType: "video", modes: ["image-to-video"] }, { id: kling.selectionKey, name: "Chosen Kling", provider: "kling-cli", mediaType: "video", modes: ["image-to-video"] }];
-  api.jobs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; refinement.props = null; isVideo = false; pending = [];
+  api.jobs = []; api.runs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; refinement.props = null; isVideo = false; pending = [];
   api.kling.mockReset().mockImplementation(async (url: string) => url.includes("/status") ? Response.json({ loggedIn: true, models: [kling], concurrency: api.concurrency }) : url.includes("/jobs?") ? Response.json({ jobs: api.jobs }) : Response.json({ jobId: "new-job" }, { status: 202 }));
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url.startsWith("/api/generation-runs?") ) return Response.json({ runs: api.runs });
+    if (url === "/api/generation-runs" && init?.method === "POST") {
+      const input = JSON.parse(String(init.body));
+      return Response.json({ id: `run-${runRequests().length}`, projectId: input.projectId, kind: input.kind, status: "queued", total: input.items.length, done: 0, failed: 0, items: input.items.map((item: Record<string, unknown>, i: number) => ({ id: `item-${i}`, kind: item.kind, scriptId: item.scriptId, shotId: item.shotId, status: "queued" })) }, { status: 202 });
+    }
     if (url === videoPromptUrl) return Response.json(promptPreview(JSON.parse(init!.body as string)));
     if (url === "/api/project/project") return Response.json({ name: "Product", productImages: ["/api/files/product.jpg"] });
     if (url.endsWith("/scripts")) return Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, description: "Product rotates. 底部小字：仅供展示", camera: "Slow dolly in", prompt: "STATIC IMAGE PROMPT", visualSource: "ai_generate", transition: "direct_concat" }] }]);
@@ -125,6 +134,42 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
+
+describe("image background result reconciliation", () => {
+  function enableImages() {
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+    useSettingsStore.setState({ defaultImageModel: "fixture-image" });
+  }
+  it("waits for the exact newly saved keyframe before offering automatic motion", async () => {
+    enableImages(); api.jobs = [savedKlingJob()];
+    await mount(ark); await click("btnRegenerate");
+    await click("查看 / 恢复");
+    await act(async () => (container.querySelector('[aria-label="refresh-job-detail"]') as HTMLButtonElement).click());
+    expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
+    let finishAssets!: (response: Response) => void;
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/assets") && !init?.method ? new Promise((resolve) => { finishAssets = resolve; }) : normal(url, init));
+    completeRuns();
+    api.runs[0] = { ...api.runs[0], items: [{ id: "saved-image", kind: "image", scriptId: "script", shotId: 1, status: "completed", result: { assetId: "new-frame", selected: true, filePath: "/api/files/new-frame.jpg" } }] };
+    await act(async () => window.dispatchEvent(new Event("clipforge:generation-runs-refresh")));
+    expect(previewRequests()).toHaveLength(0);
+    await act(async () => finishAssets(Response.json([{ id: "new-frame", shotId: 1, status: "done", selected: true, filePath: "/api/files/new-frame.jpg" }])));
+    expect(previewRequests()).toHaveLength(1);
+    expect(previewRequests()[0].controlInputs?.firstFrameUrl).toBe("/api/files/new-frame.jpg");
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("clears the local generating indicator when an accepted image task fails", async () => {
+    enableImages(); await mount(ark); await click("btnRegenerate");
+    expect(button("btnGenerating")).toBeDefined();
+    api.runs = [{ id: "run-1", projectId: "project", kind: "image", status: "failed", total: 1, done: 0, failed: 1, items: [{ id: "failed-image", kind: "image", scriptId: "script", shotId: 1, status: "failed", error: "Provider image failed" }] }];
+    await act(async () => window.dispatchEvent(new Event("clipforge:generation-runs-refresh")));
+    expect(button("btnGenerating")).toBeUndefined();
+    expect(button("retry")?.disabled).toBe(false);
+    expect(container.textContent).toContain("Provider image failed");
+    expect(previewRequests()).toHaveLength(0);
+  });
+});
 
 describe("keyframe refinement entry points", () => {
   function configureFrames() {
@@ -159,6 +204,20 @@ describe("keyframe refinement entry points", () => {
   function expectNoGenerationRequests() {
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   }
+
+  it.each([ark, kling.selectionKey])("keeps individual image and grid actions without a generate-all action for %s", async (videoModel) => {
+    configureFrames();
+    useSettingsStore.setState({ uiMode: "pro" });
+    await mount(videoModel);
+
+    expect(button("批量生成图片关键帧")).toBeUndefined();
+    expect(button("generateAll")).toBeUndefined();
+    expect(button("btnGenerate")?.disabled).toBe(false);
+    expect(button("gridButton")?.disabled).toBe(false);
+    expect(button("keyframeRefineBatch")?.disabled).toBe(false);
+    expect(button("batchMotionButton")?.disabled).toBe(false);
+    expectNoGenerationRequests();
+  });
 
   it("opens batch refinement for selected saved stills and excludes videos, missing, failed and unadopted assets", async () => {
     configureFrames();
@@ -264,10 +323,10 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     await navigate("/project/project/assets?presenter=another-presenter");
     expect(identity?.textContent).toContain(selectedPresenter.name);
     await click("gridButton");
-    const gridRequest = fetchMock.mock.calls.find(([url]) => url.endsWith("/storyboard-grid"))!;
+    const gridRequest = generationRequests("storyboard_grid")[0];
     expect(JSON.parse(gridRequest[1].body)).toMatchObject({ scriptId: "script", characterSheetUrl: "/api/files/frozen-presenter.png" });
     await click("btnGenerate");
-    const imageRequest = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/ai/image")![1].body);
+    const imageRequest = JSON.parse(generationRequests("image")[0][1].body);
     expect(imageRequest).toMatchObject({ imageUrl: "/api/files/frozen-presenter.png", referenceImageUrls: ["/api/files/frozen-presenter.png", "/api/files/product.jpg"] });
     expect(JSON.stringify(imageRequest)).not.toContain("changed-presenter");
     expect(JSON.stringify(imageRequest)).not.toContain("query-presenter");
@@ -288,11 +347,15 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     planned.tidewe = { ...planned.tidewe!, personVisible: false, presenter };
     api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
     await mount(ark); await click("btnGenerate");
-    const imageRequest = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/ai/image")![1].body);
+    const imageRequest = JSON.parse(generationRequests("image")[0][1].body);
     expect(imageRequest.mode).toBe("text-to-image");
     expect(imageRequest).not.toHaveProperty("imageUrl");
     expect(imageRequest).not.toHaveProperty("referenceImageUrls");
     expect(imageRequest.prompt).not.toContain(selectedPresenter.name);
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json([{ id: "asset", shotId: 1, status: "done", selected: true, filePath: "/api/files/frame.jpg" }])) : normal(url, init));
+    completeRuns();
+    await click("刷新任务");
     await click("btnConvertMotion");
     expect(previewRequests()[0].controlInputs).not.toHaveProperty("characterReferenceUrl");
     expect(previewRequests()[0].controlInputs).not.toHaveProperty("productReferenceUrl");
@@ -341,37 +404,26 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(generated).toMatchObject({ prompt: serverPrompt(), controlPlan: { audioMode: "post" }, options: { audioEnabled: false } });
     expect(generated.options.voiceover).toBeUndefined();
     expect(generated.options.audioPrompt).toBeUndefined();
-    const saved = fetchMock.mock.calls.find(([url, init]) => url.endsWith("/assets") && init?.method === "POST");
-    expect(JSON.parse(saved![1].body)).toMatchObject({ generationPlan: { audioMode: "post" } });
+    expect(backgroundItems("video")[0].asset).toMatchObject({ generationPlan: { audioMode: "post" } });
   });
-  it("saves an image against its source script hash before showing the adopted result", async () => {
+  it("registers image generation together with its source script hash and import snapshot", async () => {
     configureTideweAssets();
-    await mount(ark);
-    await click("btnGenerate");
-    const generation = fetchMock.mock.calls.find(([url]) => url === "/api/ai/image")!;
-    expect(JSON.parse(generation[1].body)).toMatchObject({ scriptId: "script", shotId: 1, mode: "image-to-image", imageUrl: "/api/files/product.jpg" });
-    const saves = fetchMock.mock.calls.filter(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST");
-    expect(saves).toHaveLength(1);
-    expect(JSON.parse(saves[0][1].body)).toMatchObject({ scriptId: "script", expectedScriptHash: tideweScriptHash, shotId: 1, sourceUrl: "https://example.test/tidewe-generated.png" });
-    expect(container.querySelector('img[src="/api/files/tidewe-saved.png"]')).not.toBeNull();
-    expect(button("btnRegenerate")).toBeDefined();
-    expect(submissions()).toHaveLength(0);
+    await mount(ark); await click("btnGenerate");
+    expect(backgroundItems("image")).toHaveLength(1);
+    expect(backgroundItems("image")[0]).toMatchObject({ request: { scriptId: "script", shotId: 1, mode: "image-to-image", imageUrl: "/api/files/product.jpg" }, asset: { scriptId: "script", expectedScriptHash: tideweScriptHash, shotId: 1, expectedSelectedAssetId: null } });
+    expect(fetchMock.mock.calls.some(([url, init]) => url.endsWith("/assets") && init?.method === "POST")).toBe(false);
+    expect(container.querySelector('img[src="https://example.test/tidewe-generated.png"]')).toBeNull();
   });
 
-  it("keeps a 409 image-save conflict failed instead of showing an unadopted generated image as done", async () => {
+  it("keeps a rejected image registration visibly failed without adopting a remote image", async () => {
     configureTideweAssets();
     const normal = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project/assets" && init?.method === "POST"
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs" && init?.method === "POST"
       ? Promise.resolve(Response.json({ error: "The script revision changed. Refresh before adopting this image." }, { status: 409 })) : normal(url, init));
-    await mount(ark);
-    await click("btnGenerate");
+    await mount(ark); await click("btnGenerate");
     expect(container.textContent).toContain("The script revision changed. Refresh before adopting this image.");
     expect(button("retry")).toBeDefined();
-    expect(button("btnRegenerate")).toBeUndefined();
     expect(button("btnConvertMotion")).toBeUndefined();
-    expect(container.querySelector('img[src="https://example.test/tidewe-generated.png"]')).toBeNull();
-    expect(container.querySelector('img[src="/api/files/tidewe-saved.png"]')).toBeNull();
-    expect(submissions()).toHaveLength(0);
   });
 
   it("generates environment shots without product references or obsolete sales visual rules", async () => {
@@ -381,7 +433,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     } });
     await mount(ark);
     await click("btnGenerate");
-    const imageCalls = fetchMock.mock.calls.filter(([url]) => url === "/api/ai/image");
+    const imageCalls = generationRequests("image");
     expect(imageCalls).toHaveLength(1);
     const request = JSON.parse(imageCalls[0][1].body);
     expect(request.mode).toBe("text-to-image");
@@ -391,7 +443,6 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(request.prompt).not.toContain("OLD SALES HOST");
     expect(request.prompt).not.toContain("OLD SALES PACKAGING");
     expect(container.textContent).not.toContain("visualBibleBlocked");
-    expect(container.querySelector('img[src="/api/files/tidewe-saved.png"]')).not.toBeNull();
   });
 
   it("sends the source hash and creative revision when editing a camera move", async () => {
@@ -565,31 +616,19 @@ describe("TIDEWE assets preserve the frozen script context", () => {
 });
 
 describe("assets uses the configured provider through one motion entry", () => {
-  it("submits the selected grid resolution and reports the actual cropped dimensions when the model is limited", async () => {
+  it("queues the selected grid resolution and lets the user leave before rendering completes", async () => {
     api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image"] });
     useSettingsStore.setState({ uiMode: "pro", defaultImageModel: "fixture-image", imageParams: { aspectRatio: "1:1", count: 4, seed: 23 } });
-    const normalFetch = fetchMock.getMockImplementation()!;
-    let finishGrid!: (response: Response) => void;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, shots: [1, 2].map((shotId) => ({ shotId, type: "demo", duration: 5, description: "Product rotates", visualSource: "ai_generate" })) }]));
-      if (url.endsWith("/storyboard-grid")) return new Promise<Response>((resolve) => { finishGrid = resolve; });
-      return normalFetch(url, init);
-    });
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts") ? Promise.resolve(Response.json([{ id: "script", selected: true, shots: [1, 2].map(shotId => ({ shotId, type: "demo", duration: 5, description: "Product rotates", visualSource: "ai_generate" })) }])) : normal(url, init));
     await mount(ark);
     const select = container.querySelector<HTMLSelectElement>("#storyboard-grid-resolution")!;
     expect(select.value).toBe("4k");
-    expect(container.querySelector(`label[for="${select.id}"]`)?.textContent).toBe("九宫格清晰度");
-    expect(container.querySelector("#storyboard-grid-resolution-hint")?.textContent).toContain("2160×3840");
     await act(async () => { select.value = "2k"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await click("gridButton");
-    const request = fetchMock.mock.calls.find(([url]) => url.endsWith("/storyboard-grid"))!;
-    expect(JSON.parse(request[1].body)).toMatchObject({ gridResolution: "2k", options: { width: 1080, height: 1920, count: 1, seed: 23 } });
-    expect(select.disabled).toBe(true);
-    await act(async () => finishGrid(Response.json({ count: 2, resolution: { requested: "2k", gridWidth: 768, gridHeight: 1365, minCellWidth: 250, minCellHeight: 449, maxCellWidth: 250, maxCellHeight: 449, limited: true } })));
-    const notice = [...container.querySelectorAll('[role="status"]')].find((item) => item.textContent?.includes("gridDone"));
-    expect(notice?.textContent).toContain("实际九宫格 768×1365，裁剪后单格至少 250×449");
-    expect(notice?.textContent).toContain("未达到所选清晰度目标");
-    expect(select.disabled).toBe(false);
+    expect(backgroundItems("storyboard_grid")[0].request).toMatchObject({ gridResolution: "2k", options: { width: 1080, height: 1920, count: 1, seed: 23 } });
+    expect(container.textContent).toContain("九宫格已进入后台任务");
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/storyboard-grid"))).toBe(false);
   });
 
   it("only shows local video tasks belonging to the selected script, including after refresh", async () => {
@@ -664,13 +703,13 @@ describe("assets uses the configured provider through one motion entry", () => {
   });
 
   it("refreshes the task list, material library, shot preview and account capacity after deletion", async () => {
-    api.jobs = [savedKlingJob()]; api.concurrency = { active: 1, max: 10, blockedByUnknownSubmission: false };
+    api.jobs = [savedKlingJob()]; api.concurrency = { active: 1, max: null, blockedByUnknownSubmission: false };
     api.showMaterialLibrary = true; isVideo = true;
     const originalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/materials") ? Promise.resolve(Response.json({ materials: [] })) : originalFetch(url, init));
     const originalKling = api.kling.getMockImplementation()!;
     api.kling.mockImplementation((url: string, init?: RequestInit) => {
-      if (init?.method === "DELETE") { api.jobs = []; isVideo = false; api.concurrency = { active: 0, max: 10, blockedByUnknownSubmission: false }; return Promise.resolve(Response.json({ deleted: true, jobId: "saved-job" })); }
+      if (init?.method === "DELETE") { api.jobs = []; isVideo = false; api.concurrency = { active: 0, max: null, blockedByUnknownSubmission: false }; return Promise.resolve(Response.json({ deleted: true, jobId: "saved-job" })); }
       return originalKling(url, init);
     });
     await mount(kling.selectionKey);
@@ -685,7 +724,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(container.querySelector('[aria-label="job-detail"]')).toBeNull();
     expect(container.querySelector('a[href="/api/files/clip.mp4"]')).toBeNull();
     expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
-    expect(container.textContent).toContain("当前账号生成名额：0 / 10");
+    expect(container.textContent).not.toContain("最多同时生成 10");
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/assets")).length).toBeGreaterThan(assetsReads);
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/materials")).length).toBeGreaterThan(materialReads);
     expect(api.kling.mock.calls.filter(([url]) => url.includes("/status")).length).toBeGreaterThan(statusReads);
@@ -707,7 +746,7 @@ describe("assets uses the configured provider through one motion entry", () => {
 
   it.each([200, 500])("ignores a pre-deletion task poll that returns late with status %i", async (status) => {
     const oldJob = savedKlingJob({ submissionState: "submission_unknown", remoteState: "unknown", importState: "not_ready", outputs: [] });
-    api.jobs = [oldJob]; api.concurrency = { active: 1, max: 10, blockedByUnknownSubmission: true };
+    api.jobs = [oldJob]; api.concurrency = { active: 1, max: null, blockedByUnknownSubmission: true };
     await mount(kling.selectionKey);
     const originalKling = api.kling.getMockImplementation()!;
     let delayPoll = true;
@@ -718,7 +757,7 @@ describe("assets uses the configured provider through one motion entry", () => {
         return new Promise<Response>((resolve) => { finishOldPoll = resolve; });
       }
       if (init?.method === "DELETE") {
-        api.jobs = []; api.concurrency = { active: 0, max: 10, blockedByUnknownSubmission: false };
+        api.jobs = []; api.concurrency = { active: 0, max: null, blockedByUnknownSubmission: false };
         return Promise.resolve(Response.json({ deleted: true, jobId: oldJob.jobId }));
       }
       return originalKling(url, init);
@@ -728,10 +767,10 @@ describe("assets uses the configured provider through one motion entry", () => {
     await act(async () => deleteVideoButton().click());
     await click("确认删除");
     expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
-    expect(container.textContent).toContain("当前账号生成名额：0 / 10");
+    expect(container.textContent).not.toContain("最多同时生成 10");
     await act(async () => finishOldPoll(Response.json(status === 200 ? { jobs: [oldJob] } : { error: "旧轮询失败" }, { status })));
     expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
-    expect(container.textContent).toContain("当前账号生成名额：0 / 10");
+    expect(container.textContent).not.toContain("最多同时生成 10");
     expect(container.textContent).not.toContain("旧轮询失败");
     expect(container.textContent).not.toContain("请先恢复任务列表");
   });
@@ -813,7 +852,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(deleteVideoButton().disabled).toBe(false);
     await click("查看 / 恢复");
     await act(async () => deleteVideoButton().click());
-    expect(container.querySelector("h2")?.textContent).toBe("删除任务？");
+    expect([...container.querySelectorAll("h2")].some((heading) => heading.textContent === "删除任务？")).toBe(true);
     expect(container.textContent).toContain("本地任务记录，停止自动查询");
     expect(container.textContent).toContain("云端任务可能继续运行，删除不等于取消云端生成。");
     expect(button("确认删除")!.disabled).toBe(false);
@@ -936,21 +975,18 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each([9, 10])("shows account capacity %i/10 and only blocks new shots when all slots are reserved", async (active) => {
-    api.concurrency = { active, max: 10, blockedByUnknownSubmission: false };
+  it.each([9, 40])("permits confirming a background Kling shot with %i existing account jobs", async (active) => {
+    api.concurrency = { active, max: null, blockedByUnknownSubmission: false };
     await mount(kling.selectionKey);
-    expect(container.textContent).toContain(`当前账号生成名额：${active} / 10`);
-    expect(container.textContent).toContain("同一账号最多同时生成 10 个镜头");
-    expect(button("btnConvertMotion")!.disabled).toBe(active === 10);
-    if (active === 9) {
-      await click("btnConvertMotion");
-      expect(container.querySelector("h2")?.textContent).toContain("确认镜头 1 视频生成");
-    }
+    expect(button("btnConvertMotion")!.disabled).toBe(false);
+    expect(container.textContent).not.toContain("最多同时生成 10");
+    await click("btnConvertMotion");
+    expect(container.querySelector("h2")?.textContent).toContain("确认镜头 1 视频生成");
     expect(submissions()).toHaveLength(0);
   });
 
   it("keeps original task recovery available while account capacity is full", async () => {
-    api.concurrency = { active: 10, max: 10, blockedByUnknownSubmission: true };
+    api.concurrency = { active: 10, max: null, blockedByUnknownSubmission: true };
     api.jobs = [{ jobId: "original", shotId: 1, scriptId: "script", submissionState: "submission_unknown", outputs: [] }];
     await mount(kling.selectionKey);
     const recovery = button("查看视频任务")!;
@@ -1037,12 +1073,8 @@ describe("assets uses the configured provider through one motion entry", () => {
     await click("确认生成此镜头");
     expect(JSON.parse(submissions()[0][1].body).prompt).toBe(firstPrompt);
 
-    if (defaultModel === kling.selectionKey) {
-      // Import completion refreshes the asset rows; the original script remains unchanged.
-      isVideo = true;
-      await act(async () => (container.querySelector('[aria-label="refresh-job-detail"]') as HTMLButtonElement).click());
-      await act(async () => (container.querySelector('[aria-label="close-job-detail"]') as HTMLButtonElement).click());
-    }
+    isVideo = true; completeRuns();
+    await click("刷新任务");
     await click("btnRedoMotion");
     expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(firstPrompt);
     expect(previewRequests()).toHaveLength(2);
@@ -1274,7 +1306,7 @@ describe("assets uses the configured provider through one motion entry", () => {
 
   it("keeps an API submission with uncertain status blocked after closing the confirmation", async () => {
     const normal = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/ai/video" ? Promise.reject(new TypeError("Network interrupted")) : normal(url, init));
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs" && init?.method === "POST" ? Promise.reject(new TypeError("Network interrupted")) : normal(url, init));
     await mount(ark); await click("btnConvertMotion");
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
@@ -1381,39 +1413,21 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it("persists a generated batch video against its original script and input keyframe", async () => {
-    await mount(ark);
-    await click("batchMotionButton");
+  it("freezes batch video import metadata alongside the provider request", async () => {
+    await mount(ark); await click("batchMotionButton");
     const draft = batch.props!.shots[0].draft!;
     await act(async () => { await draft.generate(); });
-    const saves = fetchMock.mock.calls.filter(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST");
-    expect(saves).toHaveLength(1);
-    expect(JSON.parse(saves[0][1].body)).toMatchObject({
-      scriptId: "script", shotId: 1, provider: "volcengine", model: ark,
-      sourceUrl: "/api/files/result.mp4", thumbnailPath: "/api/files/frame.jpg",
-    });
-    expect(container.querySelector('a[href="/api/files/saved.mp4"]')).not.toBeNull();
-    expect(submissions()).toHaveLength(1);
+    expect(backgroundItems("video")[0].asset).toMatchObject({ scriptId: "script", shotId: 1, provider: "volcengine", model: ark, thumbnailPath: "/api/files/frame.jpg", expectedSelectedAssetId: "asset" });
+    expect(fetchMock.mock.calls.some(([url, init]) => url.endsWith("/assets") && init?.method === "POST")).toBe(false);
   });
 
-  it("keeps a generated video recoverable and blocks resubmission when saving its asset fails", async () => {
-    const normal = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project/assets" && init?.method === "POST"
-      ? Promise.resolve(Response.json({ error: "Import unavailable" }, { status: 500 })) : normal(url, init));
+  it("restores a background import failure and keeps its snapshot out of a new batch", async () => {
+    api.runs = [{ id: "old-run", projectId: "project", kind: "video", status: "needs_attention", total: 1, done: 0, failed: 1, items: [{ id: "old-item", kind: "video", scriptId: "script", shotId: 1, status: "needs_attention", error: "Import unavailable" }] }];
     await mount(ark);
-    await click("batchMotionButton");
-    const draft = batch.props!.shots[0].draft!;
-    await act(async () => { await expect(draft.generate()).rejects.toMatchObject({ uncertain: true, message: expect.stringContaining("保存素材失败") }); });
     expect(container.textContent).toContain("Import unavailable");
-    expect(container.querySelector('a[href="/api/files/result.mp4"]')).toBeNull();
-    expect(button("btnRedoMotion")).toBeUndefined();
-    await act(async () => (container.querySelector('[aria-label="close-batch-motion-panel"]') as HTMLButtonElement).click());
     await click("batchMotionButton");
-    const row = batch.props!.shots[0];
-    expect(row.disabledReason).toBe("batchMotionExistingTask");
-    expect(row.draft).toBeUndefined();
-    await act(async () => (container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).click());
-    expect(submissions()).toHaveLength(1);
+    expect(batch.props!.shots[0].disabledReason).toBe("batchMotionExistingTask");
+    expect(submissions()).toHaveLength(0);
   });
 
   it("blocks unsupported premium CG batch imports before starting a paid generation", async () => {
@@ -1446,6 +1460,18 @@ describe("assets uses the configured provider through one motion entry", () => {
     await navigate("/project/project/assets?klingFilm=film-b");
     expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("film-b");
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/scripts"))).toHaveLength(scriptReads);
+    expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it.each([ark, kling.selectionKey])("ignores the retired Kling film creation link with default model %s", async (videoModel) => {
+    await navigate("/project/project/assets?klingFilm=1");
+    await mount(videoModel);
+    expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
+
+    await navigate("/project/project/assets?klingFilm=existing-film");
+    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("existing-film");
+    await navigate("/project/project/assets?klingFilm=1");
+    expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([, init]) => init?.method === "POST")).toBe(false);
   });
 

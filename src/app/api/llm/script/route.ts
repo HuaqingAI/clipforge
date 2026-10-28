@@ -24,6 +24,8 @@ import {
   type ProjectCreativeProfile,
 } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
+import { generationContextSnapshot, generationContextCheckpoint, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
+import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 import { assertTideweImportedCopy, assertTideweScript } from "@/lib/tidewe/validation";
 import { analyzeTideweProductImages } from "@/lib/tidewe/image-analysis";
@@ -204,6 +206,8 @@ export async function POST(req: NextRequest) {
 }
 
 async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBody): Promise<NextResponse> {
+  const recoveringGenerated = Array.isArray(generationContextCheckpoint()?.generatedScripts);
+  const frozenContext = generationContextSnapshot();
   const {
     productImages: requestedProductImages,
     productName: requestedProductName,
@@ -221,10 +225,14 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     const db = getDb();
     const [row] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
     if (!row) return apiError(req, "项目不存在", "Project not found", 404);
-    project = row;
-    projectRevision = row.creativeConfigRevision ?? 0;
-    projectProfile = resolveCreativeProfile(row.creativeProfile, {
-      videoMode: row.videoMode,
+    const frozen = generationContextSnapshot()?.project as typeof row | undefined;
+    if (frozen && !recoveringGenerated && (frozen.id !== projectId || projectGenerationSignature(frozen) !== projectGenerationSignature(row))) {
+      return NextResponse.json({ error: "项目输入已变化，请重新提交脚本任务。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+    }
+    project = frozen ?? row;
+    projectRevision = project.creativeConfigRevision ?? 0;
+    projectProfile = resolveCreativeProfile(project.creativeProfile, {
+      videoMode: project.videoMode,
       styleType: body.styleType,
       targetDuration: body.targetDuration ?? body.duration,
     });
@@ -260,8 +268,25 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
 
   const premiumProfile = isPremiumProductCgProfile(projectProfile) ? projectProfile : undefined;
   const tideweProfile = isTideweOutdoorProfile(projectProfile) ? projectProfile : undefined;
-  let originalSelection: { id: string } | undefined;
-  let originalSource: { id: string } | undefined;
+  let originalSelection: { id: string; hash: string } | undefined;
+  let originalSource: { id: string; hash: string } | undefined;
+  if (projectId) {
+    const existing = getDb().select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
+    const prior = body.requestId ? existing.filter((row) => row.generationMetadata?.requestId === body.requestId) : [];
+    if (prior.length) return NextResponse.json({ scripts: prior.map((row) => ({ ...row, scriptHash: scriptRevision(row) })) });
+    const selected = frozenContext ? frozenContext.script as typeof scriptsTable.$inferSelect | undefined : existing.find((row) => row.selected);
+    originalSelection = selected ? { id: selected.id, hash: scriptRevision(selected) } : undefined;
+    const frozenSource = generationContextSnapshot()?.script as typeof scriptsTable.$inferSelect | undefined;
+    const sourceId = body.sourceScriptId ?? frozenSource?.id;
+    if (sourceId) {
+      const source = recoveringGenerated && frozenSource ? frozenSource : existing.find((row) => row.id === sourceId);
+      const expectedHash = body.expectedScriptHash ?? (frozenSource ? scriptRevision(frozenSource) : undefined);
+      if (!source || (expectedHash && scriptRevision(source) !== expectedHash)) {
+        return NextResponse.json({ error: "源脚本已变化，请重新提交脚本任务。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
+      }
+      originalSource = { id: source.id, hash: scriptRevision(source) };
+    }
+  }
   if (tideweProfile) {
     if (!projectId || !project) return NextResponse.json({ error: "TIDEWE generation requires a saved project.", code: "TIDEWE_PROJECT_REQUIRED" }, { status: 400 });
     if (typeof body.requestId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(body.requestId)) return NextResponse.json({ error: "A valid requestId is required.", code: "TIDEWE_REQUEST_ID_REQUIRED" }, { status: 400 });
@@ -285,12 +310,12 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         return NextResponse.json({ error: error instanceof Error ? error.message : "请输入完整英文口播文案。", code: "TIDEWE_IMPORTED_COPY_INVALID", requestId: body.requestId }, { status: 400 });
       }
     }
-    const selected = existing.find((row) => row.selected);
-    originalSelection = selected ? { id: selected.id } : undefined;
+    const selected = frozenContext ? frozenContext.script as typeof scriptsTable.$inferSelect | undefined : existing.find((row) => row.selected);
+    originalSelection = selected ? { id: selected.id, hash: scriptRevision(selected) } : undefined;
     if (body.sourceScriptId !== undefined || body.expectedScriptHash !== undefined) {
-      const source = existing.find((row) => row.id === body.sourceScriptId);
+      const source = recoveringGenerated && frozenContext?.script ? frozenContext.script as typeof scriptsTable.$inferSelect : existing.find((row) => row.id === body.sourceScriptId);
       if (!source) return NextResponse.json({ error: "The source script does not belong to this project.", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
-      originalSource = { id: source.id };
+      originalSource = { id: source.id, hash: scriptRevision(source) };
     }
   }
   const productImages = (project?.productImages as string[] | undefined) ?? requestedProductImages;
@@ -320,22 +345,26 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
 
   try {
     // Product image analysis: convert local paths to base64 before passing to the vision model
-    let analysis = body.productAnalysis;
+    const savedAnalysis = generationContextCheckpoint()?.productAnalysis;
+    const analysisComplete = generationContextCheckpoint()?.analysisComplete === true;
+    let analysis = typeof savedAnalysis === "string" ? savedAnalysis : body.productAnalysis;
     const imageReferences = productImages ?? [];
-    if (tideweProfile && imageReferences.length && !analysis) {
+    if (tideweProfile && imageReferences.length && !analysis && !analysisComplete) {
       try {
         const imageUrls = await Promise.all(imageReferences.slice(0, 4).map(imagePathToBase64));
+        beforeGenerationSubmission();
         analysis = await analyzeTideweProductImages(llmConfig, imageUrls);
       } catch (error) {
         // Vision is optional and never supplies confirmed facts. A conservative copy can still use the product brief.
         console.warn("TIDEWE image observations unavailable:", error);
       }
     }
-    if (!tideweProfile && !analysis && imageReferences.length > 0 && llmConfig) {
+    if (!tideweProfile && !analysis && imageReferences.length > 0 && llmConfig && !analysisComplete) {
       try {
         const imageUrls = await Promise.all(
           imageReferences.map(imagePathToBase64)
         );
+        beforeGenerationSubmission();
         analysis = await analyzeProduct(imageUrls, llmConfig);
       } catch (e) {
         // Image analysis failure should not block script generation
@@ -343,6 +372,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       }
     }
 
+    generationCheckpoint({ analysisComplete: true, productAnalysis: analysis ?? null, submissionState: "not_submitted" });
     // Data flywheel (read side): pull the creator's real conversion feedback for this category.
     // Used two ways: (1) bias smart-recommend ("auto") mode toward the top-converting style,
     // (2) inject an advisory hint into the prompt so generated variants lean toward what sells.
@@ -352,7 +382,9 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     }
 
     // Generate script (category/styleType/duration already normalized above)
-    const scripts = await generateScript({
+    const savedGenerated = generationContextCheckpoint()?.generatedScripts as Awaited<ReturnType<typeof generateScript>> | undefined;
+    if (!savedGenerated) beforeGenerationSubmission();
+    const scripts = savedGenerated ?? await generateScript({
       productName,
       category,
       // CG accepts any product category; the legacy sales fallback must not relabel it as beauty.
@@ -388,6 +420,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
           : undefined,
       llmConfig,
     });
+    generationCheckpoint({ generatedScripts: scripts, submissionState: "acknowledged", stage: "saving" });
     if (tideweProfile) {
       if (!scripts.length || scripts.length > 3) throw new Error("TIDEWE returned an invalid candidate count.");
       for (const script of scripts) {
@@ -400,7 +433,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     const generationMetadata = { ...scriptGenerationMetadata(
       llmConfig,
       tideweProfile ? "tidewe-outdoor-script" : premiumProfile ? "premium-product-cg-script" : "commerce-script",
-    ), ...(tideweProfile && { requestId: body.requestId }) };
+    ), ...(body.requestId && { requestId: body.requestId }) };
     let savedScripts = scripts;
     if (projectId) {
       const db = getDb();
@@ -422,12 +455,27 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         let replayedDuringSave = false;
         const rows = db.transaction((tx) => {
           const [currentProject] = tx
-            .select({ creativeProfile: projects.creativeProfile })
+            .select()
             .from(projects)
             .where(eq(projects.id, projectId))
             .limit(1)
             .all();
-          creativeConfigChanged = !currentProject || resolveCreativeProfile(currentProject.creativeProfile).creationType !== projectProfile.creationType;
+          creativeConfigChanged = !currentProject || !project || projectGenerationSignature(currentProject) !== projectGenerationSignature(project);
+          const allCurrentScripts = tx.select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
+          const savedByOtherWorker = body.requestId ? allCurrentScripts.filter((row) => row.generationMetadata?.requestId === body.requestId) : [];
+          if (savedByOtherWorker.length) {
+            replayedDuringSave = true;
+            creativeConfigChanged ||= !savedByOtherWorker.some((row) => row.selected);
+            return savedByOtherWorker;
+          }
+          const selectedNow = allCurrentScripts.find((row) => row.selected);
+          creativeConfigChanged ||= originalSelection
+            ? selectedNow?.id !== originalSelection.id || scriptRevision(selectedNow) !== originalSelection.hash
+            : Boolean(selectedNow);
+          if (originalSource) {
+            const sourceNow = tx.select().from(scriptsTable).where(eq(scriptsTable.id, originalSource.id)).get();
+            creativeConfigChanged ||= !sourceNow || scriptRevision(sourceNow) !== originalSource.hash;
+          }
           if (tideweProfile) {
             const currentScripts = tx.select().from(scriptsTable).where(eq(scriptsTable.projectId, projectId)).all();
             // Another worker may have finished this request after our initial read.

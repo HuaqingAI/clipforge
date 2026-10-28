@@ -8,6 +8,7 @@ import { useTemplateStore } from "@/lib/stores/template-store";
 import { useProductLibraryStore, type ProductItem } from "@/lib/stores/product-library-store";
 import { getExampleProducts, type ExampleProduct } from "@/lib/examples";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { submitGenerationRun } from "@/lib/hooks/use-generation-runs";
 import { AD_TEMPLATE_GROUPS, listAdTemplates, getAdTemplate, adTemplateScriptDirective, adTemplateStorageKey, recommendAdTemplates, encodeStoredAdTemplate, exportAdTemplateShare, exportAdTemplatePack, AD_TEMPLATE_EDIT_VOCAB, CUSTOM_AD_TEMPLATE_ID, type AdTemplate, type AdTemplateGroupId, type AdTemplateCategory } from "@/lib/ad-templates";
 import { CAMERA_PRESETS } from "@/lib/camera-presets";
 import { LOOK_PRESETS } from "@/lib/look-presets";
@@ -224,6 +225,8 @@ function createSalesRecipeSnapshot(
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const pageAlive = useRef(false);
+  useEffect(() => { pageAlive.current = true; return () => { pageAlive.current = false; }; }, []);
   const t = useT("newProject");
   const tt = useT("tidewe");
   const locale = useLocale();
@@ -880,10 +883,9 @@ export default function NewProjectPage() {
             .join("\n")
         : undefined;
 
-      const scriptRes = await fetch("/api/llm/script", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const generationRun = await submitGenerationRun({
+        projectId: project.id, clientRequestId: crypto.randomUUID(), kind: "script",
+        items: [{ kind: "script", request: {
           projectId: project.id,
           ...(isTidewe && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: updatedProject.creativeConfigRevision ?? project.creativeConfigRevision ?? 0 }),
           ...(useTideweOriginal && { copyText: tideweCopyText, count: 1 }),
@@ -926,26 +928,14 @@ export default function NewProjectPage() {
               voiceStyle: selectedCharacter.voiceProfile?.style,
             },
           }),
-        }),
+        } }],
       });
 
       // increment use count when a template was applied
       if (isSales && selectedTemplateId) {
         incrementUseCount(selectedTemplateId);
       }
-      if (!scriptRes.ok) {
-        const failure = await scriptRes.json().catch(() => ({}));
-        throw new Error(failure.error || t("errorScriptFailed"));
-      }
-
-      // step 4: done
-      setProgress({
-        step: "done",
-        percent: 100,
-        message: isTidewe ? tt(useTideweOriginal ? "copyInputComplete" : "complete") : t(isPremiumCg ? "progressDoneCg" : "progressDone"),
-      });
-      await new Promise((r) => setTimeout(r, 800));
-      router.push(`/project/${project.id}/script`);
+      if (pageAlive.current) router.push(`/project/${project.id}/script?runId=${encodeURIComponent(generationRun.id)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("errorGeneric"));
       setIsSubmitting(false);

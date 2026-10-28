@@ -1,3 +1,4 @@
+import { submitGenerationRun, type GenerationRun } from "@/lib/hooks/use-generation-runs";
 import type { Shot } from "@/lib/db/schema";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
 import type { CreativeProfileSnapshot } from "@/lib/creative-profiles";
@@ -53,93 +54,46 @@ export function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<
   });
 }
 
-/** Observe saved results independently of the long-running generation request. */
+/** Submit once. Leaving the page stops observation while the durable server task continues. */
 export async function generateProjectScripts(options: GenerationOptions): Promise<SavedScript[]> {
-  const { endpoint, payload, projectId, signal, messages } = options;
-  const knownIds = new Set(options.knownScriptIds);
-  const requestId = options.requestId ?? (options.payload && typeof options.payload === "object" && "requestId" in options.payload && typeof options.payload.requestId === "string" ? options.payload.requestId : undefined);
+  const { signal, projectId, messages } = options;
+  if (signal.aborted) throw signal.reason;
+  const payload = options.payload && typeof options.payload === "object" ? options.payload as Record<string, unknown> : {};
+  const requestId = options.requestId ?? (typeof payload.requestId === "string" ? payload.requestId : crypto.randomUUID());
+  let run = await submitGenerationRun({
+    projectId, clientRequestId: requestId, kind: "script",
+    items: [{ kind: "script", ...(typeof payload.sourceScriptId === "string" || typeof payload.scriptId === "string" ? { scriptId: String(payload.sourceScriptId ?? payload.scriptId) } : {}),
+      request: { ...payload, projectId, generationEndpoint: options.endpoint, generationMethod: options.method ?? "POST" } }],
+  });
   const controller = new AbortController();
-  const onAbort = () => controller.abort(signal.reason);
-  if (signal.aborted) onAbort();
-  else signal.addEventListener("abort", onAbort, { once: true });
-  const deadline = setTimeout(() => controller.abort(new Error(messages.unconfirmed)), 10 * 60_000);
-
-  const readScripts = async () => {
-    const readController = new AbortController();
-    const cancel = () => readController.abort(controller.signal.reason);
-    if (controller.signal.aborted) cancel();
-    else controller.signal.addEventListener("abort", cancel, { once: true });
-    const timeout = setTimeout(() => readController.abort(new Error(messages.reload)), 15_000);
-    try {
-      return await abortable((async () => {
-        const response = await fetch(`/api/project/${projectId}/scripts`, {
-          cache: "no-store", signal: readController.signal,
-        });
-        if (!response.ok) throw new Error(messages.reload);
-        const rows: unknown = await response.json();
-        if (!isSavedScripts(rows)) throw new Error(messages.reload);
-        return rows;
-      })(), readController.signal);
-    } finally {
-      clearTimeout(timeout);
-      controller.signal.removeEventListener("abort", cancel);
-      readController.abort();
-    }
-  };
-
-  const request = async () => {
-    const response = await fetch(endpoint, {
-      method: options.method ?? "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    // Once HTTP has confirmed failure, a stalled error body must not leave the UI polling
-    // for successful scripts until the full generation deadline. Keep the server's diagnostic
-    // when it arrives, and fall back to the failure message if the body never completes.
-    const errorBodyDeadline = !response.ok
-      ? setTimeout(() => controller.abort(new Error(messages.failed)), 15_000)
-      : undefined;
-    let data;
-    try {
-      data = await abortable(response.json().catch(() => null), controller.signal);
-    } finally {
-      clearTimeout(errorBodyDeadline);
-    }
-    if (!response.ok) throw new Error(data?.error || messages.failed);
-    // Both generation routes return persisted scripts, so no second request is needed.
-    if (isSavedScripts(data?.scripts) && data.scripts.length > 0) return data.scripts;
-    const rows = await readScripts();
-    if (rows.length === 0) throw new Error(messages.reload);
+  const cancel = () => controller.abort(signal.reason);
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  const timeout = setTimeout(() => controller.abort(new Error(messages.unconfirmed)), 10 * 60_000);
+  const readResult = async (value: GenerationRun): Promise<SavedScript[]> => {
+    const result = value.items.find((item) => item.kind === "script")?.result;
+    // A delayed generation can be saved as history while another script remains selected.
+    // Its result contains only the new rows, so read canonical selection before updating UI.
+    if (result?.historical !== true && isSavedScripts(result?.scripts) && result.scripts.some((row) => row.selected)) return result.scripts;
+    const response = await fetch(`/api/project/${projectId}/scripts`, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) throw new Error(messages.reload);
+    const rows: unknown = await response.json();
+    if (!isSavedScripts(rows)) throw new Error(messages.reload);
     return rows;
   };
-
-  const observe = async () => {
+  try {
     while (!controller.signal.aborted) {
-      await new Promise<void>((resolve, reject) => {
-        const cancel = () => { clearTimeout(timer); reject(controller.signal.reason); };
-        const timer = setTimeout(() => {
-          controller.signal.removeEventListener("abort", cancel);
-          resolve();
-        }, 2500);
-        controller.signal.addEventListener("abort", cancel, { once: true });
-      });
-      try {
-        const rows = await readScripts();
-        // Old selections and archived results from a changed creative profile are not completion.
-        if (rows.some((row) => row.selected && !knownIds.has(row.id) && (!requestId || row.generationMetadata?.requestId === requestId))) return rows;
-      } catch {
-        // A transient read failure must not interrupt the generation request.
+      if (run.status === "completed") return await abortable(readResult(run), controller.signal);
+      if (["failed", "needs_attention", "cancelled"].includes(run.status)) {
+        throw new Error(run.items.find((item) => item.error)?.error || run.error || messages.failed);
       }
+      await abortable(new Promise((resolve) => setTimeout(resolve, 1500)), controller.signal);
+      const response = await fetch(`/api/generation-runs/${encodeURIComponent(run.id)}`, { cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error(messages.reload);
+      run = await abortable(response.json(), controller.signal) as GenerationRun;
     }
     throw controller.signal.reason;
-  };
-
-  try {
-    return await abortable(Promise.race([request(), observe()]), controller.signal);
   } finally {
-    clearTimeout(deadline);
-    signal.removeEventListener("abort", onAbort);
-    controller.abort();
+    clearTimeout(timeout); signal.removeEventListener("abort", cancel); controller.abort();
   }
 }

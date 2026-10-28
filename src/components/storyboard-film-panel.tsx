@@ -17,15 +17,16 @@ export function StoryboardFilmPanel(props: FilmPanelProps) {
   return props.open ? <FilmSession key={props.initialRunId ?? props.initialTaskId ?? "new"} {...props} /> : null;
 }
 
-function FilmSession({ onOpenChange, projectId, scriptId, presenterId, initialRunId, initialTaskId, onAssetsChanged, creativeProfile }: FilmPanelProps) {
+function FilmSession({ onOpenChange, projectId, scriptId, presenterId, initialRunId, initialTaskId, onAssetsChanged }: FilmPanelProps) {
   const defaultModel = useSettingsStore((state) => state.defaultVideoModel);
-  const profileId = useSettingsStore((state) => state.providers["kling-cli"]?.profileId);
   const [kling] = useState(() => Boolean(initialRunId) || (!initialTaskId && isKlingVideoSelection(defaultModel)));
   const [jobId, setJobId] = useState<string | null>(null);
 
+  if (kling && !initialRunId) return null;
+
   return <>
     {kling
-      ? <KlingFilmPanel open onOpenChange={onOpenChange} projectId={projectId} scriptId={scriptId} profileId={profileId} defaultModel={defaultModel} presenterId={presenterId} initialRunId={initialRunId} onAssetsChanged={onAssetsChanged} onOpenJob={setJobId} creativeProfile={creativeProfile} />
+      ? <KlingFilmPanel open onOpenChange={onOpenChange} projectId={projectId} initialRunId={initialRunId} onAssetsChanged={onAssetsChanged} onOpenJob={setJobId} />
       : <ArkFilmPanel open onOpenChange={onOpenChange} projectId={projectId} scriptId={scriptId} presenterId={presenterId} initialTaskId={initialTaskId} onAssetsChanged={onAssetsChanged} />}
     <KlingJobDetail jobId={jobId} open={jobId !== null} onOpenChange={(next) => { if (!next) setJobId(null); }} onChanged={() => { void onAssetsChanged(); }} />
   </>;

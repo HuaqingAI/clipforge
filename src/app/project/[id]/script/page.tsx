@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useGenerationRuns, generationRunActive } from "@/lib/hooks/use-generation-runs";
+import { GenerationRunsPanel } from "@/components/generation-runs-panel";
 import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil, LuTrash2, LuHistory } from "react-icons/lu";
 import { checkScriptCompliance } from "@/lib/ad-compliance";
 import { checkPublishReadiness } from "@/lib/publish-readiness";
@@ -139,6 +141,11 @@ export default function ScriptPage() {
   const tc = useT("common");
   const locale = useLocale();
   const { id } = useParams<{ id: string }>();
+  const { runs: generationRuns, loading: generationRunsLoading, error: generationRunsError } = useGenerationRuns(id);
+  const scriptRuns = generationRuns.filter((run) => run.items.some((item) => item.kind === "script"));
+  const scriptRunActive = scriptRuns.some(generationRunActive);
+  const scriptRunBlocked = scriptRunActive || scriptRuns.some((run) => run.status === "needs_attention");
+  const completedScriptRuns = scriptRuns.filter((run) => run.status === "completed").map((run) => run.id).sort().join(",");
   const router = useRouter();
   const [selectedScript, setSelectedScript] = useState(0);
   const [scripts, setScripts] = useState<
@@ -149,7 +156,8 @@ export default function ScriptPage() {
   // project metadata: reused when re-generating the script from the empty state
   const [projectMeta, setProjectMeta] = useState<ProjectMeta | null>(null);
   const [creativeConfigSaving, setCreativeConfigSaving] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [localGenerating, setIsGenerating] = useState(false);
+  const isGenerating = localGenerating || scriptRunActive;
   const generationInFlight = useRef(false);
   const generationAbort = useRef<AbortController | null>(null);
   const deletionAbort = useRef<AbortController | null>(null);
@@ -204,7 +212,7 @@ export default function ScriptPage() {
 
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
   const handleGenerate = async () => {
-    if (!projectMeta || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!projectMeta || generationRunsLoading || generationRunsError || scriptRunBlocked || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     const manualTideweCopy = projectMeta.creativeProfile.creationType === "tidewe_outdoor" && tideweCopySource === "manual";
     const copyError = manualTideweCopy ? tideweCopyInputError(tideweCopyText) : undefined;
     if (copyError) {
@@ -390,7 +398,7 @@ export default function ScriptPage() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, completedScriptRuns]);
 
   const currentScript = scripts[selectedScript];
   const isPremiumCgProject = projectMeta?.creativeProfile.creationType === "premium_product_cg";
@@ -837,6 +845,7 @@ export default function ScriptPage() {
 
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
   const saveTideweCopy = async (copyText: string) => {
+    if (generationRunsLoading || generationRunsError || scriptRunBlocked) return;
     if (!currentScript?.scriptHash || !projectMeta) throw new Error(tt("missingHash"));
     if (!llm.apiKey) throw new Error(tt("missingLlm"));
     if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
@@ -864,7 +873,7 @@ export default function ScriptPage() {
     finally { if (generationAbort.current === controller) { generationAbort.current = null; generationInFlight.current = false; } }
   };
 
-  const scriptActionsBusy = isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
+  const scriptActionsBusy = generationRunsLoading || Boolean(generationRunsError) || scriptRunBlocked || isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
   const judgeRewriteCount = judgeReport ? autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length : 0;
   const judgeHasActionableAdvice = judgeReport?.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default")) ?? false;
   const judgeHasSuggestions = judgeReport ? judgeReport.verdicts.some((verdict) => verdict.issues.length > 0) || judgeReport.rewrites.length > 0 || judgeReport.descriptionRewrites.length > 0 : false;
@@ -891,7 +900,10 @@ export default function ScriptPage() {
   const historyDialog = historyOpen ? (
     <ScriptHistoryDialog key={id} projectId={id} busy={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClose={() => setHistoryOpen(false)} onRestore={restoreHistoricalScript} />
   ) : null;
-  const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} />;
+  const headerBar = <>
+    <ProjectHeader projectName={projectName || t("defaultProjectName")} />
+    <div className="mx-auto max-w-6xl px-6 pt-4"><GenerationRunsPanel projectId={id} /></div>
+  </>;
   const creativeProfileSummary = projectMeta && projectMeta.contentType !== "topic" ? (
     <Card className="glass-card mb-5">
       <CardContent className="p-4">
