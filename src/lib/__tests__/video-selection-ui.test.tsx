@@ -181,15 +181,27 @@ describe("compose-page shot video versions", () => {
     expect(composeRequests()).toHaveLength(0);
   });
 
-  it("keeps an active image compatible and allows switching back after choosing a video", async () => {
-    rows[1] = asset("original-image", 1, true, 500, "png");
+  it("keeps an active image compatible while offering only video versions to choose", async () => {
+    rows[1].selected = false;
+    rows.push(asset("original-image", 1, true, 500, "png"), asset("alternative-image", 1, false, 2500, "jpg"), asset("newest-image", 1, false, 3000, "png"));
     await mount();
     expect(currentThumbnail("/api/files/project/original-image.png")).not.toBeNull();
-    await expand(1); await click(useVersion(1, 1));
-    expect(currentThumbnail("/api/files/project/new-one.mp4")).not.toBeNull();
-    await click(useVersion(1, 1, "图片"));
-    expect(currentThumbnail("/api/files/project/original-image.png")).not.toBeNull();
     expect(buildShotAssetSelections(shots, rows)[0]).toEqual({ shotId: 1, assetId: "original-image" });
+    expect(container.querySelector('button[aria-controls="shot-video-versions-1"]')?.textContent).toContain("选择视频版本（2）");
+    await expand(1);
+    const picker = container.querySelector("#shot-video-versions-1")!;
+    expect(picker.querySelectorAll("video[controls]")).toHaveLength(2);
+    expect(picker.querySelectorAll("img")).toHaveLength(0);
+    expect(picker.textContent).not.toMatch(/图片版本|Image version/);
+    expect(picker.querySelectorAll('button[aria-label*="的视频版本"]')).toHaveLength(2);
+    expect(picker.querySelector('button[aria-label*="图片"]')).toBeNull();
+    await click(useVersion(1, 2));
+    expect(currentThumbnail("/api/files/project/new-one.mp4")).not.toBeNull();
+    expect(currentThumbnail("/api/files/project/original-image.png")).toBeNull();
+    expect(fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH")?.[1]).toMatchObject({ body: JSON.stringify({ assetId: "new-one" }) });
+    expect(buildShotAssetSelections(shots, rows)[0]).toEqual({ shotId: 1, assetId: "new-one" });
+    expect(picker.querySelector("img")).toBeNull();
+    expect(picker.querySelector('button[aria-label*="图片"]')).toBeNull();
   });
 
   it("pins the mixed selection and script in ordinary composition and locks switching while rendering", async () => {

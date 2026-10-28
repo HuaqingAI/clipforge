@@ -43,6 +43,8 @@ import {
 import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { assertTideweMediaDuration } from "@/lib/tidewe/visual-policy";
+import { validateElevenLabsConfig } from "@/lib/elevenlabs/config";
+import { assertElevenLabsLocalRequest, elevenLabsRouteError } from "@/lib/elevenlabs/local-access";
 
 type ComposeRequestBody = {
   scriptId?: unknown;
@@ -481,10 +483,18 @@ export async function POST(
     // explicit false is the user's choice to use only the source recording.
     const ttsEnabled = body.ttsEnabled !== false;
     // 可选 TTS 配音配置（前端从设置带入）
-    const ttsConfig: TTSConfig | undefined =
-      !premiumCg && ttsEnabled && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice
-        ? body.ttsConfig
-        : undefined;
+    let ttsConfig: TTSConfig | undefined;
+    if (!premiumCg && ttsEnabled && body.ttsConfig?.provider === "elevenlabs-cli") {
+      // An explicit CLI selection must never become the implicit Edge fallback
+      // when its voice or model is missing, including on TIDEWE projects.
+      const validation = validateElevenLabsConfig(body.ttsConfig);
+      if (!validation.ok) return NextResponse.json({ error: validation.error, code: "ELEVENLABS_CONFIG_INVALID" }, { status: 400 });
+      try { await assertElevenLabsLocalRequest(req); }
+      catch (error) { return elevenLabsRouteError(error); }
+      ttsConfig = validation.config;
+    } else if (!premiumCg && ttsEnabled && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice) {
+      ttsConfig = body.ttsConfig;
+    }
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
     const freeTts = premiumCg ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
     // Restrained CG narration is a controlled post-production voice track. It
@@ -551,10 +561,10 @@ export async function POST(
     const composeWarnings: { code: "tts_fallback_free" | "tts_failed"; shotId: number }[] = [];
 
     /**
-     * 为某分镜生成配音并落地为本地 mp3；失败返回 undefined（不阻断合成）。
+     * 为某分镜生成配音并落地为本地 mp3；ElevenLabs 或 TIDEWE 失败时阻断合成。
      * 返回 { file, words }：words 为免费 Edge 引擎回传的词级时间戳（卡拉OK真同步用），付费引擎无词数据。
-     * 付费 TTS 抛错时回退免费 Edge（同文案照常出声）并记录 tts_fallback_free 警告——
-     * 哑镜是最刺耳的成片缺陷，免费兜底链永远比静音好。
+     * 其他付费 TTS 保留原有免费 Edge 兜底，并记录 tts_fallback_free 警告。
+     * ElevenLabs 需保持用户选定的克隆声音，错误交给用户修复后重试。
      * characterVoice：剧情脚本中该镜说话角色的专属音色（仅免费 Edge 路径生效——付费 TTS 配置是
      * 单音色的，保持旁白音色以免半路换声）。
      */
@@ -579,7 +589,7 @@ export async function POST(
           try {
             audio = await generateSpeech(text, { ...ttsConfig, ...expressive });
           } catch (e) {
-            if (tidewe) throw e;
+            if (tidewe || ttsConfig.provider === "elevenlabs-cli") throw e;
             console.warn(`分镜 ${shotId} 付费配音失败，回退免费 Edge 配音:`, e);
             composeWarnings.push({ code: "tts_fallback_free", shotId });
             const d = await generateSpeechFreeDetailed(text, freeOpts);
@@ -595,6 +605,7 @@ export async function POST(
         await writeFile(file, audio);
         return { file, words };
       } catch (e) {
+        if (ttsConfig?.provider === "elevenlabs-cli") throw new Error(`镜头 ${shotId} ElevenLabs 配音失败，请检查本机登录、声音权限和额度后重试：${e instanceof Error ? e.message : "未知错误"}`);
         if (tidewe) throw new Error(`镜头 ${shotId} 英文配音失败，请修复声音服务后重试：${e instanceof Error ? e.message : "未知错误"}`);
         console.warn(`分镜 ${shotId} 配音生成失败（已跳过）:`, e);
         composeWarnings.push({ code: "tts_failed", shotId });

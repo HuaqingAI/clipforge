@@ -1,9 +1,9 @@
 /**
- * Atlas Cloud "one key covers everything" preset for quick onboarding.
+ * Atlas Cloud preset for quick script and visual onboarding.
  *
  * Landing-page "try first, configure later" flow: when a beginner has configured no keys at all,
  * pasting a single Atlas key unlocks script generation (LLM) + product-image analysis (Vision)
- * + image gen + video gen + voiceover (TTS) all at once, with models pre-selected automatically.
+ * + image gen + video gen. Voiceover is configured separately in Settings.
  * Model IDs are taken from the Atlas official on-sale catalog (verified via official MCP, 2026-06).
  */
 

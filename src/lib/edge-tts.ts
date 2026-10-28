@@ -228,8 +228,12 @@ async function synthesizeOnce(
         const buf = Buffer.from(data as ArrayBuffer);
         if (buf.length < 2) return;
         const headerLen = buf.readUInt16BE(0);
+        if (headerLen > buf.length - 2) return;
         const header = buf.subarray(2, 2 + headerLen).toString("utf-8");
-        if (header.includes("Path:audio")) chunks.push(buf.subarray(2 + headerLen));
+        const payload = buf.subarray(2 + headerLen);
+        // Edge can send an audio header with no payload for unsupported text/voice
+        // combinations. Such a frame must not make an empty synthesis look successful.
+        if (header.includes("Path:audio") && payload.length > 0) chunks.push(payload);
       }
     };
 

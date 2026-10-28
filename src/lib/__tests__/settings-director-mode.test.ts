@@ -34,10 +34,10 @@ describe("director-only workspace", () => {
       visualLook: "phone_raw", motionIntensity: "strong", spendCapUsd: 2,
     };
     expect(useSettingsStore.getState()).toMatchObject(expected);
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 7, state: expected });
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 8, state: expected });
   });
 
-  it.each([7, undefined])("normalizes legacy mode during hydration even with version %s", async (version) => {
+  it.each([8, undefined])("normalizes legacy mode during hydration even with version %s", async (version) => {
     localStorage.setItem(storageKey, JSON.stringify({ version, state: { uiMode: "simple", locale: "en" } }));
 
     await useSettingsStore.persist.rehydrate();

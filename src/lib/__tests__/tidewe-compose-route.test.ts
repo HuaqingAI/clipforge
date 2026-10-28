@@ -107,6 +107,14 @@ describe("TIDEWE composition enforces frozen English narration", () => {
     expect(state.tts).not.toHaveBeenCalled();
     expect(state.render).not.toHaveBeenCalled();
   });
+  it("rejects an incomplete ElevenLabs selection instead of silently using the default Microsoft voice", async () => {
+    const response = await request({ ttsConfig: { provider: "elevenlabs-cli", model: "eleven_multilingual_v2", voice: "" } });
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("ELEVENLABS_CONFIG_INVALID");
+    expect(db.select().from(schema.compositions).all()).toEqual([]);
+    expect(state.tts).not.toHaveBeenCalled();
+    expect(state.render).not.toHaveBeenCalled();
+  });
   it("rejects stored voiceover that no longer equals the canonical copy slice", async () => {
     db.update(schema.scripts).set({ shots: [{ ...shot, voiceover: "A different sentence." }] }).run();
     expect((await request()).status).toBe(409);

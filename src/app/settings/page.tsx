@@ -21,19 +21,12 @@ import { ARK_STANDARD_BASE_URL, ARK_AGENT_PLAN_BASE_URL, isArkAgentPlanBase } fr
 import { useT } from "@/lib/i18n";
 import { useSettingsStore, type ProviderSetting } from "@/lib/stores/settings-store";
 import { useBrandStore } from "@/lib/stores/brand-store";
-import {
-  TTS_PROVIDERS,
-  OPENAI_TTS_PRESETS,
-  getTTSProviderMeta,
-  resolveTTSConfig,
-  isPaidTTSReady,
-  type TTSProvider,
-} from "@/lib/tts-presets";
 import { mergeCustomModels } from "@/lib/gen-params";
 import { ModelPicker } from "@/components/settings/model-picker";
 import { GenerationSettings } from "@/components/generation-settings";
 import { PresenterManager } from "@/components/presenter-manager";
 import { KlingCliSettings } from "@/components/settings/kling-cli-settings";
+import { TTSSettings } from "@/components/settings/tts-settings";
 import { configuredCatalogProviders } from "@/lib/model-catalog";
 
 // default resolution options
@@ -234,7 +227,6 @@ export default function SettingsPage() {
   const {
     providers,
     llm,
-    tts,
     defaultResolution,
     spendCapUsd,
     setSpendCapUsd,
@@ -244,32 +236,11 @@ export default function SettingsPage() {
     customModels,
     setProvider,
     setLLM,
-    setTTS,
     setDefaultResolution,
     setDefaultAspectRatio,
     setDefaultImageModel,
     setDefaultVideoModel,
   } = useSettingsStore();
-
-  // TTS preview playback state
-  const [ttsTestStatus, setTtsTestStatus] = useState<"idle" | "testing" | "error">("idle");
-  const testTTS = async () => {
-    setTtsTestStatus("testing");
-    try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // send the fully resolved config (including per-platform reused Key / default baseUrl / model)
-        body: JSON.stringify({ text: t("ttsSample"), ttsConfig: resolveTTSConfig(tts, providers) }),
-      });
-      if (!res.ok) throw new Error();
-      const blob = await res.blob();
-      new Audio(URL.createObjectURL(blob)).play();
-      setTtsTestStatus("idle");
-    } catch {
-      setTtsTestStatus("error");
-    }
-  };
 
   // AI platform key connectivity test (real auth probe, not a fake test)
   const [providerTest, setProviderTest] = useState<Record<string, { state: "idle" | "testing" | "ok" | "invalid" | "unknown"; msg?: string }>>({});
@@ -298,14 +269,6 @@ export default function SettingsPage() {
       if (providerTestVersions.current[key] !== version) return;
       setProviderTest((s) => ({ ...s, [key]: { state: "unknown", msg: t("connectFailed") } }));
     }
-  };
-
-  // TTS provider metadata / ready state / reset model, voice, and baseUrl to provider defaults when switching providers
-  const ttsMeta = getTTSProviderMeta(tts.provider);
-  const ttsReady = isPaidTTSReady(tts, providers);
-  const onChangeTTSProvider = (provider: TTSProvider) => {
-    const meta = getTTSProviderMeta(provider);
-    setTTS({ ...tts, provider, baseUrl: meta.baseUrl, model: meta.defaultModel, voice: meta.defaultVoice });
   };
 
   // save feedback state
@@ -728,151 +691,7 @@ export default function SettingsPage() {
           {tab === "tts" && (
           <section className="min-w-0 flex-1">
             <div className="space-y-6">
-              {/* TTS voiceover */}
-              <Card className="glass-card">
-                <CardContent className="p-5">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-rose-500 to-pink-600 text-white">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                          <line x1="12" y1="19" x2="12" y2="22" />
-                        </svg>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold text-sm">{t("ttsTitle")}</h3>
-                        <p className="text-xs text-muted-foreground">{t("ttsSubtitle")}</p>
-                      </div>
-                    </div>
-                    <ToggleSwitch checked={tts.enabled} onChange={(v) => setTTS({ ...tts, enabled: v })} />
-                  </div>
-
-                  {tts.enabled && (
-                    <div className="space-y-4">
-                      {/* TTS provider selection */}
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground">{t("ttsProviderLabel")}</Label>
-                        <Select value={tts.provider ?? "openai"} onValueChange={(v) => onChangeTTSProvider((v ?? "openai") as TTSProvider)}>
-                          <SelectTrigger className="w-full">
-                            <SelectValue>
-                              {(value: string) => TTS_PROVIDERS.find((p) => p.value === value)?.label ?? t("ttsProviderFallback")}
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            {TTS_PROVIDERS.map((p) => (
-                              <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {ttsMeta.hint && <p className="text-[11px] text-muted-foreground/80">{ttsMeta.hint}</p>}
-                      </div>
-
-                      {ttsMeta.value === "openai" ? (
-                        <>
-                          {/* OpenAI-compatible: quick presets + baseUrl + Key + free model/voice */}
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-2">{t("ttsPresetHint")}</p>
-                            <div className="flex flex-wrap gap-2">
-                              {OPENAI_TTS_PRESETS.map((p) => (
-                                <button
-                                  key={p.label}
-                                  onClick={() => setTTS({ ...tts, baseUrl: p.baseUrl, model: p.model, voice: p.voice })}
-                                  className="px-2.5 h-7 rounded-md border border-border/60 bg-muted/20 text-xs hover:border-primary/50 hover:text-primary transition-colors"
-                                >
-                                  {p.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="space-y-1.5">
-                            <Label className="text-xs text-muted-foreground">{t("ttsBaseUrlLabel")}</Label>
-                            <Input value={tts.baseUrl} onChange={(e) => setTTS({ ...tts, baseUrl: e.target.value })} placeholder="https://api.siliconflow.cn/v1" className="font-mono text-xs" />
-                          </div>
-                          <div className="space-y-1.5">
-                            <Label className="text-xs text-muted-foreground">{t("apiKeyLabel")}</Label>
-                            <PasswordInput value={tts.apiKey} onChange={(apiKey) => setTTS({ ...tts, apiKey })} placeholder={t("ttsApiKeyPlaceholder")} />
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("ttsModelLabel")}</Label>
-                              <Input value={tts.model} onChange={(e) => setTTS({ ...tts, model: e.target.value })} placeholder="tts-1" className="font-mono text-xs" />
-                            </div>
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("ttsVoiceLabel")}</Label>
-                              <Input value={tts.voice} onChange={(e) => setTTS({ ...tts, voice: e.target.value })} placeholder="alloy" className="font-mono text-xs" />
-                            </div>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          {/* Atlas / MiniMax / fal: Key (reused or custom) + optional GroupId/baseUrl + model/voice dropdowns */}
-                          {ttsMeta.keySource === "tts" ? (
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("apiKeyLabel")}</Label>
-                              <PasswordInput value={tts.apiKey} onChange={(apiKey) => setTTS({ ...tts, apiKey })} placeholder={t("ttsApiKeyPlaceholderShort")} />
-                            </div>
-                          ) : (
-                            <div className="text-xs rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                              {providers[ttsMeta.keySource]?.apiKey ? (
-                                <span className="text-emerald-500">{t("ttsKeyReused")}</span>
-                              ) : (
-                                <span className="text-amber-500">{t("ttsKeyMissing")}</span>
-                              )}
-                            </div>
-                          )}
-                          {ttsMeta.editableBaseUrl && (
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("ttsBaseUrlLabel")}</Label>
-                              <Input value={tts.baseUrl} onChange={(e) => setTTS({ ...tts, baseUrl: e.target.value })} placeholder={ttsMeta.baseUrl} className="font-mono text-xs" />
-                            </div>
-                          )}
-                          {ttsMeta.needsGroupId && (
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("ttsGroupIdLabel")}</Label>
-                              <Input value={tts.groupId ?? ""} onChange={(e) => setTTS({ ...tts, groupId: e.target.value })} placeholder={t("ttsGroupIdPlaceholder")} className="font-mono text-xs" />
-                            </div>
-                          )}
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            {ttsMeta.models.length > 0 && (
-                              <div className="space-y-1.5">
-                                <Label className="text-xs text-muted-foreground">{t("ttsModelLabel")}</Label>
-                                <Select value={tts.model || ttsMeta.defaultModel} onValueChange={(v) => setTTS({ ...tts, model: v ?? ttsMeta.defaultModel })}>
-                                  <SelectTrigger className="w-full">
-                                    <SelectValue>{(value: string) => ttsMeta.models.find((o) => o.value === value)?.label ?? value}</SelectValue>
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {ttsMeta.models.map((o) => (<SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            )}
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("ttsVoiceLabel")}</Label>
-                              <Select value={tts.voice || ttsMeta.defaultVoice} onValueChange={(v) => setTTS({ ...tts, voice: v ?? ttsMeta.defaultVoice })}>
-                                <SelectTrigger className="w-full">
-                                  <SelectValue>{(value: string) => ttsMeta.voices.find((o) => o.value === value)?.label ?? value}</SelectValue>
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {ttsMeta.voices.map((o) => (<SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </div>
-                        </>
-                      )}
-
-                      {/* preview playback */}
-                      <div className="pt-3 mt-1 border-t border-border/50">
-                        <Button variant="outline" size="sm" onClick={testTTS} disabled={!ttsReady || ttsTestStatus === "testing"} className={`text-xs ${ttsTestStatus === "error" ? "text-destructive" : ""}`}>
-                          {ttsTestStatus === "testing" ? t("ttsTesting") : ttsTestStatus === "error" ? t("ttsTestError") : t("ttsTestButton")}
-                        </Button>
-                        {!ttsReady && <span className="ml-2 text-[11px] text-muted-foreground">{t("ttsFillKeyFirst")}</span>}
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+              <TTSSettings />
             </div>
           </section>
           )}

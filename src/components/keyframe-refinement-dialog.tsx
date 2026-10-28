@@ -89,7 +89,7 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
   const locale = useLocale() === "en" ? "en" : "zh";
   const copy = COPY[locale];
   const [selected, setSelected] = useState<number[]>(() => shots.filter((shot) => shot.assetId && shot.imageUrl && (initialShotId === undefined || shot.shotId === initialShotId)).map((shot) => shot.shotId));
-  const [issues, setIssues] = useState<KeyframeRepairIssue[]>(["hands", "anatomy", "duplicates", "product"]);
+  const [issues, setIssues] = useState<KeyframeRepairIssue[]>(["hands", "anatomy", "duplicates", "product", "details"]);
   const [instructions, setInstructions] = useState("");
   const [resolution, setResolution] = useState<KeyframeRefinementResolution>("2k");
   const [histories, setHistories] = useState<Record<number, History>>(() => Object.fromEntries(shots.map((shot) => [shot.shotId, { candidates: shot.assetId && shot.imageUrl ? [initialCandidate(shot)] : [], loading: true, loaded: false }])));

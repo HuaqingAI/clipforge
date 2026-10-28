@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DEFAULT_LOCALE, type Locale } from "@/lib/i18n/config";
-import { DEFAULT_TTS_PROVIDER, type TTSProvider } from "@/lib/tts-presets";
+import { normalizeTTSSettings, type VoiceoverProvider } from "@/lib/tts-presets";
 import {
   DEFAULT_IMAGE_PARAMS,
   DEFAULT_VIDEO_PARAMS,
@@ -9,7 +9,7 @@ import {
   type ImageGenParams,
   type VideoGenParams,
 } from "@/lib/gen-params";
-import { ATLAS_BASE_URL, ATLAS_LLM_BASE_URL, ATLAS_ONEKEY_MODELS, fillAtlasModelDefaults } from "@/lib/atlas-onekey";
+import { ATLAS_LLM_BASE_URL, ATLAS_ONEKEY_MODELS, fillAtlasModelDefaults } from "@/lib/atlas-onekey";
 import type { MotionIntensity, MotionRealismTier } from "@/lib/motion-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import {
@@ -37,17 +37,17 @@ export interface LLMSetting {
   visionModel?: string; // 视觉分析模型
 }
 
-// TTS 配音配置（多平台：OpenAI 兼容 / Atlas / MiniMax / fal.ai）
+// Voiceover settings: free Microsoft TTS or locally authenticated ElevenLabs CLI.
 export interface TTSSetting {
   enabled: boolean;
-  /** 平台，缺省 "openai"（旧配置无此字段时按 openai 处理） */
-  provider?: TTSProvider;
+  /** Retired providers are migrated to Microsoft TTS during hydration. */
+  provider?: VoiceoverProvider;
   baseUrl: string;
   apiKey: string;
   model: string;
   voice: string;
   speed?: number;
-  /** MiniMax 国内端点的 GroupId（可选） */
+  /** Legacy storage only; stripped whenever settings are normalized. */
   groupId?: string;
 }
 
@@ -114,7 +114,7 @@ export interface SettingsState {
   /** Legacy action: always enables director mode, including calls from older UI bundles. */
   setUiMode: (mode: "simple" | "pro") => void;
   applyProductionProfile: (profile: ProductionProfileId) => void;
-  /** 一个 Atlas Key 一键接入：脚本+看图+生图+生视频+配音全配好（不覆盖用户已选模型/已开的配音） */
+  /** Configure Atlas script/vision/image access without altering voiceover settings. */
   applyAtlasOneKey: (apiKey: string) => void;
 }
 
@@ -179,6 +179,8 @@ export function migrateSettings(state: SettingsState): SettingsState {
   }
   // v7: all existing users receive the complete director workspace.
   state.uiMode = "pro";
+  // v8: retire key-based TTS settings in favor of Microsoft or local ElevenLabs OAuth.
+  state.tts = normalizeTTSSettings(state.tts);
   return state;
 }
 
@@ -202,15 +204,7 @@ export const useSettingsStore = create<SettingsState>()(
         model: "",
         visionModel: "",
       },
-      tts: {
-        enabled: false,
-        provider: DEFAULT_TTS_PROVIDER,
-        baseUrl: "",
-        apiKey: "",
-        model: "",
-        voice: "",
-        speed: 1,
-      },
+      tts: normalizeTTSSettings(undefined),
       defaultImageModel: "",
       defaultVideoModel: "",
       defaultResolution: "720p",
@@ -239,7 +233,7 @@ export const useSettingsStore = create<SettingsState>()(
           providers: { ...state.providers, [name]: setting },
         })),
       setLLM: (llm) => set({ llm }),
-      setTTS: (tts) => set({ tts }),
+      setTTS: (tts) => set({ tts: normalizeTTSSettings(tts) }),
       setDefaultImageModel: (model) => set({ defaultImageModel: model }),
       setDefaultVideoModel: (model) => set({ defaultVideoModel: model }),
       setDefaultResolution: (resolution) =>
@@ -284,10 +278,6 @@ export const useSettingsStore = create<SettingsState>()(
               "atlas-cloud": { ...state.providers["atlas-cloud"], enabled: true, apiKey: key },
             },
             defaultImageModel: def.image,
-            // 配音：之前没开过才默认接 Atlas TTS（复用同一个 Key），已配则保持不动
-            tts: state.tts.enabled
-              ? state.tts
-              : { ...state.tts, enabled: true, provider: "atlas", baseUrl: ATLAS_BASE_URL, model: "", voice: "" },
           };
         }),
     }),
@@ -303,10 +293,14 @@ export const useSettingsStore = create<SettingsState>()(
       // 迁到 OpenAI 兼容的聊天网关 /v1。
       // v6: synchronize visible and advanced video resolution defaults; preserve explicit 480p.
       // v7: retire beginner mode and persist director mode for existing users.
-      version: 7,
+      // v8: voiceover configuration and login live in Settings; remove retired providers.
+      version: 8,
       migrate: (persisted) => migrateSettings(persisted as SettingsState),
       // Normalize even unversioned imports or same-version storage containing the legacy value.
-      merge: (persisted, current) => ({ ...current, ...(persisted as Partial<SettingsState>), uiMode: "pro" }),
+      merge: (persisted, current) => {
+        const saved = persisted as Partial<SettingsState> | undefined;
+        return { ...current, ...saved, uiMode: "pro", tts: normalizeTTSSettings(saved?.tts ?? current.tts) };
+      },
     }
   )
 );

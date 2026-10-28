@@ -1,17 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSpeech, type TTSConfig } from "@/lib/tts";
 import { apiError, errText } from "@/lib/api-error";
+import { validateElevenLabsConfig } from "@/lib/elevenlabs/config";
+import { assertElevenLabsLocalRequest, elevenLabsRouteError } from "@/lib/elevenlabs/local-access";
 
 // TTS voice preview: return mp3 audio bytes for the frontend to preview a voice
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { text, ttsConfig } = body as { text?: string; ttsConfig?: TTSConfig };
+    const { text } = body as { text?: string };
+    let ttsConfig = body.ttsConfig as TTSConfig | undefined;
 
-    if (!text) {
+    if (typeof text !== "string" || !text.trim()) {
       return apiError(req, "缺少配音文本", "Missing voiceover text");
     }
-    if (!ttsConfig?.baseUrl || !ttsConfig?.apiKey || !ttsConfig?.model || !ttsConfig?.voice) {
+    if (ttsConfig?.provider === "elevenlabs-cli") {
+      const validation = validateElevenLabsConfig(ttsConfig);
+      if (!validation.ok) return NextResponse.json({ error: validation.error }, { status: 400 });
+      try { await assertElevenLabsLocalRequest(req); }
+      catch (error) { return elevenLabsRouteError(error); }
+      ttsConfig = validation.config;
+    } else if (!ttsConfig?.baseUrl || !ttsConfig?.apiKey || !ttsConfig?.model || !ttsConfig?.voice) {
       return apiError(
         req,
         "请先在设置中配置 TTS（baseUrl、apiKey、model、voice）",

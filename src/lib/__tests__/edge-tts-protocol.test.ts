@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateSecMsGec } from "@/lib/edge-tts-token";
 
 const cache = vi.hoisted(() => ({
@@ -12,6 +12,8 @@ vi.mock("@/lib/tts-cache", () => ({
   ttsCacheKey: () => "protocol-test",
 }));
 
+beforeEach(() => vi.clearAllMocks());
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -19,6 +21,38 @@ afterEach(() => {
 });
 
 describe("Edge Read Aloud protocol", () => {
+  it.each(["turn.end", "close"] as const)("rejects header-only audio frames ending with %s without caching empty MP3", async (ending) => {
+    const connections: EmptyAudioSocket[] = [];
+    class EmptyAudioSocket {
+      binaryType = "blob";
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: string | ArrayBuffer }) => void) | null = null;
+      onerror = null;
+      onclose: ((event: { code: number }) => void) | null = null;
+      constructor() {
+        connections.push(this);
+        void Promise.resolve().then(() => this.onopen?.());
+      }
+      send(message: string) {
+        if (!message.includes("Path:ssml\r\n")) return;
+        const header = Buffer.from("Path:audio\r\nContent-Type:audio/mpeg\r\n");
+        const frame = Buffer.alloc(2 + header.length);
+        frame.writeUInt16BE(header.length);
+        header.copy(frame, 2);
+        this.onmessage?.({ data: frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer });
+        if (ending === "turn.end") this.onmessage?.({ data: "Path:turn.end\r\n\r\n" });
+        else this.onclose?.({ code: 1000 });
+      }
+      close() {}
+    }
+    vi.stubGlobal("WebSocket", EmptyAudioSocket);
+    const { generateSpeechFreeDetailed } = await import("@/lib/edge-tts");
+    await expect(generateSpeechFreeDetailed("中文试听", { voice: "en-US-EricNeural" })).rejects.toThrow(/未返回音频|连接关闭/);
+    expect(connections).toHaveLength(2);
+    expect(cache.writeTtsCache).not.toHaveBeenCalled();
+    expect(cache.writeTtsWords).not.toHaveBeenCalled();
+  });
+
   it.each([
     { voice: undefined, locale: "zh-CN" },
     { voice: "en-US-JennyNeural", locale: "en-US" },

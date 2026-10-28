@@ -1,12 +1,13 @@
 /**
  * TTS dubbing — unified entry point for multiple platforms.
  *
- * Supports four paid TTS providers, dispatched by config.provider
+ * Supports API providers and the locally authenticated ElevenLabs CLI, dispatched by config.provider
  * (defaults to "openai" for backward compatibility with legacy configs):
  * - openai: OpenAI-compatible /audio/speech (tts-1 / SiliconFlow CosyVoice / Volcengine Ark…), synchronous mp3.
  * - atlas: Atlas Cloud generateAudio (xai/tts-v1), async — submit, get prediction id, then poll for audio URL.
  * - minimax: MiniMax Hailuo T2A v2, synchronous hex-encoded mp3 (domestic endpoint requires GroupId).
  * - falai: fal.ai (MiniMax Speech-02), queue async — submit, poll status, fetch audio.url on completion.
+ * - elevenlabs-cli: official CLI using the current OS user's OAuth credentials, synchronous mp3.
  *
  * All providers produce mp3 bytes (Buffer); callers (compose/preview) need not handle provider differences.
  */
@@ -15,6 +16,7 @@ import type { TTSProvider } from "./tts-presets";
 import { CircuitBreaker } from "@/lib/circuit-breaker";
 import { ttsCacheKey, readTtsCache, writeTtsCache } from "@/lib/tts-cache";
 import { stripPauseMarks } from "@/lib/voice-markup";
+import { validateElevenLabsConfig } from "@/lib/elevenlabs/config";
 
 export interface TTSConfig {
   /** Platform; defaults to "openai" */
@@ -53,6 +55,9 @@ const OPENAI_INSTRUCTION_MODELS = /gpt-4o-mini-tts/i;
 // or downed service), fail-fast all subsequent TTS calls so a bad key doesn't let every shot in a
 // batch time out individually and stall the whole compose pipeline; auto half-opens after 30s.
 const ttsBreakers = new Map<string, CircuitBreaker>();
+// A second render of the same narration joins the current CLI call instead of
+// submitting another billable request while its first cache entry is being written.
+const elevenLabsInFlight = new Map<string, Promise<Buffer>>();
 function ttsBreaker(provider: string): CircuitBreaker {
   let b = ttsBreakers.get(provider);
   if (!b) {
@@ -100,6 +105,12 @@ export async function generateSpeech(text: string, config: TTSConfig): Promise<B
   const clean = stripPauseMarks((text || "").trim());
   if (!clean) throw new Error("配音文本为空");
   const provider = config.provider || "openai";
+  const localCli = provider === "elevenlabs-cli";
+  if (localCli) {
+    const validated = validateElevenLabsConfig(config);
+    if (!validated.ok) throw new Error(validated.error);
+    config = validated.config;
+  }
   // Content-addressed cache: identical text + voice params reuse the previously synthesized
   // audio, so a re-compose (e.g. after a BGM tweak) doesn't re-bill the paid TTS provider.
   // baseUrl is part of the identity — the same model/voice names on different endpoints
@@ -111,30 +122,44 @@ export async function generateSpeech(text: string, config: TTSConfig): Promise<B
     baseUrl: config.baseUrl,
     model: config.model,
     voice: config.voice,
-    speed: config.speed,
+    speed: localCli ? config.speed ?? 1 : config.speed,
     // expressive delivery changes the audio → changes the identity
-    ...(config.emotion && { emotion: config.emotion }),
-    ...(config.instruction && { instruction: config.instruction }),
+    ...(!localCli && config.emotion && { emotion: config.emotion }),
+    ...(!localCli && config.instruction && { instruction: config.instruction }),
     text: clean,
   });
   const cached = await readTtsCache(cacheKey);
   if (cached) return cached;
+  if (localCli) {
+    const pending = elevenLabsInFlight.get(cacheKey);
+    if (pending) return pending;
+  }
   const breaker = ttsBreaker(provider);
   if (breaker.isOpen()) {
-    throw new Error(`配音服务(${provider})连续失败已暂时熔断——请检查对应平台 Key/服务，约 30 秒后自动重试`);
+    throw new Error(localCli
+      ? "ElevenLabs 配音连续失败，请检查登录状态和账户额度，约 30 秒后可重试"
+      : `配音服务(${provider})连续失败已暂时熔断——请检查对应平台 Key/服务，约 30 秒后自动重试`);
   }
-  try {
-    // Retries live INSIDE one breaker-accounted call: the breaker judges the final outcome, so a
-    // wobble that recovers on retry doesn't burn a failure toward the 2-strike trip threshold.
-    const buf = await withTTSRetry(() => dispatchTTS(clean, config));
-    breaker.recordSuccess();
-    // Write-through on success only (failures are never cached); cache errors degrade silently
-    await writeTtsCache(cacheKey, buf);
-    return buf;
-  } catch (e) {
-    breaker.recordFailure();
-    throw e;
-  }
+  const synthesize = async () => {
+    try {
+      // A timed-out CLI request may already have been billed. The CLI adapter also
+      // disables its own network retries; let the user resolve the error explicitly.
+      // Other providers keep their existing retries inside one breaker-accounted call.
+      const buf = localCli ? await dispatchTTS(clean, config) : await withTTSRetry(() => dispatchTTS(clean, config));
+      breaker.recordSuccess();
+      // Write-through on success only (failures are never cached); cache errors degrade silently
+      await writeTtsCache(cacheKey, buf);
+      return buf;
+    } catch (e) {
+      breaker.recordFailure();
+      throw e;
+    }
+  };
+  if (!localCli) return synthesize();
+  const pending = synthesize();
+  elevenLabsInFlight.set(cacheKey, pending);
+  try { return await pending; }
+  finally { if (elevenLabsInFlight.get(cacheKey) === pending) elevenLabsInFlight.delete(cacheKey); }
 }
 
 /**
@@ -163,6 +188,8 @@ export function estimateSpeechSeconds(text: string): number {
 
 function dispatchTTS(clean: string, config: TTSConfig): Promise<Buffer> {
   switch (config.provider) {
+    case "elevenlabs-cli":
+      return import("@/lib/elevenlabs/client").then(({ generateElevenLabsSpeech }) => generateElevenLabsSpeech(clean, config));
     case "atlas":
       return generateSpeechAtlas(clean, config);
     case "minimax":

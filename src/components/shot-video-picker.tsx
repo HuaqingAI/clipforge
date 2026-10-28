@@ -50,9 +50,6 @@ export function ShotVideoPicker({ shotId, assets, disabled, savingAssetId, error
   const selected = selectedShotAsset(assets, shotId);
   const videos = assets.filter((asset) => asset.shotId === shotId && asset.status === "done" && asset.filePath && isVideo(asset.filePath))
     .sort((a, b) => assetTime(a) - assetTime(b) || a.id.localeCompare(b.id));
-  const images = assets.filter((asset) => asset.shotId === shotId && asset.status === "done" && asset.filePath && !isVideo(asset.filePath))
-    .sort((a, b) => assetTime(a) - assetTime(b) || a.id.localeCompare(b.id));
-  const candidates = [...images, ...videos];
   const hasHistory = videos.some((asset) => asset.matchesCurrentScript === false);
   const panelId = `shot-video-versions-${shotId}`;
 
@@ -69,23 +66,16 @@ export function ShotVideoPicker({ shotId, assets, disabled, savingAssetId, error
         <div id={panelId} className="mt-3 space-y-3">
           <p className="text-[11px] text-muted-foreground">{zh ? "每个镜头可独立选择，选用后会保存并用于合成。" : "Choose each shot independently. Your selection is saved and used for composition."}</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {candidates.map((asset) => {
+            {videos.map((asset, index) => {
               const chosen = asset.id === selected?.id;
               const historical = asset.matchesCurrentScript === false;
               const canSelect = !historical || Boolean(asset.klingJobId && asset.klingOutputId);
-              const video = isVideo(asset.filePath!);
-              const version = videos.findIndex((item) => item.id === asset.id) + 1;
-              const imageVersion = images.findIndex((item) => item.id === asset.id) + 1;
-              const title = video ? zh ? `视频版本 ${version}` : `Video version ${version}` : zh ? `图片版本 ${imageVersion}` : `Image version ${imageVersion}`;
+              const version = index + 1;
+              const title = zh ? `视频版本 ${version}` : `Video version ${version}`;
               const date = assetTime(asset) ? new Intl.DateTimeFormat(zh ? "zh-CN" : "en-US", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(assetTime(asset))) : "";
               return (
                 <div key={asset.id} className={`rounded-lg border p-2 space-y-2 ${chosen ? "border-primary bg-primary/5" : "border-border/50"}`}>
-                  {video ? (
-                    <video key={asset.id} src={asset.filePath!} poster={asset.thumbnailPath ?? undefined} controls muted playsInline preload="metadata" aria-label={title} className="w-full h-40 rounded bg-black object-contain" />
-                  ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={asset.filePath!} alt={title} className="w-full h-40 rounded bg-black object-contain" />
-                  )}
+                  <video key={asset.id} src={asset.filePath!} poster={asset.thumbnailPath ?? undefined} controls muted playsInline preload="metadata" aria-label={title} className="w-full h-40 rounded bg-black object-contain" />
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium">{title}</span>
                     {chosen && <span className="flex items-center gap-1 text-[11px] text-primary"><LuCheck className="h-3 w-3" />{zh ? "当前选用" : "Selected"}</span>}

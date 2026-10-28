@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { LuArrowLeft, LuPlay, LuChevronDown, LuArrowRight, LuLoaderCircle } from "react-icons/lu";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { resolveTTSConfig, isPaidTTSReady, getTTSProviderMeta } from "@/lib/tts-presets";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,8 +19,12 @@ import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
 import { sanitizeCreativeProfile, isTideweOutdoorProfile, isTideweNativeSpeech, type PremiumProductCgProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
 import { resolveNarrationVoice, TIDEWE_TTS_VOICES } from "@/lib/narration-voice";
+import { DEFAULT_FREE_VOICE, FREE_TTS_VOICES, ttsVoiceLocale, ttsVoicePreviewText } from "@/lib/tts-voices";
 import { ProjectHeader } from "@/components/project-header";
 import { FreeVoicePreview } from "@/components/free-voice-preview";
+import { ElevenLabsVoiceSelector } from "@/components/elevenlabs-voice-selector";
+import { ElevenLabsVoicePreview } from "@/components/elevenlabs-voice-preview";
+import { elevenLabsFetch, elevenLabsErrorMessage } from "@/lib/elevenlabs/browser-client";
 import { ShotVideoPicker, buildShotAssetSelections, selectedShotAsset, type ShotVideoAsset } from "@/components/shot-video-picker";
 import { klingErrorMessage, klingFetch } from "@/lib/kling/client";
 import {
@@ -47,7 +50,10 @@ interface ComposeConfig {
   ttsEnabled: boolean;
   voiceoverMode: "auto" | "replace" | "mix";
   ttsVoice: string;
-  /** 免费 TTS 音色（未配置付费 TTS 时使用） */
+  voiceService: "microsoft" | "elevenlabs-cli";
+  elevenLabsVoice: string;
+  elevenLabsModel: string;
+  /** 微软免费 TTS 音色 */
   freeVoice: string;
   subtitles: boolean;
   subtitleSize: number;
@@ -151,7 +157,7 @@ export default function VideoPage() {
   const tt = useT("tidewe");
   const locale = useLocale();
   const { id } = useParams<{ id: string }>();
-  const { defaultResolution, defaultAspectRatio, tts, providers } = useSettingsStore();
+  const { defaultResolution, defaultAspectRatio, tts } = useSettingsStore();
   const [clips, setClips] = useState<VideoClipItem[]>([]);
   const [scriptId, setScriptId] = useState("");
   const [savedAssets, setSavedAssets] = useState<ShotVideoAsset[]>([]);
@@ -173,14 +179,17 @@ export default function VideoPage() {
   const [loadedProfileProjectId, setLoadedProfileProjectId] = useState<string | null>(null);
   const availableFreeVoices: { value: string; labelKey?: string; label?: string }[] = tidewe
     ? TIDEWE_TTS_VOICES.map((voice) => ({ value: voice.value, label: locale === "zh" ? voice.labelZh : voice.label }))
-    : freeVoiceOptions;
+    : FREE_TTS_VOICES.map((voice) => ({ value: voice.value, labelKey: freeVoiceOptions.find((item) => item.value === voice.value)?.labelKey, label: locale === "zh" ? voice.labelZh ?? voice.label : voice.label }));
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
-    ttsEnabled: true,
+    ttsEnabled: tts.enabled,
     voiceoverMode: "auto",
     ttsVoice: "female-gentle",
-    freeVoice: "zh-CN-XiaoxiaoNeural",
+    voiceService: tts.provider === "elevenlabs-cli" ? "elevenlabs-cli" : "microsoft",
+    elevenLabsVoice: tts.provider === "elevenlabs-cli" ? tts.voice : "",
+    elevenLabsModel: tts.provider === "elevenlabs-cli" ? tts.model : "",
+    freeVoice: tts.provider === "microsoft" ? FREE_TTS_VOICES.find((voice) => voice.value === tts.voice)?.value ?? DEFAULT_FREE_VOICE : DEFAULT_FREE_VOICE,
     subtitles: true,
     subtitleSize: 24,
     subtitlePosition: "bottom",
@@ -205,8 +214,64 @@ export default function VideoPage() {
   // 背景音乐
   const [bgm, setBgm] = useState<{ path: string; name: string } | null>(null);
   const [bgmUploading, setBgmUploading] = useState(false);
-  // 是否已配置付费 TTS（否则配音走免费 Edge keyless TTS）
-  const paidTtsReady = !tidewe && isPaidTTSReady(tts, providers);
+  const [elevenLabsReady, setElevenLabsReady] = useState(false);
+  const [loadedVoiceProjectId, setLoadedVoiceProjectId] = useState<string | null>(null);
+  const [customizedVoiceProjectId, setCustomizedVoiceProjectId] = useState<string | null>(null);
+  const defaultVoiceProjectId = useRef<string | null>(null);
+  const customizedFreeVoiceProjectId = useRef<string | null>(null);
+  const useElevenLabs = config.voiceService === "elevenlabs-cli";
+  const elevenLabsEnabled = tts.enabled && tts.provider === "elevenlabs-cli";
+  const useFreeTts = !useElevenLabs;
+  const voiceoverBlocked = !premiumCg && config.ttsEnabled && useElevenLabs && (!elevenLabsEnabled || !elevenLabsReady);
+  const selectedVoiceoverConfig = premiumCg || !config.ttsEnabled ? {} : useElevenLabs
+    ? { ttsConfig: { provider: "elevenlabs-cli", baseUrl: "", apiKey: "", voice: config.elevenLabsVoice, model: config.elevenLabsModel, ...(tts.speed !== undefined && { speed: tts.speed }) } }
+    : { freeTts: { enabled: true, voice: config.freeVoice } };
+  const composeFetch = !premiumCg && config.ttsEnabled && useElevenLabs ? elevenLabsFetch : fetch;
+
+  useEffect(() => {
+    const restored = {
+      voiceService: (tts.provider === "elevenlabs-cli" ? "elevenlabs-cli" : "microsoft") as ComposeConfig["voiceService"],
+      elevenLabsVoice: tts.provider === "elevenlabs-cli" ? tts.voice : "",
+      elevenLabsModel: tts.provider === "elevenlabs-cli" ? tts.model : "",
+    };
+    let customized = false;
+    try {
+      const saved = JSON.parse(localStorage.getItem(`clipforge:project:${id}:voiceover`) ?? "null");
+      if (saved && typeof saved === "object") {
+        if (["microsoft", "elevenlabs-cli"].includes(saved.voiceService)) {
+          customized = true;
+          restored.voiceService = saved.voiceService;
+          for (const key of ["elevenLabsVoice", "elevenLabsModel"] as const) {
+            if (typeof saved[key] === "string" && saved[key].length <= 200) restored[key] = saved[key].trim();
+          }
+        }
+      }
+    } catch { /* Browser storage is optional; voice choices remain usable in memory. */ }
+    const newProject = defaultVoiceProjectId.current !== id;
+    defaultVoiceProjectId.current = id;
+    const defaultFreeVoice = tts.provider === "microsoft" ? FREE_TTS_VOICES.find((voice) => voice.value === tts.voice)?.value ?? DEFAULT_FREE_VOICE : DEFAULT_FREE_VOICE;
+    setConfig((current) => ({
+      ...current,
+      ...(newProject && { ttsEnabled: tts.enabled }),
+      ...((newProject || (!tideweRef.current && customizedFreeVoiceProjectId.current !== id)) && { freeVoice: defaultFreeVoice }),
+      ...restored,
+    }));
+    if (newProject) setElevenLabsReady(false);
+    setLoadedVoiceProjectId(id);
+    setCustomizedVoiceProjectId(customized ? id : null);
+    // Global voice/model changes supply defaults while explicit project choices are retained.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, tts.provider, tts.voice, tts.model]);
+
+  useEffect(() => {
+    if (loadedVoiceProjectId !== id || customizedVoiceProjectId !== id) return;
+    try {
+      localStorage.setItem(`clipforge:project:${id}:voiceover`, JSON.stringify({
+        voiceService: config.voiceService, elevenLabsVoice: config.elevenLabsVoice, elevenLabsModel: config.elevenLabsModel,
+      }));
+    } catch { /* No credentials are stored in project preferences. */ }
+  }, [id, loadedVoiceProjectId, customizedVoiceProjectId, config.voiceService, config.elevenLabsVoice, config.elevenLabsModel]);
+
   const uploadBgm = async (file: File) => {
     setBgmUploading(true);
     try {
@@ -514,7 +579,7 @@ export default function VideoPage() {
 
   /** Run the matrix: sequential compose per combo, each polled by its own compositionId. */
   const runMatrix = async () => {
-    if (premiumCg || tidewe || matrixRunning || isComposing || selectingAsset.current || !scriptId || matrixCombos.length === 0) return;
+    if (premiumCg || tidewe || matrixRunning || isComposing || selectingAsset.current || voiceoverBlocked || !scriptId || matrixCombos.length === 0) return;
     const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
     const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setMatrixRunning(true);
@@ -525,7 +590,7 @@ export default function VideoPage() {
         // hook variant: in-memory voiceover override for shot 1 (the stored script stays untouched)
         const variant = combo.hookKey === "base" ? undefined : hookVariants.find((v) => v.hookId === combo.hookKey);
         const hookShot = variant?.script.shots[0];
-        const res = await fetch(`/api/project/${id}/compose`, {
+        const res = await composeFetch(`/api/project/${id}/compose`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -544,12 +609,11 @@ export default function VideoPage() {
             ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
             ...(!premiumCg && { voiceGround: config.voiceGround }),
             ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
-            ...(!premiumCg && config.ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
-            ...(!premiumCg && config.ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
+            ...selectedVoiceoverConfig,
           }),
         });
         const data = await res.json();
-        if (!res.ok || !data.compositionId) throw new Error(data.error || "compose failed");
+        if (!res.ok || !data.compositionId) throw new Error(elevenLabsErrorMessage(data, t("errorComposeFailed")));
         // poll THIS composition by id (avoids the latest-row race across sequential renders)
         const url: string = await new Promise((resolve, reject) => {
           const poll = setInterval(async () => {
@@ -584,7 +648,7 @@ export default function VideoPage() {
 
   // 真实合成：调用 compose API 跑 FFmpeg，配乐观进度动画，完成后拿到真实 mp4
   const startCompose = async () => {
-    if (isComposing || matrixRunning || selectingAsset.current || !scriptId) return;
+    if (isComposing || matrixRunning || selectingAsset.current || voiceoverBlocked || !scriptId) return;
     const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
     const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setIsComposing(true);
@@ -600,7 +664,7 @@ export default function VideoPage() {
 
     try {
       // 提交合成任务（后台异步），随后轮询状态
-      const res = await fetch(`/api/project/${id}/compose`, {
+      const res = await composeFetch(`/api/project/${id}/compose`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -618,19 +682,12 @@ export default function VideoPage() {
           ...(!premiumCg && config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
           ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
           ...(!premiumCg && { voiceGround: config.voiceGround }),
-          // 开启配音时：已配付费 TTS 走付费；否则走免费 Edge keyless TTS（无需 Key），合成为每镜生成口播音轨
           ...(!premiumCg && config.ttsEnabled && (tidewe || config.voiceoverMode !== "auto") && { voiceoverMode: config.voiceoverMode }),
-          ...(!premiumCg && config.ttsEnabled && paidTtsReady && {
-            // 解析后的完整配置（含平台、复用的 Key、默认 baseUrl/模型/音色、可选 GroupId）
-            ttsConfig: resolveTTSConfig(tts, providers),
-          }),
-          ...(!premiumCg && config.ttsEnabled && !paidTtsReady && {
-            freeTts: { enabled: true, voice: config.freeVoice },
-          }),
+          ...selectedVoiceoverConfig,
         }),
       });
       const data = await res.json();
-      if (!res.ok || !data.compositionId) throw new Error(data.error || t("errorComposeFailed"));
+      if (!res.ok || !data.compositionId) throw new Error(elevenLabsErrorMessage(data, t("errorComposeFailed")));
 
       // 轮询合成状态，直到 done / failed（后台任务，避免长视频请求超时）
       const url: string = await new Promise((resolve, reject) => {
@@ -873,9 +930,27 @@ export default function VideoPage() {
               <CardContent className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">{t("ttsLabel")}</Label>
-                  {!paidTtsReady && (
+                  {useFreeTts && (
                     <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-500">{t("ttsFreeBadge")}</span>
                   )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="compose-voice-service" className="text-xs">{t("ttsServiceLabel")}</Label>
+                  <select
+                    id="compose-voice-service"
+                    aria-label={t("ttsServiceLabel")}
+                    value={config.voiceService}
+                    disabled={isComposing || matrixRunning || !config.ttsEnabled}
+                    onChange={(event) => {
+                      if (event.target.value !== config.voiceService) setElevenLabsReady(false);
+                      setCustomizedVoiceProjectId(id);
+                      setConfig((current) => ({ ...current, voiceService: event.target.value as ComposeConfig["voiceService"] }));
+                    }}
+                    className="h-9 w-full rounded-md border border-border/50 bg-muted/30 px-2 text-xs disabled:opacity-50"
+                  >
+                    <option value="microsoft">{t("ttsServiceMicrosoft")}</option>
+                    <option value="elevenlabs-cli">{t("ttsServiceElevenLabs")}</option>
+                  </select>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">{t("ttsEnableLabel")}</span>
@@ -884,7 +959,10 @@ export default function VideoPage() {
                     role="switch"
                     aria-label={t("ttsEnableLabel")}
                     aria-checked={config.ttsEnabled}
-                    onClick={() => setConfig((c) => ({ ...c, ttsEnabled: !c.ttsEnabled }))}
+                    onClick={() => {
+                      setElevenLabsReady(false);
+                      setConfig((c) => ({ ...c, ttsEnabled: !c.ttsEnabled }));
+                    }}
                     className={`relative w-10 h-5 rounded-full transition-colors ${config.ttsEnabled ? "bg-primary" : "bg-muted"}`}
                   >
                     <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.ttsEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
@@ -917,14 +995,36 @@ export default function VideoPage() {
                     </div>
                   ))}
                 </div>
-                {config.ttsEnabled && paidTtsReady && (
-                  <p className="text-[11px] text-muted-foreground">
-                    {t("ttsPaidHint", { provider: getTTSProviderMeta(tts.provider).label })}
-                  </p>
+                {config.ttsEnabled && useElevenLabs && !elevenLabsEnabled && (
+                  <div className="space-y-2 rounded-lg border border-border/50 p-3">
+                    <p className="text-xs text-muted-foreground">{t("elevenLabsSettingsRequired")}</p>
+                    <Link href="/settings?tab=tts" className="text-xs text-primary underline underline-offset-4">{t("elevenLabsOpenSettings")}</Link>
+                  </div>
                 )}
-                {config.ttsEnabled && !paidTtsReady && (
+                {loadedProfileProjectId === id && config.ttsEnabled && useElevenLabs && elevenLabsEnabled && (
+                  <div className="space-y-3">
+                    <ElevenLabsVoiceSelector
+                      key={id}
+                      allowLogin={false}
+                      voice={config.elevenLabsVoice}
+                      model={config.elevenLabsModel}
+                      onVoiceChange={(voice) => { setCustomizedVoiceProjectId(id); setConfig((current) => ({ ...current, elevenLabsVoice: voice })); }}
+                      onModelChange={(model) => { setCustomizedVoiceProjectId(id); setConfig((current) => ({ ...current, elevenLabsModel: model })); }}
+                      onReadyChange={setElevenLabsReady}
+                    />
+                    <ElevenLabsVoicePreview
+                      key={`${id}:${config.elevenLabsVoice}:${config.elevenLabsModel}:${tts.speed ?? 1}:${locale}:${elevenLabsReady}:${isComposing}:${matrixRunning}`}
+                      voice={config.elevenLabsVoice}
+                      model={config.elevenLabsModel}
+                      speed={tts.speed}
+                      ready={elevenLabsReady && !isComposing && !matrixRunning}
+                      text={tidewe ? "The walk in is one thing. Sitting still on a cold morning is another." : undefined}
+                    />
+                  </div>
+                )}
+                {config.ttsEnabled && useFreeTts && (
                   <div className="space-y-2">
-                    <Select value={config.freeVoice} onValueChange={(v) => setConfig((c) => ({ ...c, freeVoice: v ?? c.freeVoice }))}>
+                    <Select value={config.freeVoice} onValueChange={(v) => { customizedFreeVoiceProjectId.current = id; setConfig((c) => ({ ...c, freeVoice: v ?? c.freeVoice })); }}>
                       <SelectTrigger aria-label={t("ttsVoiceLabel")} className="bg-muted/30 border-border/50 text-xs">
                         {/* Base UI 的 Select.Value 默认显示原始 value，用函数子节点映射为中文标签 */}
                         <SelectValue>
@@ -945,7 +1045,7 @@ export default function VideoPage() {
                     <FreeVoicePreview
                       key={`${config.freeVoice}:${locale}`}
                       voice={config.freeVoice}
-                      text={tidewe ? "The walk in is one thing. Sitting still on a cold morning is another." : t("ttsPreviewText")}
+                      text={tidewe && ttsVoiceLocale(config.freeVoice).startsWith("en-") ? "The walk in is one thing. Sitting still on a cold morning is another." : ttsVoicePreviewText(config.freeVoice)}
                     />
                   </div>
                 )}
@@ -1205,7 +1305,7 @@ export default function VideoPage() {
 
               <Button
                 onClick={startCompose}
-                disabled={isComposing || matrixRunning || savingAssetId !== null || !scriptId || clips.length === 0}
+                disabled={isComposing || matrixRunning || savingAssetId !== null || voiceoverBlocked || !scriptId || clips.length === 0}
                 className="w-full brand-gradient text-white"
               >
                 {isComposing ? (
@@ -1297,7 +1397,7 @@ export default function VideoPage() {
                         <Button
                           size="sm"
                           className="text-xs"
-                          disabled={matrixRunning || matrixCombos.length === 0 || isComposing || savingAssetId !== null || !scriptId}
+                          disabled={matrixRunning || matrixCombos.length === 0 || isComposing || savingAssetId !== null || voiceoverBlocked || !scriptId}
                           onClick={runMatrix}
                         >
                           {matrixRunning ? (

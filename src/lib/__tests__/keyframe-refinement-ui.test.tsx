@@ -108,7 +108,7 @@ describe("keyframe refinement review and adoption", () => {
     await click("生成高清候选");
     expect(calls("POST")).toHaveLength(1);
     expect(calls("POST")[0][0]).toBe("/api/generation-runs");
-    expect(JSON.parse(calls("POST")[0][1].body)).toMatchObject({ projectId: "project", kind: "keyframe_refine", items: [{ kind: "keyframe_refine", scriptId: "script", shotId: 1, request: { scriptId: "script", shotId: 1, sourceAssetId: "crop-1", sourceImageUrl: "/api/files/crop-1.png", provider: "atlas-cloud", model: "openai/gpt-image-2/edit", resolution: "4k", instructions: "去掉身后的第二把椅子", issues: ["hands", "anatomy", "duplicates", "product"] } }] });
+    expect(JSON.parse(calls("POST")[0][1].body)).toMatchObject({ projectId: "project", kind: "keyframe_refine", items: [{ kind: "keyframe_refine", scriptId: "script", shotId: 1, request: { scriptId: "script", shotId: 1, sourceAssetId: "crop-1", sourceImageUrl: "/api/files/crop-1.png", provider: "atlas-cloud", model: "openai/gpt-image-2/edit", resolution: "4k", instructions: "去掉身后的第二把椅子", issues: ["hands", "anatomy", "duplicates", "product", "details"] } }] });
     expect(calls("PATCH")).toHaveLength(0);
     expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
     expect(container.querySelector('img[alt="分镜 1 精修候选"]')).toBeNull();

@@ -46,3 +46,17 @@ export function ttsVoiceLocale(voice: string): string {
     ?? /^([A-Za-z]{2,3}-[A-Z]{2})-/.exec(voice)?.[1]
     ?? "zh-CN";
 }
+
+const FREE_TTS_PREVIEW_TEXT: Record<string, string> = {
+  zh: "你好！欢迎了解这款产品，让每一天更轻松、更精彩。",
+  en: "Hello! Discover a product that makes every day easier and more enjoyable.",
+  ja: "こんにちは！毎日の暮らしをもっと便利に、もっと楽しくする商品をご紹介します。",
+  ko: "안녕하세요! 매일의 생활을 더 편리하고 즐겁게 만드는 제품을 소개합니다.",
+  es: "¡Hola! Descubre un producto que hace tu día a día más fácil y agradable.",
+};
+
+/** Monolingual Edge voices need a sample in their own language, independently of UI locale. */
+export function ttsVoicePreviewText(voice: string): string {
+  return FREE_TTS_PREVIEW_TEXT[ttsVoiceLocale(voice).split("-")[0].toLowerCase()]
+    ?? FREE_TTS_PREVIEW_TEXT.en;
+}

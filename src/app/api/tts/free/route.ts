@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSpeechFree, FREE_TTS_VOICES, DEFAULT_FREE_VOICE } from "@/lib/edge-tts";
+import { ttsVoicePreviewText } from "@/lib/tts-voices";
 
 // GET /api/tts/free —— list available free voices (no API key required)
 export async function GET() {
@@ -14,9 +15,9 @@ export async function POST(req: NextRequest) {
   } catch {
     /* allow empty body; use default preview text */
   }
-  const text = (typeof body.text === "string" && body.text.trim()) || "你好，这是免费配音的试听效果。";
   // validate that the voice name contains only safe characters (Edge voices look like en-US-AriaNeural; hyphens allowed, compatible with any valid Edge voice rather than a fixed allowlist) — fall back to default on invalid input to prevent SSML injection
   const voice = typeof body.voice === "string" && /^[A-Za-z0-9-]{1,40}$/.test(body.voice) ? body.voice : DEFAULT_FREE_VOICE;
+  const text = (typeof body.text === "string" && body.text.trim()) || ttsVoicePreviewText(voice);
   // rate must be in SSML prosody rate format (e.g. +10% / -5%) — omit on invalid input to prevent SSML injection
   const rate = typeof body.rate === "string" && /^[+-]?\d{1,3}%$/.test(body.rate) ? body.rate : undefined;
 

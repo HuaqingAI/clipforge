@@ -20,6 +20,7 @@ import { AIGC_BADGE_DEFAULT_TEXT } from "@/lib/compliance-overlays";
 import { assetScopeForShot } from "@/lib/asset-context";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { buildComposeInvocation, FADE_DURATION, type ComposeConfig } from "@/lib/video-composer/composer";
+import { createElevenLabsLocalSession } from "@/lib/elevenlabs/local-access";
 
 const state = vi.hoisted(() => ({ db: null as unknown, render: vi.fn(), freeTts: vi.fn(), paidTts: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
@@ -40,6 +41,7 @@ const db = drizzle(sqlite, { schema });
 let directory: string;
 let shortNarration: Buffer;
 let longNarration: Buffer;
+let elevenLabsHeaders: Record<string, string>;
 const projectId = "voiceover-project";
 const sourceSeconds = 2;
 const baseShot: schema.Shot = {
@@ -50,6 +52,15 @@ const baseShot: schema.Shot = {
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), "clipforge-compose-voiceover-"));
   vi.stubEnv("APP_DATA_DIR", directory);
+  vi.stubEnv("CLIPFORGE_RUNTIME", "");
+  vi.stubEnv("CLIPFORGE_ELEVENLABS_DISABLED", "");
+  const session = await createElevenLabsLocalSession(new NextRequest("http://localhost/api/integrations/elevenlabs/session", {
+    headers: { host: "localhost", "x-clipforge-elevenlabs": "1" },
+  }));
+  elevenLabsHeaders = {
+    cookie: session.headers.get("set-cookie")!.split(";")[0],
+    "x-clipforge-elevenlabs-csrf": (await session.json()).csrfToken,
+  };
   state.db = db;
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
   db.insert(schema.projects).values({ id: projectId, name: "Voiceover modes" }).run();
@@ -130,14 +141,14 @@ async function markSelectedAssetsAsTrustedPremiumCg() {
   }
 }
 
-async function requestCompose(body: Record<string, unknown> = {}) {
+async function requestCompose(body: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
   return POST(new NextRequest(`http://localhost/api/project/${projectId}/compose`, {
-    method: "POST", body: JSON.stringify(body),
+    method: "POST", body: JSON.stringify(body), headers: { host: "localhost", "content-type": "application/json", ...headers },
   }), { params: Promise.resolve({ id: projectId }) });
 }
 
-async function compose(body: Record<string, unknown> = {}) {
-  const response = await requestCompose(body);
+async function compose(body: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
+  const response = await requestCompose(body, headers);
   expect(response.status).toBe(202);
   const { compositionId } = await response.json();
   await vi.waitFor(() => {
@@ -668,5 +679,76 @@ describe("composition voiceover modes", () => {
     } finally {
       warning.mockRestore();
     }
+  });
+});
+
+describe("ElevenLabs CLI composition", () => {
+  const ttsConfig = { provider: "elevenlabs-cli", baseUrl: "", apiKey: "", voice: "cloned_voice", model: "eleven_multilingual_v2", speed: 1 };
+
+  it("uses the chosen ElevenLabs voice without API credentials or free TTS", async () => {
+    setShots([{ source: "audible" }]);
+    const { config, timeline } = await compose({ ttsConfig, voiceoverMode: "replace" }, elevenLabsHeaders);
+    expect(state.paidTts).toHaveBeenCalledWith(baseShot.voiceover, expect.objectContaining(ttsConfig));
+    expect(state.freeTts).not.toHaveBeenCalled();
+    expect(config.clips[0]).toMatchObject({ hasAudio: false, audioPath: expect.stringMatching(/\.mp3$/) });
+    expect(timeline.audioTracks.map((track) => track.role)).toEqual(["dialogue"]);
+    expect(timeline.warnings).toBeUndefined();
+  });
+
+  it("keeps native audio in auto mode and skips ElevenLabs when narration is disabled", async () => {
+    setShots([{ source: "audible" }]);
+    await compose({ ttsConfig }, elevenLabsHeaders);
+    expect(state.paidTts).not.toHaveBeenCalled();
+    // TTS-off should not require a local ElevenLabs session or silently enable Edge.
+    const { config } = await compose({ ttsConfig, ttsEnabled: false, voiceoverMode: "replace", freeTts: { enabled: true } });
+    expect(config.clips[0].hasAudio).toBe(true);
+    expect(state.paidTts).not.toHaveBeenCalled();
+    expect(state.freeTts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { voice: "" }, { model: "" }, { voice: 123 }, { model: {} },
+    { speed: "1" }, { speed: 0.6 }, { speed: 1.3 },
+    { baseUrl: "https://example.test" }, { apiKey: "untrusted-key" },
+  ])("rejects invalid selected ElevenLabs config before creating work: %j", async (invalid) => {
+    setShots([{ source: "silent" }]);
+    const response = await requestCompose({ ttsConfig: { ...ttsConfig, ...invalid }, freeTts: { enabled: true } }, elevenLabsHeaders);
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("ELEVENLABS_CONFIG_INVALID");
+    expect(db.select().from(schema.compositions).all()).toEqual([]);
+    expect(state.paidTts).not.toHaveBeenCalled();
+    expect(state.freeTts).not.toHaveBeenCalled();
+    expect(state.render).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { headers: {}, status: 401 },
+    { headers: { origin: "https://other.example" }, status: 403 },
+    { headers: { "sec-fetch-site": "cross-site" }, status: 403 },
+  ] as Array<{ headers: Record<string, string>; status: number }>)("blocks CLI compositions without a trusted local request: $status", async ({ headers, status }) => {
+    setShots([{ source: "silent" }]);
+    const response = await requestCompose({ ttsConfig }, Object.keys(headers).length ? { ...elevenLabsHeaders, ...headers } : {});
+    expect(response.status).toBe(status);
+    expect(db.select().from(schema.compositions).all()).toEqual([]);
+    expect(state.paidTts).not.toHaveBeenCalled();
+    expect(state.freeTts).not.toHaveBeenCalled();
+  });
+
+  it("persists an actionable failure and never switches to Edge or renders silence", async () => {
+    setShots([{ source: "audible" }]);
+    state.paidTts.mockRejectedValue(new Error("OAuth session expired"));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await requestCompose({ ttsConfig, voiceoverMode: "replace", freeTts: { enabled: true } }, elevenLabsHeaders);
+      expect(response.status).toBe(202);
+      const { compositionId } = await response.json();
+      await vi.waitFor(async () => {
+        const result = await GET(new NextRequest(`http://localhost/api/project/${projectId}/compose?compositionId=${compositionId}`), { params: Promise.resolve({ id: projectId }) });
+        expect((await result.json()).composition).toMatchObject({ status: "failed", error: expect.stringMatching(/镜头 1 ElevenLabs 配音失败.*OAuth session expired/) });
+      });
+      expect(state.paidTts).toHaveBeenCalledTimes(1);
+      expect(state.freeTts).not.toHaveBeenCalled();
+      expect(state.render).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
   });
 });
