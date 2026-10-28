@@ -118,6 +118,24 @@ describe("project background run recovery", () => {
 });
 
 describe("generation run history panel", () => {
+  it("counts attention separately from actual failures, including legacy combined failure totals", async () => {
+    const attention = run("attention", "A", { status: "needs_attention", total: 5, failed: 5, items: Array.from({ length: 5 }, (_, index) => ({ id: `attention-${index}`, kind: "video", shotId: index + 1, status: "needs_attention" })) });
+    const mixed = run("mixed", "A", { status: "needs_attention", total: 3, done: 1, failed: 2, items: [
+      { id: "saved", kind: "video", status: "completed" },
+      { id: "failed", kind: "video", status: "failed" },
+      { id: "attention", kind: "video", status: "needs_attention" },
+    ] });
+    request.mockResolvedValue(Response.json({ runs: [attention, mixed] }));
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
+    const attentionSummary = container.querySelector('details[data-run-id="attention"] summary')?.textContent;
+    expect(attentionSummary).toContain("需处理 5");
+    expect(attentionSummary).not.toContain("失败");
+    const mixedSummary = container.querySelector('details[data-run-id="mixed"] summary')?.textContent;
+    expect(mixedSummary).toContain("失败 1");
+    expect(mixedSummary).toContain("需处理 1");
+    expect(mixedSummary).not.toContain("失败 2");
+  });
+
   it("links completed refinement candidates from historical scripts without adopting them", async () => {
     const refined = run("refinement", "A", { kind: "keyframe_refine_batch", status: "completed", done: 1, items: [{ id: "candidate", kind: "keyframe_refine", scriptId: "historical-script", shotId: 3, status: "completed", result: { asset: { filePath: "/api/files/A/refined%20frame.png" } } }] });
     request.mockResolvedValue(Response.json({ runs: [refined] }));

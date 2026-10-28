@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import type { GenerationExecutionItem } from "@/lib/generation-types";
+import { GenerationExecutionError, type GenerationExecutionItem } from "@/lib/generation-types";
 import type { KlingProfile, KlingVideoModelDescriptor } from "@/lib/kling/types";
 
 const state = vi.hoisted(() => ({ directory: "", sqlite: null as Database.Database | null, execute: vi.fn() }));
@@ -250,6 +250,78 @@ describe("durable cross-project generation", () => {
     expect(() => generationRunAction(run.id, "retry_import")).toThrow("核对原平台");
     getDb().update(generationItems).set({ checkpoint: encryptGenerationValue({ taskId: "known-cloud-task" }) }).where(eq(generationItems.id, item.id)).run();
     expect(generationRunAction(run.id, "retry_import").status).toBe("waiting");
+  });
+  it("gives the first import failure a fresh retry budget after many successful cloud polls", async () => {
+    const run = enqueueGenerationRun(input());
+    const db = getDb(), item = db.select().from(generationItems).get()!;
+    db.update(generationItems).set({ attempts: 68, checkpoint: encryptGenerationValue({ taskId: "paid-task", resultUrls: ["https://example.test/paid.mp4"] }) }).where(eq(generationItems.id, item.id)).run();
+    state.execute.mockImplementation(async (execution: GenerationExecutionItem, save: (checkpoint: Record<string, unknown>) => void) => {
+      save({ ...execution.checkpoint, stage: "importing", localPaths: { 0: "/api/files/A/paid.mp4" }, childJobId: "paid-child" });
+      throw new GenerationExecutionError("temporary disk failure", "GENERATION_IMPORT_FAILED", true);
+    });
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    await vi.waitFor(() => {
+      const saved = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!;
+      expect(saved).toMatchObject({ status: "waiting", attempts: 69, leaseOwner: null });
+      expect(decryptGenerationValue(saved.checkpoint!)).toEqual({ taskId: "paid-task", resultUrls: ["https://example.test/paid.mp4"], stage: "importing", localPaths: { 0: "/api/files/A/paid.mp4" }, childJobId: "paid-child", importFailures: 1 });
+      expect(saved.checkpoint).not.toContain("paid-task");
+    });
+    expect(getGenerationRun(run.id).failed).toBe(0);
+  });
+  it("stops after six actual import failures and resets that budget for manual recovery", async () => {
+    const run = enqueueGenerationRun(input());
+    const db = getDb(), item = db.select().from(generationItems).get()!;
+    db.update(generationItems).set({ attempts: 40, checkpoint: encryptGenerationValue({ taskId: "paid-task" }) }).where(eq(generationItems.id, item.id)).run();
+    state.execute.mockImplementation(async (execution: GenerationExecutionItem, save: (checkpoint: Record<string, unknown>) => void) => {
+      save({ ...execution.checkpoint, resultUrls: ["https://example.test/paid.mp4"], stage: "importing" });
+      throw new GenerationExecutionError("temporary import failure", "GENERATION_IMPORT_FAILED", true);
+    });
+    vi.stubEnv("NEXT_PHASE", "");
+    for (let failure = 1; failure <= 6; failure++) {
+      db.update(generationItems).set({ nextRunAt: 0 }).where(eq(generationItems.id, item.id)).run();
+      await runGenerationTick();
+      await vi.waitFor(() => {
+        const saved = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!;
+        expect(saved).toMatchObject({ status: failure === 6 ? "needs_attention" : "waiting", leaseOwner: null });
+        expect(decryptGenerationValue(saved.checkpoint!)).toMatchObject({ taskId: "paid-task", importFailures: failure });
+      });
+    }
+    expect(state.execute).toHaveBeenCalledTimes(6);
+    vi.stubEnv("NEXT_PHASE", "phase-production-build");
+    expect(generationRunAction(run.id, "retry_import").status).toBe("waiting");
+    expect(decryptGenerationValue(db.select().from(generationItems).get()!.checkpoint!)).toMatchObject({ taskId: "paid-task", resultUrls: ["https://example.test/paid.mp4"], importFailures: 0 });
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    await vi.waitFor(() => {
+      const saved = db.select().from(generationItems).get()!;
+      expect(saved).toMatchObject({ status: "waiting", leaseOwner: null });
+      expect(decryptGenerationValue(saved.checkpoint!)).toMatchObject({ importFailures: 1 });
+    });
+  });
+  it("does not count transient query errors against the import retry budget", async () => {
+    enqueueGenerationRun(input());
+    const db = getDb(), item = db.select().from(generationItems).get()!;
+    db.update(generationItems).set({ checkpoint: encryptGenerationValue({ taskId: "paid-task", importFailures: 3 }) }).where(eq(generationItems.id, item.id)).run();
+    state.execute.mockRejectedValue(new GenerationExecutionError("temporary query failure", "GENERATION_QUERY_FAILED", true));
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    await vi.waitFor(() => {
+      const saved = db.select().from(generationItems).get()!;
+      expect(saved).toMatchObject({ status: "waiting", leaseOwner: null });
+      expect(decryptGenerationValue(saved.checkpoint!)).toEqual({ taskId: "paid-task", importFailures: 3 });
+    });
+  });
+  it("leaves a replacement worker's checkpoint and lease intact after a late import error", async () => {
+    enqueueGenerationRun(input());
+    const db = getDb(), item = db.select().from(generationItems).get()!;
+    const replacement = `${process.pid}:replacement`;
+    state.execute.mockImplementation(async () => {
+      db.update(generationItems).set({ leaseOwner: replacement, checkpoint: encryptGenerationValue({ taskId: "paid-task", importFailures: 2, stage: "new-worker" }) }).where(eq(generationItems.id, item.id)).run();
+      throw new GenerationExecutionError("late import failure", "GENERATION_IMPORT_FAILED", true);
+    });
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    await vi.waitFor(() => expect(state.execute).toHaveBeenCalledOnce());
+    const saved = db.select().from(generationItems).get()!;
+    expect(saved).toMatchObject({ status: "running", leaseOwner: replacement, errorCode: null });
+    expect(decryptGenerationValue(saved.checkpoint!)).toEqual({ taskId: "paid-task", importFailures: 2, stage: "new-worker" });
   });
   it("authenticates encrypted snapshots", () => {
     const encrypted = encryptGenerationValue({ apiKey: "private" });

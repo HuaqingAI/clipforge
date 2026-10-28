@@ -64,8 +64,11 @@ export function GenerationRunsPanel({ projectId, onCompleted }: { projectId: str
     <div className="flex items-center justify-between gap-3"><div><h2 className="text-sm font-medium">后台任务</h2><p className="text-xs text-muted-foreground">可切换项目继续创作，回来后自动恢复全部批次进度。</p></div><Button size="sm" variant="outline" onClick={() => void refresh()}>刷新任务</Button></div>
     {(error || actionError) && <p role="alert" className="text-xs text-amber-600">{actionError || error}</p>}
     {!shown.length && <p className="text-xs text-muted-foreground">{loading ? "正在读取后台任务…" : "暂无后台任务"}</p>}
-    {shown.map((run) => <details key={run.id} open={requestedId === run.id ? true : undefined} className="rounded-lg border border-border/60 p-3" data-run-id={run.id}>
-      <summary className="cursor-pointer text-sm"><span>{run.label || kindLabels[run.kind]} · {statusLabels[run.status]} · {run.done}/{run.total}</span>{run.failed > 0 && <span className="ml-2 text-amber-600">失败 {run.failed}</span>}</summary>
+    {shown.map((run) => {
+      const failed = run.items.filter((item) => item.status === "failed").length;
+      const attention = run.items.filter((item) => item.status === "needs_attention").length;
+      return <details key={run.id} open={requestedId === run.id ? true : undefined} className="rounded-lg border border-border/60 p-3" data-run-id={run.id}>
+      <summary className="cursor-pointer text-sm"><span>{run.label || kindLabels[run.kind]} · {statusLabels[run.status]} · {run.done}/{run.total}</span>{failed > 0 && <span className="ml-2 text-amber-600">失败 {failed}</span>}{attention > 0 && <span className="ml-2 text-amber-600">需处理 {attention}</span>}</summary>
       <div className="mt-3 space-y-2">{run.items.map((item) => {
         const jobId = item.result?.childJobId || item.result?.jobId;
         const asset = item.result?.asset as { filePath?: unknown } | undefined;
@@ -74,6 +77,7 @@ export function GenerationRunsPanel({ projectId, onCompleted }: { projectId: str
       })}
         <div className="flex gap-2">{generationRunActive(run) && <Button size="sm" variant="outline" disabled={busy === run.id} onClick={() => void actOn(run, "cancel")}>停止未提交镜头</Button>}{["needs_attention", "failed"].includes(run.status) && <Button size="sm" variant="outline" disabled={busy === run.id} onClick={() => void actOn(run, "retry_import")}>恢复保存</Button>}</div>
       </div>
-    </details>)}
+    </details>;
+    })}
   </section>;
 }

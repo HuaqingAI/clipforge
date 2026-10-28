@@ -248,13 +248,19 @@ async function executeKling(item: GenerationExecutionItem, request: RecordValue,
   }
   generationCheckpoint({ childJobId: job.id, stage: "cloud_running", ...(job.remoteGenerationId && { remoteTaskId: job.remoteGenerationId }) });
   startKlingJobRunner();
-  if (job.submissionState === "submission_unknown" || job.needsConfirmation || job.autoQueryPaused || job.submissionState === "not_submitted") throw attention(job.data.error?.message ?? job.data.blockedReason ?? "原 Kling 任务需要手动确认，请在原任务中继续。");
+  let outputs = job.remoteState === "completed" ? getKlingOutputs(job.id).filter((output) => !output.data.deletedAt) : [];
+  const alreadyImported = outputs.length > 0 && outputs.every((output) => output.importState === "imported");
+  if (!alreadyImported && (job.submissionState === "submission_unknown" || job.needsConfirmation || job.autoQueryPaused || job.submissionState === "not_submitted")) throw attention(job.data.error?.message ?? job.data.blockedReason ?? "原 Kling 任务需要手动确认，请在原任务中继续。");
   if (job.remoteState === "failed" || job.remoteState === "cancelled") throw new GenerationExecutionError(job.data.error?.message ?? "Kling 生成失败", "GENERATION_PROVIDER_FAILED");
   if (job.remoteState !== "completed") return pending();
-  let outputs = getKlingOutputs(job.id).filter((output) => !output.data.deletedAt);
   if (outputs.some((output) => output.importState !== "imported")) {
     try { await retryKlingImport(job.id); }
-    catch (error) { throw new GenerationExecutionError(error instanceof Error ? error.message : "Kling 素材导入失败", "GENERATION_IMPORT_FAILED", true); }
+    catch (error) {
+      const code = (error as { code?: string }).code;
+      // The independent Kling runner may already be saving this same paid result.
+      if (code === "KLING_JOB_BUSY" || code === "KLING_PROFILE_BUSY") return pending("importing");
+      throw new GenerationExecutionError(error instanceof Error ? error.message : "Kling 素材导入失败", "GENERATION_IMPORT_FAILED", true);
+    }
     outputs = getKlingOutputs(job.id).filter((output) => !output.data.deletedAt);
   }
   if (!outputs.length || outputs.some((output) => output.importState !== "imported")) return pending("importing");

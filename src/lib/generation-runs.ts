@@ -6,6 +6,7 @@ import { assetMatchesScript } from "@/lib/asset-context";
 import { resolveCurrentScript } from "@/lib/current-script";
 import { generationRuns, generationItems } from "@/lib/generation-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
+import { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
 import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation-secrets";
 import { captureGenerationInputs } from "@/lib/generation-inputs";
 import type { GenerationKind, GenerationPayload } from "@/lib/generation-types";
@@ -77,18 +78,42 @@ function safelyUnsubmitted(item: Item): boolean {
   return checkpoint.submissionState === "not_submitted" && !hasRecoverableResult(checkpoint);
 }
 
+/** The child may finish saving after its parent stopped observing it. Reconcile local records only. */
+function reconcileKlingItems(items: Item[]): Item[] {
+  const db = getDb();
+  return db.transaction((tx) => items.map((item) => {
+    if (item.kind !== "video" || item.leaseOwner || ["completed", "cancelled"].includes(item.status)) return item;
+    const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
+    if (jobs.length !== 1) return item;
+    const job = jobs[0];
+    if (job.data.deletedAt || job.scriptId !== item.scriptId || job.shotId !== item.shotId || job.remoteState !== "completed") return item;
+    const outputs = tx.select().from(klingJobOutputs).where(eq(klingJobOutputs.jobId, job.id)).all().filter((output) => !output.data.deletedAt);
+    if (!outputs.length || outputs.some((output) => output.importState !== "imported" || !output.assetId || !output.data.filePath)) return item;
+    const savedAssets = tx.select().from(assets).where(inArray(assets.id, outputs.map((output) => output.assetId!))).all();
+    if (outputs.some((output) => !savedAssets.some((asset) => asset.id === output.assetId && asset.projectId === item.projectId && asset.shotId === item.shotId && asset.filePath === output.data.filePath))) return item;
+    let checkpoint: Record<string, unknown>;
+    try { checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {}; }
+    catch { return item; }
+    if (typeof checkpoint.childJobId === "string" && checkpoint.childJobId !== job.id) return item;
+    const result = { childJobId: job.id, assetIds: outputs.map((output) => output.assetId!), videoUrls: outputs.map((output) => output.data.filePath!) };
+    return tx.update(generationItems).set({ status: "completed", stage: "ready", result, error: null, errorCode: null,
+      checkpoint: encryptGenerationValue({ ...checkpoint, childJobId: job.id, completedResult: result, stage: "ready" }), updatedAt: Date.now() })
+      .where(and(eq(generationItems.id, item.id), eq(generationItems.status, item.status), eq(generationItems.updatedAt, item.updatedAt), isNull(generationItems.leaseOwner))).returning().get() ?? item;
+  }));
+}
+
 export function getGenerationRun(id: string) {
   const db = getDb();
   const run = db.select().from(generationRuns).where(eq(generationRuns.id, id)).get();
   if (!run) throw new GenerationRunError("任务批次不存在。", 404, "GENERATION_RUN_NOT_FOUND");
-  return runView(run, db.select().from(generationItems).where(eq(generationItems.runId, id)).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all());
+  return runView(run, reconcileKlingItems(db.select().from(generationItems).where(eq(generationItems.runId, id)).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all()));
 }
 
 export function listGenerationRuns(projectId?: string) {
   const db = getDb();
   const runs = db.select().from(generationRuns).where(projectId ? eq(generationRuns.projectId, projectId) : undefined).orderBy(desc(generationRuns.createdAt)).all();
   if (!runs.length) return [];
-  const items = db.select().from(generationItems).where(inArray(generationItems.runId, runs.map((r) => r.id))).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all();
+  const items = reconcileKlingItems(db.select().from(generationItems).where(inArray(generationItems.runId, runs.map((r) => r.id))).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all());
   const grouped = new Map<string, Item[]>();
   for (const item of items) { const group = grouped.get(item.runId) ?? []; group.push(item); grouped.set(item.runId, group); }
   return runs.map((run) => runView(run, grouped.get(run.id) ?? []));
@@ -191,7 +216,8 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
 }
 
 export function generationRunAction(id: string, action: string) {
-  getGenerationRun(id);
+  const run = getGenerationRun(id);
+  if (action === "retry_import" && run.status === "completed") return run;
   const db = getDb();
   db.transaction((tx) => {
     if (action === "cancel") {
@@ -206,7 +232,7 @@ export function generationRunAction(id: string, action: string) {
         if (!["needs_attention", "failed"].includes(item.status) || !item.checkpoint) continue;
         const checkpoint = decryptGenerationValue<Record<string, unknown>>(item.checkpoint);
         if (!hasRecoverableResult(checkpoint)) continue;
-        tx.update(generationItems).set({ status: "waiting", stage: "recovering", error: null, errorCode: null, nextRunAt: Date.now(), updatedAt: Date.now() }).where(eq(generationItems.id, item.id)).run();
+        tx.update(generationItems).set({ status: "waiting", stage: "recovering", error: null, errorCode: null, checkpoint: encryptGenerationValue({ ...checkpoint, importFailures: 0 }), nextRunAt: Date.now(), updatedAt: Date.now() }).where(eq(generationItems.id, item.id)).run();
         eligible++;
       }
       if (!eligible) throw new GenerationRunError("没有可安全恢复的已受理结果；提交结果不明确时，请先核对原平台任务，避免重复扣费。", 409, "GENERATION_RECOVERY_UNSAFE");
@@ -297,10 +323,17 @@ async function executeClaimedItem(item: Item) {
   } catch (error) {
     const coded = error as Error & { code?: string; retryable?: boolean };
     const cancelled = coded.code === "GENERATION_CANCELLED";
-    const exhaustedImport = coded.retryable && coded.code === "GENERATION_IMPORT_FAILED" && item.attempts >= 6;
+    const importFailed = coded.retryable && coded.code === "GENERATION_IMPORT_FAILED";
+    // Dispatch attempts include successful cloud polls; only actual import errors consume this budget.
+    const latest = !lost && importFailed ? db.select({ checkpoint: generationItems.checkpoint }).from(generationItems).where(fence).get() : undefined;
+    const checkpoint = latest?.checkpoint ? decryptGenerationValue<Record<string, unknown>>(latest.checkpoint) : {};
+    const previousFailures = typeof checkpoint.importFailures === "number" && Number.isSafeInteger(checkpoint.importFailures) && checkpoint.importFailures >= 0 ? checkpoint.importFailures : 0;
+    const importFailures = previousFailures + 1;
+    const exhaustedImport = importFailed && importFailures >= 6;
     if (!lost) db.update(generationItems).set({ status: cancelled ? "cancelled" : exhaustedImport ? "needs_attention" : coded.retryable ? "waiting" : coded.code === "GENERATION_NEEDS_ATTENTION" ? "needs_attention" : "failed",
       stage: cancelled ? "cancelled" : coded.retryable ? "retry_wait" : "needs_attention", error: cancelled ? null : redactError(error, payload), errorCode: cancelled ? null : coded.code ?? "GENERATION_FAILED",
-      nextRunAt: Date.now() + Math.min(300_000, 5000 * 2 ** Math.min(item.attempts, 6)), updatedAt: Date.now() }).where(fence).run();
+      ...(importFailed ? { checkpoint: encryptGenerationValue({ ...checkpoint, importFailures }) } : {}),
+      nextRunAt: Date.now() + Math.min(300_000, 5000 * 2 ** Math.min(importFailed ? importFailures : item.attempts, 6)), updatedAt: Date.now() }).where(fence).run();
   } finally {
     clearInterval(heartbeat);
     db.update(generationItems).set({ leaseOwner: null, leaseExpiresAt: null }).where(fence).run();

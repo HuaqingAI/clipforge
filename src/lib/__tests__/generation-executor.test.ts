@@ -48,7 +48,7 @@ beforeEach(() => {
   db.insert(scripts).values({ id: "script-A", projectId: "A", selected: true, styleType: "scene", shots: [{ shotId: 1, type: "demo", duration: 5, description: "original", voiceover: "test", camera: "static", visualSource: "ai_generate", transition: "direct_concat" }] }).run();
   state.download.mockReset().mockResolvedValue("/api/files/A/downloaded.png");
   state.submit.mockReset().mockImplementation(async () => { beforeGenerationSubmission(); generationCheckpoint({ taskId: "cloud-paid", videoUrls: ["https://example.test/paid.mp4"], submissionState: "acknowledged" }); return Response.json({ taskId: "cloud-paid", videoUrls: ["https://example.test/paid.mp4"] }); });
-  state.query.mockReset(); state.script.mockReset(); state.grid.mockReset(); state.createKling.mockReset(); state.getKling.mockReset(); state.outputs.mockReset();
+  state.query.mockReset(); state.script.mockReset(); state.grid.mockReset(); state.createKling.mockReset(); state.retryKling.mockReset(); state.getKling.mockReset(); state.outputs.mockReset();
 });
 afterAll(() => state.sqlite?.close());
 
@@ -229,6 +229,35 @@ describe("generation executor recovery", () => {
     state.getKling.mockReturnValue(job); state.outputs.mockReturnValue([{ importState: "imported", assetId: "already-imported", data: { filePath: "/api/files/A/kling/paid.mp4" } }]);
     expect(await run(input)).toMatchObject({ childJobId: "same-child", assetIds: ["already-imported"] });
     expect(input.checkpoint?.childJobId).toBe("same-child"); expect(state.createKling).not.toHaveBeenCalled();
+  });
+  it.each(["KLING_JOB_BUSY", "KLING_PROFILE_BUSY"])("waits through %s while the Kling runner saves the same result", async (code) => {
+    const input = item(); input.payload.request = { ...input.payload.request, provider: "kling-cli", profileId: "profile-A" };
+    input.checkpoint = { childJobId: "saved-child" };
+    state.getKling.mockReturnValue({ id: "saved-child", submissionState: "acknowledged", remoteState: "completed", remoteGenerationId: "remote-paid", data: {} } as KlingJob);
+    state.outputs.mockReturnValueOnce([{ importState: "downloading", data: {} }])
+      .mockReturnValue([{ importState: "imported", assetId: "saved-asset", data: { filePath: "/api/files/A/kling/paid.mp4" } }]);
+    state.retryKling.mockRejectedValueOnce(Object.assign(new Error("another worker is importing"), { code }));
+    expect(await run(input)).toMatchObject({ pending: true, stage: "importing" });
+    expect(input.checkpoint?.childJobId).toBe("saved-child");
+    expect(await run(input)).toMatchObject({ childJobId: "saved-child", assetIds: ["saved-asset"], videoUrls: ["/api/files/A/kling/paid.mp4"] });
+    expect(state.retryKling).toHaveBeenCalledOnce(); expect(state.createKling).not.toHaveBeenCalled();
+  });
+  it("keeps actual Kling import errors retryable without creating another child", async () => {
+    const input = item(); input.payload.request = { ...input.payload.request, provider: "kling-cli", profileId: "profile-A" };
+    input.checkpoint = { childJobId: "saved-child" };
+    state.getKling.mockReturnValue({ id: "saved-child", submissionState: "acknowledged", remoteState: "completed", data: {} } as KlingJob);
+    state.outputs.mockReturnValue([{ importState: "failed", data: {} }]);
+    state.retryKling.mockRejectedValueOnce(Object.assign(new Error("download interrupted"), { code: "KLING_DOWNLOAD_FAILED" }));
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true, message: "download interrupted" });
+    expect(input.checkpoint?.childJobId).toBe("saved-child"); expect(state.createKling).not.toHaveBeenCalled();
+  });
+  it("completes an imported Kling result even when automatic queries were paused", async () => {
+    const input = item(); input.payload.request = { ...input.payload.request, provider: "kling-cli", profileId: "profile-A" };
+    input.checkpoint = { childJobId: "saved-child" };
+    state.getKling.mockReturnValue({ id: "saved-child", submissionState: "acknowledged", remoteState: "completed", autoQueryPaused: true, data: {} } as KlingJob);
+    state.outputs.mockReturnValue([{ importState: "imported", assetId: "saved-asset", data: { filePath: "/api/files/A/kling/paid.mp4" } }]);
+    expect(await run(input)).toMatchObject({ childJobId: "saved-child", assetIds: ["saved-asset"] });
+    expect(state.retryKling).not.toHaveBeenCalled(); expect(state.createKling).not.toHaveBeenCalled();
   });
   it("uses the item identity for a new Kling child and keeps ambiguous children attached", async () => {
     const input = item(); input.payload.request = { ...input.payload.request, provider: "kling-cli", profileId: "profile-A", clientRequestId: "browser-id" };
