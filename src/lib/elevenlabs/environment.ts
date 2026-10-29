@@ -63,6 +63,11 @@ async function configuredPackage(input: string): Promise<string> {
 export async function discoverElevenLabsInstallation(): Promise<ElevenLabsInstallation> {
   const configured = process.env.ELEVENLABS_CLI_PATH?.trim();
   if (configured) return verifyElevenLabsPackage(await configuredPackage(configured));
+  // The launcher prepares code only; OAuth continues to use the current OS user.
+  // A broken managed installation must surface its validation error instead of
+  // silently selecting another version from a global installation or npm cache.
+  const prepared = process.env.CLIPFORGE_ELEVENLABS_PACKAGE_PATH?.trim();
+  if (prepared) return verifyElevenLabsPackage(prepared);
   const moduleRoots = [
     process.env.APPDATA && path.join(process.env.APPDATA, "npm", "node_modules"),
     process.env.npm_config_prefix && path.join(process.env.npm_config_prefix, "node_modules"),
@@ -92,5 +97,5 @@ export async function discoverElevenLabsInstallation(): Promise<ElevenLabsInstal
     catch (error) { if (error instanceof ElevenLabsError) versionError = error; }
   }
   if (versionError) throw versionError;
-  throw new ElevenLabsError("ELEVENLABS_NOT_FOUND", `未找到 ElevenLabs CLI，请先运行 npm install -g @elevenlabs/cli@${ELEVENLABS_CLI_VERSION}。`, 409);
+  throw new ElevenLabsError("ELEVENLABS_NOT_FOUND", `未找到 ElevenLabs CLI，请双击 start.cmd 自动准备，或运行 npm install -g @elevenlabs/cli@${ELEVENLABS_CLI_VERSION}。`, 409);
 }

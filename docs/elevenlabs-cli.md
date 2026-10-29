@@ -4,7 +4,9 @@
 
 ## 安装与登录
 
-当前验证版本为官方 `@elevenlabs/cli@1.8.0`，需要 Node.js 环境：
+双击项目根目录 `start.cmd` 会自动检查并准备官方 `@elevenlabs/cli@1.8.0`，安装在 `.clipforge/tools/elevenlabs`，包含当前平台所需的原生二进制。安装后会验证 CLI 能否运行；后续启动直接复用。无需全局安装，启动时不会自动登录或生成音频。
+
+也可以在已有 Node.js 环境中手动安装、登录：
 
 ```powershell
 npm install -g @elevenlabs/cli@1.8.0
@@ -14,7 +16,7 @@ elevenlabs auth status --json
 
 也可以安装后直接在「设置 → 配音」选择 ElevenLabs、开启配音，再点击 OAuth 登录。在浏览器完成授权即可。ClipForge 复用当前系统用户的 OAuth 凭据，不需要填写 ElevenLabs 账号密码或 API Key。已经完成官方 CLI 授权时，刷新设置中的状态和声音列表即可。
 
-服务端可发现全局安装和已有的 npm/npx 缓存，不会在网页请求期间自动下载程序。如果安装在其他位置，可在启动 ClipForge 前设置 `ELEVENLABS_CLI_PATH` 为官方 CLI 包目录或原生可执行文件的绝对路径，例如：
+启动器会通过 `CLIPFORGE_ELEVENLABS_PACKAGE_PATH` 将本地安装位置传给服务端。直接运行 `pnpm start` 时，服务端仍可发现全局安装和已有的 npm/npx 缓存，不会在网页请求期间自动下载程序。如果安装在其他位置，可在启动 ClipForge 前设置 `ELEVENLABS_CLI_PATH` 为官方 CLI 包目录或原生可执行文件的绝对路径，它优先于启动器路径，例如：
 
 ```powershell
 $env:ELEVENLABS_CLI_PATH = 'C:\tools\node_modules\@elevenlabs\cli'

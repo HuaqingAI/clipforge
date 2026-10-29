@@ -22,6 +22,25 @@ export function buildInputPaths(root) {
 
 const KLING_PACKAGE = "@klingai/cli-global";
 const KLING_VERSION = "0.2.0";
+export const ELEVENLABS_PACKAGE = "@elevenlabs/cli";
+export const ELEVENLABS_VERSION = "1.8.0";
+
+/** The npm wrapper needs its optional platform package to run. Never authenticate here. */
+export function elevenLabsReady(packageDirectory, env = process.env) {
+  const manifest = json(join(packageDirectory, "package.json"));
+  const platformName = `cli-${process.platform}-${process.arch}`;
+  const nativeDirectory = join(dirname(packageDirectory), platformName);
+  const native = json(join(nativeDirectory, "package.json"));
+  const executable = join(nativeDirectory, process.platform === "win32" ? "elevenlabs.exe" : "elevenlabs");
+  if (manifest?.name !== ELEVENLABS_PACKAGE || manifest.version !== ELEVENLABS_VERSION || manifest.bin?.elevenlabs !== "bin/cli.js"
+    || native?.name !== `@elevenlabs/${platformName}` || native.version !== ELEVENLABS_VERSION) return false;
+  try {
+    if (!statSync(join(packageDirectory, "bin", "cli.js")).isFile() || !statSync(executable).isFile()) return false;
+  } catch { return false; }
+  const probe = spawnSync(executable, ["--version"], { cwd: packageDirectory, env, windowsHide: true, encoding: "utf8", timeout: 10000 });
+  const versionPattern = new RegExp(`(?:^|\\s)v?${ELEVENLABS_VERSION.replaceAll(".", "\\.")}(?:\\s|$)`);
+  return probe.status === 0 && !probe.error && versionPattern.test(probe.stdout ?? "");
+}
 
 export function compatibleNode(version) {
   const [major, minor] = version.replace(/^v/, "").split(".").map(Number);
@@ -148,7 +167,9 @@ export async function main(args = process.argv.slice(2)) {
   const pnpmEntry = join(pnpmPrefix, "node_modules", "pnpm", "bin", "pnpm.cjs");
   const klingPrefix = join(local, "tools", "kling");
   const klingPackage = join(klingPrefix, "node_modules", "@klingai", "cli-global");
-  const env = { ...process.env, PATH: `${dirname(process.execPath)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH || ""}`, ELECTRON_SKIP_BINARY_DOWNLOAD: "1", NEXT_TELEMETRY_DISABLED: "1", CLIPFORGE_INSTANCE_ID: instanceId, CLIPFORGE_KLING_PACKAGE_PATH: klingPackage };
+  const elevenLabsPrefix = join(local, "tools", "elevenlabs");
+  const elevenLabsPackage = join(elevenLabsPrefix, "node_modules", "@elevenlabs", "cli");
+  const env = { ...process.env, PATH: `${dirname(process.execPath)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH || ""}`, ELECTRON_SKIP_BINARY_DOWNLOAD: "1", NEXT_TELEMETRY_DISABLED: "1", CLIPFORGE_INSTANCE_ID: instanceId, CLIPFORGE_KLING_PACKAGE_PATH: klingPackage, CLIPFORGE_ELEVENLABS_PACKAGE_PATH: elevenLabsPackage };
   // Do not pass a terminal's inherited Electron mode to the actual Node runtime.
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLIPFORGE_RUNTIME;
@@ -157,8 +178,9 @@ export async function main(args = process.argv.slice(2)) {
   const klingReady = () => json(join(klingPackage, "package.json"))?.version === KLING_VERSION && existsSync(join(klingPackage, "dist", "cli.js"));
   if (values.check) {
     const probe = probeDependencies(root, env);
-    console.log(`Node ${process.version} (${process.arch})\npnpm: ${json(join(pnpmPrefix, "node_modules/pnpm/package.json"))?.version ?? "未准备"}\nKling CLI: ${json(join(klingPackage, "package.json"))?.version ?? "未准备"}\nSQLite / FFmpeg / FFprobe: ${probe.status === 0 ? "可用" : "需要安装或修复"}\n地址: ${browserUrl}`);
-    if (probe.status !== 0 || !pnpmReady() || !klingReady()) throw new Error("环境检查未通过；正常双击启动会安装或修复依赖。" );
+    const elevenLabsIsReady = elevenLabsReady(elevenLabsPackage, env);
+    console.log(`Node ${process.version} (${process.arch})\npnpm: ${json(join(pnpmPrefix, "node_modules/pnpm/package.json"))?.version ?? "未准备"}\nKling CLI: ${json(join(klingPackage, "package.json"))?.version ?? "未准备"}\nElevenLabs CLI: ${elevenLabsIsReady ? ELEVENLABS_VERSION : "未准备或需要修复"}\nSQLite / FFmpeg / FFprobe: ${probe.status === 0 ? "可用" : "需要安装或修复"}\n地址: ${browserUrl}`);
+    if (probe.status !== 0 || !pnpmReady() || !klingReady() || !elevenLabsIsReady) throw new Error("环境检查未通过；正常双击启动会安装或修复依赖。" );
     return;
   }
   if (!(await portAvailable(port))) {
@@ -198,14 +220,14 @@ export async function main(args = process.argv.slice(2)) {
     log("ClipForge 本机网页版启动器（首次安装与构建可能需要数分钟）");
     if (!existsSync(npmCli)) throw new Error("当前 Node.js 没有 npm。请使用 start.cmd 自动准备完整 Node.js。");
     if (!pnpmReady()) {
-      log(`[1/5] 准备 pnpm ${pnpmVersion}（仅安装到项目目录）`);
+      log(`[1/6] 准备 pnpm ${pnpmVersion}（仅安装到项目目录）`);
       await run(npmCli, ["install", "--prefix", pnpmPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--save-exact", `pnpm@${pnpmVersion}`]);
     }
     const dependencyPaths = DEPENDENCY_PATHS;
     const dependenciesHash = fingerprint(root, dependencyPaths);
     const installed = json(join(local, "dependencies.json"));
     if (installed?.fingerprint !== dependenciesHash || probeDependencies(root, env).status !== 0) {
-      log("[2/5] 安装项目依赖（保留 SQLite 和媒体工具安装脚本，跳过 Electron 下载）");
+      log("[2/6] 安装项目依赖（保留 SQLite 和媒体工具安装脚本，跳过 Electron 下载）");
       await run(pnpmEntry, ["install", "--frozen-lockfile", "--prod=false", "--config.confirmModulesPurge=false", "--config.ignore-scripts=false"]);
       let probe = probeDependencies(root, env);
       if (probe.status !== 0) {
@@ -215,17 +237,26 @@ export async function main(args = process.argv.slice(2)) {
       }
       if (probe.status !== 0) throw new Error(`SQLite / FFmpeg / FFprobe 无法运行。请检查下载网络和系统架构。${probe.stderr?.trim() || probe.error?.message || ""}`);
       writeJson(join(local, "dependencies.json"), { fingerprint: dependenciesHash });
-    } else log("[2/5] 项目依赖与媒体工具可用，复用现有安装。");
+    } else log("[2/6] 项目依赖与媒体工具可用，复用现有安装。");
     if (!klingReady()) {
-      log(`[3/5] 准备 Kling Global CLI ${KLING_VERSION}（不登录、不生成）`);
+      log(`[3/6] 准备 Kling Global CLI ${KLING_VERSION}（不登录、不生成）`);
       await run(npmCli, ["install", "--prefix", klingPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--save-exact", `${KLING_PACKAGE}@${KLING_VERSION}`]);
-    } else log("[3/5] Kling CLI 已准备。");
+    } else log("[3/6] Kling CLI 已准备。");
+    if (!elevenLabsReady(elevenLabsPackage, env)) {
+      log(`[4/6] 准备 ElevenLabs 官方 CLI ${ELEVENLABS_VERSION}（不登录、不生成）`);
+      // Remove a partial installation through npm so an intact lockfile cannot hide missing binaries.
+      if (existsSync(join(elevenLabsPrefix, "package.json"))) {
+        await run(npmCli, ["uninstall", "--prefix", elevenLabsPrefix, "--no-audit", "--no-fund", "--ignore-scripts", ELEVENLABS_PACKAGE]);
+      }
+      await run(npmCli, ["install", "--prefix", elevenLabsPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--include=optional", "--save-exact", `${ELEVENLABS_PACKAGE}@${ELEVENLABS_VERSION}`]);
+      if (!elevenLabsReady(elevenLabsPackage, env)) throw new Error("ElevenLabs CLI 安装后仍无法运行，请检查网络及 optionalDependencies 平台二进制下载，再重新启动。");
+    } else log("[4/6] ElevenLabs CLI 已准备。");
     const buildPaths = buildInputPaths(root);
     const built = json(join(local, "build.json"));
     const entry = join(standaloneDir, "server.js");
     const buildStatus = localBuildStatus(root, distDirName);
     if (built?.fingerprint !== fingerprint(root, buildPaths) || !buildStatus.buildId || built.buildId !== buildStatus.buildId || !buildStatus.ok || !existsSync(entry) || probeDependencies(root, env, true).status !== 0) {
-      log("[4/5] 构建本机网页版（源码或配置更新后自动重建）");
+      log("[5/6] 构建本机网页版（源码或配置更新后自动重建）");
       await run(pnpmEntry, ["run", "build"]);
       const rebuiltStatus = localBuildStatus(root, distDirName);
       if (!rebuiltStatus.ok || !rebuiltStatus.buildId || !existsSync(entry)) {
@@ -234,8 +265,8 @@ export async function main(args = process.argv.slice(2)) {
       const probe = probeDependencies(root, env, true);
       if (probe.status !== 0) throw new Error(`构建中的数据库或媒体依赖无法运行：${probe.stderr?.trim() || probe.error?.message || "未知错误"}`);
       writeJson(join(local, "build.json"), { fingerprint: fingerprint(root, buildPaths), buildId: rebuiltStatus.buildId });
-    } else log("[4/5] 源码未变化，复用生产构建。");
-    log(`[5/5] 启动 ${browserUrl}；请保留此窗口，按 Ctrl+C 停止。`);
+    } else log("[5/6] 源码未变化，复用生产构建。");
+    log(`[6/6] 启动 ${browserUrl}；请保留此窗口，按 Ctrl+C 停止。`);
     const server = start(join(root, "scripts", "start-standalone.mjs"), ["--port", String(port), "--hostname", "127.0.0.1"]);
     let ready = false;
     for (let attempt = 0; attempt < 120 && !stopping; attempt++) {
@@ -246,7 +277,7 @@ export async function main(args = process.argv.slice(2)) {
       await new Promise((done) => setTimeout(done, 500));
     }
     if (!ready) throw new Error(stopping ? "服务已停止。" : "服务未就绪，请查看上方错误及启动日志。");
-    log(`已就绪：${browserUrl}\nKling：在设置中启用平台，保存预填路径、检测环境并登录，再选择默认视频模型。`);
+    log(`已就绪：${browserUrl}\nKling：在设置中启用平台，保存预填路径、检测环境并登录，再选择默认视频模型。\nElevenLabs：在设置 → 配音中选择并开启，完成 OAuth 登录后选择声音和模型。`);
     if (!values["no-browser"]) openBrowser(browserUrl);
     const result = await server.completion;
     activeChild = undefined;
