@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { deflateSync } from "node:zlib";
 import { OpenAIProvider } from "@/lib/providers/openai";
 
 const baseUrl = "https://images.example.com/v1";
@@ -24,6 +25,210 @@ function mockImageResponse() {
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
+
+function pngFixture(width = 2, height = 2, alpha = true): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    let crc = 0xffffffff;
+    for (const byte of body) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    const size = Buffer.alloc(4), checksum = Buffer.alloc(4);
+    size.writeUInt32BE(data.length); checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([size, body, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width); header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = alpha ? 6 : 2;
+  const channels = alpha ? 4 : 3;
+  const raw = Buffer.alloc((width * channels + 1) * height, 0);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const offset = y * (width * channels + 1) + 1 + x * channels;
+    raw[offset] = 120; raw[offset + 1] = 140; raw[offset + 2] = 160;
+    if (alpha) raw[offset + 3] = x === 0 ? 0 : 255;
+  }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+const pngUrl = (bytes: Buffer) => `data:image/png;base64,${bytes.toString("base64")}`;
+
+describe("OpenAI explicit image output controls", () => {
+  it.each(["text-to-image", "image-to-image"] as const)("sends explicit Sunburst quality and format in %s without allowing extra to override them", async mode => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({
+      modelId: "gpt-image-2.5-sunburst", mode, prompt: "Resolve the existing grass", quality: "xhigh", outputFormat: "png",
+      ...(mode === "image-to-image" && { referenceImageUrls: [presenter] }),
+      extra: { quality: "low", output_format: "jpeg" },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = fetchMock.mock.calls[0][1].body;
+    if (mode === "image-to-image") {
+      const form = body as FormData;
+      expect(form.getAll("quality")).toEqual(["xhigh"]);
+      expect(form.getAll("output_format")).toEqual(["png"]);
+      expect(form.has("outputFormat")).toBe(false);
+      expect(form.getAll("image[]")).toHaveLength(1);
+    } else {
+      expect(JSON.parse(body)).toMatchObject({ quality: "xhigh", output_format: "png" });
+      expect(JSON.parse(body)).not.toHaveProperty("outputFormat");
+    }
+  });
+
+  it.each(["text-to-image", "image-to-image"] as const)("keeps both fields absent by default in %s", async mode => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ modelId: "gpt-image-2.5-sunburst", mode, prompt: "Ground texture", ...(mode === "image-to-image" && { referenceImageUrls: [presenter] }) });
+    const body = fetchMock.mock.calls[0][1].body;
+    if (mode === "image-to-image") {
+      expect((body as FormData).has("quality")).toBe(false);
+      expect((body as FormData).has("output_format")).toBe(false);
+    } else {
+      expect(JSON.parse(body)).not.toHaveProperty("quality");
+      expect(JSON.parse(body)).not.toHaveProperty("output_format");
+    }
+  });
+
+  it.each(["auto", "low", "medium", "high"] as const)("forwards the explicit %s quality on older GPT Image models", async quality => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ modelId: "gpt-image-1.5", mode: "image-to-image", prompt: "Ground texture", referenceImageUrl: presenter, quality, outputFormat: "webp" });
+    const form = fetchMock.mock.calls[0][1].body as FormData;
+    expect(form.get("quality")).toBe(quality);
+    expect(form.get("output_format")).toBe("webp");
+  });
+
+  it.each([
+    { modelId: "dall-e-2", mode: "image-to-image" as const },
+    { modelId: "dall-e-2", mode: "text-to-image" as const },
+    { modelId: "dall-e-3", mode: "text-to-image" as const },
+  ])("ignores unsupported new controls for legacy $modelId $mode", async ({ modelId, mode }) => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ modelId, mode, prompt: "Ground texture", quality: "xhigh", outputFormat: "png", ...(mode === "image-to-image" && { referenceImageUrl: presenter }) });
+    const body = fetchMock.mock.calls[0][1].body;
+    if (mode === "image-to-image") {
+      expect((body as FormData).has("quality")).toBe(false);
+      expect((body as FormData).has("output_format")).toBe(false);
+    } else {
+      expect(JSON.parse(body)).not.toHaveProperty("quality");
+      expect(JSON.parse(body)).not.toHaveProperty("output_format");
+    }
+  });
+
+  it("retains the existing DALL·E 3 extra quality contract", async () => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ modelId: "dall-e-3", mode: "text-to-image", prompt: "Ground texture", extra: { quality: "hd" } });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).quality).toBe("hd");
+  });
+
+  it.each(["text-to-image", "image-to-image"] as const)("rejects unsupported xhigh quality before HTTP in %s", async mode => {
+    const fetchMock = mockImageResponse();
+    await expect(provider().generateImage({ modelId: "gpt-image-1.5", mode, prompt: "Ground texture", quality: "xhigh", ...(mode === "image-to-image" && { referenceImageUrl: "https://reference.example.test/image.png" }) })).rejects.toMatchObject({ code: "IMAGE_QUALITY_UNSUPPORTED", submissionRejected: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["jpeg", "webp"] as const)("uses the reported %s MIME for base64 output", async outputFormat => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ output_format: outputFormat, data: [{ b64_json: "generated-image" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await provider().generateImage({ modelId: "gpt-image-2.5-flare", mode: "text-to-image", prompt: "Ground texture", outputFormat });
+    expect(result.imageUrls).toEqual([`data:image/${outputFormat};base64,generated-image`]);
+  });
+});
+
+describe("OpenAI explicit edit masks", () => {
+  const source = pngFixture();
+  const mask = pngFixture();
+  const edit = { modelId: "gpt-image-2.5-sunburst", mode: "image-to-image" as const, prompt: "Repair the selected foreground", referenceImageUrls: [pngUrl(source), product], maskImageUrl: pngUrl(mask) };
+
+  it.each(["gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2026-09-08", "gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08", "chatgpt-image-latest"])("uploads an explicit alpha PNG mask for supported %s edits", async (modelId) => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ ...edit, modelId, extra: { mask: "untrusted-mask", image: "untrusted-source", prompt: "untrusted-prompt" } });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, request] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${baseUrl}/images/edits`);
+    const form = request.body as FormData;
+    const uploadedMask = form.get("mask") as File;
+    expect(uploadedMask.name).toBe("mask.png");
+    expect(uploadedMask.type).toBe("image/png");
+    expect(Buffer.from(await uploadedMask.arrayBuffer())).toEqual(mask);
+    const images = form.getAll("image[]") as Blob[];
+    expect(images).toHaveLength(2);
+    expect(Buffer.from(await images[0].arrayBuffer())).toEqual(source);
+    expect(await images[1].text()).toBe("product");
+    expect(form.get("prompt")).toBe(edit.prompt);
+    expect(form.get("model")).toBe(modelId);
+  });
+
+  it("uses the first source dimensions while retaining differently sized additional references", async () => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ ...edit, referenceImageUrls: [pngUrl(source), pngUrl(pngFixture(3, 4))] });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect((fetchMock.mock.calls[0][1].body as FormData).getAll("image[]")).toHaveLength(2);
+  });
+
+  it("fetches the explicit mask URL before submitting its PNG bytes", async () => {
+    const maskUrl = "https://reference.example.test/mask.png";
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => url === maskUrl
+      ? new Response(new Uint8Array(mask), { headers: { "content-type": "image/png" } })
+      : Response.json({ data: [{ b64_json: "generated-image" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await provider().generateImage({ ...edit, maskImageUrl: maskUrl });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([maskUrl, `${baseUrl}/images/edits`]);
+    expect(Buffer.from(await (fetchMock.mock.calls[1][1].body.get("mask") as Blob).arrayBuffer())).toEqual(mask);
+  });
+
+  it.each(["dall-e-2", "dall-e-3", "custom/model", "gpt-image-2-unrecognized", "gpt-image-1"])("rejects unsupported mask model %s before any HTTP request", async (modelId) => {
+    const fetchMock = mockImageResponse();
+    await expect(provider().generateImage({ ...edit, modelId })).rejects.toMatchObject({ code: "MASK_MODEL_UNSUPPORTED", submissionRejected: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mask without a source even in text-to-image mode", async () => {
+    const fetchMock = mockImageResponse();
+    await expect(provider().generateImage({ ...edit, mode: "text-to-image", referenceImageUrls: [] })).rejects.toMatchObject({ code: "MASK_SOURCE_REQUIRED", submissionRejected: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "empty URL", maskImageUrl: "", code: "BAD_MASK" },
+    { name: "non-PNG image", maskImageUrl: product, code: "BAD_MASK" },
+    { name: "PNG without alpha", maskImageUrl: pngUrl(pngFixture(2, 2, false)), code: "BAD_MASK" },
+    { name: "truncated PNG", maskImageUrl: pngUrl(mask.subarray(0, 33)), code: "BAD_MASK" },
+    { name: "mismatching dimensions", maskImageUrl: pngUrl(pngFixture(3, 2)), code: "MASK_DIMENSIONS_MISMATCH" },
+    { name: "4 MiB boundary", maskImageUrl: pngUrl(Buffer.concat([mask, Buffer.alloc(4 * 1024 * 1024 - mask.length)])), code: "MASK_TOO_LARGE" },
+  ])("rejects $name before the paid HTTP request", async ({ maskImageUrl, code }) => {
+    const fetchMock = mockImageResponse();
+    await expect(provider().generateImage({ ...edit, maskImageUrl })).rejects.toMatchObject({ code, submissionRejected: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("explicitly rejects a non-PNG first source only when a mask is requested", async () => {
+    const fetchMock = mockImageResponse();
+    await expect(provider().generateImage({ ...edit, referenceImageUrls: [product, pngUrl(source)] })).rejects.toMatchObject({ code: "MASK_SOURCE_UNSUPPORTED", message: expect.stringContaining("PNG 源图"), submissionRejected: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await provider().generateImage({ ...edit, referenceImageUrls: [product], maskImageUrl: undefined });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect((fetchMock.mock.calls[0][1].body as FormData).has("mask")).toBe(false);
+  });
+
+  it.each(["network", "404", "body"])("rejects a %s mask download failure before the paid POST", async (scenario) => {
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      if (scenario === "network") throw new TypeError("Mask connection failed");
+      if (scenario === "404") return new Response("Missing", { status: 404 });
+      return { ok: true, blob: async () => { throw new TypeError("Mask body interrupted"); } };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(provider().generateImage({ ...edit, maskImageUrl: "https://reference.example.test/mask.png" })).rejects.toMatchObject({ submissionRejected: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]).toEqual(["https://reference.example.test/mask.png"]);
+  });
+
+  it.each([400, 429])("never retries an upstream HTTP %i mask rejection", async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ error: { message: "mask rejected" } }, { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(provider().generateImage(edit)).rejects.toMatchObject({ code: "API_ERROR", statusCode: status, submissionRejected: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect((fetchMock.mock.calls[0][1].body as FormData).has("mask")).toBe(true);
+  });
+});
 
 describe("OpenAI image reference contract", () => {
   it.each(imageModels.flatMap((modelId) => (["text-to-image", "image-to-image"] as const)

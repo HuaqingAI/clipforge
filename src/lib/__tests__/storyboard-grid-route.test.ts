@@ -20,8 +20,9 @@ import {
   createTideweOutdoorProfile,
 } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
-import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
+import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot, TideweVisualPlan } from "@/lib/tidewe/types";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
+import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
 import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 import type { StoryboardGridResolutionInfo } from "@/lib/storyboard-grid-resolution";
 import { withGenerationContext } from "@/lib/generation-context";
@@ -147,8 +148,8 @@ afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-async function generate(references: Record<string, unknown>, expectedRequests = 1, expectedCount = 2) {
-  const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
+async function requestGrid(references: Record<string, unknown> = {}) {
+  return POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
     method: "POST",
     body: JSON.stringify({
       scriptId,
@@ -159,6 +160,10 @@ async function generate(references: Record<string, unknown>, expectedRequests = 
       ...references,
     }),
   }), { params: Promise.resolve({ id: projectId }) });
+}
+
+async function generate(references: Record<string, unknown>, expectedRequests = 1, expectedCount = 2) {
+  const response = await requestGrid(references);
   const result = await response.json();
   expect(result).not.toHaveProperty("error");
   expect(response.status).toBe(200);
@@ -183,17 +188,20 @@ async function assertUploadedImages(expected: Buffer[]) {
   return form;
 }
 
-function useTidewe(presenterImage = presenterPath, personVisible = true) {
+function useTidewe(presenterImage = presenterPath, personVisible = true, speechMode: "on_camera" | "voiceover" = "voiceover", speechDelivery?: "on_camera" | "off_camera", segments = ["Take a look.", " See what fits."]) {
   const presenter: TidewePresenterSnapshot = { id: "saved-host", name: "Sam", appearance: "短发户外主播", referenceImages: [presenterImage] };
-  const profile = createTideweOutdoorProfile({ speechMode: "voiceover", presenter });
-  const segments = ["Take a look.", " See what fits."];
+  const profile = createTideweOutdoorProfile({ speechMode, presenter });
   const text = segments.join("");
   const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "other", items: [] };
   const copyDocument: TideweCopyDocument = { version: 1, language: "en-US", text, translation: "看一眼，找到适合自己的。", angle: "scene", hookType: "scene", claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts), corpusVersion: profile.corpusVersion, compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 6 };
   let start = 0;
-  const shots: schema.Shot[] = originalShots.map((shot, index) => {
+  const shots: schema.Shot[] = segments.map((segment, index) => {
+    const shot = originalShots[index % originalShots.length];
     const copySpan = { start, end: start + segments[index].length }; start = copySpan.end;
-    return { ...shot, characterId: presenter.id, description: personVisible ? `${tidewePresenterAnchor(presenter)}在树林边展示商品。` : "树林边静置商品的特写。", visualIntent: "展示户外商品", camera: "固定中景", voiceover: segments[index].trim(), prompt: personVisible ? "户外实拍主播展示商品。" : "户外实拍商品特写。", tidewe: { copySpan, translation: "查看商品。", shotGoal: "展示商品", productVisible: true, personVisible, presenter, sceneId: "woods", factRefs: [] } };
+    const visualPlan: TideweVisualPlan = personVisible && index % 2 === 0
+      ? { framing: "wide", visualRole: "demonstration", productFocus: "主播手持的当前商品整体与接触位置", actionStart: "主播已握稳商品，商品完整入画", action: "向拍摄同伴轻抬一次商品", actionEnd: "商品自然停稳" }
+      : { framing: "close_up", visualRole: "detail", productFocus: "当前商品参考可见的表面与外轮廓", actionStart: "商品可见表面与外轮廓已经入画", action: "保持商品表面与外轮廓可读", actionEnd: "商品与镜头自然停稳" };
+    return { ...shot, shotId: index + 1, characterId: presenter.id, description: personVisible ? `${tidewePresenterAnchor(presenter)}在树林边展示商品。` : "树林边静置商品的特写。", visualIntent: "展示户外商品", camera: "固定中景", voiceover: segment.trim(), prompt: personVisible ? "户外实拍主播展示商品。" : "户外实拍商品特写。", tidewe: { copySpan, translation: "查看商品。", shotGoal: "展示商品", productVisible: true, personVisible, presenter, visualPlan, ...(speechDelivery && { speechDelivery }), sceneId: "woods", factRefs: [] } };
   });
   db.update(schema.projects).set({ creativeProfile: profile, creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
   db.update(schema.scripts).set({ styleType: "tidewe_outdoor", shots, copyDocument, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).where(eq(schema.scripts.id, scriptId)).run();
@@ -215,6 +223,118 @@ describe("durable grid provider rejection", () => {
 });
 
 describe("TIDEWE frozen presenter grid references", () => {
+  it.each([
+    { provider: "openai", productPart: "靴子鞋底" },
+    { provider: "fal-ai", productPart: "靴子鞋底" },
+    { provider: "openai", productPart: "椅脚" },
+    { provider: "fal-ai", productPart: "椅脚" },
+  ])("keeps low-angle $productPart support ground readable in the actual $provider positive grid request", async ({ provider, productPart }) => {
+    useTidewe(presenterPath, false);
+    const saved = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    db.update(schema.scripts).set({ shots: saved.shots!.map((shot, index) => ({ ...shot,
+      description: `${productPart}已稳定落在现有落叶地面，画面下沿至接触处为连续地面。`, camera: index === 0 ? "固定低机位近景，保留当前局部构图。" : "固定低机位接触处特写。",
+      prompt: `林边真实自然光，${productPart}和邻近落叶地面构成连续支撑。`, visualIntent: "观察当前商品与支撑面实际接触。",
+      tidewe: { ...shot.tidewe!, visualPlan: { framing: index === 0 ? "close_up" : "detail", visualRole: "detail", productFocus: `${productPart}与现有落叶地面的接触关系`, actionStart: `${productPart}已稳固放在现有地面上`, action: "静态观察当前接地与支撑状态", actionEnd: "商品继续保持稳定接地" } },
+    })) }).where(eq(schema.scripts.id, scriptId)).run();
+    const beforeScript = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    let prompt: string;
+    if (provider === "fal-ai") {
+      const model = "openai/gpt-image-2/image-to-image";
+      const endpoint = `https://fal-provider.test/${model}`;
+      fetchMock.mockImplementation(async (url, init) => {
+        if (String(url) === endpoint && init?.method === "POST") return Response.json({ request_id: "foreground-grid" });
+        if (String(url) === `${endpoint}/requests/foreground-grid/status`) return Response.json({ status: "COMPLETED" });
+        expect(String(url)).toBe(`${endpoint}/requests/foreground-grid`);
+        return Response.json({ images: [{ url: `data:image/png;base64,${gridBase64}` }] });
+      });
+      await generate({ provider, model, baseUrl: "https://fal-provider.test" }, 3);
+      const submitted = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, unknown>;
+      expect(submitted.num_images).toBe(1);
+      expect(submitted).not.toHaveProperty("negative_prompt");
+      expect((submitted.image_urls as string[]).map(url => Buffer.from(url.split(",")[1], "base64"))).toEqual(productBytes);
+      prompt = String(submitted.prompt);
+    } else {
+      await generate({});
+      const form = await assertUploadedImages(productBytes);
+      expect(form.get("n")).toBe("1");
+      expect(form.has("negative_prompt")).toBe(false);
+      prompt = String(form.get("prompt"));
+    }
+    expect(prompt.split(TIDEWE_IMAGE_FOCUS_TARGET)).toHaveLength(2);
+    expect(prompt).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(prompt.match(/合焦目标：近前景—接触处—商品共同合焦/g)).toHaveLength(beforeScript.shots!.length);
+    expect(prompt).toContain("仅限本格已有表面");
+    expect(prompt).toContain("已确认景别：近景／较大操作区域");
+    expect(prompt).toContain("已确认景别：特写／局部部件与接触");
+    expect(prompt).toContain("第 1 张参考图为当前同一商品的第 1/2 个视角");
+    expect(prompt).toContain("第 2 张参考图为当前同一商品的第 2/2 个视角");
+    for (const shot of beforeScript.shots!) {
+      expect(prompt).toContain(shot.description);
+      expect(prompt).toContain(shot.camera!);
+      expect(prompt).toContain(shot.tidewe!.visualPlan!.productFocus!);
+      expect(prompt).toContain(shot.tidewe!.visualPlan!.actionStart);
+      expect(prompt).toContain(shot.tidewe!.visualPlan!.action);
+      expect(prompt).not.toContain(shot.tidewe!.visualPlan!.actionEnd);
+    }
+    expect(prompt).not.toContain("嘴部清晰可见");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()).toEqual(beforeScript);
+  });
+
+  it.each(["openai", "fal-ai"])("sends initial anatomy, reference and readable-background quality in the actual %s positive request", async provider => {
+    const fal = provider === "fal-ai";
+    useTidewe(presenterPath, !fal);
+    const beforeScript = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    let prompt: string;
+    if (fal) {
+      const model = "openai/gpt-image-2/image-to-image";
+      const endpoint = `https://fal-provider.test/${model}`;
+      fetchMock.mockImplementation(async (url, init) => {
+        if (String(url) === endpoint && init?.method === "POST") return Response.json({ request_id: "grid-quality-request" });
+        if (String(url) === `${endpoint}/requests/grid-quality-request/status`) return Response.json({ status: "COMPLETED" });
+        expect(String(url)).toBe(`${endpoint}/requests/grid-quality-request`);
+        return Response.json({ images: [{ url: `data:image/png;base64,${gridBase64}` }] });
+      });
+      await generate({ provider, model, baseUrl: "https://fal-provider.test" }, 3);
+      const submitted = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, unknown>;
+      expect(submitted.num_images).toBe(1);
+      expect(submitted).not.toHaveProperty("negative_prompt");
+      const refs = submitted.image_urls as string[];
+      expect(refs.map(url => Buffer.from(url.split(",")[1], "base64"))).toEqual(productBytes);
+      prompt = String(submitted.prompt);
+    } else {
+      await generate({});
+      const form = await assertUploadedImages([presenterBytes, ...productBytes]);
+      expect(form.get("n")).toBe("1");
+      expect(form.has("negative_prompt")).toBe(false);
+      prompt = String(form.get("prompt"));
+      expect(prompt).toContain("光线与焦点服从本格");
+      expect(prompt).toContain("第 2 张参考图为当前同一商品的第 1/2 个视角");
+      expect(prompt).toContain("第 3 张参考图为当前同一商品的第 2/2 个视角");
+    }
+    expect(prompt.split(TIDEWE_IMAGE_FOCUS_TARGET)).toHaveLength(2);
+    expect(prompt).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(prompt.split("画面结构：")).toHaveLength(2);
+    expect(prompt).toContain("肩、肘、前臂、手腕与手自然连续");
+    expect(prompt).toContain("左右手、掌背、拇指侧别与关节符合真实姿态");
+    expect(prompt).toContain("保留自然遮挡");
+    expect(prompt).toContain("可见部件数量和连接关系以参考为准");
+    expect(prompt).toContain("共享透视、色温、原生成像质感、光向及接触阴影");
+    expect(prompt).toContain("商品在本格环境中重新成像");
+    expect(prompt.match(/合焦目标：近前景—接触处—商品共同合焦/g)).toHaveLength(beforeScript.shots!.length);
+    for (const shot of beforeScript.shots!) {
+      expect(prompt).toContain(shot.description.replace(tidewePresenterAnchor(shot.tidewe!.presenter!), "主播"));
+      expect(prompt).toContain(shot.camera!);
+      expect(prompt).toContain(shot.tidewe!.visualPlan!.productFocus!);
+      expect(prompt).toContain(shot.tidewe!.visualPlan!.actionStart);
+      expect(prompt).toContain(shot.tidewe!.visualPlan!.action);
+      expect(prompt).not.toContain(shot.tidewe!.visualPlan!.actionEnd);
+    }
+    expect(prompt).not.toMatch(/reference image 1|source image|repair report|Edit and regenerate|保留源图/i);
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()).toEqual(beforeScript);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
   it("uploads the frozen presenter and actual product bytes in prompt order", async () => {
     useTidewe();
     await generate({});
@@ -226,12 +346,127 @@ describe("TIDEWE frozen presenter grid references", () => {
     await generate({});
     await assertUploadedImages(productBytes);
   });
+  it("omits the presenter reference for a person-free grid with native off-camera narration", async () => {
+    useTidewe(`/api/files/${projectId}/missing-person.png`, false, "on_camera", "off_camera");
+    await generate({});
+    const form = await assertUploadedImages(productBytes);
+    expect(form.get("prompt")).not.toContain("嘴部清晰可见");
+    expect(form.get("prompt")).not.toContain("固定出镜人物");
+  });
   it.each(["foreign", "unavailable"])("rejects %s identity references before provider generation", async (reason) => {
     useTidewe(reason === "unavailable" ? `/api/files/${projectId}/missing-person.png` : presenterPath);
     const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, { method: "POST", body: JSON.stringify({ scriptId, provider: "openai", model: "gpt-image-2", apiKey: "test-key", ...(reason === "foreign" ? { characterSheetUrl: productPaths[0] } : {}) }) }), { params: Promise.resolve({ id: projectId }) });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: reason === "foreign" ? "TIDEWE_PRESENTER_REFERENCE_INVALID" : "TIDEWE_REFERENCE_UNAVAILABLE" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("TIDEWE product coverage before grid generation", () => {
+  it("rejects the affected five-shot presenter-only script before resolving references or calling the provider, without changing saved data", async () => {
+    useTidewe(`/api/files/${projectId}/missing-presenter.png`, true, "voiceover", undefined,
+      ["Check the fit.", " Look at the shaft.", " Consider your layers.", " Think about the ground.", " Choose what fits."]);
+    const saved = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    db.update(schema.scripts).set({ shots: saved.shots!.map(shot => ({
+      ...shot, description: `${tidewePresenterAnchor(shot.tidewe!.presenter!)}在树林边以胸上近景向拍摄同伴讲解，画面不包含靴子。`, camera: "胸上近景",
+      tidewe: { ...shot.tidewe!, productVisible: false },
+    })) }).where(eq(schema.scripts.id, scriptId)).run();
+    const beforeScript = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const beforeAssets = db.select().from(schema.assets).all();
+    const beforeProject = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
+    expect(beforeScript.shots).toHaveLength(5);
+    expect(beforeScript.shots!.every(shot => shot.tidewe?.productVisible === false)).toBe(true);
+    // Both the foreign requested presenter and the unavailable frozen reference would fail
+    // later reference validation. Product coverage must be the first reported defect.
+    const response = await requestGrid({ characterSheetUrl: productPaths[0] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_PRODUCT_COVERAGE_INVALID", issues: expect.arrayContaining([
+      expect.objectContaining({ code: "PRODUCT_NOT_VISIBLE" }),
+    ]) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()).toEqual(beforeScript);
+    expect(db.select().from(schema.assets).all()).toEqual(beforeAssets);
+    expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()).toEqual(beforeProject);
+    await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a complete three-shot plan with no product detail or use shot", async () => {
+    useTidewe(presenterPath, true, "voiceover", undefined, ["Check the fit.", " Look at the shaft.", " Choose what fits."]);
+    const saved = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const presenterPlan: TideweVisualPlan = { framing: "medium", visualRole: "presenter", productFocus: "主播身旁的迷彩靴筒", actionStart: "主播已站稳", action: "向同伴作一次小幅手势", actionEnd: "主播自然站稳" };
+    db.update(schema.scripts).set({
+      shots: saved.shots!.map(shot => ({ ...shot, tidewe: { ...shot.tidewe!, visualPlan: presenterPlan } })),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+    const beforeScript = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const beforeAssets = db.select().from(schema.assets).all();
+    const response = await requestGrid();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_PRODUCT_COVERAGE_INVALID", issues: expect.arrayContaining([
+      expect.objectContaining({ code: "PRODUCT_DETAIL_MISSING" }),
+      expect.objectContaining({ code: "PRODUCT_USE_MISSING" }),
+    ]) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()).toEqual(beforeScript);
+    expect(db.select().from(schema.assets).all()).toEqual(beforeAssets);
+  });
+
+  it.each(["complete-without-focus", "partial-plan"])("rejects %s instead of allowing the missing product evidence", async planCoverage => {
+    useTidewe(presenterPath, true, "voiceover", undefined, ["Check the fit.", " Look at the shaft.", " Choose what fits."]);
+    const saved = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const oldPlan: TideweVisualPlan = { framing: "medium", visualRole: "presenter", actionStart: "主播已站稳", action: "向同伴作一次小幅手势", actionEnd: "主播自然站稳" };
+    db.update(schema.scripts).set({
+      shots: saved.shots!.map((shot, index) => ({ ...shot, tidewe: { ...shot.tidewe!, visualPlan: planCoverage === "complete-without-focus" || index === 0 ? oldPlan : undefined } })),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+    const beforeScript = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const beforeAssets = db.select().from(schema.assets).all();
+    const response = await requestGrid();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_PRODUCT_COVERAGE_INVALID", issues: expect.arrayContaining([
+      expect.objectContaining({ code: "PRODUCT_FOCUS_MISSING" }),
+    ]) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()).toEqual(beforeScript);
+    expect(db.select().from(schema.assets).all()).toEqual(beforeAssets);
+  });
+
+  it("rejects a two-shot script with a visible product but no visual plan or product focus", async () => {
+    useTidewe();
+    const saved = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    db.update(schema.scripts).set({ shots: saved.shots!.map((shot, index) => ({
+      ...shot, tidewe: { ...shot.tidewe!, productVisible: index === 0, visualPlan: undefined },
+    })) }).where(eq(schema.scripts.id, scriptId)).run();
+    const historical = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    expect(historical.copyDocument?.visualBeats).toBeUndefined();
+    expect(historical.shots!.every(shot => !shot.tidewe?.visualPlan)).toBe(true);
+    const response = await requestGrid();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_PRODUCT_COVERAGE_INVALID", issues: expect.arrayContaining([
+      expect.objectContaining({ code: "PRODUCT_FOCUS_MISSING", shotId: 1 }),
+    ]) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()).toEqual(historical);
+  });
+
+  it("sends each approved productFocus to the real provider prompt for a valid structured boot storyboard", async () => {
+    useTidewe(presenterPath, true, "voiceover", undefined, ["Check the shaft.", " Look at the outsole.", " See how it fits."]);
+    const saved = db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
+    const plans: TideweVisualPlan[] = [
+      { framing: "medium", visualRole: "presenter", productFocus: "主播手持的迷彩高筒靴", actionStart: "主播已握稳靴筒，靴子完整入画", action: "朝拍摄同伴轻抬靴筒一次", actionEnd: "靴子停稳" },
+      { framing: "detail", visualRole: "detail", productFocus: "鞋底可见沟槽与手指接触处", actionStart: "鞋底朝向镜头，手指已接触可见沟槽", action: "手指沿一条可见沟槽轻划一次", actionEnd: "手指在沟槽旁停稳" },
+      { framing: "wide", visualRole: "demonstration", productFocus: "已穿在脚上的高筒靴与裤脚关系", actionStart: "主播双脚穿着靴子站稳，靴底接触地面", action: "手指轻整一次现有裤脚", actionEnd: "裤脚自然停在靴筒旁，双脚站稳" },
+    ];
+    const facts: ProductFacts = { ...saved.copyDocument!.factsSnapshot, category: "waterproof_boots" };
+    const cameras = ["腰上中景，手持靴子完整入画", "鞋底沟槽细节特写", "低机位全景，脚上的靴子与裤脚清楚入画"];
+    db.update(schema.scripts).set({
+      copyDocument: { ...saved.copyDocument!, productName: "TIDEWE camouflage boots", visualObservations: "参考图可见高筒、迷彩与外底沟槽。", factsSnapshot: facts, factsHash: productFactsHash(facts) },
+      shots: saved.shots!.map((shot, index) => ({ ...shot, camera: cameras[index], description: `${tidewePresenterAnchor(shot.tidewe!.presenter!)}；${plans[index].actionStart}`, tidewe: { ...shot.tidewe!, visualPlan: plans[index] } })),
+    }).where(eq(schema.scripts.id, scriptId)).run();
+    await generate({}, 1, 3);
+    const form = await assertUploadedImages([presenterBytes, ...productBytes]);
+    const prompt = String(form.get("prompt"));
+    for (const plan of plans) expect(prompt).toContain(`本镜商品观察对象：${plan.productFocus}`);
+    expect(prompt).toContain("该商品或部位必须清楚入画");
+    expect(db.select().from(schema.assets).all().filter(asset => asset.id !== "previous-take")).toHaveLength(3);
   });
 });
 

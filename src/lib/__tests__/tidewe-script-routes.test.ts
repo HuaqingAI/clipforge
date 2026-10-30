@@ -8,7 +8,8 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { productFactsHash, englishWordCount } from "@/lib/tidewe/validation";
+import { productFactsHash, englishWordCount, TideweValidationError } from "@/lib/tidewe/validation";
+import { withGenerationContext } from "@/lib/generation-context";
 import { assetMatchesScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
 import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import type { TideweCopyDocument, ProductFacts, TidewePresenterSnapshot } from "@/lib/tidewe/types";
@@ -43,7 +44,7 @@ const params = () => ({ params: Promise.resolve({ id: projectId }) });
 function req(path: string, body?: unknown, method = "POST") {
   return new NextRequest(`http://localhost${path}`, { method, ...(body !== undefined && { body: JSON.stringify(body) }), headers: { "Content-Type": "application/json" } });
 }
-function generated(text = copyText, presenter?: TidewePresenterSnapshot) {
+function generated(text = copyText, presenter?: TidewePresenterSnapshot, shotCount = 7) {
   const copyDocument: TideweCopyDocument = {
     version: 1, language: "en-US", text, translation: "坐着等候和走进林子感觉不同。适合的话可以看看。",
     angle: "long_wait", hookType: "scene", claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts),
@@ -56,10 +57,17 @@ function generated(text = copyText, presenter?: TidewePresenterSnapshot) {
     transition: "direct_concat", voiceover: text, tidewe: { copySpan: { start: 0, end: text.length }, translation: copyDocument.translation,
       shotGoal: "等待的户外场景", productVisible: false, ...(presenter && { presenter, personVisible: true }), factRefs: [], sceneId: "woods" },
   };
-  return { title: "Waiting in the woods", styleType: "tidewe_outdoor" as const, totalDuration: 10, copyDocument, shots: [shot] };
+  const shots = Array.from({ length: shotCount }, (_, index): schema.Shot => index === 0 ? shot : {
+    ...shot, shotId: index + 1, duration: 1, voiceover: "",
+    description: "林间环境与远处小径的自然观察画面。",
+    tidewe: { ...shot.tidewe!, copySpan: { start: text.length, end: text.length },
+      shotGoal: `补充第${index + 1}处户外环境观察`, personVisible: false, productVisible: false },
+  });
+  return { title: "Waiting in the woods", styleType: "tidewe_outdoor" as const, totalDuration: 9 + shotCount, copyDocument, shots };
 }
 function seedScript(id = "source-script", presenter?: TidewePresenterSnapshot) {
-  const script = generated(copyText, presenter);
+  // Historical scripts remain usable even when they predate the generation shot-count rule.
+  const script = generated(copyText, presenter, 1);
   return db.insert(schema.scripts).values({ ...script, id, projectId, selected: true, version: 1,
     creativeProfileSnapshot: createCreativeProfileSnapshot(createTideweOutdoorProfile({ presenter }), 1) }).returning().get()!;
 }
@@ -209,6 +217,108 @@ describe("TIDEWE project context", () => {
 });
 
 describe("TIDEWE generation, history and concurrency", () => {
+  it.each([7, 8, 9].flatMap(shotCount => [false, true].map(regenerate => ({ shotCount, regenerate }))))("saves $shotCount shots for initial generation or regeneration=$regenerate", async ({ shotCount, regenerate }) => {
+    const source = regenerate ? seedScript() : undefined;
+    calls.generate.mockResolvedValueOnce([generated(copyText, undefined, shotCount)]);
+    const response = await generate(req("/api/llm/script", {
+      ...generationBody(), ...(source && { sourceScriptId: source.id, expectedScriptHash: scriptRevision(source) }),
+    }));
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.scripts[0].shots).toHaveLength(shotCount);
+    expect(result.scripts[0].copyDocument.text).toBe(copyText);
+    expect(result.scripts[0].selected).toBe(true);
+    const rows = db.select().from(schema.scripts).all();
+    expect(rows).toHaveLength(regenerate ? 2 : 1);
+    expect(rows.find(row => row.selected)?.shots).toHaveLength(shotCount);
+    if (source) expect(rows.find(row => row.id === source.id)).toMatchObject({ selected: false, shots: source.shots, copyDocument: source.copyDocument });
+    expect(calls.generate).toHaveBeenCalledOnce();
+  });
+
+  it.each([5, 10])("rejects a completed %s-shot checkpoint without saving or buying generation again", async shotCount => {
+    const source = seedScript();
+    const before = db.select().from(schema.scripts).all();
+    const paidScripts = [generated(copyText, undefined, shotCount)];
+    let checkpoint: Record<string, unknown> = { generatedScripts: paidScripts, submissionState: "acknowledged", analysisComplete: true, productAnalysis: "observed green jacket" };
+    const execute = () => withGenerationContext({ itemId: `recovered-${shotCount}-shot-script`, checkpoint, save: value => { checkpoint = structuredClone(value); } },
+      () => generate(req("/api/llm/script", { ...generationBody(`checkpoint-${shotCount}`), sourceScriptId: source.id, expectedScriptHash: scriptRevision(source) })));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await execute();
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain 7-9 shots; received ${shotCount}`) });
+      expect(checkpoint.generatedScripts).toEqual(paidScripts);
+      expect(db.select().from(schema.scripts).all()).toEqual(before);
+    }
+    expect(calls.generate).not.toHaveBeenCalled();
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.analyze).not.toHaveBeenCalled();
+  });
+
+  it.each([5, 10])("rejects newly generated %s-shot output and preserves the selected historical script", async shotCount => {
+    seedScript();
+    const before = db.select().from(schema.scripts).all();
+    calls.generate.mockResolvedValueOnce([generated(copyText, undefined, shotCount)]);
+    const response = await generate(req("/api/llm/script", generationBody()));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain 7-9 shots; received ${shotCount}`) });
+    expect(db.select().from(schema.scripts).all()).toEqual(before);
+    expect(calls.generate).toHaveBeenCalledOnce();
+  });
+
+  it("checks the 7-9 shot rule independently for every candidate before saving any", async () => {
+    const before = db.select().from(schema.scripts).all();
+    calls.generate.mockResolvedValueOnce([generated(copyText, undefined, 7), generated(copyText, undefined, 10)]);
+    const response = await generate(req("/api/llm/script", { ...generationBody(), count: 2 }));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining("TIDEWE copy 2 must contain 7-9 shots; received 10") });
+    expect(db.select().from(schema.scripts).all()).toEqual(before);
+    expect(calls.generate).toHaveBeenCalledOnce();
+  });
+
+  it.each(["planner rejection", "empty candidates", "missing canonical copy", "invalid shot"])("records %s as a completed local failure without recoverable scripts", async failure => {
+    const source = seedScript();
+    if (failure === "planner rejection") calls.generate.mockRejectedValueOnce(new TideweValidationError("Shot 2 has on_camera speech in detail framing; use off_camera narration or choose a framing that includes the speaking face."));
+    else if (failure === "empty candidates") calls.generate.mockResolvedValueOnce([]);
+    else if (failure === "missing canonical copy") calls.generate.mockResolvedValueOnce([{ ...generated(), copyDocument: undefined }]);
+    else {
+      const invalid = generated();
+      invalid.shots[0].tidewe!.copySpan = { start: 0, end: 1 };
+      calls.generate.mockResolvedValueOnce([invalid]);
+    }
+    let checkpoint: Record<string, unknown> = {};
+    const response = await withGenerationContext({ itemId: "local-validation", checkpoint, save: value => { checkpoint = structuredClone(value); } },
+      () => generate(req("/api/llm/script", { ...generationBody(), productAnalysis: "observed green jacket" })));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED" });
+    expect(checkpoint).toMatchObject({ submissionState: "acknowledged", stage: "failed", scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED" } });
+    expect(checkpoint.generatedScripts).toBeUndefined();
+    expect(db.select().from(schema.scripts).all()).toMatchObject([{ id: source.id, selected: true }]);
+    expect(calls.generate).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an interrupted LLM submission as unknown instead of labelling it a local failure", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    calls.generate.mockRejectedValueOnce(new Error("network interrupted"));
+    let checkpoint: Record<string, unknown> = {};
+    try {
+      const response = await withGenerationContext({ itemId: "network-failure", checkpoint, save: value => { checkpoint = structuredClone(value); } },
+        () => generate(req("/api/llm/script", { ...generationBody(), productAnalysis: "observed green jacket" })));
+      expect(response.status).toBe(500);
+      expect(checkpoint.submissionState).toBe("submitting");
+      expect(checkpoint.scriptValidationFailure).toBeUndefined();
+      expect(checkpoint.generatedScripts).toBeUndefined();
+    } finally { log.mockRestore(); }
+  });
+
+  it("rejects invalid imported copy before submission without marking it acknowledged", async () => {
+    let checkpoint: Record<string, unknown> = {};
+    const response = await withGenerationContext({ itemId: "invalid-copy", checkpoint, save: value => { checkpoint = structuredClone(value); } },
+      () => generate(req("/api/llm/script", { ...generationBody(), copyText: "这是一段中文文案" })));
+    expect(response.status).toBe(400);
+    expect(checkpoint).toEqual({});
+    expect(calls.generate).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: "missing presenter", presenter: undefined },
     { label: "different presenter", presenter: presenterB },
@@ -475,6 +585,21 @@ describe("TIDEWE alternative selection", () => {
 });
 
 describe("TIDEWE editing and import", () => {
+  it("clears a stale structured action after a manual composition edit while preserving the exact copy", async () => {
+    const source = seedScript();
+    const visualPlan = { framing: "medium" as const, visualRole: "presenter" as const, actionStart: "手已靠近装备边缘", action: "点向装备一次", actionEnd: "手掌自然停稳" };
+    const shots = source.shots!.map(shot => ({ ...shot, tidewe: { ...shot.tidewe!, visualPlan } }));
+    db.update(schema.scripts).set({ shots }).where(eq(schema.scripts.id, source.id)).run();
+    const unchanged = await edit(req(`/api/project/${projectId}/scripts`, { scriptId: source.id, shotTexts: [{ shotId: 1, camera: shots[0].camera }] }, "PATCH"), params());
+    expect(unchanged.status).toBe(200);
+    expect(db.select().from(schema.scripts).get()!.shots![0].tidewe!.visualPlan).toEqual(visualPlan);
+    const changed = await edit(req(`/api/project/${projectId}/scripts`, { scriptId: source.id, shotTexts: [{ shotId: 1, description: "林间人物在椅旁查看地面接触位置。" }] }, "PATCH"), params());
+    expect(changed.status).toBe(200);
+    const saved = db.select().from(schema.scripts).get()!;
+    expect(saved.shots![0].tidewe!.visualPlan).toBeUndefined();
+    expect(saved.copyDocument).toEqual(source.copyDocument);
+    expect(saved.shots![0].voiceover).toBe(source.shots![0].voiceover);
+  });
   it("preserves the presenter, copy and same-script media when editing the camera", async () => {
     db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ presenter: presenterA }), characterId: presenterA.id }).run();
     const source = seedScript("source-script", presenterA);
@@ -512,6 +637,7 @@ describe("TIDEWE editing and import", () => {
     expect(rows).toHaveLength(2);
     expect(rows.find(row => row.id === source.id)?.copyDocument?.text).toBe(copyText);
     expect(rows.find(row => row.selected)?.copyDocument?.text).toBe(revised);
+    expect(rows.find(row => row.selected)?.shots).toHaveLength(7);
   });
   it("blocks the legacy per-shot voiceover edit channel", async () => {
     const source = seedScript();
@@ -535,6 +661,7 @@ describe("TIDEWE editing and import", () => {
     expect(response.status).toBe(200);
     expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ copyText, count: 1 }));
     expect(db.select().from(schema.scripts).get()?.styleType).toBe("tidewe_outdoor");
+    expect(db.select().from(schema.scripts).get()?.shots).toHaveLength(7);
   });
 
   it("persists staff prose with original paragraphs and punctuation through the import entry point", async () => {
@@ -548,6 +675,7 @@ describe("TIDEWE editing and import", () => {
     const saved = db.select().from(schema.scripts).get()!;
     expect(saved.copyDocument).toMatchObject({ text, source: "user_provided", factsSnapshot: facts });
     expect(saved.shots?.[0].voiceover).toBe(text);
+    expect(saved.shots).toHaveLength(7);
     expect(saved.selected).toBe(true);
   });
 
@@ -578,7 +706,7 @@ describe("TIDEWE editing and import", () => {
     const report = await response.json();
     expect(report.rewrites).toEqual([]);
     expect(report.sourceScriptHash).toBe(scriptRevision(source));
-    expect(calls.complete.mock.calls[0][1].messages[0].content).toContain("Off-screen");
+    expect(calls.complete.mock.calls[0][1].messages[0].content).toContain("speechDelivery=off_camera");
     expect(calls.complete.mock.calls[0][1].messages[0].content).toContain(copyText);
   });
 
@@ -587,7 +715,8 @@ describe("TIDEWE editing and import", () => {
     const spoken = source.shots![0];
     const silent = (shotId: number, duration: number, offset: number): schema.Shot => ({
       ...spoken, shotId, duration, voiceover: "", description: "林间湿草上的露水近景。",
-      tidewe: { ...spoken.tidewe!, copySpan: { start: offset, end: offset } },
+      tidewe: { ...spoken.tidewe!, copySpan: { start: offset, end: offset }, speechDelivery: "off_camera", personVisible: false, productVisible: false,
+        visualPlan: { framing: "close_up", visualRole: "context", actionStart: "湿草露水已经入画", action: "固定观察自然环境", actionEnd: "构图保持稳定" } },
     });
     const updated = db.update(schema.scripts).set({
       shots: [silent(1, 3.5, 0), { ...spoken, shotId: 2 }, silent(3, 2.5, copyText.length)],
@@ -603,8 +732,9 @@ describe("TIDEWE editing and import", () => {
     expect(prompt).toContain('"actualTotalDuration":16,"plannedTotalDuration":40');
     expect(prompt).toContain('"shotId":2,"start":3.5,"end":13.5,"duration":10');
     expect(prompt).toContain('"shotId":3,"start":13.5,"end":16,"duration":2.5,"hasNarration":false');
-    expect(prompt).not.toContain("林间湿草上的露水近景。");
+    expect(prompt).toContain("林间湿草上的露水近景。");
     const reviewShots = JSON.parse(prompt.split("\n").find((line: string) => line.startsWith("SHOTS: ")).slice("SHOTS: ".length));
-    expect(reviewShots.map((shot: { shotId: number }) => shot.shotId)).toEqual([2]);
+    expect(reviewShots.map((shot: { shotId: number }) => shot.shotId)).toEqual([1, 2, 3]);
+    expect(reviewShots[0]).toMatchObject({ voiceover: "", tidewe: { speechDelivery: "off_camera", personVisible: false, visualPlan: { visualRole: "context", action: "固定观察自然环境" } } });
   });
 });

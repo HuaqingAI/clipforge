@@ -4,6 +4,7 @@ import type { JudgeId, JudgeReport } from "@/lib/script-judge";
 import { parseJudgeApplyResponse, type JudgeEditableScript } from "@/lib/script-judge-apply";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts } from "@/lib/tidewe/types";
 import { assertTideweScript, englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
+import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 
 function shot(shotId: number, voiceover: string): Shot {
   return {
@@ -43,6 +44,15 @@ function tidewe(segments = ["Wait.", "Go."], opts: { imported?: boolean; sku?: s
       compilerVersion: TIDEWE_COMPILER_VERSION, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 5,
     },
   };
+}
+
+function tideweWithProductionMetadata(): JudgeEditableScript {
+  const script = tidewe();
+  for (const shot of script.shots!) {
+    shot.tidewe!.visualPlan = { framing: "detail", visualRole: "detail", actionStart: "指腹已接触靴口边缘。", action: "轻压靴口一次。", actionEnd: "手指松开后在靴口旁停稳。" };
+  }
+  script.copyDocument!.visualBeats = script.shots!.map(shot => ({ text: shot.voiceover, visualRole: "detail", visualIdea: "观察已有靴口的局部接触。", factRefs: [] }));
+  return script;
 }
 
 describe("apply judge feedback to existing shots", () => {
@@ -97,6 +107,39 @@ describe("apply judge feedback to existing shots", () => {
 });
 
 describe("apply TIDEWE feedback without desynchronizing frozen copy", () => {
+  it.each(["description", "prompt", "visualIntent"] as const)("clears stale visualPlan only on the shot whose %s changes", (field) => {
+    const script = tideweWithProductionMetadata();
+    const description = "人物在林边穿着靴子向前走一步，鞋底稳定接触地面。";
+    const oldAction = script.shots![0].tidewe!.visualPlan!.action;
+    const result = apply(script, [{ shotId: 1, [field]: description }], report("visual"));
+    expect(result.shots[0][field]).toBe(description);
+    expect(result.shots[0].tidewe?.visualPlan).toBeUndefined();
+    expect(result.shots[1]).toBe(script.shots![1]);
+    expect(result.shots[1].tidewe?.visualPlan).toEqual(script.shots![1].tidewe!.visualPlan);
+    expect(result.copyDocument).toBe(script.copyDocument);
+    expect(result.copyDocument?.visualBeats).toEqual(script.copyDocument!.visualBeats);
+    expect(script.shots![0].tidewe!.visualPlan).toBeDefined();
+    for (const kind of ["image", "video"] as const) {
+      const compiled = compileTideweVisualPrompt(result.shots[0], kind);
+      expect(compiled.prompt).not.toContain(oldAction);
+      expect(compiled.prompt).not.toContain("指腹已接触靴口边缘");
+      if (field !== "prompt") expect(compiled.prompt).toContain(description);
+    }
+  });
+
+  it("keeps visualPlan for pure narration and translation edits while discarding beats tied to the old text", () => {
+    const script = tideweWithProductionMetadata();
+    const result = apply(script, [{ shotId: 1, voiceover: "Take a moment.", translation: "稍微等一会儿。", description: script.shots![0].description, prompt: script.shots![0].prompt, visualIntent: script.shots![0].visualIntent }]);
+    expect(result.copyDocument?.text).toBe("Take a moment.\r\n\r\nGo.");
+    expect(result.copyDocument).not.toHaveProperty("visualBeats");
+    expect(script.copyDocument?.visualBeats).toHaveLength(2);
+    expect(result.shots[0].tidewe?.translation).toBe("稍微等一会儿。");
+    expect(result.shots[0].tidewe?.visualPlan).toEqual(script.shots![0].tidewe!.visualPlan);
+    expect(result.shots[1].tidewe?.visualPlan).toEqual(script.shots![1].tidewe!.visualPlan);
+    expect(result.shots[1].voiceover).toBe(script.shots![1].voiceover);
+    expect(() => assertTideweScript(result)).not.toThrow();
+  });
+
   it("accepts an English wording correction whose complete Chinese translation is unchanged", () => {
     const script = tidewe();
     const result = apply(script, [{ shotId: 1, voiceover: "Take a moment.", translation: "原中文译文。" }]);

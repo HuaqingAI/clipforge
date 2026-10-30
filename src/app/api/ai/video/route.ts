@@ -201,7 +201,7 @@ export async function POST(req: NextRequest) {
         const shot = selected.shots?.find((item) => item.shotId === shotId);
         if (!shot) return apiError(req, "镜头不存在", "Shot not found", 404);
         tideweProductVisible = shot.tidewe?.productVisible === true;
-        tidewePresenterImage = shot.tidewe?.personVisible !== false || (tideweNative && shot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
+        tidewePresenterImage = shot.tidewe?.personVisible !== false || (tideweNative && shot.tidewe?.speechDelivery !== "off_camera" && shot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
         sourceContext = { version: 1, sourceScriptId: selected.id, sourceShotKey: shotKey(selected.id, shot), sourceRevision: scriptRevision(selected) };
         // Browser metadata cannot choose the provenance for a recovered paid result.
         controlPlan = sanitizeVideoControlSummary({ ...reviewedPrompt.controlPlan, sourceContext });

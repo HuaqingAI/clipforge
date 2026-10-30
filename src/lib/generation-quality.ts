@@ -103,6 +103,15 @@ function normalizedDimensions(rows: Array<Omit<ShotQualityDimension, "weight"> &
   });
 }
 
+/** Visible photography checks for the frozen TIDEWE style, kept out of generic reviews. */
+export const TIDEWE_PHOTOGRAPHY_QUALITY_CRITERIA = [
+  "Keep ALL existing foreground naturally clear, including isolated near grass, leaves, frame-edge objects and the ground up to the subject. Only distant scenery BEHIND the subject may be slightly soft, with recognizable structure; no foreground bokeh or broad background blur.",
+  "Person, product and surroundings must share continuous perspective, edge softness, grain, light direction, occlusion and contact shadows. Flag pasted cutout edges, separate sharp/blurred layers or abrupt blur boundaries.",
+  "Outdoor light and product colors must look neutral and accurate, with visible material and markings readable. Flag a warm/orange cast, crushed shadows or clipped highlights that conceal product details.",
+  "Use natural photographic texture and contrast. Flag sharpening halos, excessive local microcontrast, HDR edges, waxy skin or painted/oil-paint texture; do not reward artificial crispness as detail.",
+  "Where present, hands, product and supporting surfaces must show credible contact, occlusion and weight. Visible interaction with the product or camera must fit the requested shot. Do not require a person, eye contact or a new action in an off-camera, detail or environmental shot.",
+] as const;
+
 /** Compile one script shot and the project memory into a provider-neutral, inspectable quality contract. */
 export function buildShotQualityContract(input: {
   shot: Shot;
@@ -113,6 +122,7 @@ export function buildShotQualityContract(input: {
   hasCharacterReference?: boolean;
   hasPreviousReference?: boolean;
   hasSourceKeyframe?: boolean;
+  tidewePhotography?: boolean;
 }): ShotQualityContract {
   const { shot } = input;
   const intent = input.intent ?? { subject: "" };
@@ -130,7 +140,10 @@ export function buildShotQualityContract(input: {
     input.hasPreviousReference ? "Opening state should continue naturally from the accepted previous-shot tail" : undefined,
   ]);
   const rows: Array<Omit<ShotQualityDimension, "weight"> & { weight: number }> = [
-    { id: "visual-fidelity", weight: 18, required: true, criteria: unique(["Clear, coherent commercial imagery without anatomy, geometry, texture, flicker or compression artifacts"]) },
+    { id: "visual-fidelity", weight: 18, required: true, criteria: [
+      ...unique(["Clear, coherent commercial imagery without anatomy, geometry, texture, flicker or compression artifacts"]),
+      ...(input.tidewePhotography ? TIDEWE_PHOTOGRAPHY_QUALITY_CRITERIA : []),
+    ] },
     ...(input.mediaType === "video" ? [{ id: "temporal-coherence" as const, weight: 18, required: true, criteria: unique(["Stable subjects and background across time", `Smooth, intentional motion for camera direction: ${shot.camera}`]) }] : []),
     { id: "shot-alignment", weight: 24, required: true, criteria: unique([shot.description, shot.prompt, intent.subject, intent.environment]) },
     { id: "subject-fidelity", weight: productCritical || characterCritical ? 20 : 10, required: productCritical || characterCritical, criteria: unique([
@@ -141,7 +154,8 @@ export function buildShotQualityContract(input: {
       productCritical ? "The product described in the shot must keep a stable shape, color and presentation" : undefined,
       characterCritical ? "The main character described in the shot must keep a stable identity and appearance" : undefined,
       input.hasProductReference ? "Product shape, color, packaging and visible branding must match the product reference" : undefined,
-      input.hasCharacterReference ? "Face, hair, build and outfit must match the character reference without identity drift" : undefined,
+      input.hasCharacterReference ? input.tidewePhotography
+        ? "Face, hair and build must match the identity-only character reference. Clothing must follow the approved shot/source, not the identity reference." : "Face, hair, build and outfit must match the character reference without identity drift" : undefined,
     ]) },
     { id: "action-binding", weight: actionCriteria.length ? 14 : 8, required: Boolean(intent.action || shot.type === "demo"), criteria: actionCriteria },
     { id: "continuity", weight: continuityCriteria.length ? 12 : 6, required: Boolean(input.hasPreviousReference), criteria: continuityCriteria },

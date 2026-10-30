@@ -1,6 +1,7 @@
 import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "child_process";
+import { createHash } from "crypto";
 import { promisify } from "util";
 import { writeFile, mkdir, stat } from "fs/promises";
 import { join } from "path";
@@ -25,6 +26,7 @@ import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
 import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
+import { getTideweProductCoverageIssues } from "@/lib/tidewe/planning-quality";
 import { TIDEWE_VISUAL_NEGATIVE_PROMPT } from "@/lib/tidewe/visual-policy";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
@@ -37,6 +39,43 @@ import {
 } from "@/lib/storyboard-grid-resolution";
 
 const execFileAsync = promisify(execFile);
+
+interface FrozenStoryboardGridPlan {
+  version: 1;
+  cropVersion: number;
+  prompt: string;
+  signature: string;
+  provider: string;
+  model: string;
+  options: Record<string, string | number>;
+  referenceHashes: string[];
+}
+
+function frozenGridPlan(value: unknown): FrozenStoryboardGridPlan | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const plan = value as FrozenStoryboardGridPlan;
+  if (plan.version !== 1 || !Number.isSafeInteger(plan.cropVersion)
+    || typeof plan.prompt !== "string" || !plan.prompt
+    || typeof plan.signature !== "string" || !/^[a-f0-9]{64}$/.test(plan.signature)
+    || typeof plan.provider !== "string" || !plan.provider || typeof plan.model !== "string" || !plan.model
+    || !plan.options || typeof plan.options !== "object" || Array.isArray(plan.options)
+    || !Array.isArray(plan.referenceHashes) || !plan.referenceHashes.every((hash) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))) return;
+  return plan;
+}
+
+/** Audit only known image controls; opaque extras can contain credentials or image bytes. */
+function gridPlanOptions(options: Record<string, unknown>, resolution: string): FrozenStoryboardGridPlan["options"] {
+  const result: FrozenStoryboardGridPlan["options"] = { gridResolution: resolution };
+  for (const key of ["width", "height", "count", "guidanceScale", "steps", "seed"]) {
+    if (typeof options[key] === "number" && Number.isFinite(options[key])) result[key] = options[key];
+  }
+  if (typeof options.negativePrompt === "string") {
+    result.negativePromptHash = createHash("sha256").update(options.negativePrompt).digest("hex");
+    if ([TIDEWE_VISUAL_NEGATIVE_PROMPT, PREMIUM_CG_IMAGE_NEGATIVE_PROMPT].includes(options.negativePrompt)) result.negativePrompt = options.negativePrompt;
+  }
+  if (["standard", "2k", "4k"].includes(String(options.imageResolution))) result.imageResolution = String(options.imageResolution);
+  return result;
+}
 
 /**
  * Premium CG owns the prompt and all visual reference inputs. Providers merge their
@@ -171,7 +210,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const script = snapshot?.script as typeof liveScript | undefined ?? liveScript;
     const project = snapshot?.project as typeof liveProject | undefined ?? liveProject;
     const savedGrid = generationContextCheckpoint()?.imageUrls;
-    const recoveringGrid = Array.isArray(savedGrid) && typeof savedGrid[0] === "string";
+    const savedGridUrl = Array.isArray(savedGrid) ? nonEmptyString(savedGrid[0]) : undefined;
+    const recoveringGrid = Boolean(savedGridUrl);
+    const originalGridPlan = recoveringGrid ? frozenGridPlan(generationContextCheckpoint()?.gridPlan) : undefined;
     if (!recoveringGrid && (script.id !== liveScript.id || scriptRevision(script) !== scriptRevision(liveScript)
       || project.id !== liveProject.id || projectGenerationSignature(project) !== projectGenerationSignature(liveProject))) {
       return NextResponse.json({ error: "项目或源脚本已变化，请重新提交分镜任务。", code: "SCRIPT_CONTEXT_CHANGED" }, { status: 409 });
@@ -196,11 +237,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (tidewe) {
       try { assertTideweScript(script, creativeProfile.presenter ?? null); }
       catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
+      const issues = getTideweProductCoverageIssues(shots, {
+        copyDocument: script.copyDocument ?? undefined,
+        videoMode: creativeProfile.videoMode,
+        requireEvidence: true,
+      });
+      if (issues.length) {
+        return NextResponse.json({
+          error: "TIDEWE 分镜缺少商品画面、细节或实际使用证据，请先重新规划分镜后再生成九宫格。",
+          code: "TIDEWE_PRODUCT_COVERAGE_INVALID",
+          issues,
+        }, { status: 409 });
+      }
     }
-    const resolution = normalizeStoryboardGridResolution(gridResolution);
+    const resolution = normalizeStoryboardGridResolution(originalGridPlan?.options.gridResolution ?? gridResolution);
     const baseGenerationOptions = gridGenerationOptions(options, premiumCg || tidewe);
     if (tidewe) baseGenerationOptions.negativePrompt = TIDEWE_VISUAL_NEGATIVE_PROMPT;
-    const targetDimensions = storyboardGridTargetDimensions(baseGenerationOptions.width as number, baseGenerationOptions.height as number, resolution);
+    const targetDimensions = storyboardGridTargetDimensions(
+      typeof originalGridPlan?.options.width === "number" ? originalGridPlan.options.width : baseGenerationOptions.width as number,
+      typeof originalGridPlan?.options.height === "number" ? originalGridPlan.options.height : baseGenerationOptions.height as number,
+      resolution,
+    );
     const generationOptions = withStoryboardGridResolution(baseGenerationOptions, resolution, providerName ?? "", model ?? "");
     const requestedProductImageUrl = nonEmptyString(productImageUrl);
     const requestedProductImageUrls = Array.isArray(productImageUrls)
@@ -218,7 +275,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const projectProductRefs = Array.isArray(project.productImages)
       ? project.productImages.map(nonEmptyString).filter((u): u is string => Boolean(u))
       : [];
-    if (tidewe && shots.some((shot) => shot.tidewe?.productVisible) && !projectProductRefs.length) {
+    if (!recoveringGrid && tidewe && shots.some((shot) => shot.tidewe?.productVisible) && !projectProductRefs.length) {
       return NextResponse.json({ error: "TIDEWE 产品镜需要当前商品参考图。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
     }
     if (premiumCg) {
@@ -242,14 +299,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       if (issues.length) {
         return NextResponse.json({ error: "Premium product CG shot policy violation.", code: "CREATIVE_POLICY_VIOLATION", issues }, { status: 400 });
       }
-      if (projectProductRefs.length === 0) {
+      if (!recoveringGrid && projectProductRefs.length === 0) {
         return NextResponse.json({
           error: "高端产品 CG 九宫格至少需要一张已保存的产品参考图。",
           code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED",
         }, { status: 400 });
       }
       const projectProductRefSet = new Set(projectProductRefs);
-      if (allRequestedProductRefs.some((reference) => !projectProductRefSet.has(reference))) {
+      if (!recoveringGrid && allRequestedProductRefs.some((reference) => !projectProductRefSet.has(reference))) {
         return NextResponse.json({
           error: "高端产品 CG 九宫格只能使用本项目已保存的产品参考图。",
           code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID",
@@ -298,25 +355,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const productRefs = tidewe ? projectProductRefs : premiumCg
       ? (requestedProductRefs.length > 0 ? requestedProductRefs : projectProductRefs)
       : requestedProductRefs;
-    const frozenPresenter = tidewe && shots.some((shot) => shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(creativeProfile) && shot.voiceover?.trim())) ? tidewePresenterReference(creativeProfile) : undefined;
+    const frozenPresenter = tidewe && shots.some((shot) => shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(creativeProfile) && shot.tidewe?.speechDelivery !== "off_camera" && shot.voiceover?.trim())) ? tidewePresenterReference(creativeProfile) : undefined;
     const requestedSheet = nonEmptyString(characterSheetUrl);
-    if (tidewe && requestedSheet && requestedSheet !== frozenPresenter) return NextResponse.json({ error: "TIDEWE 主播已随脚本冻结，请回到脚本设置更换主播并重新规划。", code: "TIDEWE_PRESENTER_REFERENCE_INVALID" }, { status: 400 });
+    if (!recoveringGrid && tidewe && requestedSheet && requestedSheet !== frozenPresenter) return NextResponse.json({ error: "TIDEWE 主播已随脚本冻结，请回到脚本设置更换主播并重新规划。", code: "TIDEWE_PRESENTER_REFERENCE_INVALID" }, { status: 400 });
     const sheetRef = tidewe ? frozenPresenter ?? "" : requestedSheet ?? "";
     const useCharacterSheet = !premiumCg && Boolean(sheetRef);
     const refInputs = [...(useCharacterSheet ? [sheetRef] : []), ...productRefs];
-    const convertedReferenceInputs = await Promise.all(refInputs.map(reference => toRemoteUsableImage(reference, { requireReadableLocal: tidewe })));
+    // An acknowledged output only needs importing/cropping; its original refs may
+    // have moved. Never read them or use today's refs to rebuild its frozen plan.
+    const convertedReferenceInputs = recoveringGrid ? [] : await Promise.all(refInputs.map(reference => toRemoteUsableImage(reference, { requireReadableLocal: tidewe })));
     const referenceImageUrls = convertedReferenceInputs.filter(
       (u): u is string => !!u
     );
     if (tidewe && convertedReferenceInputs.some((reference) => !reference)) return NextResponse.json({ error: "TIDEWE 已选主播或商品参考图不可用，请恢复脚本中保存的参考图后重试。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
-    if (frozenPresenter && referenceImageUrls.length > 1 && !["openai", "atlas-cloud", "volcengine"].includes(providerName) && !(providerName === "fal-ai" && /edit/i.test(model))) return NextResponse.json({ error: "此图片模型无法同时接收已选主播和商品参考，请选择支持多图参考的生图模型。", code: "TIDEWE_PRESENTER_REFERENCE_UNSUPPORTED" }, { status: 400 });
+    if (!recoveringGrid && frozenPresenter && referenceImageUrls.length > 1 && !["openai", "atlas-cloud", "volcengine"].includes(providerName) && !(providerName === "fal-ai" && /edit/i.test(model))) return NextResponse.json({ error: "此图片模型无法同时接收已选主播和商品参考，请选择支持多图参考的生图模型。", code: "TIDEWE_PRESENTER_REFERENCE_UNSUPPORTED" }, { status: 400 });
     // Providers with one-reference-only image APIs need the product rather than a
     // presenter sheet. Multi-reference providers continue to receive the full ordered set.
     const primaryProductReference = convertedReferenceInputs
       .slice(useCharacterSheet ? 1 : 0)
       .find((u): u is string => Boolean(u));
     const primaryReferenceImageUrl = frozenPresenter ? referenceImageUrls[0] : primaryProductReference ?? referenceImageUrls[0];
-    if ((premiumCg || (tidewe && shots.some((shot) => shot.tidewe?.productVisible))) && !primaryProductReference) {
+    if (!recoveringGrid && (premiumCg || (tidewe && shots.some((shot) => shot.tidewe?.productVisible))) && !primaryProductReference) {
       return NextResponse.json({
         error: "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
         code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
@@ -325,16 +384,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     // 1) one generation renders every shot — consistency is physical, not prompted;
     // with references attached the sheet pins the person and the photo pins the product
-    const prompt = buildStoryboardGridPrompt(shots, script.characters, {
+    const prompt = recoveringGrid ? originalGridPlan?.prompt : buildStoryboardGridPrompt(shots, script.characters, {
       characterSheet: useCharacterSheet,
       productImageCount: productRefs.length,
       aspectRatio: gridAspectRatio(generationOptions),
     }, { creativeProfile });
-    const signature = storyboardGridSignature({
+    // An already-paid image retains the exact policy/signature used at submission.
+    // Legacy checkpoints have no trustworthy prompt provenance and cannot seed a new cache.
+    const signature = recoveringGrid ? originalGridPlan?.signature : storyboardGridSignature({
       scriptId,
       shots,
       characters: script.characters,
-      prompt,
+      prompt: prompt!,
       referenceInputs: refInputs,
       referenceContents: referenceImageUrls,
       provider: providerName,
@@ -342,7 +403,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       baseUrl: providerName === "openai" ? normalizeOpenAIBaseUrl(baseUrl) : (baseUrl ?? "").trim().replace(/\/+$/, ""),
       options: { ...generationOptions, gridResolution: resolution },
     });
-    if (reuseExisting === true) {
+    if (!recoveringGrid && signature && reuseExisting === true) {
       const scopedSelectedAssets = filterAssetsForScript(
         await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
         script,
@@ -356,20 +417,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           ...(cached.resolution && { resolution: cached.resolution }) });
       }
     }
-    let gridUrl = recoveringGrid ? savedGrid[0] as string : undefined;
-    if (!gridUrl) {
+    let gridUrl = savedGridUrl;
+    if (!recoveringGrid) {
       const provider = createProvider({ name: providerName, apiKey, baseUrl: baseUrl ?? "" });
+      const gridPlan: FrozenStoryboardGridPlan = {
+        version: 1,
+        cropVersion: STORYBOARD_GRID_CROP_VERSION,
+        prompt: prompt!,
+        signature: signature!,
+        provider: providerName,
+        model,
+        options: gridPlanOptions(generationOptions, resolution),
+        referenceHashes: referenceImageUrls.map((reference) => createHash("sha256").update(reference).digest("hex")),
+      };
+      // Persist before the paid boundary, so a failed checkpoint write cannot buy a grid.
+      generationCheckpoint({ gridPlan });
       beforeGenerationSubmission();
       const result = await provider.generateImage({
         ...generationOptions, modelId: model,
         mode: referenceImageUrls.length > 0 ? "image-to-image" : "text-to-image",
         ...(primaryReferenceImageUrl && { referenceImageUrl: primaryReferenceImageUrl }),
-        ...(referenceImageUrls.length > 0 && { referenceImageUrls }), prompt,
+        ...(referenceImageUrls.length > 0 && { referenceImageUrls }), prompt: gridPlan.prompt,
       });
       gridUrl = result.imageUrls?.[0];
       if (!gridUrl) throw new Error("生图未返回图片");
       generationCheckpoint({ imageUrls: [gridUrl], stage: "importing", submissionState: "acknowledged" });
     }
+    if (!gridUrl) throw new Error("生图未返回图片");
 
     // A restart after download uses the same local grid even if its cloud URL expires.
     const storedPath = generationContextCheckpoint()?.gridPublicPath;
@@ -434,7 +508,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         return tx.insert(assets).values({
           ...(stableAssetId ? { id: stableAssetId } : {}),
           projectId: id, shotId: shots[i].shotId, type: "ai_generated", filePath,
-          provider: providerName, model,
+          provider: originalGridPlan?.provider ?? providerName, model: originalGridPlan?.model ?? model,
           prompt: `[storyboard-grid-v${STORYBOARD_GRID_CROP_VERSION} 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
           ...assetScopeForShot(script, shots[i]), selected, status: "done",
         }).returning().get();
@@ -455,7 +529,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       : scopedCurrentSelected;
     const fullMatchingGrid = saved.length === shots.length && !alternatives && currentScript?.id === scriptId && scriptRevision(currentScript) === revision &&
       saved.every((cell) => currentSelected.filter((asset) => asset.shotId === cell.shotId).length === 1 && currentSelected.some((asset) => asset.shotId === cell.shotId && asset.filePath === cell.filePath && asset.status === "done"));
-    if (fullMatchingGrid) await saveStoryboardGridManifest(id, { version: STORYBOARD_GRID_CROP_VERSION, signature, gridPath: publicPath, cells: saved, resolution: resolutionInfo })
+    if (fullMatchingGrid && signature && (!recoveringGrid || originalGridPlan?.cropVersion === STORYBOARD_GRID_CROP_VERSION)) await saveStoryboardGridManifest(id, { version: STORYBOARD_GRID_CROP_VERSION, signature, gridPath: publicPath, cells: saved, resolution: resolutionInfo })
       .catch((error) => console.error("保存九宫格复用记录失败:", error));
     const responseCells = preserveExisting === true ? shots.map((shot) => preserved.get(shot.shotId) ?? saved.find((cell) => cell.shotId === shot.shotId)!) : saved;
     return NextResponse.json({ gridPath: publicPath, cells: responseCells, count: responseCells.length, reused: false, resolution: resolutionInfo,

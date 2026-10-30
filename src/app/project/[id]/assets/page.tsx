@@ -235,6 +235,8 @@ function AssetsPageContent() {
   const [savingCameraShot, setSavingCameraShot] = useState<number | null>(null);
   // storyboard grid: one generation renders all shots in a 3x3 grid → cells become keyframes
   const [isGridSubmitting, setIsGridGenerating] = useState(false);
+  const [isBatchKeyframesSubmitting, setIsBatchKeyframesSubmitting] = useState(false);
+  const batchKeyframeSubmission = useRef<AbortController | null>(null);
   const { runs: generationRuns } = useGenerationRuns(id);
   const backgroundShots = useMemo(() => new Set(generationRuns.filter(run => generationRunActive(run) || run.status === "needs_attention").flatMap(run => run.items.filter(item => item.scriptId === scriptId && item.shotId != null && !["completed", "failed", "cancelled"].includes(item.status)).map(item => item.shotId!))), [generationRuns, scriptId]);
   const isGridGenerating = isGridSubmitting || generationRuns.some(run => run.kind === "storyboard_grid" && generationRunActive(run) && run.items.some(item => item.scriptId === scriptId));
@@ -279,6 +281,14 @@ function AssetsPageContent() {
   const tidewe = isTideweOutdoorProfile(projectCreativeProfile);
   const tideweNative = isTideweNativeSpeech(projectCreativeProfile);
   const premiumCgVisualOnly = premiumCg && projectCreativeProfile.narrationMode === "none";
+  const pendingKeyframeShots = assets.filter((asset) =>
+    (asset.status === "pending" || asset.status === "failed")
+    && (!asset.visualSource || asset.visualSource === "ai_generate")
+    && !backgroundShots.has(asset.shotId) && !motionShots.has(asset.shotId)
+    && !unresolvedMotionShots.has(asset.shotId)
+    && !pendingTasks.some((task) => task.shotId === asset.shotId && task.status !== "failed")
+    && !klingJobs.some((job) => job.scriptId === scriptId && job.shotId === asset.shotId && klingJobBlocksSubmission(job))
+  );
   // Premium CG always starts from the supplied product reference. Sales users may still
   // choose a freer text-to-image treatment through the existing toggle.
   const productReferenceLocked = premiumCg || tidewe || productSafe;
@@ -302,6 +312,7 @@ function AssetsPageContent() {
   useEffect(() => () => {
     motionPreparation.current?.abort();
     batchPreparation.current?.abort();
+    batchKeyframeSubmission.current?.abort();
     motionDraftDone.current?.();
   }, [id, scriptId, videoConfigurationKey]);
 
@@ -824,7 +835,7 @@ function AssetsPageContent() {
         ? previousAsset?.lastFrameUrl ?? (previousAsset ? lastFrameByShot.current.get(previousAsset.shotId) : undefined)
         : undefined;
       const characterReference = tidewe
-        ? (asset?.tidewe?.personVisible !== false || (tideweNative && asset?.voiceover?.trim()) ? presenterSheet : undefined)
+        ? (asset?.tidewe?.personVisible !== false || (tideweNative && asset?.tidewe?.speechDelivery !== "off_camera" && asset?.voiceover?.trim()) ? presenterSheet : undefined)
         : !premiumCg && asset?.characterId
         ? presenterLib.find((character) => character.id === asset.characterId)?.referenceImages?.[0] ?? presenterSheet
         : undefined;
@@ -1045,7 +1056,7 @@ function AssetsPageContent() {
 
   // Generate and save one shot, then offer motion generation when enabled.
   const generateOne = useCallback(
-    async (shotId: number): Promise<void> => {
+    async (shotId: number, opts?: { skipMotion?: boolean }): Promise<void> => {
       const asset = assets.find((a) => a.shotId === shotId);
       if (!asset) return;
 
@@ -1080,7 +1091,7 @@ function AssetsPageContent() {
             body: JSON.stringify({ shotId, type: "product_image", sourceUrl: productImages[0] }),
           }).catch(() => {});
           // auto motion: use the product image as the first frame and run image-to-video (bring the real product to life); falls back to a static image on failure
-          if (autoMotion && videoModelTarget && !isKlingDefault) await generateMotion(shotId, productImages[0]);
+          if (!opts?.skipMotion && autoMotion && videoModelTarget && !isKlingDefault) await generateMotion(shotId, productImages[0]);
         }
         return;
       }
@@ -1102,7 +1113,7 @@ function AssetsPageContent() {
       // product fidelity: AI shot featuring product + product image available + toggle on → redraw with product image (image-to-image, locks in the product subject)
       const useProductSafe =
         productReferenceLocked && !!productImages[0] && (tidewe ? asset.tidewe?.productVisible !== false : premiumCg || PRODUCT_SHOT_TYPES.has(asset.type));
-      const characterReference = tidewe && (asset.tidewe?.personVisible !== false || (tideweNative && asset.voiceover?.trim())) ? presenterSheet : undefined;
+      const characterReference = tidewe && (asset.tidewe?.personVisible !== false || (tideweNative && asset.tidewe?.speechDelivery !== "off_camera" && asset.voiceover?.trim())) ? presenterSheet : undefined;
       const referenceImageUrls = tidewe ? [...new Set([...(characterReference ? [characterReference] : []), ...(useProductSafe ? productImages : [])])] : [];
       const hasImageReferences = useProductSafe || referenceImageUrls.length > 0;
       const genModel = hasImageReferences ? toEditVariant(modelTarget.model) : modelTarget.model;
@@ -1165,7 +1176,7 @@ function AssetsPageContent() {
           } }],
         });
         if (imageSubmissionContext.current.projectId === id && imageSubmissionContext.current.scriptId === scriptId) {
-          imageMotionRuns.current.set(run.id, { projectId: id, scriptId, shotId, autoMotion: Boolean(autoMotion && videoModelTarget && !isKlingDefault) });
+          imageMotionRuns.current.set(run.id, { projectId: id, scriptId, shotId, autoMotion: Boolean(!opts?.skipMotion && autoMotion && videoModelTarget && !isKlingDefault) });
         }
       } catch (e) {
         if (imageSubmissionContext.current.projectId !== id || imageSubmissionContext.current.scriptId !== scriptId) return;
@@ -1178,6 +1189,24 @@ function AssetsPageContent() {
     },
     [assets, id, scriptId, scriptHash, modelTarget, productImages, productReferenceLocked, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, tidewe, tideweNative, boundPresenter, presenterSheet, visualLook, generateMotion, t]
   );
+
+  // Register missing keyframes with the durable queue; execution continues in the background.
+  const generateAllKeyframes = async () => {
+    if (batchKeyframeSubmission.current || !scriptId || !modelTarget || !pendingKeyframeShots.length
+      || isGridGenerating || batchMotionBusy || keyframeRefinementBusy) return;
+    const controller = new AbortController();
+    batchKeyframeSubmission.current = controller;
+    setIsBatchKeyframesSubmitting(true);
+    try {
+      for (const asset of pendingKeyframeShots) {
+        if (controller.signal.aborted) break;
+        await generateOne(asset.shotId, { skipMotion: true });
+      }
+    } finally {
+      batchKeyframeSubmission.current = null;
+      setIsBatchKeyframesSubmitting(false);
+    }
+  };
 
   // storyboard grid: ONE image generation renders every shot as a 3x3 grid cell (person /
   // outfit / room / light physically identical), the server crops cells into per-shot
@@ -1369,7 +1398,7 @@ function AssetsPageContent() {
                         id="storyboard-grid-resolution"
                         value={gridResolution}
                         onChange={(event) => setGridResolution(event.target.value as StoryboardGridResolution)}
-                        disabled={isGridGenerating || batchMotionBusy}
+                        disabled={isGridGenerating || batchMotionBusy || isBatchKeyframesSubmitting}
                         aria-describedby="storyboard-grid-resolution-hint"
                         className="h-8 max-w-36 rounded-lg border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
                       >
@@ -1379,7 +1408,7 @@ function AssetsPageContent() {
                       </select>
                       <Button
                         onClick={runStoryboardGrid}
-                        disabled={!gridReady || isGridGenerating || batchMotionBusy}
+                        disabled={!gridReady || isGridGenerating || batchMotionBusy || isBatchKeyframesSubmitting}
                         variant="outline"
                         className="text-xs"
                         title={gridReason}
@@ -1396,8 +1425,18 @@ function AssetsPageContent() {
                     </div>
                   )}
                   <Button
+                    onClick={generateAllKeyframes}
+                    disabled={!scriptId || !modelTarget || !pendingKeyframeShots.length || isBatchKeyframesSubmitting || isGridGenerating || batchMotionBusy || keyframeRefinementBusy}
+                    variant="outline"
+                    className="text-xs"
+                    title={!modelTarget ? t("errorNoImageModel") : !pendingKeyframeShots.length ? t("batchKeyframesNeedShots") : t("batchKeyframesHint")}
+                  >
+                    {isBatchKeyframesSubmitting ? <LuLoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <LuImage className="mr-1.5 h-3.5 w-3.5" />}
+                    {t(isBatchKeyframesSubmitting ? "batchKeyframesSubmitting" : "batchKeyframesButton")}
+                  </Button>
+                  <Button
                     onClick={() => openKeyframeRefinement()}
-                    disabled={!scriptId || !refinableShots.length || isGridGenerating || batchMotionBusy || keyframeRefinementBusy || motionShots.size > 0}
+                    disabled={!scriptId || !refinableShots.length || isGridGenerating || batchMotionBusy || keyframeRefinementBusy || isBatchKeyframesSubmitting || motionShots.size > 0}
                     variant="outline"
                     className="text-xs"
                     title={t("keyframeRefineTip")}
@@ -1406,7 +1445,7 @@ function AssetsPageContent() {
                   </Button>
                   <Button
                     onClick={openBatchMotion}
-                    disabled={!batchReady || isGridGenerating || preparingBatchMotion || batchMotionBusy || motionShots.size > 0}
+                    disabled={!batchReady || isGridGenerating || preparingBatchMotion || batchMotionBusy || isBatchKeyframesSubmitting || motionShots.size > 0}
                     variant="outline"
                     className="text-xs border-primary/50 text-primary hover:bg-primary/10 disabled:border-border/60 disabled:text-muted-foreground"
                     title={batchReason}
@@ -1902,7 +1941,7 @@ function AssetsPageContent() {
                               variant="outline"
                               size="sm"
                               className="text-xs w-24"
-                              disabled={batchMotionBusy || backgroundShots.has(asset.shotId) || asset.status === "generating" || motionShots.has(asset.shotId)}
+                              disabled={batchMotionBusy || isBatchKeyframesSubmitting || backgroundShots.has(asset.shotId) || asset.status === "generating" || motionShots.has(asset.shotId)}
                               onClick={() => generateOne(asset.shotId)}
                             >
                               {asset.status === "generating"

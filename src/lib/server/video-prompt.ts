@@ -108,7 +108,8 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
   const tideweGenerateAudio = tideweNative && request.generateAudio !== false && (request.provider === "kling-cli"
     ? true
     : getVideoModelCapabilities(request.model, undefined, request.provider).nativeAudio === true);
-  const frozenPresenter = tidewe && (shot.tidewe?.personVisible !== false || (tideweNative && shot.voiceover?.trim())) ? tidewePresenterReference(profile) : undefined;
+  const onCameraSpeech = tideweNative && shot.tidewe?.speechDelivery !== "off_camera" && Boolean(shot.voiceover?.trim());
+  const frozenPresenter = tidewe && (shot.tidewe?.personVisible !== false || onCameraSpeech) ? tidewePresenterReference(profile) : undefined;
   if (tidewe) {
     try { assertTideweScript(script, profile.presenter ?? null); }
     catch (error) { throw new VideoPromptError("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 原文覆盖无效。", 409); }
@@ -126,7 +127,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     supportsAudio: tideweNative ? tideweGenerateAudio : silent ? false : request.controlInputs?.supportsAudio,
     generateAudio: !silent,
     voiceover: silent && !tideweNative ? "" : shot.narration?.trim() || shot.voiceover?.trim(),
-    speakerVisible: tideweNative || (!silent && !premiumCg && Boolean(shot.characterId)),
+    speakerVisible: tideweNative ? onCameraSpeech : !silent && !premiumCg && Boolean(shot.characterId),
     description: shot.description,
     locale,
   });

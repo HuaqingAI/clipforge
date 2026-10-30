@@ -82,7 +82,7 @@ function outputSettings(raw: unknown, creativeProfile?: ProjectCreativeProfile):
   const tideweNative = isTideweNativeSpeech(creativeProfile);
   if (isTideweOutdoorProfile(creativeProfile)) {
     const requiredStrategy = tideweNative ? "native" : "edge-tts";
-    if (value.audioStrategy !== undefined && value.audioStrategy !== requiredStrategy) throw fail("TIDEWE_OUTPUT_POLICY", tideweNative ? "TIDEWE 真人口播必须保留模型原生英语音轨，不能改用后期配音。" : "此 TIDEWE 项目使用静音视觉与后期英语旁白，请选择配音替换原声音。");
+    if (value.audioStrategy !== undefined && value.audioStrategy !== requiredStrategy) throw fail("TIDEWE_OUTPUT_POLICY", tideweNative ? "TIDEWE 原生英语讲解必须保留模型音轨（含对镜口播与画外讲解），不能改用后期配音。" : "此 TIDEWE 项目使用静音视觉与后期英语旁白，请选择配音替换原声音。");
     try { voice = resolveNarrationVoice(creativeProfile, typeof value.voice === "string" ? value.voice : undefined); }
     catch (error) { throw fail("TIDEWE_VOICE_INVALID", error instanceof Error ? error.message : "英语音色无效"); }
   }
@@ -252,7 +252,7 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
     const selected = selectedAssets.filter((asset) => asset.shotId === shot.shotId);
     if (selected.length > 1) throw fail("KLING_CONTEXT_CHANGED", `镜头 ${shot.shotId} 有多个选中素材，请先明确选择一个版本。`);
     const asset = selected[0];
-    const presenterReference = tidewe && (shot.tidewe?.personVisible !== false || (isTideweOutdoorProfile(creativeProfile) && creativeProfile.speechMode === "on_camera" && shot.voiceover?.trim())) ? tidewePresenterReference(creativeProfile) : undefined;
+    const presenterReference = tidewe && (shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(creativeProfile) && shot.tidewe?.speechDelivery !== "off_camera" && shot.voiceover?.trim())) ? tidewePresenterReference(creativeProfile) : undefined;
     if (tidewe && (shot.tidewe?.productVisible || presenterReference) && asset?.type === "stock_footage") throw fail("TIDEWE_PRODUCT_REFERENCE_REQUIRED", `镜头 ${shot.shotId} 的库存素材不能冒充 TIDEWE 商品或已选主播，请先生成当前分镜素材。`);
     const direction = promptFor(shot, model, output, ordinal, project, promptSettings, creativeProfile);
     const data: KlingFilmShotData = { shot: structuredClone(shot), source: "generate", prompt: direction.prompt, options: {}, missingKeyframe: false, inputs: [], baselineAssetId: asset?.id ?? null, attempt: 0 };

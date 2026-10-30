@@ -1,10 +1,13 @@
 import type { ProductFact, ProductFacts, TideweProductCategory } from "./types";
+import { TIDEWE_SHOP_CATEGORIES } from "./categories";
 
-const CATEGORIES = new Set<TideweProductCategory>(["hunting_chair", "hunting_blind", "waders", "heated_apparel", "hunting_apparel", "waterproof_boots", "other"]);
+const CATEGORIES = new Set<TideweProductCategory>([...TIDEWE_SHOP_CATEGORIES, "hunting_chair", "heated_apparel", "hunting_apparel", "waterproof_boots", "other"]);
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown, max = 4000) => typeof v === "string" ? v.trim().slice(0, max) : "";
 
 export function normalizeTideweCategory(value: unknown): TideweProductCategory {
+  // Preserve recognized stored IDs and the historical fallback behavior. SHOP
+  // aliases are canonicalized only in editable UI input, never inside snapshots.
   if (CATEGORIES.has(value as TideweProductCategory)) return value as TideweProductCategory;
   const hint = str(value).toLowerCase();
   if (/chair|椅/.test(hint)) return "hunting_chair";

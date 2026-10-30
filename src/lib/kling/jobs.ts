@@ -121,7 +121,7 @@ function validateTideweVideoInputs(
   const shot = script.shots?.find((item) => item.shotId === shotId);
   if (!shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前镜头已改变，请重新预览。", 409);
   const productVisible = shot.tidewe?.productVisible === true;
-  const presenter = shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(profile) && shot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
+  const presenter = shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(profile) && shot.tidewe?.speechDelivery !== "off_camera" && shot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
   if (productVisible && (!project.productImages?.length || !refs.some((ref) => ref.role === "image" && ref.sourceUrl !== presenter))) {
     throw new KlingError("TIDEWE_PRODUCT_REFERENCE_REQUIRED", "TIDEWE 产品镜须使用当前商品参考图或已保存关键帧，通过图生视频生成。", 422);
   }

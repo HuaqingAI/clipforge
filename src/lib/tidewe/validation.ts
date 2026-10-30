@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Shot } from "@/lib/db/schema";
 import { claimableFacts, normalizeProductFacts } from "./facts";
-import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_MIN_SHOTS, TIDEWE_MAX_SHOTS, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
 import { isValidTidewePresenterInput, tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
 
 export class TideweValidationError extends Error {
@@ -15,18 +15,33 @@ export class TideweImportedCopyError extends Error {
 }
 function fail(message: string): never { throw new TideweValidationError(message); }
 
-const PROHIBITED_VISUAL_TERMS = "热成像|发光热区|透视剖面|独立电池|thermal imaging|glowing heat|standalone battery";
+/** Generation-only constraint; saved historical scripts remain readable and editable. */
+export function assertTideweGeneratedShotCount(shotCount: number, copyIndex = 0): void {
+  if (!Number.isInteger(shotCount) || shotCount < TIDEWE_MIN_SHOTS || shotCount > TIDEWE_MAX_SHOTS) {
+    fail(`TIDEWE copy ${copyIndex + 1} must contain ${TIDEWE_MIN_SHOTS}-${TIDEWE_MAX_SHOTS} shots; received ${shotCount}. Replan this copy within that range, preserving its complete narration exactly once.`);
+  }
+}
+
+// Match explicit foreground instructions, not every mention of optical softness.
+const FOREGROUND_VISUAL_TERMS = [
+  String.raw`(?:近?前景|画面(?:下沿|底边)|底边)(?:的)?(?:地面|落叶|草叶|草丛|草地|枝叶|支撑面|纹理)?(?:呈现|保持|略微|轻微|轻度|稍微|适度|自然|柔和|明显|略|稍)*\s*(?:虚化|失焦|散景|柔焦|模糊)`,
+  String.raw`(?:虚化|模糊|柔化)\s*(?:近?前景|画面(?:下沿|底边))`,
+  String.raw`\bforeground(?:\s+(?:leaves|grass|ground|foliage|texture|surfaces?))?\s+(?:(?:is|are|remains?|stays?)\s+)?(?:(?:slightly|softly|gently|deliberately)\s+)?(?:blur(?:red|ring)?|defocus(?:ed)?|bokeh|out[ -]of[ -]focus|soft[ -]focus)\b`,
+  String.raw`\b(?:(?:slightly|softly|gently|deliberately)\s+)?(?:blurred|defocused|out[ -]of[ -]focus|soft[ -]focus)\s+foreground\b`,
+  String.raw`\b(?:blur(?:ring)?|defocus(?:ing)?)\s+(?:the\s+)?foreground\b`,
+].join("|");
+const PROHIBITED_VISUAL_TERMS = `热成像|发光热区|透视剖面|独立电池|thermal imaging|glowing heat|standalone battery|${FOREGROUND_VISUAL_TERMS}`;
 const VISUAL_LIST_ITEM = `(?:${PROHIBITED_VISUAL_TERMS})(?:\\s*(?:效果|特效|画面|展示|effects?|visuals?|displays?))?`;
 const VISUAL_LIST_SEPARATOR = String.raw`\s*(?:[、，,/](?:\s*\b(?:and|or|nor)\b)?|以及|或|和|与|及|\band\b|\bor\b|\bnor\b)\s*`;
 // Only an explicit prohibition immediately before this item (or its noun list) applies.
 // An action, contrast or another field between the prohibition and item ends its scope.
 const NEGATED_VISUAL_PREFIX = new RegExp(
   String.raw`(?<!不是|并非|不能|不得|不要|不应|不可|并不|没有|禁止|避免|not )(?:` +
-  String.raw`(?:禁止|避免|杜绝|不要|不得|不应|不可|不能|不允许|无需|没有|不是|并非|不|无|未)\s*(?:出现|使用|生成|展示|显示|呈现|添加|加入|引入|增加|采用|包含|制作|描绘|拍摄|渲染|提供|设置|表现|带|做|有)?\s*(?:任何|额外的?|新增的?)?` +
+  String.raw`(?:禁止|避免|杜绝|不要|不得|不应|不可|不能|不允许|无需|没有|不是|并非|不|无|未)\s*(?:出现|使用|生成|展示|显示|呈现|添加|加入|引入|增加|采用|包含|制作|描绘|拍摄|渲染|提供|设置|表现|带|做|有|让|使|把|将)?\s*(?:任何|额外的?|新增的?)?` +
   String.raw`|\b(?:no|without|avoid|never|do\s+not|don['’]t|must\s+not|should\s+not|forbid(?:den)?)\s+(?:(?:show(?:ing)?|display(?:ing)?|generat(?:e|ing)|us(?:e|ing)|includ(?:e|ing)|render(?:ing)?|add(?:ing)?)\s+)?(?:any\s+)?` +
   String.raw`)\s*(?:` + VISUAL_LIST_ITEM + VISUAL_LIST_SEPARATOR + String.raw`)*$`, "iu",
 );
-const NEGATED_VISUAL_SUFFIX = /^\s*(?:均|一律|全部)?(?:禁用|禁止|不允许|不得使用)(?=$|[\s，,。.;；!！?？])/u;
+const NEGATED_VISUAL_SUFFIX = /^\s*(?:(?:均|一律|全部)?(?:禁用|禁止|不允许|不得使用)|(?:(?:is|are|must\s+be|should\s+be)\s+)?(?:prohibited|forbidden|not\s+allowed|avoided))(?=$|[\s，,。.;；!！?？])/iu;
 
 function positiveProhibitedVisual(text: string): string | undefined {
   for (const match of text.matchAll(new RegExp(PROHIBITED_VISUAL_TERMS, "gi"))) {
@@ -131,6 +146,18 @@ export function assertTideweScript(script: { shots?: Shot[] | null; copyDocument
     if (!Number.isFinite(shot.duration) || shot.duration <= 0 || shotIds.has(shot.shotId)) fail("Invalid shot duration or duplicate shot ID");
     if (!fields.sceneId?.trim() || !fields.shotGoal?.trim() || typeof fields.productVisible !== "boolean") fail("Shot requires scene, goal and product visibility");
     if (fields.personVisible !== undefined && typeof fields.personVisible !== "boolean") fail("Shot person visibility must be a boolean");
+    if (fields.speechDelivery !== undefined && fields.speechDelivery !== "on_camera" && fields.speechDelivery !== "off_camera") fail("Shot speechDelivery must be on_camera or off_camera");
+    if (fields.speechDelivery === "on_camera" && shot.voiceover.trim() && fields.personVisible === false) fail("On-camera speech requires the presenter to be visible");
+    const visualPlan = fields.visualPlan;
+    if (visualPlan !== undefined && (!visualPlan || typeof visualPlan !== "object" || Array.isArray(visualPlan)
+      || !["wide", "medium", "close_up", "detail"].includes(visualPlan.framing)
+      || !["presenter", "demonstration", "detail", "context"].includes(visualPlan.visualRole)
+      || ![visualPlan.actionStart, visualPlan.action, visualPlan.actionEnd].every(value => typeof value === "string" && Boolean(value.trim()) && value.length <= 240 && /[\u3400-\u9fff]/u.test(value)))) {
+      fail(`镜头 ${shot.shotId} 的景别、画面任务和动作起止不完整，请重新规划该镜头。`);
+    }
+    if (visualPlan?.productFocus !== undefined && (typeof visualPlan.productFocus !== "string" || !visualPlan.productFocus.trim() || visualPlan.productFocus.length > 240 || !/[\u3400-\u9fff]/u.test(visualPlan.productFocus))) {
+      fail(`镜头 ${shot.shotId} 的商品观察对象必须是简短中文，请描述实际入画的商品或部位。`);
+    }
     if (JSON.stringify(stable(fields.presenter ?? null)) !== presenterSnapshot) fail("TIDEWE shots must keep the same frozen presenter");
     if (fields.presenter && (!isValidTidewePresenterInput(fields.presenter) || typeof fields.personVisible !== "boolean")) fail("Selected presenter requires a valid frozen identity and explicit person visibility");
     if (fields.presenter && fields.personVisible && !shot.description.includes(tidewePresenterAnchor(fields.presenter))) fail("Person-visible description must retain the saved presenter identity");
@@ -141,6 +168,8 @@ export function assertTideweScript(script: { shots?: Shot[] | null; copyDocument
     const visualFields = [
       ["画面描述", shot.description], ["画面提示", shot.prompt], ["视觉意图", shot.visualIntent],
       ["运镜", shot.camera], ["画面目标", fields.shotGoal],
+      ...(visualPlan ? [["动作起点", visualPlan.actionStart], ["演示动作", visualPlan.action], ["动作结束", visualPlan.actionEnd]] : []),
+      ...(visualPlan?.productFocus ? [["商品观察对象", visualPlan.productFocus]] : []),
     ] as const;
     for (const [label, visual] of visualFields) {
       if (visual?.includes(TIDEWE_PRESENTER_PLACEHOLDER)) fail("Unresolved TIDEWE presenter placeholder");

@@ -23,6 +23,7 @@ import { GET as getPipeline, POST as postPipeline } from "@/app/api/project/[id]
 import { getLatestPipelineRun } from "@/lib/pipeline-history";
 import { parseTaskFeed, taskHref } from "@/lib/task-feed";
 import { DELETE as deleteProject } from "@/app/api/project/[id]/route";
+import { DELETE as deleteGenerationRun } from "@/app/api/generation-runs/[id]/route";
 
 const sqlite = new Database(":memory:");
 const db = drizzle(sqlite, { schema });
@@ -75,6 +76,29 @@ function job(overrides: Partial<Pick<KlingJob, "remoteState" | "importState" | "
 }
 
 describe("任务发现和恢复状态", () => {
+  it.each(["completed", "failed"])("removes a deleted %s task from the global feed while preserving its asset", async (status) => {
+    const now = Date.now();
+    db.insert(schema.generationRuns).values({ id: "history-run", projectId: "project-a", clientRequestId: "history-request", requestHash: "hash",
+      kind: "image", createdAt: now, updatedAt: now }).run();
+    db.insert(schema.generationItems).values({ id: "history-item", runId: "history-run", projectId: "project-a", kind: "image", status,
+      payload: "encrypted-input", result: { assetId: "history-asset" }, nextRunAt: now, createdAt: now, updatedAt: now }).run();
+    db.insert(schema.assets).values({ id: "history-asset", projectId: "project-a", shotId: 1, type: "ai_generated", status: "done", filePath: "/api/files/project-a/keep.png" }).run();
+    try {
+      const before = await feed();
+      expect([...before.attention, ...before.recent].some((row) => row.id === "history-run")).toBe(true);
+      const asset = db.select().from(schema.assets).where(eq(schema.assets.id, "history-asset")).get();
+      const response = await deleteGenerationRun(new NextRequest("http://localhost/api/generation-runs/history-run?projectId=project-a", { method: "DELETE" }),
+        { params: Promise.resolve({ id: "history-run" }) });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ deletedIds: ["history-run"], deletedCount: 1 });
+      const after = await feed();
+      expect([...after.active, ...after.attention, ...after.recent].some((row) => row.id === "history-run")).toBe(false);
+      expect(db.select().from(schema.assets).where(eq(schema.assets.id, "history-asset")).get()).toEqual(asset);
+      expect(state.remove).not.toHaveBeenCalled();
+    } finally {
+      db.delete(schema.assets).where(eq(schema.assets.id, "history-asset")).run();
+    }
+  });
   it.each(["queued", "running", "waiting", "importing", "needs_attention"])("keeps a project's files while its durable task is %s", async (status) => {
     const now = Date.now();
     db.insert(schema.generationRuns).values({ id: "durable-run", projectId: "project-a", clientRequestId: "request-durable", requestHash: "hash", kind: "video_batch", createdAt: now, updatedAt: now }).run();

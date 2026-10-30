@@ -9,9 +9,12 @@ import { resolveCharacterReferenceModel } from "@/lib/character-reference-model"
 import { useLocale } from "@/lib/i18n";
 import { submitGenerationRun, useGenerationRuns, type GenerationRun, type GenerationRunInput, type GenerationStatus } from "@/lib/hooks/use-generation-runs";
 import {
+  DEFAULT_KEYFRAME_REFINEMENT_RESOLUTION,
   KEYFRAME_REPAIR_ISSUES,
+  supportsKeyframeFocusMask,
   type KeyframeRefinementCandidate,
   type KeyframeRefinementResolution,
+  type KeyframeRefinementResolutionInfo,
   type KeyframeRepairIssue,
 } from "@/lib/keyframe-refinement";
 
@@ -29,18 +32,22 @@ export interface KeyframeRefinementDialogProps {
 
 const COPY = {
   zh: {
+    sourceRule: "已采用精修候选时，将在当前关键帧基础上继续精修；未采用候选或恢复原图后，将以原图为基础。",
     background: "确认后整批进入后台任务，可关闭窗口或切换项目继续创作；生成结果需手动采用。",
     submitting: "正在登记后台任务", submitted: "已进入后台任务，可关闭窗口或切换项目。", retry: "重试核对本批次", frozen: "本批次分镜和参数已锁定，重试会核对同一任务；请先核对后台任务再新建另一批次。", refreshTasks: "刷新后台任务", task: "查看后台任务",
-    title: "高清关键帧精修", intro: "以裁剪后的单镜图片为基础，修复手脚、重复物体和商品结构，尽量保持人物、服装、构图与光线一致。",
+    title: "高清关键帧精修", intro: "以裁剪后的单镜图片为基础，修复手脚、重复物体、商品结构和人物环境融合。人物、商品、近处与中景清楚，远景原有结构仍可辨、仅轻微柔化，保留原有构图与光线。",
     model: "本次精修模型", noModel: "请先在设置中配置可编辑图片的模型。", choose: "选择需要精修的分镜", all: "全选", none: "取消全选", shot: "分镜", missing: "缺少可用原图，请先生成或上传关键帧。",
-    issues: "需要修复的问题", instructions: "补充修复说明", placeholder: "例如：去掉身后多余的椅子；修复可见腿部连接并保留自然遮挡；修正手指，保持原有手势。", resolution: "目标清晰度", dimensions: "以平台支持的实际输出尺寸为准。", cost: "每个所选分镜会新增一次图片生成费用，按当前平台和模型计费。点击下方生成按钮后才会提交；结果需手动采用。", generate: "生成高清候选", generating: "正在精修", selected: "已选", count: "镜", history: "已保存候选", loading: "正在读取候选…", refresh: "刷新已保存候选", original: "原图", candidate: "精修候选", current: "当前关键帧", apply: "采用为关键帧", restore: "恢复原图为关键帧", noCandidates: "生成后可在这里对比原图与高清候选，满意后再采用。", loadFailed: "读取已保存候选失败，请重试。", generateFailed: "图片精修失败，请稍后手动重试。", uncertain: "本次生成结果尚不明确。请先刷新已保存候选并核对结果，避免重复付费。", checked: "我已核对候选，允许重新生成", applyFailed: "采用关键帧失败，请刷新后重试。", applied: "已采用此关键帧", saved: "候选已保存，尚未采用", skipped: "上一镜生成结果不明，剩余分镜尚未提交。", preview: "查看大图", close: "完成", applyRefreshFailed: "关键帧已采用，列表刷新失败，请刷新页面查看。", retryHistory: "读取候选成功后可开始生成。", limited: "实际输出低于所选清晰度目标，请对照原图检查效果。",
+    issues: "需要修复的问题", instructions: "补充修复说明", placeholder: "例如：近处与中景清楚，远景原有结构仍可辨、仅轻微柔化；人物边缘与环境自然衔接，保留商品纹理和原有手势。", resolution: "输出分辨率", dimensions: "默认 720p，最高 1080p；保留画面比例与完整构图，低于所选分辨率时会提示。", cost: "每个所选分镜会新增一次图片生成费用，按当前平台和模型计费。点击下方生成按钮后才会提交；结果需手动采用。", generate: "生成高清候选", generating: "正在精修", selected: "已选", count: "镜", history: "已保存候选", loading: "正在读取候选…", refresh: "刷新已保存候选", original: "原图", candidate: "精修候选", current: "当前关键帧", apply: "采用为关键帧", restore: "恢复原图为关键帧", noCandidates: "生成后可在这里对比原图与高清候选，满意后再采用。", loadFailed: "读取已保存候选失败，请重试。", generateFailed: "图片精修失败，请稍后手动重试。", uncertain: "本次生成结果尚不明确。请先刷新已保存候选并核对结果，避免重复付费。", checked: "我已核对候选，允许重新生成", applyFailed: "采用关键帧失败，请刷新后重试。", applied: "已采用此关键帧", saved: "候选已保存，尚未采用", skipped: "上一镜生成结果不明，剩余分镜尚未提交。", preview: "查看大图", close: "完成", applyRefreshFailed: "关键帧已采用，列表刷新失败，请刷新页面查看。", retryHistory: "读取候选成功后可开始生成。", limited: "实际输出低于所选分辨率，请对照原图检查效果。",
+    focusToggle: "仅修复底部前景", focusDescription: "重绘选区内已有细节，保留选区外原图。请避开商品重要结构和标识；当前需要 PNG 源图。", focusUnsupported: "当前配置不支持区域修复；需要 openai 平台的 GPT Image 2、2.5 Sunburst 或 Flare 编辑模型。", focusSingle: "底部前景修复一次仅处理 1 镜，请只选择一个分镜。", focusLocked: "已固定为人物与环境融合、景深修复；关闭开关可恢复其他修复选项。", focusPreview: "底部前景修复范围", focusHeight: "从底边向上的修复范围", focusResolution: "局部修复输出分辨率", focusDimensions: "默认 720p，最高 1080p。先按原图尺寸合成，再按所选分辨率等比输出，不裁剪画面；低于所选分辨率时会提示。", focusCompleted: "已局部修复", focusOriginalDimensions: "保持原图",
   },
   en: {
+    sourceRule: "Refinement continues from the adopted keyframe. If no candidate has been adopted, or the original has been restored, refinement uses the original image.",
     background: "The complete selection runs in the background after confirmation. Close this window or switch projects; apply candidates manually when ready.",
     submitting: "Registering background task", submitted: "Queued in the background. You can close this window or switch projects.", retry: "Check this submission again", frozen: "This submission's frames and settings are frozen. Retry checks the same task; review background tasks before starting another submission.", refreshTasks: "Refresh background tasks", task: "View background task",
-    title: "Refine HD keyframes", intro: "Repair hands, anatomy, duplicate objects and product structure from each cropped frame, aiming to preserve identity, clothing, composition and lighting.",
+    title: "Refine HD keyframes", intro: "Repair hands, anatomy, duplicate objects, product structure and subject integration from each cropped frame. Keep people, products, the foreground and middle ground clear; keep existing distant scene structure readable with only slight softness. Preserve composition and lighting.",
     model: "Refinement model", noModel: "Configure an image editing model in Settings first.", choose: "Choose frames to refine", all: "Select all", none: "Clear selection", shot: "Shot", missing: "No source image. Generate or upload a keyframe first.",
-    issues: "What should be repaired?", instructions: "Additional repair instructions", placeholder: "For example: remove the extra chair behind the person; repair visible leg connections while keeping natural occlusion; correct fingers without changing the gesture.", resolution: "Target resolution", dimensions: "Actual output dimensions depend on the platform.", cost: "Each selected shot adds one image generation charge at the current platform's rates. Requests start only when you click Generate. Review and apply the results manually.", generate: "Generate HD candidates", generating: "Refining", selected: "Selected", count: "shots", history: "Saved candidates", loading: "Loading candidates…", refresh: "Refresh saved candidates", original: "Original", candidate: "Refined candidate", current: "Current keyframe", apply: "Use as keyframe", restore: "Restore original keyframe", noCandidates: "Compare the original with the HD candidates here, then apply the result you prefer.", loadFailed: "Could not load saved candidates. Please try again.", generateFailed: "Image refinement failed. Please retry manually.", uncertain: "The generation outcome is unclear. Refresh and check saved candidates before generating again to avoid a duplicate charge.", checked: "I checked the candidates; allow generation again", applyFailed: "Could not apply the keyframe. Refresh and try again.", applied: "Keyframe applied", saved: "Candidate saved; not applied", skipped: "The previous shot's outcome is unclear. Remaining shots were not submitted.", preview: "Preview full image", close: "Done", applyRefreshFailed: "The keyframe was applied, but the list could not refresh. Reload the page to view it.", retryHistory: "Load saved candidates successfully before generating.", limited: "The actual output is below the selected resolution target. Compare it with the original before applying.",
+    issues: "What should be repaired?", instructions: "Additional repair instructions", placeholder: "For example: keep the foreground and middle ground clear, with existing distant scene structure readable and only slightly soft; blend subject edges naturally while preserving product texture and the gesture.", resolution: "Output resolution", dimensions: "Default 720p, maximum 1080p. Preserve the image ratio and complete composition; outputs below the selected resolution are marked.", cost: "Each selected shot adds one image generation charge at the current platform's rates. Requests start only when you click Generate. Review and apply the results manually.", generate: "Generate HD candidates", generating: "Refining", selected: "Selected", count: "shots", history: "Saved candidates", loading: "Loading candidates…", refresh: "Refresh saved candidates", original: "Original", candidate: "Refined candidate", current: "Current keyframe", apply: "Use as keyframe", restore: "Restore original keyframe", noCandidates: "Compare the original with the HD candidates here, then apply the result you prefer.", loadFailed: "Could not load saved candidates. Please try again.", generateFailed: "Image refinement failed. Please retry manually.", uncertain: "The generation outcome is unclear. Refresh and check saved candidates before generating again to avoid a duplicate charge.", checked: "I checked the candidates; allow generation again", applyFailed: "Could not apply the keyframe. Refresh and try again.", applied: "Keyframe applied", saved: "Candidate saved; not applied", skipped: "The previous shot's outcome is unclear. Remaining shots were not submitted.", preview: "Preview full image", close: "Done", applyRefreshFailed: "The keyframe was applied, but the list could not refresh. Reload the page to view it.", retryHistory: "Load saved candidates successfully before generating.", limited: "The actual output is below the selected resolution target. Compare it with the original before applying.",
+    focusToggle: "Repair bottom foreground only", focusDescription: "Redraw existing detail inside the selected area and preserve the original image outside it. Keep important product structures and markings outside the selection. A PNG source is currently required.", focusUnsupported: "This configuration does not support region repair. Use the openai provider with GPT Image 2, 2.5 Sunburst or Flare editing models.", focusSingle: "Bottom foreground repair handles one shot at a time. Select exactly one shot.", focusLocked: "Subject integration and depth of field is fixed for this mode. Turn it off to restore the other repair options.", focusPreview: "Bottom foreground repair area", focusHeight: "Repair height from the bottom edge", focusResolution: "Region repair output resolution", focusDimensions: "Default 720p, maximum 1080p. Composite at the source dimensions, then output proportionally at the selected resolution without cropping. Outputs below the selected resolution are marked.", focusCompleted: "Region repair complete", focusOriginalDimensions: "Original dimensions preserved",
   },
 } as const;
 
@@ -77,6 +84,20 @@ function errorText(body: unknown, fallback: string) {
   return typeof value.error === "string" ? value.error : typeof value.message === "string" ? value.message : fallback;
 }
 
+/** The overlay follows the complete image's natural ratio, including non-portrait sources. */
+function ForegroundRegionPreview({ shot, percent, label }: { shot: Shot; percent: number; label: string }) {
+  const [aspectRatio, setAspectRatio] = useState("9 / 16");
+  return <figure aria-label={label} className="mx-auto w-full max-w-xs">
+    <div className="relative overflow-hidden rounded-lg bg-black/10" style={{ aspectRatio }}>
+      <Image unoptimized fill sizes="320px" src={shot.imageUrl} alt={`${label} · ${shot.shotId}`} style={{ objectFit: "contain" }} onLoad={(event) => {
+        const { naturalWidth, naturalHeight } = event.currentTarget;
+        if (naturalWidth > 0 && naturalHeight > 0) setAspectRatio(`${naturalWidth} / ${naturalHeight}`);
+      }} />
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 border-t-2 border-sky-400 bg-sky-400/25" style={{ height: `${percent}%` }} />
+    </div>
+  </figure>;
+}
+
 /** A new source set creates a fresh session so an old response cannot replace a newer keyframe. */
 export function KeyframeRefinementDialog(props: KeyframeRefinementDialogProps) {
   if (!props.open) return null;
@@ -89,9 +110,11 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
   const locale = useLocale() === "en" ? "en" : "zh";
   const copy = COPY[locale];
   const [selected, setSelected] = useState<number[]>(() => shots.filter((shot) => shot.assetId && shot.imageUrl && (initialShotId === undefined || shot.shotId === initialShotId)).map((shot) => shot.shotId));
-  const [issues, setIssues] = useState<KeyframeRepairIssue[]>(["hands", "anatomy", "duplicates", "product", "details"]);
+  const [issues, setIssues] = useState<KeyframeRepairIssue[]>(() => KEYFRAME_REPAIR_ISSUES.map((issue) => issue.id));
+  const [focusEnabled, setFocusEnabled] = useState(false);
+  const [focusPercent, setFocusPercent] = useState(20);
   const [instructions, setInstructions] = useState("");
-  const [resolution, setResolution] = useState<KeyframeRefinementResolution>("2k");
+  const [resolution, setResolution] = useState<KeyframeRefinementResolution>(DEFAULT_KEYFRAME_REFINEMENT_RESOLUTION);
   const [histories, setHistories] = useState<Record<number, History>>(() => Object.fromEntries(shots.map((shot) => [shot.shotId, { candidates: shot.assetId && shot.imageUrl ? [initialCandidate(shot)] : [], loading: true, loaded: false }])));
   const [results, setResults] = useState<Record<number, ShotResult>>({});
   const [previewIds, setPreviewIds] = useState<Record<number, string>>({});
@@ -122,7 +145,9 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
       if (!Array.isArray(body.candidates)) throw new Error(copy.loadFailed);
       if (!alive.current || historyVersions.current.get(shot.shotId) !== version) return;
       const candidates = (body.candidates as KeyframeRefinementCandidate[]).filter((item) => item.shotId === shot.shotId && item.id && item.filePath);
-      if (!candidates.some((item) => item.id === shot.assetId) && shot.assetId && shot.imageUrl) candidates.unshift(initialCandidate(shot));
+      if (!candidates.some((item) => item.id === shot.assetId) && shot.assetId && shot.imageUrl) {
+        candidates.unshift({ ...initialCandidate(shot), selected: !candidates.some((item) => item.selected) });
+      }
       setHistories((state) => ({ ...state, [shot.shotId]: { candidates, loading: false, loaded: true } }));
     } catch (error) {
       if (!alive.current || historyVersions.current.get(shot.shotId) !== version) return;
@@ -131,6 +156,12 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
   }, [endpoint, scriptId, copy.loadFailed]);
 
   useEffect(() => { for (const shot of shots) void loadHistory(shot); }, [shots, loadHistory]);
+
+  // Browsing candidates does not change the source; only the adopted keyframe does.
+  const refinementShots = shots.map((shot) => {
+    const current = histories[shot.shotId]?.candidates.find((item) => item.selected);
+    return current ? { ...shot, assetId: current.id, imageUrl: current.filePath } : shot;
+  });
 
   const refinementRuns = useMemo(() => [...accepted.filter((run) => !runs.some((current) => current.id === run.id)), ...runs]
     .filter((run) => run.projectId === projectId && run.items.some((item) => item.kind === "keyframe_refine" && item.scriptId === scriptId)), [accepted, runs, projectId, scriptId]);
@@ -149,11 +180,16 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
       const signature = JSON.stringify(item.result ?? {});
       if (!shot || completedVersions.current.get(item.id) === signature) continue;
       completedVersions.current.set(item.id, signature);
-      const output = item.result?.resolution as { width?: number; height?: number; limited?: boolean } | undefined;
-      setResults((state) => ({ ...state, [shot.shotId]: { message: `${copy.saved}${output?.width && output?.height ? ` · ${output.width} × ${output.height}` : ""}${output?.limited ? ` · ${copy.limited}` : ""}` } }));
+      const output = item.result?.resolution as Partial<KeyframeRefinementResolutionInfo> | undefined;
+      const cropComposite = output?.processingMode === "crop_composite_v1";
+      const preservesSourceDimensions = cropComposite && output?.preservesSourceDimensions === true;
+      const message = cropComposite
+        ? `${copy.focusCompleted}${output?.width && output?.height ? ` · ${preservesSourceDimensions ? `${copy.focusOriginalDimensions} ` : ""}${output.width} × ${output.height}` : ""} · ${copy.saved}${!preservesSourceDimensions && output?.limited ? ` · ${copy.limited}` : ""}`
+        : `${copy.saved}${output?.width && output?.height ? ` · ${output.width} × ${output.height}` : ""}${output?.limited ? ` · ${copy.limited}` : ""}`;
+      setResults((state) => ({ ...state, [shot.shotId]: { message } }));
       void loadHistory(shot);
     }
-  }, [refinementRuns, scriptId, shots, loadHistory, copy.saved, copy.limited]);
+  }, [refinementRuns, scriptId, shots, loadHistory, copy.saved, copy.limited, copy.focusCompleted, copy.focusOriginalDimensions]);
 
   function setWorking(value: boolean) {
     lock.current = value;
@@ -161,14 +197,17 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
   }
 
   const editModel = modelTarget ? resolveCharacterReferenceModel(modelTarget.provider, modelTarget.model, 1) : null;
+  const focusSupported = !!modelTarget && !!editModel?.ok && supportsKeyframeFocusMask(modelTarget.provider, editModel.modelId);
+  const focusMode = focusEnabled && focusSupported;
+  const activeIssues: KeyframeRepairIssue[] = focusMode ? ["integration"] : issues;
 
   async function generate() {
     if (lock.current || !canGenerate) return;
-    const chosen = shots.filter((shot) => selected.includes(shot.shotId) && !blockedShots.has(shot.shotId));
+    const chosen = refinementShots.filter((shot) => selected.includes(shot.shotId) && !blockedShots.has(shot.shotId));
     const snapshot: GenerationRunInput = submission ?? {
       projectId, clientRequestId: crypto.randomUUID(), kind: chosen.length === 1 ? "keyframe_refine" : "keyframe_refine_batch",
       label: locale === "zh" ? `关键帧精修 · ${chosen.length} 镜` : `Keyframe refinement · ${chosen.length} shots`,
-      items: chosen.map((shot) => ({ kind: "keyframe_refine", scriptId, shotId: shot.shotId, request: { scriptId, shotId: shot.shotId, sourceAssetId: shot.assetId, sourceImageUrl: shot.imageUrl, ...modelTarget, model: editModel?.ok ? editModel.modelId : "", issues: [...issues], instructions, resolution } })),
+      items: chosen.map((shot) => ({ kind: "keyframe_refine", scriptId, shotId: shot.shotId, request: { scriptId, shotId: shot.shotId, sourceAssetId: shot.assetId, sourceImageUrl: shot.imageUrl, ...modelTarget, model: editModel?.ok ? editModel.modelId : "", issues: [...activeIssues], instructions, resolution, ...(focusMode ? { focusRegion: { x: 0, y: 1 - focusPercent / 100, width: 1, height: focusPercent / 100 } } : {}) } })),
     };
     setSubmission(snapshot); setSubmissionError(undefined); setSubmittedNotice(false);
     setWorking(true); setApplyError(undefined);
@@ -195,7 +234,9 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
       if (!response.ok) throw new Error(errorText(body, copy.applyFailed));
       if (!alive.current) return;
       applied = true;
-      setHistories((state) => ({ ...state, [candidate.shotId]: { ...state[candidate.shotId], candidates: state[candidate.shotId].candidates.map((item) => ({ ...item, selected: item.id === candidate.id })) } }));
+      // Ignore history reads started before this successful adoption.
+      historyVersions.current.set(candidate.shotId, (historyVersions.current.get(candidate.shotId) ?? 0) + 1);
+      setHistories((state) => ({ ...state, [candidate.shotId]: { ...state[candidate.shotId], loading: false, candidates: state[candidate.shotId].candidates.map((item) => ({ ...item, selected: item.id === candidate.id })) } }));
       setResults((state) => ({ ...state, [candidate.shotId]: { message: copy.applied } }));
       await onApplied();
     } catch (error) {
@@ -203,24 +244,35 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
     } finally { setWorking(false); }
   }
 
-  const readyShots = shots.filter((shot) => shot.assetId && shot.imageUrl);
-  const selectedReady = shots.filter((shot) => selected.includes(shot.shotId) && !blockedShots.has(shot.shotId));
+  const readyShots = refinementShots.filter((shot) => shot.assetId && shot.imageUrl);
+  const selectedReady = refinementShots.filter((shot) => selected.includes(shot.shotId) && !blockedShots.has(shot.shotId));
   const failedSelectedHistories = selectedReady.filter((shot) => histories[shot.shotId]?.error && !histories[shot.shotId]?.loading);
   const firstHistoryFailure = failedSelectedHistories[0];
-  const canGenerate = !!submission || (!tasksLoading && !tasksError && !!editModel?.ok && !!scriptId && (issues.length > 0 || !!instructions.trim()) && selectedReady.length > 0 && selectedReady.every((shot) => shot.assetId && shot.imageUrl && histories[shot.shotId]?.loaded && !histories[shot.shotId]?.loading));
+  const canGenerate = !!submission || (!tasksLoading && !tasksError && !!editModel?.ok && !!scriptId && (activeIssues.length > 0 || !!instructions.trim()) && selectedReady.length > 0 && (!focusMode || selectedReady.length === 1) && selectedReady.every((shot) => shot.assetId && shot.imageUrl && histories[shot.shotId]?.loaded && !histories[shot.shotId]?.loading));
 
   return <Dialog open onOpenChange={(value) => { if (!lock.current) onOpenChange(value); }}>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl" showCloseButton={!busy}>
       <DialogHeader><DialogTitle>{copy.title}</DialogTitle></DialogHeader>
       <p className="text-sm text-muted-foreground">{copy.intro}</p>
+      <p className="text-xs text-muted-foreground">{copy.sourceRule}</p>
       <p className="text-xs text-muted-foreground">{copy.background}</p>
       <div className="rounded-lg border bg-muted/20 p-3 text-sm"><p className="text-xs text-muted-foreground">{copy.model}</p>{modelTarget ? <><p aria-label={copy.model} className="mt-1 break-all font-medium">{modelTarget.provider} / {editModel?.ok ? editModel.modelId : modelTarget.model}</p>{!editModel?.ok && <p role="alert" className="mt-1 text-xs text-amber-600">{locale === "zh" ? "当前模型不支持图片精修，请在设置中选择支持参考图的 GPT Image 或 Seedream 模型。" : "This model does not support image refinement. Select a reference-capable GPT Image or Seedream model in Settings."}</p>}</> : <p role="alert" className="text-amber-600">{copy.noModel}</p>}</div>
       <fieldset disabled={busy || !!submission} className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2"><legend className="font-medium">{copy.choose} · {copy.selected} {selectedReady.length} / {readyShots.length} {copy.count}</legend><div className="flex gap-1"><Button size="sm" variant="ghost" onClick={() => setSelected(readyShots.filter((shot) => !blockedShots.has(shot.shotId)).map((shot) => shot.shotId))}>{copy.all}</Button><Button size="sm" variant="ghost" onClick={() => setSelected([])}>{copy.none}</Button></div></div>
-        <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">{shots.map((shot) => <label key={shot.shotId} className={`flex items-center gap-2 rounded-lg border p-2 ${selected.includes(shot.shotId) && !blockedShots.has(shot.shotId) ? "border-primary/60 bg-primary/5" : ""}`}><input type="checkbox" aria-label={`${copy.shot} ${shot.shotId}`} checked={selected.includes(shot.shotId) && !blockedShots.has(shot.shotId)} disabled={!shot.assetId || !shot.imageUrl || blockedShots.has(shot.shotId)} onChange={(event) => setSelected((state) => event.target.checked ? [...state, shot.shotId] : state.filter((item) => item !== shot.shotId))} />{shot.imageUrl && <Image unoptimized width={48} height={64} src={shot.imageUrl} alt="" className="h-16 w-12 rounded object-cover" />}<span className="min-w-0 text-xs"><span className="block font-medium">{copy.shot} {String(shot.shotId).padStart(2, "0")}</span><span className="line-clamp-2 text-muted-foreground">{shot.assetId && shot.imageUrl ? shot.description : copy.missing}</span></span></label>)}</div>
-        <div><p className="mb-2 text-sm font-medium">{copy.issues}</p><div className="flex flex-wrap gap-2">{KEYFRAME_REPAIR_ISSUES.map((issue) => <label key={issue.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-xs"><input type="checkbox" checked={issues.includes(issue.id)} onChange={(event) => setIssues((state) => event.target.checked ? [...state, issue.id] : state.filter((item) => item !== issue.id))} />{issue.label[locale]}</label>)}</div></div>
+        <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">{refinementShots.map((shot) => <label key={shot.shotId} className={`flex items-center gap-2 rounded-lg border p-2 ${selected.includes(shot.shotId) && !blockedShots.has(shot.shotId) ? "border-primary/60 bg-primary/5" : ""}`}><input type="checkbox" aria-label={`${copy.shot} ${shot.shotId}`} checked={selected.includes(shot.shotId) && !blockedShots.has(shot.shotId)} disabled={!shot.assetId || !shot.imageUrl || blockedShots.has(shot.shotId)} onChange={(event) => setSelected((state) => event.target.checked ? [...state, shot.shotId] : state.filter((item) => item !== shot.shotId))} />{shot.imageUrl && <Image unoptimized width={48} height={64} src={shot.imageUrl} alt="" className="h-16 w-12 rounded object-cover" />}<span className="min-w-0 text-xs"><span className="block font-medium">{copy.shot} {String(shot.shotId).padStart(2, "0")}</span><span className="line-clamp-2 text-muted-foreground">{shot.assetId && shot.imageUrl ? shot.description : copy.missing}</span></span></label>)}</div>
+        <div className="space-y-3 rounded-lg border p-3">
+          <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" role="switch" aria-label={copy.focusToggle} checked={focusMode} disabled={!focusSupported} onChange={(event) => setFocusEnabled(event.target.checked)} />{copy.focusToggle}</label>
+          {!focusSupported && <p className="text-xs text-muted-foreground">{copy.focusUnsupported}</p>}
+          {focusMode && <>
+            <p className="text-xs text-muted-foreground">{copy.focusDescription}</p>
+            <p className="text-xs text-muted-foreground">{copy.focusLocked}</p>
+            {selectedReady.length === 1 ? <ForegroundRegionPreview key={selectedReady[0].imageUrl} shot={selectedReady[0]} percent={focusPercent} label={copy.focusPreview} /> : <p role="alert" className="text-xs text-amber-600">{copy.focusSingle}</p>}
+            <label className="block space-y-2 text-xs"><span>{copy.focusHeight} · {focusPercent}%</span><input type="range" aria-label={copy.focusHeight} min={5} max={50} step={1} value={focusPercent} className="block w-full" onChange={(event) => setFocusPercent(Number(event.target.value))} /></label>
+          </>}
+        </div>
+        <div><p className="mb-2 text-sm font-medium">{copy.issues}</p><div className="flex flex-wrap gap-2">{KEYFRAME_REPAIR_ISSUES.map((issue) => <label key={issue.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-xs"><input type="checkbox" checked={activeIssues.includes(issue.id)} disabled={focusMode} onChange={(event) => setIssues((state) => event.target.checked ? [...state, issue.id] : state.filter((item) => item !== issue.id))} />{issue.label[locale]}</label>)}</div></div>
         <label className="block space-y-1 text-sm"><span>{copy.instructions}</span><textarea aria-label={copy.instructions} className="min-h-20 w-full rounded-lg border bg-background p-2 text-sm" maxLength={2000} value={instructions} placeholder={copy.placeholder} onChange={(event) => setInstructions(event.target.value)} /></label>
-        <div className="flex flex-wrap items-center gap-3 text-sm"><label>{copy.resolution}<select aria-label={copy.resolution} className="ml-2 rounded-md border bg-background p-2" value={resolution} onChange={(event) => setResolution(event.target.value as KeyframeRefinementResolution)}><option value="2k">2K</option><option value="4k">4K</option></select></label><span className="text-xs text-muted-foreground">{copy.dimensions}</span></div>
+        <div className="flex flex-wrap items-center gap-3 text-sm"><label>{focusMode ? copy.focusResolution : copy.resolution}<select aria-label={focusMode ? copy.focusResolution : copy.resolution} className="ml-2 rounded-md border bg-background p-2" value={resolution} onChange={(event) => setResolution(event.target.value as KeyframeRefinementResolution)}><option value="720p">720p</option><option value="1080p">1080p</option></select></label><span className="text-xs text-muted-foreground">{focusMode ? copy.focusDimensions : copy.dimensions}</span></div>
       </fieldset>
       {(tasksError || tasksLoading) && <div className="space-y-2"><p role={tasksError ? "alert" : "status"} className="text-xs text-amber-600">{tasksError || `${copy.refreshTasks}…`}</p>{tasksError && <Button size="sm" variant="outline" disabled={busy} onClick={() => void refreshTasks()}>{copy.refreshTasks}</Button>}</div>}
       {submissionError && <div className="space-y-1"><p role="alert" className="text-xs text-destructive">{submissionError}</p><p className="text-xs text-amber-600">{copy.frozen}</p></div>}

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -23,10 +23,11 @@ vi.mock("@/lib/generation-executor", () => ({ executeGenerationItem: (...args: u
 import { getDb } from "@/lib/db";
 import { assets, characters, projects, scripts } from "@/lib/db/schema";
 import { assetScopeForShot } from "@/lib/asset-context";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { generationItems, generationRuns } from "@/lib/generation-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation-secrets";
-import { enqueueGenerationRun, generationRunAction, getGenerationRun, listGenerationRuns, runGenerationTick, stopGenerationRunner, type EnqueueGenerationRunInput } from "@/lib/generation-runs";
+import { deleteGenerationRuns, enqueueGenerationRun, generationRunAction, getGenerationRun, listGenerationRuns, runGenerationTick, stopGenerationRunner, type EnqueueGenerationRunInput } from "@/lib/generation-runs";
 
 const klingModel: KlingVideoModelDescriptor = { selectionKey: "fixture-kling-model", provider: "kling-cli", profileId: "profile-1", region: "global", tool: "text_to_video", remoteModelId: "model-1", displayName: "Model 1", catalogRevision: "catalog-1", available: true, parameters: [], inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } };
 function klingProfile(): KlingProfile {
@@ -36,6 +37,17 @@ function klingProfile(): KlingProfile {
 function input(projectId = "A", count = 1): EnqueueGenerationRunInput {
   return { projectId, clientRequestId: `request-${projectId}`, kind: "video_batch", items: Array.from({ length: count }, (_, i) => ({ kind: "video", scriptId: `script-${projectId}`, shotId: i + 1,
     request: { provider: "mock", apiKey: "frozen-secret", model: "original", prompt: `shot ${i + 1}`, options: { duration: 5 } }, asset: { type: "ai_generated", shotId: i + 1 } })) };
+}
+const scriptValidationMessage = "Shot 2 has on_camera speech in detail framing; use off_camera narration or choose a framing that includes the speaking face.";
+function stalledScriptValidation() {
+  const db = getDb();
+  db.update(projects).set({ creativeProfile: createTideweOutdoorProfile() }).where(eq(projects.id, "A")).run();
+  const request: EnqueueGenerationRunInput = { projectId: "A", clientRequestId: "stalled-script", kind: "script", items: [{ kind: "script", request: {} }] };
+  const run = enqueueGenerationRun(request);
+  const item = db.select().from(generationItems).where(eq(generationItems.runId, run.id)).get()!;
+  db.update(generationItems).set({ status: "needs_attention", stage: "needs_attention", error: scriptValidationMessage,
+    errorCode: "GENERATION_NEEDS_ATTENTION", checkpoint: encryptGenerationValue({ submissionState: "submitting" }) }).where(eq(generationItems.id, item.id)).run();
+  return { run, item, request };
 }
 function refinementInput(projectId = "A", count = 1): EnqueueGenerationRunInput {
   const db = getDb();
@@ -48,7 +60,7 @@ function refinementInput(projectId = "A", count = 1): EnqueueGenerationRunInput 
     writeFileSync(path.join(directory, `${sourceAssetId}.png`), `source bytes ${index}`);
     db.insert(assets).values({ id: sourceAssetId, projectId, shotId: shot.shotId, type: "ai_generated", filePath: sourceImageUrl, status: "done", ...assetScopeForShot(script, shot) }).run();
     return { kind: "keyframe_refine", scriptId: script.id, shotId: shot.shotId, request: { scriptId: script.id, shotId: shot.shotId, sourceAssetId, sourceImageUrl,
-      provider: "openai", model: "gpt-image-2", apiKey: "refinement-secret", issues: ["hands"], resolution: "2k" } };
+      provider: "openai", model: "gpt-image-2", apiKey: "refinement-secret", issues: ["hands"], resolution: "720p" } };
   }) };
 }
 async function settled(id: string) { await vi.waitFor(() => expect(["completed", "failed", "needs_attention", "waiting"].includes(getGenerationRun(id).status)).toBe(true)); }
@@ -66,7 +78,150 @@ beforeEach(() => {
 });
 afterEach(() => { stopGenerationRunner(); vi.unstubAllEnvs(); });
 
+describe("finished generation record deletion", () => {
+  function finish(id: string, statuses: string[]) {
+    const db = getDb();
+    const items = db.select().from(generationItems).where(eq(generationItems.runId, id)).all();
+    for (let index = 0; index < items.length; index++) db.update(generationItems).set({ status: statuses[index], leaseOwner: null, leaseExpiresAt: null }).where(eq(generationItems.id, items[index].id)).run();
+    return items;
+  }
+  it.each([["completed"], ["failed"], ["completed", "failed"]])("soft deletes finished %j records and retains request, items, assets and files", (...statuses) => {
+    const request = refinementInput("A", statuses.length);
+    const run = enqueueGenerationRun(request);
+    finish(run.id, statuses);
+    const db = getDb();
+    const oldRun = db.select().from(generationRuns).get()!;
+    const oldItems = db.select().from(generationItems).all();
+    const oldAssets = db.select().from(assets).all();
+    const source = path.join(state.directory, "uploads", "A", "source-A-1.png");
+    const bytes = readFileSync(source);
+    expect(deleteGenerationRuns("A", run.id)).toEqual({ deletedIds: [run.id], deletedCount: 1 });
+    expect(db.select().from(generationRuns).get()).toEqual({ ...oldRun, deletedAt: expect.any(Number) });
+    expect(db.select().from(generationItems).all()).toEqual(oldItems);
+    expect(db.select().from(assets).all()).toEqual(oldAssets);
+    expect(readFileSync(source)).toEqual(bytes);
+    expect(listGenerationRuns()).toEqual([]);
+    expect(listGenerationRuns("A")).toEqual([]);
+    expect(deleteGenerationRuns("A", run.id)).toEqual({ deletedIds: [], deletedCount: 0 });
+    expect(() => getGenerationRun(run.id)).toThrow(expect.objectContaining({ status: 410, code: "GENERATION_RUN_DELETED" }));
+    for (const action of ["retry_import", "cancel"]) expect(() => generationRunAction(run.id, action)).toThrow(expect.objectContaining({ status: 410, code: "GENERATION_RUN_DELETED" }));
+    for (const replay of [request, { ...request, label: "changed" }]) expect(() => enqueueGenerationRun(replay)).toThrow(expect.objectContaining({ status: 410, code: "GENERATION_RUN_DELETED" }));
+    expect(db.select().from(generationRuns).all()).toHaveLength(1);
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it.each(["queued", "running", "waiting", "importing", "needs_attention", "cancelled", "unknown"])("rejects a failed batch containing a %s item", (status) => {
+    const run = enqueueGenerationRun(input("A", 2));
+    finish(run.id, ["failed", status]);
+    expect(() => deleteGenerationRuns("A", run.id)).toThrow(expect.objectContaining({ status: 409, code: "GENERATION_RUN_NOT_DELETABLE" }));
+    expect(getDb().select().from(generationRuns).get()?.deletedAt).toBeNull();
+  });
+  it.each([{ leaseOwner: "worker", leaseExpiresAt: null }, { leaseOwner: null, leaseExpiresAt: 1 }])("rejects terminal statuses while an execution lease remains: %j", (lease) => {
+    const run = enqueueGenerationRun(input());
+    const [item] = finish(run.id, ["completed"]);
+    getDb().update(generationItems).set(lease).where(eq(generationItems.id, item.id)).run();
+    expect(() => deleteGenerationRuns("A", run.id)).toThrow(expect.objectContaining({ code: "GENERATION_RUN_NOT_DELETABLE" }));
+  });
+  it("requires a valid project, keeps cross-project records private and rejects an empty batch", () => {
+    const run = enqueueGenerationRun(input());
+    finish(run.id, ["completed"]);
+    for (const projectId of [undefined, null, "", "  "]) expect(() => deleteGenerationRuns(projectId, run.id)).toThrow(expect.objectContaining({ status: 400, code: "GENERATION_PROJECT_REQUIRED" }));
+    expect(() => deleteGenerationRuns("missing", run.id)).toThrow(expect.objectContaining({ status: 404, code: "GENERATION_PROJECT_NOT_FOUND" }));
+    expect(() => deleteGenerationRuns("B", run.id)).toThrow(expect.objectContaining({ status: 404, code: "GENERATION_RUN_NOT_FOUND" }));
+    getDb().delete(generationItems).where(eq(generationItems.runId, run.id)).run();
+    expect(() => deleteGenerationRuns("A", run.id)).toThrow(expect.objectContaining({ code: "GENERATION_RUN_NOT_DELETABLE" }));
+  });
+  it("atomically bulk deletes only eligible records in the current project", () => {
+    const db = getDb();
+    const a = enqueueGenerationRun(input()); finish(a.id, ["completed"]);
+    const failed = enqueueGenerationRun({ ...input(), clientRequestId: "failed" }); finish(failed.id, ["failed"]);
+    const mixed = enqueueGenerationRun({ ...input("A", 2), clientRequestId: "mixed" }); finish(mixed.id, ["failed", "waiting"]);
+    const b = enqueueGenerationRun(input("B")); finish(b.id, ["completed"]);
+    const result = deleteGenerationRuns("A");
+    expect(result.deletedCount).toBe(2); expect(result.deletedIds.sort()).toEqual([a.id, failed.id].sort());
+    expect(listGenerationRuns().map((run) => run.id).sort()).toEqual([mixed.id, b.id].sort());
+    expect(db.select().from(generationItems).all()).toHaveLength(5);
+    expect(deleteGenerationRuns("A")).toEqual({ deletedIds: [], deletedCount: 0 });
+  });
+  it("rolls back every tombstone if a bulk update fails", () => {
+    const a = enqueueGenerationRun(input()); finish(a.id, ["completed"]);
+    const b = enqueueGenerationRun({ ...input(), clientRequestId: "abort-delete" }); finish(b.id, ["failed"]);
+    state.sqlite!.exec("CREATE TRIGGER prevent_test_delete BEFORE UPDATE OF deleted_at ON generation_runs WHEN OLD.client_request_id = 'abort-delete' AND NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'deletion failed'); END");
+    try { expect(() => deleteGenerationRuns("A")).toThrow("deletion failed"); }
+    finally { state.sqlite!.exec("DROP TRIGGER prevent_test_delete"); }
+    expect(getDb().select().from(generationRuns).all().every((run) => run.deletedAt === null)).toBe(true);
+    expect(listGenerationRuns("A")).toHaveLength(2);
+  });
+  it("never reconciles hidden script failures on get or list", () => {
+    const { run, item } = stalledScriptValidation();
+    finish(run.id, ["failed"]);
+    deleteGenerationRuns("A", run.id);
+    getDb().update(generationItems).set({ status: "needs_attention" }).where(eq(generationItems.id, item.id)).run();
+    const before = getDb().select().from(generationItems).get();
+    expect(() => getGenerationRun(run.id)).toThrow(expect.objectContaining({ code: "GENERATION_RUN_DELETED" }));
+    expect(listGenerationRuns()).toEqual([]);
+    expect(listGenerationRuns("A")).toEqual([]);
+    expect(getDb().select().from(generationItems).get()).toEqual(before);
+  });
+  it("rechecks deletion under the recovery transaction lock", () => {
+    const db = getDb(), run = enqueueGenerationRun(input());
+    const [item] = finish(run.id, ["failed"]);
+    db.update(generationItems).set({ checkpoint: encryptGenerationValue({ taskId: "already-paid" }) }).where(eq(generationItems.id, item.id)).run();
+    const transaction = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction").mockImplementationOnce(((callback, options) => {
+      expect(options).toEqual({ behavior: "immediate" });
+      deleteGenerationRuns("A", run.id); // The competing delete commits before recovery obtains its lock.
+      return transaction(callback, options);
+    }) as typeof db.transaction);
+    try { expect(() => generationRunAction(run.id, "retry_import")).toThrow(expect.objectContaining({ code: "GENERATION_RUN_DELETED" })); }
+    finally { spy.mockRestore(); }
+    expect(db.select().from(generationItems).get()?.status).toBe("failed");
+  });
+  it("rechecks active items under the deletion transaction lock after recovery wins", () => {
+    const db = getDb(), run = enqueueGenerationRun(input());
+    const [item] = finish(run.id, ["failed"]);
+    db.update(generationItems).set({ checkpoint: encryptGenerationValue({ taskId: "already-paid" }) }).where(eq(generationItems.id, item.id)).run();
+    const transaction = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction").mockImplementationOnce(((callback, options) => {
+      expect(options).toEqual({ behavior: "immediate" });
+      generationRunAction(run.id, "retry_import"); // Recovery commits before deletion obtains its lock.
+      return transaction(callback, options);
+    }) as typeof db.transaction);
+    try { expect(() => deleteGenerationRuns("A", run.id)).toThrow(expect.objectContaining({ code: "GENERATION_RUN_NOT_DELETABLE" })); }
+    finally { spy.mockRestore(); }
+    expect(db.select().from(generationRuns).get()?.deletedAt).toBeNull();
+    expect(db.select().from(generationItems).get()?.status).toBe("waiting");
+  });
+  it("never claims a deleted parent even if a legacy item incorrectly becomes active", async () => {
+    const db = getDb(), run = enqueueGenerationRun(input());
+    const [item] = finish(run.id, ["completed"]);
+    deleteGenerationRuns("A", run.id);
+    db.update(generationItems).set({ status: "queued" }).where(eq(generationItems.id, item.id)).run();
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    expect(state.execute).not.toHaveBeenCalled();
+    expect(db.select().from(generationItems).get()?.status).toBe("queued");
+  });
+});
+
 describe("durable cross-project generation", () => {
+  it.each([undefined, "720p", "1080p"])("freezes the selected refinement resolution and defaults omission to 720p (%s)", (resolution) => {
+    const request = refinementInput();
+    if (resolution === undefined) delete request.items[0].request.resolution;
+    else request.items[0].request.resolution = resolution;
+    const before = structuredClone(request);
+    enqueueGenerationRun(request);
+    const payload = decryptGenerationValue<GenerationExecutionItem["payload"]>(getDb().select().from(generationItems).get()!.payload);
+    expect(payload.request.resolution).toBe(resolution ?? "720p");
+    expect(request).toEqual(before);
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it.each(["2k", "4k", "1440p", null])("rejects an invalid refinement resolution atomically before accepting a batch (%s)", (resolution) => {
+    const request = refinementInput("A", 3);
+    request.items[2].request.resolution = resolution;
+    expect(() => enqueueGenerationRun(request)).toThrow("请选择 720p 或 1080p 精修分辨率");
+    expect(listGenerationRuns()).toEqual([]);
+    expect(getDb().select().from(generationItems).all()).toEqual([]);
+    expect(state.execute).not.toHaveBeenCalled();
+  });
   it.each([1, 4])("atomically registers %s refinement shots with durable source snapshots", (count) => {
     const request = refinementInput("A", count);
     const run = enqueueGenerationRun(request);
@@ -86,6 +241,38 @@ describe("durable cross-project generation", () => {
     expect(() => enqueueGenerationRun(request)).toThrow("精修源图不属于");
     expect(listGenerationRuns()).toEqual([]);
     expect(getDb().select().from(generationItems).all()).toEqual([]);
+  });
+  it("freezes an optional region without changing the source reference list", () => {
+    const request = refinementInput();
+    const focusRegion = { x: 0, y: 0.7, width: 1, height: 0.3 };
+    Object.assign(request.items[0].request, { issues: ["integration"], focusRegion });
+    enqueueGenerationRun(request);
+    focusRegion.y = 0.5;
+    const payload = decryptGenerationValue<GenerationExecutionItem["payload"]>(getDb().select().from(generationItems).get()!.payload);
+    expect(payload.request.focusRegion).toEqual({ x: 0, y: 0.7, width: 1, height: 0.3 });
+    expect(payload.snapshot?.referenceInputs).toHaveLength(1);
+    expect(payload.snapshot?.referenceInputs?.[0].url).toBe("/api/files/A/source-A-1.png");
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it.each([
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3, feather: 0.1 }, code: "INVALID_FOCUS_REGION" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, issues: ["integration", "hands"], code: "FOCUS_REGION_REQUIRES_INTEGRATION" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, provider: "fal-ai", code: "FOCUS_MASK_UNSUPPORTED" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, model: "gpt-image-1.5", code: "FOCUS_MASK_UNSUPPORTED" },
+  ])("rejects invalid region enqueue before accepting any task ($code)", ({ code, ...fields }) => {
+    const request = refinementInput();
+    Object.assign(request.items[0].request, { issues: ["integration"], ...fields });
+    expect(() => enqueueGenerationRun(request)).toThrow(expect.objectContaining({ status: 400, code }));
+    expect(getDb().select().from(generationItems).all()).toEqual([]);
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it("rejects a non-PNG region source before enqueue", () => {
+    const request = refinementInput();
+    Object.assign(request.items[0].request, { issues: ["integration"], focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, sourceImageUrl: "/api/files/A/source.jpg" });
+    getDb().update(assets).set({ filePath: "/api/files/A/source.jpg" }).where(eq(assets.id, "source-A-1")).run();
+    expect(() => enqueueGenerationRun(request)).toThrow(expect.objectContaining({ status: 400, code: "FOCUS_MASK_PNG_REQUIRED" }));
+    expect(getDb().select().from(generationItems).all()).toEqual([]);
+    expect(state.execute).not.toHaveBeenCalled();
   });
   it("rejects stale or missing refinement source files before accepting a batch", () => {
     const request = refinementInput("A", 2);
@@ -243,6 +430,53 @@ describe("durable cross-project generation", () => {
     expect(() => generationRunAction(run.id, "retry_import")).toThrow("核对原平台");
     getDb().update(generationItems).set({ checkpoint: encryptGenerationValue({ generatedScripts: [{ title: "already paid script" }] }) }).where(eq(generationItems.id, item.id)).run();
     expect(generationRunAction(run.id, "retry_import").status).toBe("waiting");
+  });
+  it.each(["get", "list"])("locally reconciles the identified TIDEWE planner failure through %s and unlocks a fresh generation", entry => {
+    const { run, item, request } = stalledScriptValidation();
+    const reconciled = entry === "get" ? getGenerationRun(run.id) : listGenerationRuns("A").find(value => value.id === run.id)!;
+    expect(reconciled).toMatchObject({ status: "failed", items: [{ status: "failed", stage: "failed", error: scriptValidationMessage, errorCode: "TIDEWE_VALIDATION_FAILED" }] });
+    const saved = getDb().select().from(generationItems).where(eq(generationItems.id, item.id)).get()!;
+    expect(decryptGenerationValue(saved.checkpoint!)).toMatchObject({ submissionState: "acknowledged", stage: "failed",
+      scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED", message: scriptValidationMessage } });
+    expect(state.execute).not.toHaveBeenCalled();
+    expect(getDb().select().from(scripts).where(eq(scripts.projectId, "A")).all()).toMatchObject([{ id: "script-A", selected: true }]);
+    expect(enqueueGenerationRun({ ...request, clientRequestId: "fresh-script-after-validation" }).status).toBe("queued");
+  });
+  it.each(["unknown error", "generated scripts", "cloud task", "completed result", "result urls", "live lease", "other profile", "other endpoint", "saved script", "public result", "corrupt checkpoint"])("preserves a stalled script with %s instead of treating it as the known local failure", guard => {
+    const { run, item } = stalledScriptValidation();
+    const db = getDb();
+    const row = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!;
+    if (guard === "unknown error") db.update(generationItems).set({ error: "network interrupted while submitting" }).where(eq(generationItems.id, item.id)).run();
+    else if (["generated scripts", "cloud task", "completed result", "result urls"].includes(guard)) {
+      const output = guard === "generated scripts" ? { generatedScripts: [{ title: "paid result" }] }
+        : guard === "cloud task" ? { taskId: "accepted-task" }
+          : guard === "completed result" ? { completedResult: { scripts: [{ id: "saved" }] } }
+            : { resultUrls: ["https://example.test/paid-result"] };
+      db.update(generationItems).set({ checkpoint: encryptGenerationValue({ submissionState: "submitting", ...output }) }).where(eq(generationItems.id, item.id)).run();
+    } else if (guard === "live lease") db.update(generationItems).set({ leaseOwner: "live-worker", leaseExpiresAt: Date.now() + 60000 }).where(eq(generationItems.id, item.id)).run();
+    else if (guard === "other profile" || guard === "other endpoint") {
+      const payload = decryptGenerationValue<GenerationExecutionItem["payload"]>(row.payload);
+      if (guard === "other profile") payload.snapshot!.project!.creativeProfile = null;
+      else payload.request.generationEndpoint = "/api/topic/script";
+      db.update(generationItems).set({ payload: encryptGenerationValue(payload) }).where(eq(generationItems.id, item.id)).run();
+    } else if (guard === "saved script") db.update(scripts).set({ generationMetadata: { requestId: item.id } as never }).where(eq(scripts.id, "script-A")).run();
+    else if (guard === "public result") db.update(generationItems).set({ result: { scripts: [{ id: "known-result" }] } }).where(eq(generationItems.id, item.id)).run();
+    else db.update(generationItems).set({ checkpoint: "invalid-encrypted-checkpoint" }).where(eq(generationItems.id, item.id)).run();
+    const before = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!;
+    expect(getGenerationRun(run.id).items[0]).toMatchObject({ status: "needs_attention", errorCode: "GENERATION_NEEDS_ATTENTION" });
+    expect(db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(before);
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it("finishes a new local script validation failure with failed status and stage", async () => {
+    const run = enqueueGenerationRun({ projectId: "A", clientRequestId: "script-validation-failed", kind: "script", items: [{ kind: "script", request: {} }] });
+    state.execute.mockRejectedValue(new GenerationExecutionError(scriptValidationMessage, "TIDEWE_VALIDATION_FAILED"));
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    await vi.waitFor(() => {
+      const saved = getDb().select().from(generationItems).where(eq(generationItems.runId, run.id)).get()!;
+      expect(saved).toMatchObject({ status: "failed", stage: "failed", errorCode: "TIDEWE_VALIDATION_FAILED", leaseOwner: null });
+    });
+    expect(getGenerationRun(run.id).status).toBe("failed");
+    expect(state.execute).toHaveBeenCalledOnce();
   });
   it("only retries known cloud results; an unknown paid submission requires attention", () => {
     const run = enqueueGenerationRun(input()); const item = getDb().select().from(generationItems).get()!;

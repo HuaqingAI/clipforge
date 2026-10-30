@@ -38,7 +38,40 @@ export interface GenerationRunInput {
 }
 export const GENERATION_RUNS_REFRESH_EVENT = "clipforge:generation-runs-refresh";
 export const generationRunActive = (run: Pick<GenerationRun, "status">) => ["queued", "running", "waiting", "importing"].includes(run.status);
+export const generationRunDeletable = (run: Pick<GenerationRun, "status" | "items">) => ["completed", "failed"].includes(run.status)
+  && run.items.length > 0 && run.items.every((item) => ["completed", "failed"].includes(item.status));
 const EMPTY_RUNS: GenerationRun[] = [];
+// Successful deletions must also hide snapshots fetched before the server deleted them.
+const deletedByProject = new Map<string, Set<string>>();
+const isDeletedRun = (projectId: string, id: string) => deletedByProject.get(projectId)?.has(id) ?? false;
+
+/** A 410 deep-link response is also authoritative evidence of a deleted record. */
+export function rememberDeletedGenerationRuns(projectId: string, ids: string[]) {
+  const deleted = deletedByProject.get(projectId) ?? new Set<string>();
+  for (const id of ids) deleted.add(id);
+  deletedByProject.set(projectId, deleted);
+}
+
+interface DeletedGenerationRuns { deletedIds: string[]; deletedCount: number }
+
+async function deleteRecords(projectId: string, id?: string): Promise<DeletedGenerationRuns> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("删除任务记录超时，请刷新列表核对结果。")); }, 15_000); });
+  try {
+    const request = fetch(`/api/generation-runs${id ? `/${encodeURIComponent(id)}` : ""}?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE", signal: controller.signal }).then(async (response) => {
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(typeof body?.error === "string" ? body.error : body?.error?.message || "删除任务记录失败");
+      if (!body || !Array.isArray(body.deletedIds) || !body.deletedIds.every((value: unknown) => typeof value === "string")
+        || !Number.isSafeInteger(body.deletedCount) || body.deletedCount !== body.deletedIds.length) throw new Error("删除结果无法读取，请刷新列表核对。");
+      return body as DeletedGenerationRuns;
+    });
+    const result = await Promise.race([request, deadline]);
+    // An empty single-delete result also confirms that this specific record is already gone.
+    rememberDeletedGenerationRuns(projectId, id ? [...result.deletedIds, id] : result.deletedIds);
+    return result;
+  } finally { clearTimeout(timeout); changed(); }
+}
 
 function changed() {
   if (typeof window === "undefined") return;
@@ -95,7 +128,7 @@ export function useGenerationRuns(projectId: string) {
         });
         const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("读取后台任务超时，请重新刷新。")); }, 15_000); });
         const loaded = await Promise.race([request, deadline]);
-        if (!stopped && !controller.signal.aborted) { latest = loaded; setSnapshot({ projectId, runs: latest }); setError(null); }
+        if (!stopped && !controller.signal.aborted) { latest = loaded.filter((run) => run.projectId === projectId && !isDeletedRun(projectId, run.id)); setSnapshot({ projectId, runs: latest }); setError(null); }
       } catch (failure) {
         if (!stopped) setError(failure instanceof Error ? failure.message : "读取后台任务失败");
       } finally {
@@ -108,6 +141,8 @@ export function useGenerationRuns(projectId: string) {
       }
     }
     const wake = () => {
+      latest = latest.filter((run) => !isDeletedRun(projectId, run.id));
+      setSnapshot({ projectId, runs: latest });
       if (document.visibilityState === "hidden") { if (timer) clearTimeout(timer); }
       else void read();
     };
@@ -139,5 +174,8 @@ export function useGenerationRuns(projectId: string) {
   }, [refresh]);
   const cancelRun = useCallback((id: string) => action(id, "cancel"), [action]);
   const retryImport = useCallback((id: string) => action(id, "retry_import"), [action]);
-  return { runs, loading: loading || snapshot.projectId !== projectId, error: snapshot.projectId === projectId ? error : null, refresh, submitRun, cancelRun, retryImport };
+  const deleteRun = useCallback((id: string) => deleteRecords(projectId, id), [projectId]);
+  const clearFinished = useCallback(() => deleteRecords(projectId), [projectId]);
+  const isRunDeleted = useCallback((id: string) => isDeletedRun(projectId, id), [projectId]);
+  return { runs, loading: loading || snapshot.projectId !== projectId, error: snapshot.projectId === projectId ? error : null, refresh, submitRun, cancelRun, retryImport, deleteRun, clearFinished, isRunDeleted };
 }

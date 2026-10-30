@@ -236,11 +236,19 @@ export async function PATCH(
       const patchShots = (source: NonNullable<typeof script.shots>) => source.map((shot) => {
         const patch = patchByShot.get(shot.shotId);
         if (!patch) return shot;
+        const description = typeof patch.description === "string" ? patch.description.trim() : shot.description;
+        const camera = typeof patch.camera === "string" ? patch.camera.trim().slice(0, CAMERA_MAX_LEN) : shot.camera;
+        // A hand-edited composition supersedes the old structured production intent.
+        // Keep the frozen narration and identity while letting the edited visual lead.
+        const tidewe = shot.tidewe && (description !== shot.description || camera !== shot.camera)
+          ? { ...shot.tidewe, visualPlan: undefined }
+          : shot.tidewe;
         return {
           ...shot,
           ...(typeof patch.voiceover === "string" && { voiceover: patch.voiceover.trim() }),
-          ...(typeof patch.description === "string" && { description: patch.description.trim() }),
-          ...(typeof patch.camera === "string" && { camera: patch.camera.trim().slice(0, CAMERA_MAX_LEN) }),
+          description,
+          camera,
+          ...(tidewe && { tidewe }),
         };
       });
       const shots = patchShots(script.shots ?? []);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildShotQualityContract,
+  buildQualityEvaluationPrompt,
   parseGenerationQuality,
   qualityDisposition,
   rankQualityCandidates,
@@ -49,6 +50,26 @@ describe("generation quality contracts", () => {
     const contract = buildShotQualityContract({ shot, mediaType: "image" });
     expect(contract.dimensions.some((dimension) => dimension.id === "temporal-coherence")).toBe(false);
     expect(contract.dimensions.reduce((sum, dimension) => sum + dimension.weight, 0)).toBe(100);
+  });
+
+  it("adds five complete, observable photography checks only for frozen TIDEWE reviews", () => {
+    const contract = buildShotQualityContract({ shot, mediaType: "image", tidewePhotography: true, hasCharacterReference: true });
+    const visual = contract.dimensions.find((dimension) => dimension.id === "visual-fidelity")!;
+    expect(visual.criteria).toHaveLength(6);
+    const prompt = buildQualityEvaluationPrompt(contract, "zh");
+    expect(prompt).toContain("including isolated near grass, leaves, frame-edge objects");
+    expect(prompt).toContain("Only distant scenery BEHIND the subject may be slightly soft");
+    expect(prompt).toContain("separate sharp/blurred layers or abrupt blur boundaries");
+    expect(prompt).toContain("warm/orange cast");
+    expect(prompt).toContain("painted/oil-paint texture");
+    expect(prompt).toContain("credible contact, occlusion and weight");
+    expect(prompt).toContain("Do not require a person, eye contact or a new action");
+    expect(prompt).toContain("Clothing must follow the approved shot/source, not the identity reference");
+    expect(prompt).not.toContain("build and outfit must match the character reference");
+    const ordinary = buildShotQualityContract({ shot, mediaType: "image", hasCharacterReference: true });
+    expect(ordinary.dimensions.find((dimension) => dimension.id === "visual-fidelity")?.criteria).toHaveLength(1);
+    expect(buildQualityEvaluationPrompt(ordinary, "en")).not.toContain("foreground bokeh");
+    expect(buildQualityEvaluationPrompt(ordinary, "en")).toContain("build and outfit must match the character reference");
   });
 
   it("recomputes the weighted result and refuses a critical identity failure", () => {

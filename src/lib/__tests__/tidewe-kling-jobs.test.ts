@@ -92,6 +92,31 @@ afterAll(async () => { stopKlingJobRunner(); state.sqlite?.close(); await fs.rm(
 
 describe("TIDEWE Kling policy before paid dispatch", () => {
   const presenter: TidewePresenterSnapshot = { id: "saved-host", name: "Sam", appearance: "短发户外主播", referenceImages: ["/api/files/project-1/presenter.png"] };
+  it("dispatches a person-free native-narration film child without a visible presenter reference or lip sync", async () => {
+    const native = createTideweOutdoorProfile({ presenter });
+    const detail: Shot = { ...shot, description: "清晨林地的环境细节，无人出镜。", tidewe: { ...shot.tidewe!, presenter, personVisible: false, speechDelivery: "off_camera" } };
+    getDb().update(projects).set({ creativeProfile: native }).run();
+    getDb().update(scripts).set({ shots: [detail], creativeProfileSnapshot: createCreativeProfileSnapshot(native, 1) }).run();
+    const context = { filmRunId: "off-camera-film", filmShotId: "off-camera-shot", authorizationEpoch: 1, expectedInputHashes: [] };
+    const now = Date.now();
+    getDb().insert(klingFilmRuns).values({ id: context.filmRunId, projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: state.profile!.principalKey!, status: "running", createdAt: now, updatedAt: now,
+      data: { scriptRevision: "fixture", scriptSnapshot: { shots: [detail] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: "native", voice: "en-US-GuyNeural", subtitles: false }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
+    const compiled = compileTideweVisualPrompt(detail, "video", "on_camera", presenter);
+    const job = await createKlingFilmShotJob(request({ prompt: compiled.prompt }), context);
+    expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), []);
+    expect(job.data.prompt).toContain(JSON.stringify(text));
+    expect(job.data.prompt).toContain("off-camera narration");
+    expect(job.data.prompt).not.toContain("must visibly articulate");
+    expect(job.data.prompt).not.toContain("嘴部清晰可见");
+    expect(job.data.options.generate_audio).toBe(true);
+    expect(job.data.options.negative_prompt).toContain("说话口型");
+    const guard = vi.fn();
+    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged" });
+    expect(job.data.videoPromptAudit?.sourceShot).toEqual(detail);
+  });
   function selectedPresenterContext(multiImage = false) {
     const imageModel = productContext();
     if (multiImage) { imageModel.capabilities.multiImage = true; imageModel.inputSlots.push({ name: "image2", role: "image", required: false }); }

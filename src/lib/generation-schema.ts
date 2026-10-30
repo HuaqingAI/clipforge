@@ -8,6 +8,9 @@ export const generationRuns = sqliteTable("generation_runs", {
   kind: text("kind").notNull(),
   label: text("label"),
   cancelRequested: integer("cancel_requested", { mode: "boolean" }).notNull().default(false),
+  // Keep the request key and checkpoints after hiding a finished run so a lost
+  // acknowledgement can never create the same paid work again.
+  deletedAt: integer("deleted_at"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, (t) => [uniqueIndex("generation_run_request_unique").on(t.projectId, t.clientRequestId)]);

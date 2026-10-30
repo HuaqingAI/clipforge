@@ -155,7 +155,7 @@ export async function POST(req: NextRequest) {
         if (!approvedTideweShot) return apiError(req, "镜头不存在", "Shot not found", 404);
         // The frozen project/script presenter is authoritative, regardless of browser
         // references or subsequent edits/removal in the local character library.
-        tidewePresenterImage = approvedTideweShot.tidewe?.personVisible !== false || (isTideweNativeSpeech(profile) && approvedTideweShot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
+        tidewePresenterImage = approvedTideweShot.tidewe?.personVisible !== false || (isTideweNativeSpeech(profile) && approvedTideweShot.tidewe?.speechDelivery !== "off_camera" && approvedTideweShot.voiceover?.trim()) ? tidewePresenterReference(profile) : undefined;
         const references: string[] = tidewePresenterImage ? [tidewePresenterImage] : [];
         if (approvedTideweShot.tidewe?.productVisible !== false) {
           const savedImages = (project.productImages ?? []).filter((value): value is string => typeof value === "string" && Boolean(value.trim()));

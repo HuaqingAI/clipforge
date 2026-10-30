@@ -54,14 +54,16 @@ beforeEach(() => {
   const text = `${first} ${second}`;
   const copyDocument: TideweCopyDocument = { version: 1, language: "en-US", text, translation: "走过湿草地时先看防水。我也会配上狩猎袜检查合脚程度。",
     angle: "scene_pain", hookType: "scene", claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts),
-    corpusVersion: profile.corpusVersion, compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 9 };
+    corpusVersion: profile.corpusVersion, compilerVersion: profile.promptCompilerVersion, exampleIds: [], wordCount: englishWordCount(text), estimatedDuration: 9,
+    visualBeats: [{ text, visualRole: "presenter", visualIdea: "主播在林边解释选购时需要核对的问题。", factRefs: [] }] };
   source = db.insert(schema.scripts).values({ id: "source", projectId, selected: true, styleType: "tidewe_outdoor", totalDuration: 12,
     creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1), copyDocument,
     shots: [first, second].map((voiceover, i) => ({ shotId: i + 1, type: i ? "demo" : "hook", duration: 6,
       description: i ? "猎人坐在林边穿上袜子，整理靴子。" : "猎人沿林边的湿草地走向猎位。", camera: "固定镜头", visualIntent: "呈现户外装备使用场景。", prompt: "林边人物自然展示装备。",
       visualSource: "ai_generate", transition: "direct_concat", voiceover,
       tidewe: { copySpan: { start: i ? first.length + 1 : 0, end: i ? text.length : first.length }, translation: i ? "我也会配上狩猎袜检查合脚程度。" : "走过湿草地时先看防水。",
-        shotGoal: "呈现真实户外使用", productVisible: true, factRefs: [], sceneId: "woods" } })),
+        shotGoal: "呈现真实户外使用", productVisible: true, factRefs: [], sceneId: "woods",
+        visualPlan: { framing: "medium", visualRole: "presenter", actionStart: "双脚已经踩稳林边地面。", action: "向拍摄同伴自然说明选购问题。", actionEnd: "身体站稳并保持自然交流。" } } })),
   }).returning().get()!;
   result = { patches: [{ shotId: 2, voiceover: "I'd try these on with my hunting socks.", translation: "我会配上狩猎袜试穿这双靴子。" }] };
   calls.complete.mockReset().mockImplementation(async (_client, _params, _config, parse) => parse(JSON.stringify(result)));
@@ -82,6 +84,8 @@ describe("apply judge feedback", () => {
     expect(updated.copyDocument!.translation).toContain("我会配上狩猎袜试穿这双靴子。");
     expect(updated.copyDocument!.factsSnapshot).toEqual(source.copyDocument!.factsSnapshot);
     expect(updated.copyDocument!.wordCount).toBe(englishWordCount(updated.copyDocument!.text));
+    expect(updated.copyDocument!.visualBeats).toBeUndefined();
+    expect(updated.shots![1].tidewe?.visualPlan).toEqual(source.shots![1].tidewe?.visualPlan);
     expect((await response.json()).script.scriptHash).toBe(scriptRevision(updated));
     expect(calls.complete.mock.calls[0][1].messages[0].content).toContain(second);
   });
@@ -95,6 +99,8 @@ describe("apply judge feedback", () => {
     expect(updated.shots![1].prompt).toBe(updated.shots![1].description);
     expect(updated.shots![1].visualIntent).toBe(updated.shots![1].description);
     expect(updated.shots![1].voiceover).toBe(second);
+    expect(updated.shots![1].tidewe?.visualPlan).toBeUndefined();
+    expect(updated.shots![0].tidewe?.visualPlan).toEqual(source.shots![0].tidewe?.visualPlan);
   });
 
   it.each(["missing", "stale"])("rejects a %s source revision before calling the model", async kind => {

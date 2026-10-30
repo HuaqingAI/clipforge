@@ -6,7 +6,8 @@ import ScriptPage from "@/app/project/[id]/script/page";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useCharacterStore, type Character } from "@/lib/stores/project-store";
-import { buildTideweProductFacts, tideweProductInputFromFacts } from "@/components/tidewe-product-fields";
+import { TideweProductFields, buildTideweProductFacts, tideweProductInputFromFacts } from "@/components/tidewe-product-fields";
+import { TIDEWE_SHOP_CATEGORIES } from "@/lib/tidewe/categories";
 import { TideweProjectSettings } from "@/components/tidewe-project-settings";
 import { snapshotTidewePresenter } from "@/lib/tidewe/presenter";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
@@ -19,16 +20,16 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 vi.mock("@/components/project-header", () => ({ ProjectHeader: () => null }));
-const i18nOptions = vi.hoisted(() => ({ showModeCopy: false }));
+const i18nOptions = vi.hoisted(() => ({ showModeCopy: false, showProductCopy: false, locale: "zh" as "zh" | "en" }));
 vi.mock("@/lib/i18n", async () => {
   const { tidewe } = await import("@/lib/i18n/messages/tidewe");
   const { newProject } = await import("@/lib/i18n/messages/newProject");
   const modeKeys = new Set(["modeCloseupLabel", "modeCloseupDesc", "modeSceneLabel", "modeSceneDesc", "cgModeCloseupLabel", "cgModeCloseupDesc", "cgModeSceneLabel", "cgModeSceneDesc", "modeHint"]);
   return {
-    useT: (namespace: string) => (key: string) => i18nOptions.showModeCopy && modeKeys.has(key)
-      ? (namespace === "tidewe" ? tidewe : newProject).zh[key] ?? key
-      : key,
-    useLocale: () => "zh",
+    useT: (namespace: string) => (key: string) => i18nOptions.showProductCopy && namespace === "tidewe"
+      ? tidewe[i18nOptions.locale][key] ?? key
+      : i18nOptions.showModeCopy && modeKeys.has(key) ? (namespace === "tidewe" ? tidewe : newProject).zh[key] ?? key : key,
+    useLocale: () => i18nOptions.locale,
   };
 });
 
@@ -66,6 +67,7 @@ async function changeSelect(selector: string, value: string) {
 }
 beforeEach(() => {
   i18nOptions.showModeCopy = false;
+  i18nOptions.showProductCopy = false; i18nOptions.locale = "zh";
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("fetch", fetchMock);
   useSettingsStore.setState({ ...settingsInitial, uiMode: "pro", llm: { provider: "fixture", baseUrl: "https://example.test", apiKey: "fixture-key", model: "fixture" } });
   useCharacterStore.setState({ ...charactersInitial, characters: [] });
@@ -85,6 +87,7 @@ describe("TIDEWE product facts input", () => {
   it("supports image-only projects and gives unrelated specifications distinct keys", () => {
     expect(buildTideweProductFacts({ category: "other", sku: "", specifications: "", source: "" }).items).toEqual([]);
     const result = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", sku: "HJ006", specifications: "Three heat settings\nBattery sold separately", source: "manual-check" }))!;
+    expect(result.category).toBe("heated_gear");
     expect(result.items.map((item) => item.status)).toEqual(["confirmed", "confirmed"]);
     expect(result.blockedClaims).toBeUndefined();
   });
@@ -108,6 +111,53 @@ describe("TIDEWE product facts input", () => {
     expect(inserted.items[1]).toEqual(existing.items[0]);
     expect(new Set(inserted.items.map((item) => item.id)).size).toBe(2);
     expect(inserted.blockedClaims).toBeUndefined();
+  });
+  it.each([
+    { locale: "zh" as const, labels: ["狩猎帐篷", "涉水服", "加热装备", "服装", "靴子", "配件"], placeholder: "请选择", skuPlaceholder: "填写产品型号或 SKU" },
+    { locale: "en" as const, labels: ["Hunting Blinds", "Waders", "Heated Gear", "Apparel", "Boots", "Accessories"], placeholder: "Please select", skuPlaceholder: "Enter a model number or SKU" },
+  ])("offers six SHOP choices in order and sends canonical values from real select events: $locale", async ({ locale, labels, placeholder, skuPlaceholder }) => {
+    i18nOptions.showProductCopy = true; i18nOptions.locale = locale;
+    const changed = vi.fn();
+    const value = { category: "other" as const, sku: "MODEL-42", specifications: "Confirmed specification", source: "manual-check" };
+    await act(async () => root.render(createElement(TideweProductFields, { value, onChange: changed })));
+    const select = container.querySelector<HTMLSelectElement>("#tidewe-category")!;
+    expect([...select.options].map((option) => [option.value, option.text])).toEqual([["", placeholder], ...TIDEWE_SHOP_CATEGORIES.map((category, index) => [category, labels[index]])]);
+    expect(select.value).toBe("");
+    expect(select.options[0].disabled).toBe(true);
+    expect([...select.options].filter((option) => !option.disabled)).toHaveLength(6);
+    expect(container.querySelector<HTMLInputElement>("#tidewe-sku")?.placeholder).toBe(skuPlaceholder);
+    for (const category of TIDEWE_SHOP_CATEGORIES) {
+      await changeSelect("#tidewe-category", category);
+      expect(changed).toHaveBeenLastCalledWith({ ...value, category });
+      expect(buildTideweProductFacts(changed.mock.calls.at(-1)![0]).category).toBe(category);
+    }
+    expect(changed).toHaveBeenCalledTimes(6);
+  });
+  it.each([
+    { legacy: "hunting_chair" as const, shop: "accessories", next: "hunting_blind" },
+    { legacy: "heated_apparel" as const, shop: "heated_gear", next: "waders" },
+    { legacy: "hunting_apparel" as const, shop: "apparel", next: "boots" },
+    { legacy: "waterproof_boots" as const, shop: "boots", next: "apparel" },
+  ])("shows legacy $legacy as SHOP $shop and saves canonical product data after a user selection", async ({ legacy, shop, next }) => {
+    const stored = { ...facts, category: legacy };
+    const original = structuredClone(stored);
+    const profile = createTideweOutdoorProfile();
+    const saved = vi.fn();
+    expect(tideweProductInputFromFacts(stored).category).toBe(shop);
+    expect(buildTideweProductFacts({ ...tideweProductInputFromFacts(stored), category: legacy }, stored).category).toBe(shop);
+    const changed = vi.fn();
+    await act(async () => root.render(createElement(TideweProductFields, { value: { ...tideweProductInputFromFacts(stored), category: legacy }, onChange: changed })));
+    expect(container.querySelector<HTMLSelectElement>("#tidewe-category")?.value).toBe(shop);
+    await changeInput("#tidewe-sku", "UPDATED-MODEL");
+    expect(changed).toHaveBeenLastCalledWith({ ...tideweProductInputFromFacts(stored), category: shop, sku: "UPDATED-MODEL" });
+    await act(async () => root.render(createElement(TideweProjectSettings, { projectId: "tidewe-project", revision: 4, facts: stored, profile, drafts: { tidewe_outdoor: profile }, disabled: false, onBusyChange: vi.fn(), onSaved: saved })));
+    expect(container.querySelector<HTMLSelectElement>("#project-tidewe-category")?.value).toBe(shop);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await changeSelect("#project-tidewe-category", next);
+    await click("saveFacts");
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ expectedCreativeConfigRevision: 4, productCategory: next, productFacts: { category: next, sku: stored.sku, items: stored.items } });
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(stored).toEqual(original);
   });
 });
 

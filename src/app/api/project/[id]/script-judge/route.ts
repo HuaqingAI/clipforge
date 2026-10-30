@@ -2,21 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { projects, scripts } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
-import { buildJudgePrompt, buildTideweJudgePrompt, parseJudgeResponse, type JudgeShotInput } from "@/lib/script-judge";
+import { buildJudgePrompt, buildTideweJudgePrompt, parseJudgeResponse, withTideweJudgeProductContext, withTideweProductCoverageIssues, type JudgeShotInput } from "@/lib/script-judge";
 import { styleNameMap } from "@/lib/script-engine/prompts";
 import { reasoningParams, completeWithJsonRetry } from "@/lib/script-engine/generator";
 import { createLLMClient, llmErrorPair, jsonModeParams } from "@/lib/llm-error";
 import { apiError, errText } from "@/lib/api-error";
 import { isTideweOutdoorProfile, checkCreativeProfileContext } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
+import { getTideweProductCoverageIssues } from "@/lib/tidewe/planning-quality";
 import { scriptRevision } from "@/lib/asset-context";
 
 /**
  * POST /api/project/[id]/script-judge — the judge panel: tear the lines apart
  * BEFORE any generation money is spent.
  *
- * One LLM call runs four narrow judges (pacing / spoken-voice / freshness /
- * structure — the voice judge rules by the same SPOKEN_VOICE_RULES injected at
+ * One LLM call runs five narrow judges (pacing / spoken-voice / freshness /
+ * structure / visuals — the voice judge rules by the same SPOKEN_VOICE_RULES injected at
  * generation time) over the script's per-shot voiceover lines, and returns
  * per-judge issues plus length-preserving rewrites. Applying rewrites is the
  * client's move via the existing scripts PATCH (shotTexts) channel — this route
@@ -53,22 +54,40 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const allShots: JudgeShotInput[] = (Array.isArray(script.shots) ? script.shots : [])
-      // Keep silent shots for timing without expanding the original review scope.
+      // Generic review retains its voiced-line scope; TIDEWE also reviews silent visuals.
       .map((s) => ({
         shotId: s.shotId,
         voiceover: typeof s.voiceover === "string" ? s.voiceover.trim() : "",
         ...(typeof s.duration === "number" && { duration: s.duration }),
         ...(typeof s.description === "string" && s.description.trim() && { description: s.description.trim() }),
+        ...(tidewe && typeof s.camera === "string" && s.camera.trim() && { camera: s.camera.trim() }),
+        ...(tidewe && s.tidewe && { tidewe: {
+          ...(s.tidewe.visualPlan && { visualPlan: s.tidewe.visualPlan }),
+          ...(s.tidewe.speechDelivery && { speechDelivery: s.tidewe.speechDelivery }),
+          ...(typeof s.tidewe.personVisible === "boolean" && { personVisible: s.tidewe.personVisible }),
+          productVisible: s.tidewe.productVisible,
+          copySpan: s.tidewe.copySpan,
+          factRefs: s.tidewe.factRefs,
+          shotGoal: s.tidewe.shotGoal,
+        } }),
       }));
-    const shots = allShots.filter((shot) => shot.voiceover);
+    const shots = tidewe ? allShots : allShots.filter((shot) => shot.voiceover);
     if (shots.length === 0) {
       return apiError(req, "该脚本没有台词可评审", "This script has no voiceover lines to judge", 400);
     }
 
     const styleLabel = script.styleType ? styleNameMap[script.styleType] : undefined;
     const timing = { plannedTotalDuration: script.creativeProfileSnapshot?.profile.targetDuration ?? project?.creativeProfile?.targetDuration, timelineShots: allShots };
-    const prompt = tidewe && script.copyDocument
-      ? buildTideweJudgePrompt(script.copyDocument, shots, timing)
+    const savedProfile = script.creativeProfileSnapshot?.profile ?? project?.creativeProfile;
+    const tideweProfile = isTideweOutdoorProfile(savedProfile) ? savedProfile : undefined;
+    const productCoverageIssues = tidewe ? getTideweProductCoverageIssues(allShots, {
+      copyDocument: script.copyDocument ?? undefined,
+      videoMode: tideweProfile?.videoMode,
+      requireEvidence: true,
+    }) : [];
+    const reviewCopy = tidewe && script.copyDocument ? withTideweJudgeProductContext(script.copyDocument, project ?? {}) : undefined;
+    const prompt = reviewCopy
+      ? buildTideweJudgePrompt(reviewCopy, shots, { ...timing, speechMode: tideweProfile?.speechMode, videoMode: tideweProfile?.videoMode, productCoverageIssues })
       : buildJudgePrompt(shots, { styleLabel, styleType: script.styleType ?? undefined, ...timing });
 
     const client = createLLMClient({
@@ -92,8 +111,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { baseUrl: llmConfig.baseUrl ?? "", apiKey: llmConfig.apiKey ?? "", model: llmConfig.model },
       (content) => parseJudgeResponse(content, shots),
     );
+    const reviewedReport = tidewe ? withTideweProductCoverageIssues(report, productCoverageIssues) : report;
     // The model cannot open an alternate edit channel around canonical-copy validation.
-    return NextResponse.json({ ...(tidewe ? { ...report, rewrites: [], descriptionRewrites: [] } : report), sourceScriptHash: scriptRevision(script) });
+    return NextResponse.json({ ...(tidewe ? { ...reviewedReport, rewrites: [], descriptionRewrites: [] } : reviewedReport), sourceScriptHash: scriptRevision(script) });
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && String(error.code).startsWith("TIDEWE_")) return NextResponse.json({ error: error instanceof Error ? error.message : "Script validation failed", code: error.code }, { status: "status" in error ? Number(error.status) || 400 : 400 });
     console.error("判官团评审失败:", error);

@@ -159,7 +159,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const frozenProfile = script.creativeProfileSnapshot?.profile;
   const tidewe = script.styleType === "tidewe_outdoor" || isTideweOutdoorProfile(frozenProfile);
   const nativeSpeech = isTideweOutdoorProfile(frozenProfile) ? isTideweNativeSpeech(frozenProfile) : tidewe;
-  const personVisible = shot.tidewe?.personVisible !== false || (nativeSpeech && Boolean(shot.voiceover?.trim()));
+  const personVisible = shot.tidewe?.personVisible !== false || (nativeSpeech && shot.tidewe?.speechDelivery !== "off_camera" && Boolean(shot.voiceover?.trim()));
   const productReference = !tidewe || shot.tidewe?.productVisible !== false
     ? await usableReference(project.productImages?.[0]) : undefined;
   const characterId = tidewe ? undefined : shot.characterId || project.characterId;
@@ -180,6 +180,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     mediaType,
     intent: tidewe ? undefined : project.creativeIntent,
     bible: tidewe ? undefined : project.visualBible,
+    tidewePhotography: tidewe,
     hasSourceKeyframe: Boolean(sourceKeyframe),
     hasProductReference: Boolean(productReference),
     hasCharacterReference: Boolean(characterReference),

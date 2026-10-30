@@ -123,6 +123,18 @@ describe("TIDEWE quality reference identity", () => {
     expect(db.select().from(schema.generationReviews).all()).toHaveLength(1);
   });
 
+  it("uses frozen script photography requirements even after the project changes to an ordinary style", async () => {
+    seedScript();
+    db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+    expect((await evaluate()).status).toBe(200);
+    const contract = state.evaluate.mock.calls[0][0].contract;
+    const criteria = contract.dimensions.find((row: { id: string }) => row.id === "visual-fidelity").criteria;
+    expect(criteria).toHaveLength(6);
+    expect(criteria.join(" ")).toContain("including isolated near grass");
+    expect(criteria.join(" ")).toContain("painted/oil-paint texture");
+    expect(contract.dimensions.find((row: { id: string }) => row.id === "subject-fidelity").criteria.join(" ")).toContain("identity-only character reference");
+  });
+
   it.each([
     { speechMode: "on_camera" as const, voiceover: "", expectedReferences: [] },
     { speechMode: "voiceover" as const, voiceover: shot.voiceover, expectedReferences: [] },
@@ -139,5 +151,14 @@ describe("TIDEWE quality reference identity", () => {
     seedScript({ ...shot, tidewe: undefined }, "voiceover", false);
     expect((await evaluate()).status).toBe(200);
     expect(state.evaluate).toHaveBeenCalledWith(expect.objectContaining({ referenceImageUrls: [productReference, replacementReference] }));
+    const contract = state.evaluate.mock.calls[0][0].contract;
+    expect(contract.dimensions.find((row: { id: string }) => row.id === "visual-fidelity").criteria).toHaveLength(1);
+    expect(contract.dimensions.find((row: { id: string }) => row.id === "subject-fidelity").criteria.join(" ")).toContain("build and outfit must match");
+  });
+  it.each([false, true])("evaluates off-camera native narration with personVisible=%s using only visible identity references", async (personVisible) => {
+    seedScript({ ...shot, description: personVisible ? `${tidewePresenterAnchor(presenter)}仅双手入画整理装备。` : "林间空地，无人入画。", tidewe: { ...shot.tidewe!, personVisible, speechDelivery: "off_camera" } });
+    expect((await evaluate()).status).toBe(200);
+    expect(state.evaluate).toHaveBeenCalledWith(expect.objectContaining({ referenceImageUrls: personVisible ? [oldReference] : [],
+      contract: expect.objectContaining({ referenceRoles: ["generated-output", ...(personVisible ? ["character-reference"] : [])] }) }));
   });
 });

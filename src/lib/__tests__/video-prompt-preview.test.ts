@@ -110,6 +110,41 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
   });
 
   const presenter: TidewePresenterSnapshot = { id: "selected-host", name: "Selected host", appearance: "棕色短发", referenceImages: ["/api/files/selected-host.png"] };
+  it.each([false, true].flatMap((personVisible) => [false, true].map((generateAudio) => ({ personVisible, generateAudio }))))("reviews and dispatches off-camera narration with personVisible=$personVisible and native audio=$generateAudio", async ({ personVisible, generateAudio }) => {
+    const { shot } = useTidewe("on_camera", presenter);
+    const detailShot: schema.Shot = {
+      ...shot, visualSource: "ai_generate", camera: "固定产品细节特写，不出现脸部。",
+      description: personVisible ? `${tidewePresenterAnchor(presenter)}仅双手入画，轻按装备面料。` : "林缘地面上静置装备的细节特写，无人入画。",
+      tidewe: { ...shot.tidewe!, speechDelivery: "off_camera", personVisible },
+    };
+    db.update(schema.scripts).set({ shots: [detailShot] }).run();
+    const request = input({ generateAudio });
+    const { response, value } = await getPreview(request);
+    expect({ status: response.status, error: (value as unknown as { error?: string }).error }).toEqual({ status: 200, error: undefined });
+    expect(value.controlPlan).toMatchObject({ audioMode: generateAudio ? "native" : "post", voiceoverBound: generateAudio });
+    expect(value.controlPlan.referenceInputs.some((reference) => reference.role === "character")).toBe(personVisible);
+    expect(value.prompt).not.toContain("match the English phonemes");
+    expect(value.prompt).not.toContain("嘴部清晰可见");
+    if (generateAudio) {
+      expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
+      expect(value.controlPlan.audioPrompt).toContain("旁白只自然说一遍");
+      expect(value.controlPlan.audioPrompt).not.toContain("画面中的说话人");
+    }
+    const result = await submit(value, request);
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ prompt: value.prompt, audioEnabled: generateAudio }));
+    const dispatchedReferences = state.generate.mock.calls[0][0].referenceImageUrls ?? [];
+    expect(dispatchedReferences.includes(presenter.referenceImages[0])).toBe(personVisible);
+  });
+  it("allows a person-free narrated Kling first frame without requiring a presenter keyframe", async () => {
+    const { shot } = useTidewe("on_camera", presenter);
+    db.update(schema.scripts).set({ shots: [{ ...shot, visualSource: "ai_generate", description: "林缘空地上的装备细节，无人入画。", tidewe: { ...shot.tidewe!, personVisible: false, speechDelivery: "off_camera" } }] }).run();
+    const { response, value } = await getPreview(input({ provider: "kling-cli", model: "future-model", generateAudio: true }));
+    expect(response.status).toBe(200);
+    expect(value.controlPlan).toMatchObject({ audioMode: "native", referenceInputs: [], referenceRoles: ["keyframe"] });
+    expect(value.controlPlan.audioPrompt).toContain("旁白只自然说一遍");
+    expect(value.prompt).not.toContain("match the English phonemes");
+  });
   it("binds the frozen presenter in preview and sends the actual portrait to reference-capable video generation", async () => {
     useTidewe("voiceover", presenter);
     const request = input();

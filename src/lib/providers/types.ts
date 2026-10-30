@@ -84,12 +84,18 @@ export interface ImageOptions {
   height?: number
   /** Opt in to a larger image canvas; consumed locally rather than sent as an API field. */
   imageResolution?: 'standard' | '2k' | '4k'
+  /** Explicit image quality; omitted by default. Provider/model support may differ. */
+  quality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Explicit encoded image format; omitted by default. */
+  outputFormat?: 'png' | 'jpeg' | 'webp'
   /** Number of images to generate */
   count?: number
   /** Reference image URL (image-to-image mode) */
   referenceImageUrl?: string
   /** Multiple reference images (multi-image edit models, e.g. gpt-image-2/edit: character sheet + product photo) */
   referenceImageUrls?: string[]
+  /** Optional PNG edit mask: alpha-zero regions edit the first reference image. */
+  maskImageUrl?: string
   /** Guidance scale; controls how closely the output follows the prompt */
   guidanceScale?: number
   /** Number of inference steps */

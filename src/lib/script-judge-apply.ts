@@ -99,11 +99,15 @@ export function parseJudgeApplyResponse(content: string, script: JudgeEditableSc
     const patch = patches.get(shot.shotId);
     if (!patch) return shot;
     const { translation, ...fields } = patch;
+    const visualChanged = fields.description !== undefined || fields.prompt !== undefined || fields.visualIntent !== undefined;
+    const tidewe = shot.tidewe && (translation || visualChanged)
+      ? { ...shot.tidewe, ...(translation && { translation }), ...(visualChanged && { visualPlan: undefined }) }
+      : shot.tidewe;
     return {
       ...shot,
       ...fields,
       ...(fields.voiceover !== undefined && shot.narration !== undefined && { narration: fields.voiceover }),
-      ...(translation && shot.tidewe && { tidewe: { ...shot.tidewe, translation } }),
+      ...(tidewe && { tidewe }),
     };
   });
   const originalCopy = script.copyDocument;
@@ -139,6 +143,7 @@ export function parseJudgeApplyResponse(content: string, script: JudgeEditableSc
       wordCount,
       estimatedDuration: Math.round(wordCount / 2.3 * 10) / 10,
     };
+    if (text !== originalCopy.text) delete copyDocument.visualBeats;
     if (originalCopy.source === "user_provided") {
       // Unchanged employee prose retains its existing import policy. AI edits do
       // not inherit that exemption for new numbers, testimonials or guarantees.

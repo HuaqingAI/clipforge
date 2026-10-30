@@ -25,13 +25,28 @@ const hasGeneratedScripts = (checkpoint: RecordValue): boolean => Array.isArray(
 const pending = (stage = "cloud_running", retryAfterMs = 5000) => ({ pending: true, stage, retryAfterMs });
 const attention = (message: string) => new GenerationExecutionError(message, "GENERATION_NEEDS_ATTENTION");
 
+function scriptValidationFailure(item: GenerationExecutionItem, checkpoint: RecordValue): GenerationExecutionError | undefined {
+  const failure = record(checkpoint.scriptValidationFailure);
+  if (item.kind === "script" && failure.code === "TIDEWE_VALIDATION_FAILED" && checkpoint.submissionState === "acknowledged"
+    && !hasGeneratedScripts(checkpoint) && !checkpoint.taskId && !checkpoint.remoteTaskId && !checkpoint.childJobId
+    && !checkpoint.completedResult && !checkpoint.result && !checkpoint.resultUrls && !checkpoint.response
+    && !checkpoint.imageUrl && !checkpoint.videoUrl && !checkpoint.imageUrls && !checkpoint.videoUrls && !checkpoint.gridPublicPath) {
+    return new GenerationExecutionError(string(failure.message) ?? "脚本未通过校验，请重新生成。", "TIDEWE_VALIDATION_FAILED");
+  }
+}
+
 /** No provider call is retried after an ambiguous submission. Recovery only observes known work. */
 export async function executeGenerationItem(item: GenerationExecutionItem, save: GenerationCheckpoint): Promise<RecordValue> {
   let checkpoint: RecordValue = { ...item.checkpoint };
   return withGenerationContext({ itemId: item.id, checkpoint, snapshot: item.payload.snapshot,
     deferPolling: item.kind === "video" || item.kind === "image" || item.kind === "keyframe_refine",
     beforeSubmission: () => {
-      if (getDb().select({ cancelRequested: generationRuns.cancelRequested }).from(generationRuns).where(eq(generationRuns.id, item.runId)).get()?.cancelRequested) {
+      const parent = getDb().select({ cancelRequested: generationRuns.cancelRequested, deletedAt: generationRuns.deletedAt }).from(generationRuns).where(eq(generationRuns.id, item.runId)).get();
+      if (parent?.deletedAt != null) {
+        generationCheckpoint({ submissionState: "not_submitted", stage: "deleted" });
+        throw new GenerationExecutionError("任务记录已删除，不能重新提交。", "GENERATION_RUN_DELETED");
+      }
+      if (parent?.cancelRequested) {
         generationCheckpoint({ submissionState: "not_submitted", cancelledBeforeSubmission: true, stage: "cancelled" });
         throw new GenerationExecutionError("任务已在付费提交前取消。", "GENERATION_CANCELLED");
       }
@@ -189,6 +204,11 @@ async function executeDocument(item: GenerationExecutionItem, request: RecordVal
     }
   }
   const value = checkpoint();
+  const validationFailure = scriptValidationFailure(item, value);
+  if (validationFailure) throw validationFailure;
+  if (item.kind === "script" && record(value.scriptValidationFailure).code === "TIDEWE_VALIDATION_FAILED" && !hasGeneratedScripts(value)) {
+    throw attention("脚本校验失败记录仍包含已受理结果，请核对原任务后恢复保存。");
+  }
   if (value.submissionState === "submitting" && !strings(value.imageUrls).length && !string(value.taskId) && !hasGeneratedScripts(value)) throw attention("上次生成中断且受理结果不明，已停止自动重新生成，请核对原任务。");
   // Async grid providers can be observed without paying again, then the route resumes cropping.
   if (item.kind === "storyboard_grid" && !strings(value.imageUrls).length && string(value.taskId)) {
@@ -223,7 +243,13 @@ async function executeDocument(item: GenerationExecutionItem, request: RecordVal
       }
     }
     if (response.status === 429 && checkpoint().submissionState === "not_submitted") return pending("provider_rate_limited", 30_000);
-    if (hasGeneratedScripts(checkpoint()) || strings(checkpoint().imageUrls).length || string(checkpoint().taskId)) throw new GenerationExecutionError(string(result.error) ?? "已生成结果的保存未完成", "GENERATION_IMPORT_FAILED", true);
+    if (hasGeneratedScripts(checkpoint()) || strings(checkpoint().imageUrls).length || string(checkpoint().taskId)
+      || item.kind === "script" && checkpoint().scriptValidationFailure && (checkpoint().completedResult || checkpoint().result || checkpoint().resultUrls || checkpoint().response
+        || checkpoint().remoteTaskId || checkpoint().childJobId || checkpoint().imageUrl || checkpoint().videoUrl || checkpoint().videoUrls || checkpoint().gridPublicPath)) {
+      throw new GenerationExecutionError(string(result.error) ?? "已生成结果的保存未完成", "GENERATION_IMPORT_FAILED", true);
+    }
+    const validationFailure = scriptValidationFailure(item, checkpoint());
+    if (validationFailure) throw validationFailure;
     if (checkpoint().submissionState === "submitting") throw attention(string(result.error) ?? "生成中断且受理情况不明，请核对原任务。");
     throw new GenerationExecutionError(string(result.error) ?? "生成失败", string(result.code) ?? "GENERATION_FAILED");
   }

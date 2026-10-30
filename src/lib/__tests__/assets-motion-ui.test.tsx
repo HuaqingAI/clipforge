@@ -62,6 +62,8 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+  DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
 const kling: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","image_to_video","chosen"]', provider: "kling-cli", profileId: "profile", region: "global", tool: "image_to_video", remoteModelId: "chosen", displayName: "Chosen Kling", catalogRevision: "rev", available: true, parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5, 10], default: 5 }], inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { image: true, tailFrame: false, multiImage: false, audio: false } };
@@ -171,6 +173,114 @@ describe("image background result reconciliation", () => {
   });
 });
 
+describe("batch image keyframes", () => {
+  function configureBatchShots(options: { imageModel?: boolean; allPending?: boolean } = {}) {
+    if (options.imageModel !== false) {
+      api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+      useSettingsStore.setState({ defaultImageModel: "fixture-image" });
+    } else useSettingsStore.setState({ defaultImageModel: "" });
+    const shots = Array.from({ length: options.allPending ? 5 : 9 }, (_, index) => {
+      const shotId = index + 1;
+      const source = options.allPending ? "ai_generate" : shotId === 5 ? "user_upload" : shotId === 6 ? "stock_footage" : shotId === 7 ? "product_image" : shotId === 8 ? undefined : "ai_generate";
+      return { shotId, type: "demo", duration: 5, description: `Product detail ${shotId}`, camera: "Slow dolly in", visualSource: source, transition: "direct_concat" };
+    });
+    let saved = options.allPending ? [] : [
+      { id: "failed-2", shotId: 2, status: "failed", selected: true, filePath: "" },
+      { id: "frame-3", shotId: 3, status: "done", selected: true, filePath: "/api/files/frame-3.png" },
+      { id: "video-4", shotId: 4, status: "done", selected: true, filePath: "/api/files/video-4.mp4" },
+      { id: "generating-9", shotId: 9, status: "generating", selected: true, filePath: "" },
+    ];
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve(Response.json([{ id: "script", selected: true, shots }]))
+      : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json(saved)) : normal(url, init));
+    return {
+      completeImages() {
+        saved = [...saved, ...backgroundItems("image").map((item: { shotId: number }) => ({ id: `new-frame-${item.shotId}`, shotId: item.shotId, status: "done", selected: true, filePath: `/api/files/new-frame-${item.shotId}.png` }))];
+        completeRuns();
+        api.runs = api.runs.map((run) => ({ ...run, items: (run.items as Array<Record<string, unknown>>).map((item) => ({ ...item, result: { assetId: `new-frame-${item.shotId}`, selected: true, filePath: `/api/files/new-frame-${item.shotId}.png` } })) }));
+      },
+    };
+  }
+
+  it.each([ark, kling.selectionKey])("fills only pending or failed AI keyframes and keeps completed results as stills with %s", async (videoModel) => {
+    const fixture = configureBatchShots();
+    await mount(videoModel);
+    await click("batchKeyframesButton");
+
+    expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1, 2, 8]);
+    expect(runRequests().every((run) => run.kind === "image")).toBe(true);
+    for (const item of backgroundItems("image")) {
+      expect(item).toMatchObject({ scriptId: "script", request: { provider: "volcengine", model: "fixture-image", scriptId: "script", shotId: item.shotId }, asset: { scriptId: "script", shotId: item.shotId, expectedSelectedAssetId: null } });
+    }
+    expect(fetchMock.mock.calls.some(([url, init]) => url.endsWith("/assets") && init?.method === "POST")).toBe(false);
+    expect(previewRequests()).toHaveLength(0);
+    expect(submissions()).toHaveLength(0);
+
+    fixture.completeImages();
+    await act(async () => window.dispatchEvent(new Event("clipforge:generation-runs-refresh")));
+    expect(container.querySelector('img[src="/api/files/new-frame-1.png"]')).not.toBeNull();
+    expect(container.querySelector('img[src="/api/files/frame-3.png"]')).not.toBeNull();
+    expect(previewRequests()).toHaveLength(0);
+    expect(submissions()).toHaveLength(0);
+    expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("skips active background work and cloud tasks awaiting recovery", async () => {
+    configureBatchShots({ allPending: true });
+    api.runs = [
+      { id: "active-image", projectId: "project", kind: "image", status: "waiting", total: 1, done: 0, failed: 0, items: [{ id: "active-item", kind: "image", scriptId: "script", shotId: 2, status: "waiting" }] },
+      { id: "import-attention", projectId: "project", kind: "video", status: "needs_attention", total: 1, done: 0, failed: 1, items: [{ id: "import-item", kind: "video", scriptId: "script", shotId: 3, status: "needs_attention" }] },
+    ];
+    pending = [
+      { id: "unresolved", shotId: 4, provider: "volcengine", model: ark, taskId: "paid-video", status: "unknown" },
+      { id: "failed", shotId: 5, provider: "volcengine", model: ark, taskId: "failed-video", status: "failed" },
+    ];
+    await mount(ark);
+    await click("batchKeyframesButton");
+    expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1, 5]);
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("submits each pending shot once when the batch button is clicked twice", async () => {
+    configureBatchShots();
+    const normal = fetchMock.getMockImplementation()!;
+    let finishFirst!: (response: Response) => void;
+    let delayed = true;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/generation-runs" && init?.method === "POST" && delayed) {
+        delayed = false;
+        return new Promise<Response>((resolve) => { finishFirst = resolve; });
+      }
+      return normal(url, init);
+    });
+    await mount(ark);
+    const generate = button("batchKeyframesButton")!;
+    await act(async () => { generate.click(); generate.click(); });
+    expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1]);
+    expect(button("batchKeyframesSubmitting")?.disabled).toBe(true);
+    await act(async () => finishFirst(Response.json({ id: "run-1", projectId: "project", kind: "image", status: "queued", total: 1, done: 0, failed: 0, items: [{ id: "first-item", kind: "image", scriptId: "script", shotId: 1, status: "queued" }] }, { status: 202 })));
+    expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1, 2, 8]);
+  });
+
+  it("keeps the batch entry disabled without a configured image model", async () => {
+    configureBatchShots({ imageModel: false });
+    await mount(ark);
+    expect(button("batchKeyframesButton")?.disabled).toBe(true);
+    await click("batchKeyframesButton");
+    expect(runRequests()).toHaveLength(0);
+  });
+
+  it("keeps the batch entry visible and disabled after all AI shots have assets", async () => {
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image"] });
+    useSettingsStore.setState({ defaultImageModel: "fixture-image" });
+    await mount(ark);
+    expect(button("batchKeyframesButton")?.disabled).toBe(true);
+    expect(button("batchKeyframesButton")?.title).toContain("batchKeyframesNeedShots");
+    expect(runRequests()).toHaveLength(0);
+  });
+});
+
 describe("keyframe refinement entry points", () => {
   function configureFrames() {
     api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
@@ -205,13 +315,12 @@ describe("keyframe refinement entry points", () => {
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   }
 
-  it.each([ark, kling.selectionKey])("keeps individual image and grid actions without a generate-all action for %s", async (videoModel) => {
+  it.each([ark, kling.selectionKey])("shows batch keyframes alongside individual image and grid actions for %s", async (videoModel) => {
     configureFrames();
     useSettingsStore.setState({ uiMode: "pro" });
     await mount(videoModel);
 
-    expect(button("批量生成图片关键帧")).toBeUndefined();
-    expect(button("generateAll")).toBeUndefined();
+    expect(button("batchKeyframesButton")?.disabled).toBe(false);
     expect(button("btnGenerate")?.disabled).toBe(false);
     expect(button("gridButton")?.disabled).toBe(false);
     expect(button("keyframeRefineBatch")?.disabled).toBe(false);

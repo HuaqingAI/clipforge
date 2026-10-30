@@ -27,7 +27,7 @@ import { scriptRevision } from "@/lib/asset-context";
 import { generationContextSnapshot, generationContextCheckpoint, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
-import { assertTideweImportedCopy, assertTideweScript } from "@/lib/tidewe/validation";
+import { assertTideweGeneratedShotCount, assertTideweImportedCopy, assertTideweScript, TideweValidationError } from "@/lib/tidewe/validation";
 import { analyzeTideweProductImages } from "@/lib/tidewe/image-analysis";
 
 /** Allowed enum values for the styleType column in the scripts table */
@@ -420,14 +420,15 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
           : undefined,
       llmConfig,
     });
-    generationCheckpoint({ generatedScripts: scripts, submissionState: "acknowledged", stage: "saving" });
     if (tideweProfile) {
-      if (!scripts.length || scripts.length > 3) throw new Error("TIDEWE returned an invalid candidate count.");
-      for (const script of scripts) {
-        if (!script.copyDocument) throw new Error("TIDEWE generation returned no canonical copy document.");
+      if (!scripts.length || scripts.length > 3) throw new TideweValidationError("TIDEWE returned an invalid candidate count.");
+      for (const [copyIndex, script] of scripts.entries()) {
+        if (!script.copyDocument) throw new TideweValidationError("TIDEWE generation returned no canonical copy document.");
         assertTideweScript(script, tideweProfile.presenter ?? null);
+        assertTideweGeneratedShotCount(script.shots.length, copyIndex);
       }
     }
+    generationCheckpoint({ generatedScripts: scripts, submissionState: "acknowledged", stage: "saving" });
 
     // Persist: write generated scripts to the scripts table so the script/assets pages can read them by projectId
     const generationMetadata = { ...scriptGenerationMetadata(
@@ -573,6 +574,14 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
 
     return NextResponse.json({ scripts: savedScripts, analysis, ...(tideweProfile && { requestId: body.requestId }) });
   } catch (error) {
+    const checkpoint = generationContextCheckpoint();
+    if (tideweProfile && error instanceof TideweValidationError && checkpoint?.submissionState === "submitting"
+      && !(Array.isArray(checkpoint.generatedScripts) && checkpoint.generatedScripts.length)) {
+      // A completed local validation failure has no script to import. Keep it distinct
+      // from a network failure whose paid submission outcome remains unknown.
+      generationCheckpoint({ submissionState: "acknowledged", stage: "failed",
+        scriptValidationFailure: { code: error.code, message: error.message } });
+    }
     if (tideweProfile && error && typeof error === "object" && "code" in error && String(error.code).startsWith("TIDEWE_")) {
       return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE script validation failed.", code: error.code, requestId: body.requestId }, { status: "status" in error ? Number(error.status) || 502 : 502 });
     }

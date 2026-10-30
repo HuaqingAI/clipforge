@@ -98,6 +98,34 @@ function useTidewe(productVisible = true, speechMode: "on_camera" | "voiceover" 
 
 describe("TIDEWE frozen film planning", () => {
   const presenter: TidewePresenterSnapshot = { id: "chosen-host", name: "Sam", appearance: "短发户外主播", referenceImages: ["/api/files/presenter.png"] };
+  it.each([false, true])("freezes native off-camera narration without adding a portrait to a person-free shot, productVisible=%s", async (productVisible) => {
+    useImageModel();
+    const descriptor = state.profile!.catalogSnapshot[0];
+    descriptor.parameters.push({ name: "generate_audio", type: "boolean", required: false, default: false });
+    const { shot: tideweShot } = useTidewe(productVisible, "on_camera", presenter);
+    const detail: Shot = { ...tideweShot, description: "林地中的产品与环境细节。", camera: "低机位产品近景", tidewe: { ...tideweShot.tidewe!, personVisible: false, speechDelivery: "off_camera" } };
+    setShots([detail]);
+    if (productVisible) await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
+    const view = await previewKlingFilm(request());
+    const planned = getKlingFilmShots(view.runId)[0];
+    expect(view.output.audioStrategy).toBe("native");
+    expect(planned.data.options.generate_audio).toBe(true);
+    expect(planned.data.prompt).toContain(JSON.stringify(detail.voiceover));
+    expect(planned.data.prompt).toContain("off-camera narration");
+    expect(planned.data.prompt).not.toContain("嘴部清晰可见");
+    expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(productVisible ? ["/api/files/frame.png"] : []);
+    expect(view.missingKeyframes).toEqual(productVisible ? [] : [detail.shotId]);
+    if (productVisible) {
+      const { createKlingFilmShotJob } = await import("@/lib/kling/jobs");
+      const child = await createKlingFilmShotJob(buildFilmShotJobRequest(getKlingFilm(view.runId), planned), {
+        filmRunId: view.runId, filmShotId: planned.id, authorizationEpoch: 1,
+        expectedInputHashes: planned.data.inputs.map(({ role, hash }) => ({ role, hash })),
+      });
+      expect(child.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/frame.png"]);
+      expect(child.data.options).toEqual(planned.data.options);
+      expect(child.data.prompt).toBe(planned.data.prompt);
+    }
+  });
   it("requires a generated current-shot presenter keyframe instead of falling back to raw product photos", async () => {
     useImageModel();
     const { shot: tideweShot } = useTidewe(true, "voiceover", presenter);

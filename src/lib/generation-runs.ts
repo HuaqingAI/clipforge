@@ -15,12 +15,14 @@ import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-contex
 import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { resolveCharacterReferenceModel } from "@/lib/character-reference-model";
-import { KEYFRAME_REPAIR_ISSUES } from "@/lib/keyframe-refinement";
+import { DEFAULT_KEYFRAME_REFINEMENT_RESOLUTION, isKeyframeRefinementResolution, KEYFRAME_REPAIR_ISSUES, supportsKeyframeFocusMask } from "@/lib/keyframe-refinement";
+import { validKeyframeFocusRegion } from "@/lib/keyframe-focus-mask";
 
 const ACTIVE = ["queued", "running", "waiting", "importing"];
 const RUN_KINDS = ["video_batch", "video", "image", "script", "storyboard_grid", "keyframe_refine", "keyframe_refine_batch"];
 const ITEM_KINDS = ["video", "image", "script", "storyboard_grid", "keyframe_refine"];
 type Item = typeof generationItems.$inferSelect;
+type GenerationStore = Pick<ReturnType<typeof getDb>, "select" | "update">;
 
 export class GenerationRunError extends Error {
   constructor(message: string, public readonly status = 400, public readonly code = "INVALID_GENERATION_RUN") { super(message); }
@@ -72,6 +74,29 @@ function hasRecoverableResult(checkpoint: Record<string, unknown>): boolean {
     || (Array.isArray(checkpoint.generatedScripts) && checkpoint.generatedScripts.length));
 }
 
+/** Repair only the old, locally identified planner error; unknown submissions stay blocked. */
+function reconcileScriptValidationFailures(items: Item[], tx: GenerationStore): Item[] {
+  return items.map((item) => {
+    if (item.kind !== "script" || item.status !== "needs_attention" || item.errorCode !== "GENERATION_NEEDS_ATTENTION"
+      || item.leaseOwner || item.result && Object.keys(item.result).length
+      || !/^Shot \d+ has on_camera speech in detail framing; use off_camera narration or choose a framing that includes the speaking face\.$/.test(item.error ?? "")) return item;
+    let checkpoint: Record<string, unknown>, payload: GenerationPayload;
+    try {
+      checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
+      payload = decryptGenerationValue<GenerationPayload>(item.payload);
+    } catch { return item; }
+    if (checkpoint.submissionState !== "submitting" || hasRecoverableResult(checkpoint)
+      || checkpoint.completedResult || checkpoint.imageUrls || checkpoint.videoUrls || checkpoint.gridPublicPath
+      || !isTideweOutdoorProfile(payload.snapshot?.project?.creativeProfile)
+      || (payload.request.generationEndpoint && payload.request.generationEndpoint !== "/api/llm/script")) return item;
+    if (tx.select().from(scripts).where(eq(scripts.projectId, item.projectId)).all().some(script => script.generationMetadata?.requestId === item.id)) return item;
+    return tx.update(generationItems).set({ status: "failed", stage: "failed", errorCode: "TIDEWE_VALIDATION_FAILED",
+      checkpoint: encryptGenerationValue({ ...checkpoint, submissionState: "acknowledged", stage: "failed",
+        scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED", message: item.error } }), updatedAt: Date.now() })
+      .where(and(eq(generationItems.id, item.id), eq(generationItems.status, item.status), eq(generationItems.updatedAt, item.updatedAt), isNull(generationItems.leaseOwner))).returning().get() ?? item;
+  });
+}
+
 function safelyUnsubmitted(item: Item): boolean {
   if (!item.checkpoint) return true;
   const checkpoint = decryptGenerationValue<Record<string, unknown>>(item.checkpoint);
@@ -79,9 +104,8 @@ function safelyUnsubmitted(item: Item): boolean {
 }
 
 /** The child may finish saving after its parent stopped observing it. Reconcile local records only. */
-function reconcileKlingItems(items: Item[]): Item[] {
-  const db = getDb();
-  return db.transaction((tx) => items.map((item) => {
+function reconcileKlingItems(items: Item[], tx: GenerationStore): Item[] {
+  return items.map((item) => {
     if (item.kind !== "video" || item.leaseOwner || ["completed", "cancelled"].includes(item.status)) return item;
     const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
     if (jobs.length !== 1) return item;
@@ -99,24 +123,68 @@ function reconcileKlingItems(items: Item[]): Item[] {
     return tx.update(generationItems).set({ status: "completed", stage: "ready", result, error: null, errorCode: null,
       checkpoint: encryptGenerationValue({ ...checkpoint, childJobId: job.id, completedResult: result, stage: "ready" }), updatedAt: Date.now() })
       .where(and(eq(generationItems.id, item.id), eq(generationItems.status, item.status), eq(generationItems.updatedAt, item.updatedAt), isNull(generationItems.leaseOwner))).returning().get() ?? item;
-  }));
+  });
+}
+
+function liveRun(tx: GenerationStore, id: string) {
+  const run = tx.select().from(generationRuns).where(eq(generationRuns.id, id)).get();
+  if (!run) throw new GenerationRunError("任务批次不存在。", 404, "GENERATION_RUN_NOT_FOUND");
+  if (run.deletedAt !== null) throw new GenerationRunError("任务记录已删除，不能重新执行或恢复。", 410, "GENERATION_RUN_DELETED");
+  return run;
+}
+
+function runItems(tx: GenerationStore, id: string) {
+  return tx.select().from(generationItems).where(eq(generationItems.runId, id)).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all();
+}
+
+function reconciledItems(tx: GenerationStore, items: Item[]) {
+  return reconcileScriptValidationFailures(reconcileKlingItems(items, tx), tx);
 }
 
 export function getGenerationRun(id: string) {
-  const db = getDb();
-  const run = db.select().from(generationRuns).where(eq(generationRuns.id, id)).get();
-  if (!run) throw new GenerationRunError("任务批次不存在。", 404, "GENERATION_RUN_NOT_FOUND");
-  return runView(run, reconcileKlingItems(db.select().from(generationItems).where(eq(generationItems.runId, id)).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all()));
+  // Reads can reconcile completed local child jobs. Serialize that work with
+  // deletion and recovery, and check the tombstone before touching any item.
+  return getDb().transaction((tx) => {
+    const run = liveRun(tx, id);
+    return runView(run, reconciledItems(tx, runItems(tx, id)));
+  }, { behavior: "immediate" });
 }
 
 export function listGenerationRuns(projectId?: string) {
-  const db = getDb();
-  const runs = db.select().from(generationRuns).where(projectId ? eq(generationRuns.projectId, projectId) : undefined).orderBy(desc(generationRuns.createdAt)).all();
-  if (!runs.length) return [];
-  const items = reconcileKlingItems(db.select().from(generationItems).where(inArray(generationItems.runId, runs.map((r) => r.id))).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all());
-  const grouped = new Map<string, Item[]>();
-  for (const item of items) { const group = grouped.get(item.runId) ?? []; group.push(item); grouped.set(item.runId, group); }
-  return runs.map((run) => runView(run, grouped.get(run.id) ?? []));
+  return getDb().transaction((tx) => {
+    const runs = tx.select().from(generationRuns).where(and(isNull(generationRuns.deletedAt), projectId ? eq(generationRuns.projectId, projectId) : undefined)).orderBy(desc(generationRuns.createdAt)).all();
+    if (!runs.length) return [];
+    const items = reconciledItems(tx, tx.select().from(generationItems).where(inArray(generationItems.runId, runs.map((r) => r.id))).orderBy(asc(generationItems.createdAt), asc(generationItems.id)).all());
+    const grouped = new Map<string, Item[]>();
+    for (const item of items) { const group = grouped.get(item.runId) ?? []; group.push(item); grouped.set(item.runId, group); }
+    return runs.map((run) => runView(run, grouped.get(run.id) ?? []));
+  }, { behavior: "immediate" });
+}
+
+function deletionProject(tx: GenerationStore, projectId: unknown): string {
+  if (typeof projectId !== "string" || !projectId.trim()) throw new GenerationRunError("删除任务记录需要当前项目编号。", 400, "GENERATION_PROJECT_REQUIRED");
+  const id = projectId.trim();
+  if (!tx.select({ id: projects.id }).from(projects).where(eq(projects.id, id)).get()) throw new GenerationRunError("项目不存在。", 404, "GENERATION_PROJECT_NOT_FOUND");
+  return id;
+}
+
+function deletableRun(run: typeof generationRuns.$inferSelect, items: Item[]): boolean {
+  return items.length > 0 && ["completed", "failed"].includes(runView(run, items).status)
+    && items.every((item) => ["completed", "failed"].includes(item.status) && item.leaseOwner === null && item.leaseExpiresAt === null);
+}
+
+/** Hide records only; paid outputs, files, request keys, and checkpoints remain intact. */
+export function deleteGenerationRuns(projectId: unknown, id?: string) {
+  return getDb().transaction((tx) => {
+    const scope = deletionProject(tx, projectId);
+    const runs = tx.select().from(generationRuns).where(and(eq(generationRuns.projectId, scope), id === undefined ? isNull(generationRuns.deletedAt) : eq(generationRuns.id, id))).all();
+    if (id !== undefined && !runs.length) throw new GenerationRunError("任务批次不存在。", 404, "GENERATION_RUN_NOT_FOUND");
+    const eligible = runs.filter((run) => run.deletedAt === null && deletableRun(run, runItems(tx, run.id)));
+    if (id !== undefined && runs[0].deletedAt === null && !eligible.length) throw new GenerationRunError("只能删除所有条目已结束的成功或失败任务记录。", 409, "GENERATION_RUN_NOT_DELETABLE");
+    const deletedIds = eligible.map((run) => run.id);
+    if (deletedIds.length) tx.update(generationRuns).set({ deletedAt: Date.now() }).where(and(eq(generationRuns.projectId, scope), isNull(generationRuns.deletedAt), inArray(generationRuns.id, deletedIds))).run();
+    return { deletedIds, deletedCount: deletedIds.length };
+  }, { behavior: "immediate" });
 }
 
 /** One immediate transaction accepts the entire batch or nothing, before any paid work. */
@@ -129,6 +197,7 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
   const runId = db.transaction((tx) => {
     const old = tx.select().from(generationRuns).where(and(eq(generationRuns.projectId, input.projectId), eq(generationRuns.clientRequestId, input.clientRequestId))).get();
     if (old) {
+      if (old.deletedAt !== null) throw new GenerationRunError("任务记录已删除，请使用新请求编号创建新任务。", 410, "GENERATION_RUN_DELETED");
       if (old.requestHash !== hash) throw new GenerationRunError("相同请求编号的内容已变化，请重新确认。", 409, "GENERATION_REQUEST_CONFLICT");
       return old.id;
     }
@@ -165,9 +234,16 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
         if (!source || source.projectId !== project.id || source.shotId !== shotId || !assetMatchesScript(source, script)) throw new GenerationRunError("精修源图不属于当前项目、脚本或分镜。", 409, "SOURCE_CONTEXT_MISMATCH");
         if (source.status !== "done" || !source.filePath?.startsWith(`/api/files/${project.id}/`) || !/\.(?:png|jpe?g|webp|avif|bmp)$/i.test(source.filePath)) throw new GenerationRunError("精修源图不是可用的本地静态关键帧。", 409, "SOURCE_IMAGE_UNAVAILABLE");
         if (request.sourceImageUrl !== undefined && request.sourceImageUrl !== source.filePath) throw new GenerationRunError("精修源图已变化，请刷新后重新确认。", 409, "SOURCE_CONTEXT_MISMATCH");
-        if (request.resolution !== "2k" && request.resolution !== "4k") throw new GenerationRunError("请选择 2K 或 4K 精修分辨率。");
+        if (request.resolution === undefined) request.resolution = DEFAULT_KEYFRAME_REFINEMENT_RESOLUTION;
+        if (!isKeyframeRefinementResolution(request.resolution)) throw new GenerationRunError("请选择 720p 或 1080p 精修分辨率。");
         const issues = new Set<string>(KEYFRAME_REPAIR_ISSUES.map((issue) => issue.id));
         if (!Array.isArray(request.issues) || !request.issues.every((issue) => typeof issue === "string" && issues.has(issue))) throw new GenerationRunError("精修项目无效，请重新选择。");
+        if (request.focusRegion !== undefined) {
+          if (!validKeyframeFocusRegion(request.focusRegion)) throw new GenerationRunError("区域重绘只接受有效的 x、y、width、height 归一化矩形。", 400, "INVALID_FOCUS_REGION");
+          if (request.issues.length !== 1 || request.issues[0] !== "integration") throw new GenerationRunError("区域重绘只能单独用于人物环境融合与景深修复。", 400, "FOCUS_REGION_REQUIRES_INTEGRATION");
+          if (!supportsKeyframeFocusMask(String(request.provider), String(request.model))) throw new GenerationRunError("此模型不支持区域蒙版重绘，请选择支持的 GPT Image 模型或关闭区域重绘。", 400, "FOCUS_MASK_UNSUPPORTED");
+          if (!/\.png$/i.test(source.filePath)) throw new GenerationRunError("区域重绘首版需要 PNG 源关键帧，请先上传或生成 PNG 图片。", 400, "FOCUS_MASK_PNG_REQUIRED");
+        }
         if ((request.instructions !== undefined && typeof request.instructions !== "string") || (typeof request.instructions === "string" && request.instructions.length > 2000)
           || (!request.issues.length && !(typeof request.instructions === "string" && request.instructions.trim()))) throw new GenerationRunError("请选择精修项目或填写有效的修复说明（最多 2000 字）。");
         if (typeof request.provider !== "string" || typeof request.model !== "string" || typeof request.apiKey !== "string" || !request.apiKey.trim()) throw new GenerationRunError("请配置图片精修平台、模型与 API Key。");
@@ -216,10 +292,11 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
 }
 
 export function generationRunAction(id: string, action: string) {
-  const run = getGenerationRun(id);
-  if (action === "retry_import" && run.status === "completed") return run;
   const db = getDb();
-  db.transaction((tx) => {
+  const result = db.transaction((tx) => {
+    const run = liveRun(tx, id);
+    const items = reconciledItems(tx, runItems(tx, id));
+    if (action === "retry_import" && runView(run, items).status === "completed") return runView(run, items);
     if (action === "cancel") {
       tx.update(generationRuns).set({ cancelRequested: true, updatedAt: Date.now() }).where(eq(generationRuns.id, id)).run();
       // Already dispatched cloud work is still observed and imported; cancellation never loses a paid result.
@@ -237,9 +314,10 @@ export function generationRunAction(id: string, action: string) {
       }
       if (!eligible) throw new GenerationRunError("没有可安全恢复的已受理结果；提交结果不明确时，请先核对原平台任务，避免重复扣费。", 409, "GENERATION_RECOVERY_UNSAFE");
     } else throw new GenerationRunError("不支持此任务操作。");
+    return runView(tx.select().from(generationRuns).where(eq(generationRuns.id, id)).get()!, runItems(tx, id));
   }, { behavior: "immediate" });
   wakeGenerationRunner();
-  return getGenerationRun(id);
+  return result;
 }
 
 interface RunnerState { timer?: ReturnType<typeof setInterval>; ticking: boolean; active: Set<string> }
@@ -255,10 +333,11 @@ function processAlive(owner: string) {
 function claimNextItem(): Item | null {
   return getDb().transaction((tx) => {
     const now = Date.now();
-    const candidates = tx.select().from(generationItems).where(and(inArray(generationItems.status, ACTIVE), lte(generationItems.nextRunAt, now))).all();
+    const visibleRuns = tx.select({ id: generationRuns.id }).from(generationRuns).where(isNull(generationRuns.deletedAt));
+    const candidates = tx.select().from(generationItems).where(and(inArray(generationItems.runId, visibleRuns), inArray(generationItems.status, ACTIVE), lte(generationItems.nextRunAt, now))).all();
     const busyProjects = new Map<string, number>();
     const projectDispatch = new Map<string, number>();
-    for (const item of tx.select().from(generationItems).all()) {
+    for (const item of tx.select().from(generationItems).where(inArray(generationItems.runId, visibleRuns)).all()) {
       projectDispatch.set(item.projectId, Math.max(projectDispatch.get(item.projectId) ?? 0, item.lastDispatchedAt));
       if (item.leaseOwner && processAlive(item.leaseOwner)) busyProjects.set(item.projectId, (busyProjects.get(item.projectId) ?? 0) + 1);
     }
@@ -267,6 +346,7 @@ function claimNextItem(): Item | null {
       .sort((a, b) => (projectDispatch.get(a.projectId) ?? 0) - (projectDispatch.get(b.projectId) ?? 0) || a.lastDispatchedAt - b.lastDispatchedAt || a.createdAt - b.createdAt);
     for (const item of ordered) {
       const run = tx.select().from(generationRuns).where(eq(generationRuns.id, item.runId)).get();
+      if (!run || run.deletedAt !== null) continue;
       if (run?.cancelRequested && safelyUnsubmitted(item)) {
         tx.update(generationItems).set({ status: "cancelled", stage: "cancelled", leaseOwner: null, leaseExpiresAt: null, updatedAt: now }).where(eq(generationItems.id, item.id)).run();
         continue;
@@ -297,7 +377,8 @@ function redactError(error: unknown, payload?: GenerationPayload) {
 
 async function executeClaimedItem(item: Item) {
   const db = getDb();
-  const fence = and(eq(generationItems.id, item.id), eq(generationItems.leaseOwner, item.leaseOwner!));
+  const fence = and(eq(generationItems.id, item.id), eq(generationItems.leaseOwner, item.leaseOwner!),
+    inArray(generationItems.runId, db.select({ id: generationRuns.id }).from(generationRuns).where(isNull(generationRuns.deletedAt))));
   let lost = false;
   let payload: GenerationPayload | undefined;
   const save = (checkpoint: Record<string, unknown>) => {
@@ -331,7 +412,7 @@ async function executeClaimedItem(item: Item) {
     const importFailures = previousFailures + 1;
     const exhaustedImport = importFailed && importFailures >= 6;
     if (!lost) db.update(generationItems).set({ status: cancelled ? "cancelled" : exhaustedImport ? "needs_attention" : coded.retryable ? "waiting" : coded.code === "GENERATION_NEEDS_ATTENTION" ? "needs_attention" : "failed",
-      stage: cancelled ? "cancelled" : coded.retryable ? "retry_wait" : "needs_attention", error: cancelled ? null : redactError(error, payload), errorCode: cancelled ? null : coded.code ?? "GENERATION_FAILED",
+      stage: cancelled ? "cancelled" : coded.retryable ? "retry_wait" : coded.code === "TIDEWE_VALIDATION_FAILED" ? "failed" : "needs_attention", error: cancelled ? null : redactError(error, payload), errorCode: cancelled ? null : coded.code ?? "GENERATION_FAILED",
       ...(importFailed ? { checkpoint: encryptGenerationValue({ ...checkpoint, importFailures }) } : {}),
       nextRunAt: Date.now() + Math.min(300_000, 5000 * 2 ** Math.min(importFailed ? importFailures : item.attempts, 6)), updatedAt: Date.now() }).where(fence).run();
   } finally {

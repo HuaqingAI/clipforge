@@ -115,6 +115,21 @@ function useTidewe(productVisible: boolean, presenter?: TidewePresenterSnapshot)
 
 describe("TIDEWE image generation uses saved shot semantics", () => {
   const presenter: TidewePresenterSnapshot = { id: "selected-host", name: "Selected host", appearance: "棕色短发，灰色胡须", referenceImages: ["/api/files/selected-host.png"] };
+  it.each([false, true])("keeps off-camera detail framing and frozen references with personVisible=%s", async (personVisible) => {
+    const shot = useTidewe(true, presenter);
+    db.update(schema.scripts).set({ shots: [{
+      ...shot, visualSource: "ai_generate", camera: "固定产品细节特写，不出现脸部。",
+      description: personVisible ? `${tidewePresenterAnchor(presenter)}仅双手入画，轻按商品面料。` : "林缘地面上静置商品的细节特写，无人入画。",
+      tidewe: { ...shot.tidewe!, personVisible, speechDelivery: "off_camera" },
+    }] }).run();
+    const response = await POST(request({ provider: "openai", imageUrl: "https://example.test/other-person.png", imageUrls: ["https://example.test/other-person.png"] }));
+    expect(response.status).toBe(200);
+    const generated = state.generateImage.mock.calls[0][0];
+    expect(generated.referenceImageUrls).toEqual([...(personVisible ? [presenter.referenceImages[0]] : []), productImage]);
+    expect(generated.prompt).not.toContain("嘴部清晰可见");
+    expect(generated.prompt).toContain("固定产品细节特写");
+    expect(state.toRemoteUsableImage.mock.calls.some(([url]) => url === presenter.referenceImages[0])).toBe(personVisible);
+  });
   it.each([true, false])("uses the frozen presenter's actual image with productVisible=%s instead of browser identity", async (productVisible) => {
     useTidewe(productVisible, presenter);
     const response = await POST(request({ provider: "openai", imageUrl: "https://example.test/other-person.png", imageUrls: ["https://example.test/other-person.png"] }));

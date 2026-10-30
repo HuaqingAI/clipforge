@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import { assetScopeForShot } from "@/lib/asset-context";
 import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
+import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 import { ProviderError } from "@/lib/providers/base";
 import { OpenAIProvider } from "@/lib/providers/openai";
@@ -27,8 +29,16 @@ import { generationRuns } from "@/lib/generation-schema";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
+vi.mock("@/lib/keyframe-refinement-prompt", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/lib/keyframe-refinement-prompt")>();
+  return { ...original, buildKeyframeRefinementPrompt: vi.fn(original.buildKeyframeRefinementPrompt) };
+});
 import { GET, POST } from "@/app/api/project/[id]/keyframe-refine/route";
 import { PATCH } from "@/app/api/project/[id]/assets/route";
+import { buildKeyframeRefinementPrompt } from "@/lib/keyframe-refinement-prompt";
+import { buildKeyframeFocusMask } from "@/lib/keyframe-focus-mask";
+import * as focusPatch from "@/lib/keyframe-focus-patch";
+import type { KeyframeFocusRegion } from "@/lib/keyframe-refinement";
 
 const require = createRequire(import.meta.url);
 const sqlite = new Database(":memory:");
@@ -39,12 +49,12 @@ const productPath = `/api/files/${projectId}/product.png`;
 const presenterPath = `/api/files/${projectId}/presenter.png`;
 const shot: schema.Shot = { shotId: 1, type: "demo", duration: 5, description: "A seated host demonstrates a hunting chair in a wooden blind.", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "" };
 const fetchMock = vi.fn<typeof fetch>();
-let directory: string, cropBytes: Buffer, productBytes: Buffer, presenterBytes: Buffer, outputBytes: Buffer;
+let directory: string, cropBytes: Buffer, productBytes: Buffer, presenterBytes: Buffer, outputBytes: Buffer, oversized720Bytes: Buffer, oversized1080Bytes: Buffer;
 const ctx = () => ({ params: Promise.resolve({ id: projectId }) });
 const currentScript = () => db.select().from(schema.scripts).where(eq(schema.scripts.id, scriptId)).get()!;
 const allAssets = () => db.select().from(schema.assets).all();
 function request(extra: Record<string, unknown> = {}) {
-  return new NextRequest(`http://localhost/api/project/${projectId}/keyframe-refine`, { method: "POST", body: JSON.stringify({ scriptId, shotId: 1, sourceAssetId: "original", provider: "openai", model: "gpt-image-2", apiKey: "fixture-secret-key", baseUrl: "https://fixture-image.test/v1", issues: ["hands", "anatomy", "duplicates", "product", "details"], resolution: "4k", ...extra }) });
+  return new NextRequest(`http://localhost/api/project/${projectId}/keyframe-refine`, { method: "POST", body: JSON.stringify({ scriptId, shotId: 1, sourceAssetId: "original", provider: "openai", model: "gpt-image-2", apiKey: "fixture-secret-key", baseUrl: "https://fixture-image.test/v1", issues: ["hands", "anatomy", "duplicates", "product", "details"], resolution: "720p", ...extra }) });
 }
 function sourceScope() { db.update(schema.assets).set(assetScopeForShot(currentScript(), currentScript().shots![0])).where(eq(schema.assets.id, "original")).run(); }
 async function workerItem(presenterReference?: string): Promise<GenerationExecutionItem> {
@@ -58,6 +68,15 @@ async function workerItem(presenterReference?: string): Promise<GenerationExecut
 }
 function runWorker(input: GenerationExecutionItem) {
   return executeGenerationItem(input, (value) => { input.checkpoint = structuredClone(value); });
+}
+async function freezeLegacyNativePlan(input: GenerationExecutionItem) {
+  input.payload.request.resolution = "4k";
+  const region = input.payload.request.focusRegion as KeyframeFocusRegion;
+  const mask = buildKeyframeFocusMask(90, 160, region);
+  const maskPath = `/api/files/${projectId}/keyframe-focus-legacy-${Math.random().toString(36).slice(2)}.png`;
+  await writeFile(join(directory, "uploads", maskPath.replace("/api/files/", "")), mask);
+  input.checkpoint = { submissionState: "not_submitted", refinementPlan: { provider: "openai", model: "gpt-image-2", prompt: "Frozen legacy native region prompt", sourceKeyframeUrl: sourcePath,
+    scope: assetScopeForShot(currentScript(), currentScript().shots![0], "original"), resolution: "4k", target: { width: 2160, height: 3840 }, focusRegion: region, maskPath, maskHash: createHash("sha256").update(mask).digest("hex") } };
 }
 function tideweFixture(projectRevision = 1) {
   const presenter = { id: "tom", name: "Tom", appearance: "短发成年户外主播", referenceImages: [presenterPath] };
@@ -81,8 +100,8 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
   const uploads = join(directory, "uploads", projectId);
   await mkdir(uploads, { recursive: true });
-  for (const [name, color, dimensions] of [["crop", "green", "90x160"], ["product", "blue", "120x90"], ["presenter", "yellow", "90x160"], ["output", "red", "180x320"]]) execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-f", "lavfi", "-i", `color=c=${color}:s=${dimensions}`, "-frames:v", "1", join(uploads, `${name}.png`)]);
-  [cropBytes, productBytes, presenterBytes, outputBytes] = await Promise.all(["crop", "product", "presenter", "output"].map((name) => readFile(join(uploads, `${name}.png`))));
+  for (const [name, color, dimensions] of [["crop", "green", "90x160"], ["product", "blue", "120x90"], ["presenter", "yellow", "90x160"], ["output", "red", "180x320"], ["oversized-720", "red", "1080x1920"], ["oversized-1080", "red", "1440x2560"]]) execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-f", "lavfi", "-i", `color=c=${color}:s=${dimensions}`, "-frames:v", "1", join(uploads, `${name}.png`)]);
+  [cropBytes, productBytes, presenterBytes, outputBytes, oversized720Bytes, oversized1080Bytes] = await Promise.all(["crop", "product", "presenter", "output", "oversized-720", "oversized-1080"].map((name) => readFile(join(uploads, `${name}.png`))));
 });
 
 describe("durable keyframe refinement execution", () => {
@@ -163,6 +182,26 @@ describe("durable keyframe refinement execution", () => {
     expect(fetchMock).toHaveBeenCalledOnce(); expect(allAssets()).toHaveLength(2);
   });
 
+  it("caps an oversized paid worker output and reuses the fitted file after an interrupted import", async () => {
+    const input = await workerItem();
+    fetchMock.mockResolvedValueOnce(Response.json({ data: [{ b64_json: oversized720Bytes.toString("base64") }] }));
+    sqlite.exec("CREATE TRIGGER refinement_save_failure BEFORE INSERT ON assets WHEN NEW.id != 'original' BEGIN SELECT RAISE(FAIL, 'refinement asset write interrupted'); END");
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+    } finally { sqlite.exec("DROP TRIGGER refinement_save_failure"); }
+    const savedPath = (input.checkpoint!.localPaths as Record<string, string>)["0"];
+    const fittedPath = join(directory, "uploads", savedPath.replace("/api/files/", ""));
+    const fittedBytes = await readFile(fittedPath);
+    expect(await mediaProbe.probeMedia(fittedPath)).toMatchObject({ width: 720, height: 1280 });
+    const result = await runWorker(input);
+    expect(result).toMatchObject({ imageUrls: [savedPath], resolution: { requested: "720p", width: 720, height: 1280, limited: false } });
+    expect(await runWorker(input)).toEqual(result);
+    expect(await readFile(fittedPath)).toEqual(fittedBytes);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(allAssets()).toHaveLength(2);
+    expect(allAssets().filter((asset) => asset.selected)).toMatchObject([{ id: "original" }]);
+  });
+
   it("retains every paid output and retries a failed asset save without downloading or billing again", async () => {
     const input = await workerItem();
     fetchMock.mockResolvedValueOnce(Response.json({ data: [{ b64_json: outputBytes.toString("base64") }, { b64_json: presenterBytes.toString("base64") }] }));
@@ -206,6 +245,153 @@ describe("durable keyframe refinement execution", () => {
     } finally { generate.mockRestore(); }
   });
 
+  it("reuses a saved unsubmitted plan across a prompt-builder deployment", async () => {
+    const input = await workerItem();
+    const error = new ProviderError("rate limited before acceptance", "RATE_LIMIT", "openai", 429); error.submissionRejected = true;
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockRejectedValueOnce(error)
+      .mockResolvedValueOnce({ taskId: "paid-frozen-plan", modelId: "gpt-image-2", imageUrls: [`data:image/png;base64,${outputBytes.toString("base64")}`] });
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true, stage: "provider_rate_limited" });
+      const originalPlan = structuredClone(input.checkpoint?.refinementPlan);
+      vi.mocked(buildKeyframeRefinementPrompt).mockImplementationOnce(() => "new prompt after deployment");
+      vi.mocked(buildKeyframeRefinementPrompt).mockClear();
+      expect(await runWorker(input)).toHaveProperty("assetId");
+      expect(buildKeyframeRefinementPrompt).not.toHaveBeenCalled();
+      expect(input.checkpoint?.refinementPlan).toEqual(originalPlan);
+      expect(generate.mock.calls[0]).toEqual(generate.mock.calls[1]);
+    } finally {
+      generate.mockRestore();
+      vi.mocked(buildKeyframeRefinementPrompt).mockReset();
+      const original = await vi.importActual<typeof import("@/lib/keyframe-refinement-prompt")>("@/lib/keyframe-refinement-prompt");
+      vi.mocked(buildKeyframeRefinementPrompt).mockImplementation(original.buildKeyframeRefinementPrompt);
+    }
+  });
+
+  it("freezes the native mask and imports paid region output once after the mask file disappears", async () => {
+    const input = await workerItem();
+    Object.assign(input.payload.request, { issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } });
+    await freezeLegacyNativePlan(input);
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockImplementationOnce(async (options) => {
+      expect(options).toHaveProperty("maskImageUrl", expect.stringMatching(/^data:image\/png;base64,/));
+      expect(options.referenceImageUrls).toHaveLength(2);
+      generationCheckpoint({ taskId: "paid-masked-edit", submissionState: "acknowledged" });
+      throw new GenerationTaskPending("paid-masked-edit");
+    });
+    const query = vi.spyOn(OpenAIProvider.prototype, "getTaskStatus").mockResolvedValueOnce({ taskId: "paid-masked-edit", status: "completed", result: { taskId: "paid-masked-edit", modelId: "gpt-image-2", imageUrls: [`data:image/png;base64,${oversized1080Bytes.toString("base64")}`] } });
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true });
+      const plan = input.checkpoint!.refinementPlan as { maskPath: string; focusRegion: unknown };
+      expect(plan.focusRegion).toEqual(input.payload.request.focusRegion);
+      expect(plan.maskPath).toMatch(/^\/api\/files\/keyframe-project\/keyframe-focus-.*\.png$/);
+      await rm(join(directory, "uploads", plan.maskPath.replace("/api/files/", "")));
+      const result = await runWorker(input);
+      expect(result).toMatchObject({ resolution: { requested: "4k", width: 1440, height: 2560 } });
+      const savedPath = (result.asset as { filePath: string }).filePath;
+      expect(await mediaProbe.probeMedia(join(directory, "uploads", savedPath.replace("/api/files/", "")))).toMatchObject({ width: 1440, height: 2560 });
+      expect(await runWorker(input)).toEqual(result);
+      expect(generate).toHaveBeenCalledOnce();
+      expect(query).toHaveBeenCalledOnce();
+      expect(allAssets()).toHaveLength(2);
+    } finally { generate.mockRestore(); query.mockRestore(); }
+  });
+
+  it("reuses the exact saved mask and prompt after an explicitly rejected submission", async () => {
+    const input = await workerItem();
+    Object.assign(input.payload.request, { issues: ["integration"], focusRegion: { x: 0.1, y: 0.75, width: 0.8, height: 0.25 } });
+    await freezeLegacyNativePlan(input);
+    const rejected = new ProviderError("rate limited before acceptance", "RATE_LIMIT", "openai", 429); rejected.submissionRejected = true;
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockRejectedValueOnce(rejected)
+      .mockResolvedValueOnce({ taskId: "accepted-region", modelId: "gpt-image-2", imageUrls: [`data:image/png;base64,${outputBytes.toString("base64")}`] });
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true, stage: "provider_rate_limited" });
+      const plan = structuredClone(input.checkpoint!.refinementPlan);
+      vi.mocked(buildKeyframeRefinementPrompt).mockClear();
+      expect(await runWorker(input)).toHaveProperty("assetId");
+      expect(input.checkpoint!.refinementPlan).toEqual(plan);
+      expect(generate.mock.calls[0]).toEqual(generate.mock.calls[1]);
+      expect(buildKeyframeRefinementPrompt).not.toHaveBeenCalled();
+      expect(await runWorker(input)).toHaveProperty("assetId");
+      expect(generate).toHaveBeenCalledTimes(2); // One rejected attempt, one accepted image.
+    } finally { generate.mockRestore(); }
+  });
+
+  it("stops before a second submission if the frozen mask was replaced", async () => {
+    const input = await workerItem();
+    Object.assign(input.payload.request, { issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } });
+    await freezeLegacyNativePlan(input);
+    const rejected = new ProviderError("rate limited before acceptance", "RATE_LIMIT", "openai", 429); rejected.submissionRejected = true;
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockRejectedValueOnce(rejected);
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true });
+      const plan = input.checkpoint!.refinementPlan as { maskPath: string };
+      await writeFile(join(directory, "uploads", plan.maskPath.replace("/api/files/", "")), cropBytes);
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "FOCUS_MASK_UNAVAILABLE" });
+      expect(generate).toHaveBeenCalledOnce();
+      expect(allAssets()).toHaveLength(1);
+    } finally { generate.mockRestore(); }
+  });
+
+  it("checkpoints a paid raw crop before composition and retries local composition without provider or source reads", async () => {
+    const input = await workerItem();
+    Object.assign(input.payload.request, { issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } });
+    const compose = vi.spyOn(focusPatch, "composeKeyframeFocusPatch").mockRejectedValueOnce(new Error("temporary local composition failure"));
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+      expect(input.checkpoint).toMatchObject({ submissionState: "acknowledged", refinementPlan: { strategy: "crop_composite_v1", target: { width: 90, height: 160 }, focusPatch: { version: 1, sourceHash: expect.any(String), cropHash: expect.any(String) } }, patchPaths: { "0": { filePath: expect.any(String), hash: expect.any(String), width: 180, height: 320 } } });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      db.delete(schema.assets).run();
+      db.delete(schema.scripts).run();
+      const result = await runWorker(input);
+      expect(result).toMatchObject({ resolution: { width: 90, height: 160, processingMode: "crop_composite_v1", actualPatchWidth: 180, actualPatchHeight: 320 } });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(compose).toHaveBeenCalledTimes(2);
+      expect(await runWorker(input)).toEqual(result);
+      expect(allAssets()).toHaveLength(1);
+    } finally { compose.mockRestore(); }
+  });
+
+  it("reuses frozen crop bytes, geometry and prompt after rejection and blocks changed crop bytes before another payment", async () => {
+    const input = await workerItem();
+    Object.assign(input.payload.request, { issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } });
+    const rejected = new ProviderError("rate limited before acceptance", "RATE_LIMIT", "openai", 429); rejected.submissionRejected = true;
+    const generate = vi.spyOn(OpenAIProvider.prototype, "generateImage").mockRejectedValueOnce(rejected).mockRejectedValueOnce(rejected);
+    try {
+      expect(await runWorker(input)).toMatchObject({ pending: true });
+      const frozen = structuredClone(input.checkpoint!.refinementPlan) as { focusPatch: focusPatch.PreparedKeyframeFocusPatch };
+      vi.mocked(buildKeyframeRefinementPrompt).mockClear();
+      expect(await runWorker(input)).toMatchObject({ pending: true });
+      expect(generate.mock.calls[0]).toEqual(generate.mock.calls[1]);
+      expect(buildKeyframeRefinementPrompt).not.toHaveBeenCalled();
+      expect(input.checkpoint!.refinementPlan).toEqual(frozen);
+      await writeFile(frozen.focusPatch.cropPath, outputBytes);
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "FOCUS_PATCH_UNAVAILABLE" });
+      expect(generate).toHaveBeenCalledTimes(2);
+    } finally { generate.mockRestore(); }
+  });
+
+  it("refuses a replaced paid raw patch during local recovery without another provider request", async () => {
+    const input = await workerItem();
+    Object.assign(input.payload.request, { issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } });
+    const compose = vi.spyOn(focusPatch, "composeKeyframeFocusPatch").mockRejectedValueOnce(new Error("temporary local composition failure"));
+    try {
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED" });
+      const raw = (input.checkpoint!.patchPaths as Record<string, { filePath: string }>)["0"];
+      await writeFile(join(directory, "uploads", raw.filePath.replace("/api/files/", "")), cropBytes);
+      await expect(runWorker(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(compose).toHaveBeenCalledOnce();
+      expect(allAssets()).toHaveLength(1);
+    } finally { compose.mockRestore(); }
+  });
+
+  it("rejects a malformed saved unsubmitted plan instead of silently replacing its prompt", async () => {
+    const input = await workerItem();
+    input.checkpoint = { refinementPlan: { prompt: "" }, submissionState: "not_submitted" };
+    await expect(runWorker(input)).rejects.toMatchObject({ code: "REFINEMENT_PLAN_INVALID" });
+    expect(buildKeyframeRefinementPrompt).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each(["source", "script"])("blocks the first payment if the confirmed %s changed while queued", async (changed) => {
     const input = await workerItem();
     if (changed === "source") db.update(schema.assets).set({ filePath: `/api/files/${projectId}/output.png` }).run();
@@ -232,6 +418,7 @@ beforeEach(() => {
   db.insert(schema.scripts).values({ id: scriptId, projectId, selected: true, styleType: "scene", shots: [shot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
   db.insert(schema.assets).values({ id: "original", projectId, shotId: 1, type: "ai_generated", filePath: sourcePath, selected: true, status: "done", prompt: "[storyboard-grid-v2 第1格] seated host", ...assetScopeForShot(currentScript(), shot) }).run();
   fetchMock.mockReset().mockImplementation(async () => Response.json({ data: [{ b64_json: outputBytes.toString("base64") }] }));
+  vi.mocked(buildKeyframeRefinementPrompt).mockClear();
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -245,17 +432,143 @@ async function uploads() {
 }
 
 describe("single-frame refinement edit contract", () => {
+  it("defaults an omitted resolution to 720p", async () => {
+    const response = await POST(request({ resolution: undefined }), ctx());
+    expect(response.status).toBe(200);
+    expect((await uploads()).form.get("size")).toBe("720x1280");
+    expect(await response.json()).toMatchObject({ resolution: { requested: "720p", width: 180, height: 320, limited: true } });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["2k", "4k", null])("rejects a fresh unsupported resolution before payment: %s", async (resolution) => {
+    const response = await POST(request({ resolution }), ctx());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "INVALID_RESOLUTION", possiblyCharged: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(allAssets()).toMatchObject([{ id: "original", selected: true }]);
+  });
+
+  it.each([
+    { resolution: "720p", width: 720, height: 1280, providerWidth: 1080, providerHeight: 1920 },
+    { resolution: "1080p", width: 1080, height: 1920, providerWidth: 1440, providerHeight: 2560 },
+  ])("saves an oversized provider image within the selected $resolution canvas", async ({ resolution, width, height, providerWidth, providerHeight }) => {
+    const providerBytes = resolution === "720p" ? oversized720Bytes : oversized1080Bytes;
+    fetchMock.mockResolvedValueOnce(Response.json({ data: [{ b64_json: providerBytes.toString("base64") }] }));
+    const response = await POST(request({ resolution }), ctx());
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toMatchObject({ resolution: { requested: resolution, width, height, limited: false } });
+    const savedPath = join(directory, "uploads", result.asset.filePath.replace("/api/files/", ""));
+    const savedBytes = await readFile(savedPath);
+    expect(await mediaProbe.probeMedia(savedPath)).toMatchObject({ width, height });
+    expect([savedBytes.readUInt32BE(16), savedBytes.readUInt32BE(20)]).toEqual([width, height]);
+    expect(providerBytes.readUInt32BE(16)).toBe(providerWidth);
+    expect(providerBytes.readUInt32BE(20)).toBe(providerHeight);
+    expect(await readFile(join(directory, "uploads", projectId, "crop.png"))).toEqual(cropBytes);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(allAssets().filter((asset) => asset.selected)).toMatchObject([{ id: "original" }]);
+  });
+
+  it("composites a high-resolution source before fitting the complete region-repaired frame without cropping", async () => {
+    const highSourcePath = join(directory, "uploads", projectId, "region-source-hd.png");
+    const highSourceUrl = `/api/files/${projectId}/region-source-hd.png`;
+    execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-f", "lavfi", "-i", "color=c=green:s=1440x2560,drawbox=x=0:y=0:w=72:h=2560:color=blue:t=fill,drawbox=x=1368:y=0:w=72:h=2560:color=yellow:t=fill", "-frames:v", "1", highSourcePath]);
+    const highSourceBytes = await readFile(highSourcePath);
+    db.update(schema.assets).set({ filePath: highSourceUrl }).where(eq(schema.assets.id, "original")).run();
+    const response = await POST(request({ issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } }), ctx());
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toMatchObject({ asset: { selected: false, sourceKeyframeUrl: highSourceUrl }, resolution: { requested: "720p", width: 720, height: 1280, limited: false, processingMode: "crop_composite_v1", preservesSourceDimensions: false } });
+    const savedPath = join(directory, "uploads", result.asset.filePath.replace("/api/files/", ""));
+    expect(await mediaProbe.probeMedia(savedPath)).toMatchObject({ width: 720, height: 1280 });
+    const pixels = execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-i", savedPath, "-frames:v", "1", "-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"], { maxBuffer: 8 * 1024 * 1024 });
+    const pixel = (x: number, y: number) => [...pixels.subarray((y * 720 + x) * 4, (y * 720 + x) * 4 + 3)];
+    // Both edge markers, the untouched center and the repaired bottom survive the proportional fit.
+    expect(pixel(10, 10)).toEqual([0, 0, 254]);
+    expect(pixel(710, 10)).toEqual([253, 253, 0]);
+    expect(pixel(360, 10)).toEqual([0, 127, 0]);
+    expect(pixel(360, 1270)).toEqual([253, 0, 0]);
+    expect(await readFile(highSourcePath)).toEqual(highSourceBytes);
+    expect(await readFile(join(directory, "uploads", projectId, "crop.png"))).toEqual(cropBytes);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("sends only the immutable context crop and composites an unselected candidate at original dimensions", async () => {
+    tideweFixture();
+    const focusRegion = { x: 0, y: 0.75, width: 1, height: 0.25 };
+    const response = await POST(request({ issues: ["integration"], focusRegion }), ctx());
+    expect(response.status).toBe(200);
+    const { form, bytes } = await uploads();
+    expect(bytes).toHaveLength(1);
+    expect(bytes[0]).not.toEqual(cropBytes);
+    expect(form.has("mask")).toBe(false);
+    expect(bytes[0].readUInt32BE(16)).toBe(90);
+    expect(bytes[0].readUInt32BE(20)).toBeLessThan(160);
+    expect(buildKeyframeRefinementPrompt).toHaveBeenCalledWith(expect.objectContaining({ focusRegion, focusPatch: expect.any(Object), hasPresenterReference: false, productReferenceCount: 0 }));
+    expect(form.get("prompt")).toContain("CROPPED FOREGROUND FOCUS REPAIR");
+    expect(form.get("prompt")).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(form.get("prompt")).not.toContain(TIDEWE_IMAGE_FOCUS_TARGET);
+    expect(form.get("n")).toBe("1");
+    expect(form.get("quality")).toBe("high");
+    expect(form.get("output_format")).toBe("png");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(allAssets()).toHaveLength(2);
+    const result = await response.json();
+    expect(result).toMatchObject({ asset: { selected: false, derivedFromAssetId: "original" }, resolution: { width: 90, height: 160, limited: false, processingMode: "crop_composite_v1", preservesSourceDimensions: true } });
+    const composited = await readFile(join(directory, "uploads", result.asset.filePath.replace("/api/files/", "")));
+    const decode = (bytes: Buffer) => execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-i", "pipe:0", "-frames:v", "1", "-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"], { input: bytes });
+    const originalPixels = decode(cropBytes), outputPixels = decode(composited);
+    expect(outputPixels.subarray(0, 120 * 90 * 4)).toEqual(originalPixels.subarray(0, 120 * 90 * 4));
+    expect(outputPixels.subarray(159 * 90 * 4)).not.toEqual(originalPixels.subarray(159 * 90 * 4));
+  });
+
+  it("never falls back to a full-image edit if the provider rejects the crop edit", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ error: { message: "mask parameter unsupported", code: "unsupported_parameter", param: "mask" } }, { status: 400 }));
+    const response = await POST(request({ issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } }), ctx());
+    expect(response.ok).toBe(false);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect((await uploads()).form.has("mask")).toBe(false);
+    expect(allAssets()).toHaveLength(1);
+  });
+
+  it.each([
+    { focusRegion: null, code: "INVALID_FOCUS_REGION" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3, feather: 0.1 }, code: "INVALID_FOCUS_REGION" },
+    { focusRegion: { x: 0.9, y: 0.7, width: 1, height: 0.3 }, code: "INVALID_FOCUS_REGION" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, issues: ["integration", "hands"], code: "FOCUS_REGION_REQUIRES_INTEGRATION" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, issues: ["integration", "integration"], code: "FOCUS_REGION_REQUIRES_INTEGRATION" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, provider: "fal-ai", code: "FOCUS_MASK_UNSUPPORTED" },
+    { focusRegion: { x: 0, y: 0.7, width: 1, height: 0.3 }, model: "gpt-image-1.5", code: "FOCUS_MASK_UNSUPPORTED" },
+  ])("rejects unusable region edits before payment ($code)", async ({ code, ...fields }) => {
+    const response = await POST(request({ issues: ["integration"], ...fields }), ctx());
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code, possiblyCharged: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(allAssets()).toHaveLength(1);
+  });
+
+  it("rejects a non-PNG source for native masking before any provider request", async () => {
+    const jpeg = join(directory, "uploads", projectId, "source-jpeg.jpg");
+    execFileSync(process.env.FFMPEG_PATH!, ["-v", "error", "-y", "-i", join(directory, "uploads", projectId, "crop.png"), "-frames:v", "1", jpeg]);
+    db.update(schema.assets).set({ filePath: `/api/files/${projectId}/source-jpeg.jpg` }).where(eq(schema.assets.id, "original")).run();
+    const response = await POST(request({ issues: ["integration"], focusRegion: { x: 0, y: 0.75, width: 1, height: 0.25 } }), ctx());
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ code: "FOCUS_MASK_PNG_REQUIRED", possiblyCharged: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("uploads the crop first, requests its true ratio, and saves a durable unselected candidate", async () => {
     const response = await POST(request(), ctx());
     expect(response.status).toBe(200);
     const result = await response.json();
     const { form, bytes } = await uploads();
     expect(bytes).toEqual([cropBytes, productBytes]);
-    expect(form.get("size")).toBe("2160x3840");
+    expect(form.get("size")).toBe("720x1280");
     expect(form.get("n")).toBe("1");
+    expect(form.has("mask")).toBe(false);
     expect(form.get("prompt")).toContain("primary scene and composition anchor");
     expect(form.get("prompt")).toContain("retain natural occlusion");
-    expect(result).toMatchObject({ asset: { shotId: 1, selected: false, sourceKeyframeUrl: sourcePath, derivedFromAssetId: "original", model: "gpt-image-2" }, resolution: { requested: "4k", width: 180, height: 320, limited: true } });
+    expect(result).toMatchObject({ asset: { shotId: 1, selected: false, sourceKeyframeUrl: sourcePath, derivedFromAssetId: "original", model: "gpt-image-2" }, resolution: { requested: "720p", width: 180, height: 320, limited: true } });
     expect(result.asset.filePath).toMatch(/^\/api\/files\/keyframe-project\/keyframe-refine-1-\d+-[a-z0-9]{8}\.png$/);
     const rows = allAssets();
     expect(rows.find((row) => row.id === "original")).toMatchObject({ selected: true, filePath: sourcePath });
@@ -287,6 +600,65 @@ describe("single-frame refinement edit contract", () => {
     expect(currentScript()).toEqual(before);
     expect(db.select().from(schema.projects).get()?.creativeConfigRevision).toBe(projectRevision);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the TIDEWE integration repair through one OpenAI edit while preserving source, script and reference order", async () => {
+    tideweFixture();
+    const beforeScript = currentScript();
+    const beforeSource = allAssets().find((asset) => asset.id === "original")!;
+    const response = await POST(request({ issues: ["integration"] }), ctx());
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    const { form, bytes } = await uploads();
+    expect(bytes).toEqual([cropBytes, presenterBytes, productBytes]);
+    expect(form.get("n")).toBe("1");
+    const prompt = String(form.get("prompt"));
+    expect(prompt).toContain("SINGLE FOCUS TASK: re-render the entire existing photograph");
+    expect(prompt.split(TIDEWE_IMAGE_FOCUS_TARGET)).toHaveLength(2);
+    expect(prompt).toContain("Keep existing positions, poses, gestures, object counts, contact, occlusion, scene geometry and background content");
+    expect(prompt).toContain("Preserve camera position, perspective, framing, crop, light direction, time of day and color palette");
+    expect(prompt).toContain("source blur, cutout edges, sharpening halos and excessive subject microcontrast are defects to correct, not protected pixel attributes");
+    expect(prompt).toContain("source similarity must not preserve those optical defects");
+    expect(prompt).toContain("Keep intentional empty backgrounds empty");
+    expect(prompt).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(prompt).not.toContain("SPATIAL INTEGRATION AND FOCUS REPAIR");
+    expect(prompt).not.toContain("LOCAL ANATOMY REPAIR PRIORITY");
+    expect(prompt).toContain("Frozen presenter: 所选主播 Tom");
+    expect(prompt).toContain("Reference image 2 is the frozen presenter identity reference only");
+    expect(prompt).toContain("The last 1 reference image(s) are saved product views");
+    expect(prompt).toContain("Image 1 is the cropped approved single-shot scene");
+    expect(result.asset).toMatchObject({ selected: false, sourceKeyframeUrl: sourcePath, derivedFromAssetId: "original" });
+    expect(allAssets()).toHaveLength(2);
+    expect(allAssets().find((asset) => asset.id === result.asset.id)).toMatchObject({ selected: false, sourceScriptId: scriptId, derivedFromAssetId: "original" });
+    expect(allAssets().find((asset) => asset.id === "original")).toEqual(beforeSource);
+    expect(allAssets().filter((asset) => asset.selected).map((asset) => asset.id)).toEqual(["original"]);
+    expect(currentScript()).toEqual(beforeScript);
+    expect(await readFile(join(directory, "uploads", projectId, "crop.png"))).toEqual(cropBytes);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { category: "accessories" as const, name: "狩猎椅", canonical: "accessories", evidence: "不默认可折叠、旋转或调节" },
+    { category: "hunting_apparel" as const, name: "户外夹克", canonical: "apparel", evidence: "不默认迷彩、加热、防水" },
+    { category: "boots" as const, name: "狩猎靴", canonical: "boots", evidence: "靴子主类不等于防水靴或防蛇靴" },
+  ])("uses the frozen $category category in the actual edit even when the current project changed", async ({ category, name, canonical, evidence }) => {
+    tideweFixture();
+    const saved = currentScript();
+    const facts: ProductFacts = { ...saved.copyDocument!.factsSnapshot, category };
+    const copy: TideweCopyDocument = { ...saved.copyDocument!, factsSnapshot: facts, factsHash: productFactsHash(facts), productName: name };
+    db.update(schema.scripts).set({ copyDocument: copy }).run();
+    db.update(schema.projects).set({ productFacts: { ...facts, category: "waders" }, productName: "新涉水服" }).run();
+    sourceScope();
+    const beforeScript = currentScript();
+    const response = await POST(request({ issues: ["integration"] }), ctx());
+    expect(response.status).toBe(200);
+    const { form, bytes } = await uploads();
+    const context = JSON.parse(String(form.get("prompt")).split("CATEGORY_REPAIR_CONTEXT: ")[1].split("\n")[0]);
+    expect(context).toMatchObject({ category: canonical, evidenceLimits: expect.stringContaining(evidence) });
+    expect(context).not.toHaveProperty("contactAndFocus");
+    expect(bytes).toEqual([cropBytes, presenterBytes, productBytes]);
+    expect(currentScript()).toEqual(beforeScript);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it.each(["facts", "presenter", "speech", "type"])("uses the frozen TIDEWE option after %s edits while keeping the type boundary", async (changed) => {
@@ -357,7 +729,7 @@ describe("single-frame refinement edit contract", () => {
     const adopt = (assetId: string) => PATCH(new NextRequest(`http://localhost/api/project/${projectId}/assets`, { method: "PATCH", body: JSON.stringify({ assetId }) }), ctx());
     expect((await adopt(firstResult.asset.id)).status).toBe(200);
     expect(allAssets().find((row) => row.id === firstResult.asset.id)?.selected).toBe(true);
-    const nextResponse = await POST(request({ sourceAssetId: firstResult.asset.id, issues: ["details"], resolution: "2k" }), ctx());
+    const nextResponse = await POST(request({ sourceAssetId: firstResult.asset.id, issues: ["details"], resolution: "1080p" }), ctx());
     const nextResult = await nextResponse.json();
     expect(nextResponse.status).toBe(200);
     expect(nextResult.asset).toMatchObject({ selected: false, derivedFromAssetId: firstResult.asset.id, sourceKeyframeUrl: firstResult.asset.filePath });
@@ -478,7 +850,7 @@ describe("single-frame refinement edit contract", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally { release(Response.json({ data: [{ b64_json: outputBytes.toString("base64") }] })); }
     expect((await first).status).toBe(200);
-    expect((await POST(request({ issues: ["hands"], resolution: "2k" }), ctx())).status).toBe(200);
+    expect((await POST(request({ issues: ["hands"], resolution: "720p" }), ctx())).status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(db.select().from(schema.assets).where(and(eq(schema.assets.id, "original"), eq(schema.assets.selected, true))).all()).toHaveLength(1);
   });

@@ -26,7 +26,10 @@
  */
 import { SPOKEN_VOICE_RULES } from "@/lib/presenters";
 import { extractJSON } from "@/lib/script-engine/generator";
-import type { TideweCopyDocument } from "@/lib/tidewe/types";
+import type { TideweCopyDocument, TideweShotFields } from "@/lib/tidewe/types";
+import { getTideweProductCoverageIssues, type TideweProductCoverageIssue } from "@/lib/tidewe/planning-quality";
+import { buildTideweCategoryGuidance } from "@/lib/tidewe/category-guidance";
+import { TIDEWE_NATIVE_CAMERA_STYLE } from "@/lib/tidewe/visual-policy";
 
 export const JUDGE_IDS = ["pace", "voice", "idea", "structure", "visual"] as const;
 export type JudgeId = (typeof JUDGE_IDS)[number];
@@ -81,6 +84,9 @@ export interface JudgeShotInput {
   voiceover: string;
   /** Shot visual description — feeds the visual judge; optional for line-only callers */
   description?: string;
+  /** Framing and movement context for brand-specific visual review. */
+  camera?: string;
+  tidewe?: Partial<Pick<TideweShotFields, "visualPlan" | "speechDelivery" | "personVisible" | "productVisible" | "copySpan" | "factRefs" | "shotGoal">>;
   /** Allocated storyboard seconds, including shots without narration; not measured audio. */
   duration?: number;
 }
@@ -89,6 +95,13 @@ export interface JudgeTimingOptions {
   plannedTotalDuration?: number;
   /** Complete storyboard for timing only; does not add shots to the review scope. */
   timelineShots?: JudgeShotInput[];
+}
+
+export interface TideweJudgeOptions extends JudgeTimingOptions {
+  speechMode?: "on_camera" | "voiceover";
+  videoMode?: "scene_demo" | "product_closeup";
+  /** The route computes this once from the complete saved storyboard. */
+  productCoverageIssues?: TideweProductCoverageIssue[];
 }
 
 function validDuration(value: unknown): value is number {
@@ -119,6 +132,12 @@ const TIMING_REVIEW_RULES = [
   "时长依据：TIMING_CONTEXT 的 start/end/duration 是分镜安排的秒数；actualTotalDuration 是全部分镜（包括无旁白镜头）的合计，plannedTotalDuration 是创作计划目标，二者不是实测音频或成片时长。",
   "节奏判断必须结合每镜时长、台词密度和完整时间线。按原口播语言粗估语速：英语约 2–3 词/秒，中文约 3–5 字/秒；其他语言或混合语言按其实际语言保守估算，不要把英文按中文字数计算。停顿与动作会占时间，估算必须明确标为估算，不能声称已测配音时长或口型同步。",
   "null 表示未知：缺少或无效的分镜秒数会使总时长及后续时间点无法确定，不得补造秒数或断言超时；可以指出需要试听核对。若该创作类型适用中段钩子规则，仅在已知 actualTotalDuration 时按实际秒数判断超过 20 秒和 40%–60% 的位置，不能用目标时长代替实际分镜合计。",
+].join("\n");
+
+const TIDEWE_TIMING_REVIEW_RULES = [
+  "时长依据：TIMING_CONTEXT 的 start/end/duration 是分镜安排的秒数；actualTotalDuration 是全部分镜（包括无旁白镜头）的合计，plannedTotalDuration 是创作计划目标，二者不是实测音频或成片时长。",
+  "TIDEWE 美式英语口播以 2.3 词/秒为目标，2.6 词/秒为上限；每个有台词镜头另留至少 0.3 秒自然停顿。最低分镜时长估算为英文词数 / 2.6 + 0.3 秒，舒适时长估算为英文词数 / 2.3 + 0.3 秒；动作还会占时间。估算必须明确标为估算，不能声称已测配音时长或口型同步。过密时建议延长或按原文拆镜，不改写冻结文案。",
+  "null 表示未知：缺少或无效的分镜秒数会使总时长及后续时间点无法确定，不得补造秒数或断言超时；可以指出需要试听核对。",
 ].join("\n");
 
 /** True when the text contains CJK characters (rewrite-language pick). */
@@ -206,24 +225,77 @@ export function buildJudgePrompt(
     .join("\n");
 }
 
+/** Historical copy can use current appearance context without promoting it to confirmed facts. */
+export function withTideweJudgeProductContext(copy: TideweCopyDocument, current: { productName?: string | null; productAnalysis?: string | null }): TideweCopyDocument {
+  return {
+    ...copy,
+    productName: copy.productName?.trim() ? copy.productName : current.productName ?? "",
+    visualObservations: copy.visualObservations?.trim() ? copy.visualObservations : current.productAnalysis ?? "",
+  };
+}
+
 /** Review the canonical brand copy without offering executable per-shot narration rewrites. */
-export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeShotInput[], opts: JudgeTimingOptions = {}): string {
+export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeShotInput[], opts: TideweJudgeOptions = {}): string {
+  const productCoverageIssues = opts.productCoverageIssues ?? getTideweProductCoverageIssues(shots, {
+    copyDocument: copy,
+    videoMode: opts.videoMode,
+    requireEvidence: true,
+  });
   return [
     "Review this US-English TIDEWE outdoor product narration. Return feedback only; do not rewrite or translate it.",
-    "Judge pace, natural American spoken voice, specific outdoor situations, one coherent angle, and visible feasible actions.",
-    "A first-person preference is allowed. Invented ownership, tests, testimonials, scarcity, offers, and unsupported performance are defects.",
-    "Current product facts below are the only source for claims. Never transfer specifications from a reference product.",
+    `Mandatory capture style for every first-frame image and its animated shot: ${TIDEWE_NATIVE_CAMERA_STYLE}`,
+    "A first frame establishes this style directly; it does not need an existing first frame. Review motion under the same style. Preserve the scene's specified weather, time of day and natural ambient light. Flag added lighting equipment, sharpening, retouching or filter directions that conflict with this shared style; never recommend changing scene conditions or adding light to achieve it.",
+    "Judge pace, natural American spoken voice, a specific outdoor use or buying question, one coherent value, and the relationship between the narration and feasible visuals.",
+    copy.source === "user_provided"
+      ? "This is frozen staff-written copy. Preserve its exact prose, punctuation, repetition, experiences and existing offer; do not apply the AI's writing formula, censor it or provide executable text/description rewrites. A staff anecdote is not confirmed product evidence; flag unsupported product assertions for verification without declaring a personal experience invented merely because it is absent from the fact table."
+      : "A first-person preference is allowed. Invented ownership, tests, testimonials, scarcity, offers, and unsupported performance are defects in AI-written copy.",
+    "Current confirmed nonconflicting product facts below are the only evidence for functional, numeric or performance claims. Observed facts show appearance only. Neither a touch nor a press proves heat, waterproofing, durability or long-term comfort. Never transfer specifications from a reference product or turn an assertion into a fabricated visual test.",
+    "The current product name, appearance observations and reference-supported visible components can support showing the actual product, its appearance, ordinary handling or wearing. They cannot establish performance. Appearance context comes from the saved copy snapshot, with the current project used only when a historical snapshot is missing; it does not add confirmed facts. An empty confirmed fact table does not justify hiding the product throughout a product video; separate visible appearance evidence from unsupported functional claims.",
     "Do not demand dual CTAs, a mid-video suspense hook, a product in every frame, a visible presenter, or one unchanging room.",
-    "Off-screen narration may accompany environment footage. Chinese shot descriptions are visual directions, not narration.",
+    "Product coverage is a minimum production requirement: a product video cannot have zero product-visible shots. For three or more shots, at least ceil(shotCount / 2) must visibly contain the current product and at least one must give a close_up or detail view of an actual product component. For VIDEO_MODE=scene_demo with three or more shots, require at least one reference-supported handling, wearing or ordinary-use shot. Preserve useful context shots; these minimums do not require the product in every frame or authorize invented features or performance tests.",
+    "Check that detail and demonstration copy visualBeats map through the real copySpan to actual product-visible evidence. A product detail or demonstration cannot become an unrelated talking-head or environment shot. Inspect productFocus, description and framing together: the named component must actually fit inside the frame. Use CATEGORY_GUIDANCE for the current product's possible observations and contact relationships, subject to its actual references; never import a different category's parts or force an example into every shot. Off-camera narration may cover these close views without forcing a face into the frame.",
+    "Review every supplied shot, including silent shots, for its visual contribution. Match each shot's visualPlan.visualRole and described observation to the meaning of its narration: a presenter can explain a question or qualification, a supported action can demonstrate ordinary use, a detail can show the referenced visible component, and context can establish the use situation. Do not demand a separate demonstration for every sentence or literal action for every clause. Chinese descriptions, camera and action fields are visual directions, not narration.",
+    "Static context and a maintained product observation are valid. Assess whether the first-frame actionStart is already physically established, the action is one modest feasible action or observation, and actionEnd is a credible supported stable state. Check grips, contact, weight and product continuity; do not force a new person or movement into a valid static shot. Missing visualPlan on a historical shot is not itself a defect: review its actual description and camera.",
+    "Across shots check meaningful changes of viewpoint, framing scale and visual role, repeated actions with no new evidence, and consecutive descriptions that merely relabel the same picture. Judge duplication from actual framing, action and purpose, not enum values alone. Variation must serve the narration and current product; do not demand a fixed nine-shot template or invent features to fill a visual quota.",
+    "Review five photographic requirements against the saved visual directions: (1) person, product and environment share light direction, color temperature, perspective, occlusion and contact shadows; avoid cutout edges or floating contact; (2) full-body and medium views use ordinary phone main-camera deep focus: nearby ground and midground stay naturally clear. Where already present, midground and farther tree trunks, branches, path layers and scene silhouettes remain recognizable, with at most slight optical softness in the distance. In every framing scale, including close_up and detail, where an existing ground, tabletop or other supporting surface already extends continuously from the image's bottom edge through to the subject's contact point, that whole region must stay naturally readable. Do not recommend adding or extending a supporting surface to satisfy this rule. The main product, contact area, connected supporting surface and its visible lower frame edge are protected from defocus. Flag a blurred foreground strip, tilt-shift top-and-bottom blur bands or vignette-like edge defocus. For close component shots, ALL visible foreground in front of the subject must remain naturally resolved, including isolated near grass, leaves and edge objects disconnected from the product or support. Only distant background BEHIND the subject may have slight natural optical softness; existing surroundings must retain readable structure. No nearer-object defocus exception applies. Preserve intentional empty backgrounds; do not demand new scenery to illustrate these examples or every leaf or distance plane equally sharp. Do not recommend changing the approved aspect ratio, crop, composition, action or product support to satisfy focus requirements. Flag broad creamy blur, bokeh disks, portrait-mode masks or an abrupt blur boundary along the subject's outline; (3) use accurate neutral daylight white balance for daylight scenes so product colors and details remain legible, otherwise respect the scene's explicitly established natural ambient light and color; (4) retain natural skin, fabric and rubber with no sharpening, no HDR processing or oily/painterly texture. If subject edges or textures look too crisp, recommend removing selective or global sharpening and local microcontrast processing; never recommend sharpening the background or blurring the full image. Preserve presenter identity, actual product markings and supported material appearance; never recommend invented fine texture or hidden structure to create clarity; (5) give a filming friend believable interaction through motivated eye contact, practical gestures and real hand/product or foot/ground contact. Assess the proposed frame and action; do not claim to have inspected generated pixels.",
+    "Follow SPEECH_MODE: voiceover means post-production narration with no visible speaking requirement, irrespective of per-shot delivery. For on_camera mode, only speechDelivery=on_camera requires a visible unobstructed speaking mouth; omitted historical delivery keeps that default for narrated shots. speechDelivery=off_camera allows the same creator's narration over hands, a rear view, product details or person-free context without adding a talking face or lip synchronization. personVisible=true may mean only hands, sleeves or boots. Silent shots need no speaking mouth in either mode.",
     "Quote the exact offending English copy or Chinese visual phrase in every issue. Write explanations in Chinese for review.",
+    `COPY_SOURCE: ${copy.source ?? "ai_generated"}`,
+    `SPEECH_MODE: ${opts.speechMode ?? "on_camera"}`,
+    `VIDEO_MODE: ${opts.videoMode ?? "scene_demo"}`,
+    `CURRENT_PRODUCT_NAME: ${JSON.stringify(copy.productName ?? "")}`,
     `CURRENT_PRODUCT_FACTS: ${JSON.stringify(copy.factsSnapshot)}`,
+    `CURRENT_VISUAL_OBSERVATIONS: ${JSON.stringify(copy.visualObservations ?? "")}`,
+    `CATEGORY_GUIDANCE: ${JSON.stringify(buildTideweCategoryGuidance(copy.factsSnapshot.category, { productName: copy.productName, visualObservations: copy.visualObservations }))}`,
+    `COPY_VISUAL_BEATS: ${JSON.stringify(copy.visualBeats ?? [])}`,
+    `DETERMINISTIC_PRODUCT_COVERAGE_ISSUES: ${JSON.stringify(productCoverageIssues)}`,
+    "The deterministic coverage issues are objective storyboard defects. Address them in visual feedback even if the narration reads well; they remain in the final report independently of model opinion. Review only: never rewrite the frozen copy or silently repair the storyboard.",
     `FINAL_COPY: ${JSON.stringify(copy.text)}`,
     `SHOTS: ${JSON.stringify(shots)}`,
     `TIMING_CONTEXT: ${JSON.stringify(buildJudgeTimingContext(opts.timelineShots ?? shots, opts))}`,
-    TIMING_REVIEW_RULES,
+    TIDEWE_TIMING_REVIEW_RULES,
     'Return JSON only: {"verdicts":[{"judge":"pace","issues":[{"shotId":1,"issue":"quoted evidence and reason","tier":"default"}]},{"judge":"voice","issues":[]},{"judge":"idea","issues":[]},{"judge":"structure","issues":[]},{"judge":"visual","issues":[]}],"rewrites":[],"descriptionRewrites":[],"summary":"中文总评"}.',
     "Use invariant only for factual/structural defects, default for clear writing problems, taste for preferences. Never output rewritten narration.",
   ].join("\n");
+}
+
+/** Keep objective coverage defects visible even when the model returns no visual issues. */
+export function withTideweProductCoverageIssues(report: JudgeReport, issues: TideweProductCoverageIssue[]): JudgeReport {
+  if (!issues.length) return report;
+  const visual = report.verdicts.find(verdict => verdict.judge === "visual");
+  const merged = [...(visual?.issues ?? [])];
+  for (const issue of issues) {
+    const text = `[${issue.code}] ${issue.message}`;
+    if (!merged.some(existing => existing.shotId === issue.shotId && existing.issue === text)) {
+      merged.push({ ...(issue.shotId !== undefined && { shotId: issue.shotId }), issue: text, tier: "invariant" });
+    }
+  }
+  return {
+    ...report,
+    verdicts: visual
+      ? report.verdicts.map(verdict => verdict.judge === "visual" ? { ...verdict, issues: merged } : verdict)
+      : [...report.verdicts, { judge: "visual", issues: merged }],
+  };
 }
 
 /** Clamp a tier value; anything unrecognized becomes "taste" (show, never auto-change). */

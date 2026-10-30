@@ -15,8 +15,8 @@
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { REAL_FACE_CONSTRAINT, UGC_FIRST_FRAME_RULES } from "@/lib/presenters";
 import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
-import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { isTideweOutdoorProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
+import { TIDEWE_IMAGE_CAPTURE_POLICY } from "@/lib/tidewe/visual-policy";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 export const GRID_ROWS = 3;
@@ -41,6 +41,39 @@ const PREMIUM_SHOT_TYPE_LABELS: Record<string, string> = {
   social_proof: "space relationship",
   cta: "closing product portrait",
 };
+
+/** Initial creation quality; no edit-stage source image or repair report is required. */
+const TIDEWE_GRID_STRUCTURE_POLICY = "画面结构：肩、肘、前臂、手腕与手自然连续；左右手、掌背、拇指侧别与关节符合真实姿态，保留自然遮挡。商品轮廓、比例、材料、已有标识、可见部件数量和连接关系以参考为准；手与商品、商品与支撑面的受力、遮挡和接触成立。脚本明确需要的独立物体保留，固定件与运动件维持真实连接。";
+
+function tideweGridPresence(shot: Shot, speechMode: TideweOutdoorProfile["speechMode"]) {
+  const nativeSpeech = speechMode === "on_camera" && Boolean(shot.voiceover?.trim());
+  const spoken = nativeSpeech && shot.tidewe?.speechDelivery !== "off_camera";
+  return { spoken, offCamera: nativeSpeech && !spoken, personVisible: spoken || shot.tidewe?.personVisible !== false, productVisible: shot.tidewe?.productVisible !== false };
+}
+
+/** A grid cell describes its one frozen image; shared policies belong to the sheet. */
+function tideweGridCellBrief(shot: Shot, profile: TideweOutdoorProfile, presenterAnchor?: string): string {
+  const { spoken, offCamera, personVisible, productVisible } = tideweGridPresence(shot, profile.speechMode);
+  const text = (value?: string) => {
+    const trimmed = value?.trim();
+    // Saved descriptions can contain the full frozen identity. Refer to the global
+    // anchor without repeating its appearance paragraph in every cell.
+    return presenterAnchor && trimmed ? trimmed.replaceAll(presenterAnchor, "主播") : trimmed;
+  };
+  const plan = shot.tidewe?.visualPlan;
+  return [
+    shot.tidewe?.sceneId ? `场景 ${shot.tidewe.sceneId}` : "",
+    text(shot.description) ? `本镜画面：${text(shot.description)}` : "本镜画面：自然户外环境",
+    text(shot.visualIntent) ? `视觉意图：${text(shot.visualIntent)}` : "",
+    text(shot.tidewe?.shotGoal) ? `画面目标：${text(shot.tidewe?.shotGoal)}` : "",
+    text(shot.camera) ? `运镜/构图：${text(shot.camera)}` : "",
+    plan ? `已确认景别：${({ wide: "全景／使用空间", medium: "中景／人物与装备交流", close_up: "近景／较大操作区域", detail: "特写／局部部件与接触" })[plan.framing]}；画面任务：${({ presenter: "人物交流", demonstration: "真实使用演示", detail: "可见细节观察", context: "使用情境与空间关系" })[plan.visualRole]}` : "",
+    productVisible ? `产品可见${plan?.productFocus ? `；本镜商品观察对象：${text(plan.productFocus)}` : ""}` : "产品不出镜：保持原有环境或行动，不植入商品及品牌标识",
+    plan ? `首帧已有状态：${text(plan.actionStart)}；为后续单次动作「${text(plan.action)}」保留空间` : "",
+    !personVisible ? "无人出镜，不加入人脸、路人或手" : spoken ? "真人口播：回应镜头，嘴部清晰可见，手与商品不遮嘴，保留本镜景别" : offCamera ? "画外讲解：安静操作，按本镜构图，不要求脸部或嘴部入画" : "人物按本镜构图自然互动，细节镜不强加人脸",
+    productVisible ? "合焦目标：近前景—接触处—商品共同合焦，仅限本格已有表面" : "合焦目标：本格已有近前景与行动位置清楚可读",
+  ].filter(Boolean).join("；");
+}
 
 export interface StoryboardGridPolicyInput {
   creativeProfile?: unknown;
@@ -91,23 +124,31 @@ export function buildStoryboardGridPrompt(
     || isPremiumCgPromptPolicy(refs?.outputPolicy);
   if (premiumCg) return buildPremiumStoryboardGridPrompt(cells, refs);
   if (isTideweOutdoorProfile(profileValue) || isTideweOutdoorProfile(refs?.creativeProfile)) {
-    const tideweProfile = isTideweOutdoorProfile(profileValue) ? profileValue : refs!.creativeProfile as import("@/lib/creative-profiles").TideweOutdoorProfile;
+    const tideweProfile = isTideweOutdoorProfile(profileValue) ? profileValue : refs!.creativeProfile as TideweOutdoorProfile;
     if (shots.length > GRID_MAX_SHOTS) throw new Error("TIDEWE 九宫格最多容纳 9 镜，请使用逐镜生成或明确重新规划，不能截断脚本。");
     const aspect = promptAspectRatio(refs?.aspectRatio);
     const productCount = typeof refs?.productImageCount === "number" && Number.isFinite(refs.productImageCount)
       ? Math.max(0, Math.floor(refs.productImageCount)) : refs?.productImage ? 1 : 0;
     const offset = refs?.characterSheet ? 1 : 0;
+    const hasPerson = cells.some(shot => tideweGridPresence(shot, tideweProfile.speechMode).personVisible);
+    const presenter = tideweProfile.presenter ?? cells.find(shot => tideweGridPresence(shot, tideweProfile.speechMode).personVisible)?.tidewe?.presenter;
+    const presenterAnchor = presenter ? tidewePresenterAnchor(presenter) : undefined;
     return [
       `TIDEWE 户外分镜：${GRID_ROWS}x${GRID_COLS} 严格等分九宫格，整图与每格画幅均为 ${aspect.ratio}。两条横/竖分隔线位于1/3和2/3，极细纯白直线，无外边框。按从左到右、从上到下顺序，每格独立可裁切。编号只作说明，不绘制文字。`,
-      "同 sceneId 的人物、衣物、产品、环境、天气与光线连续；按脚本允许合理换场景。人物参考只约束有人镜头，商品参考只约束产品出镜镜头；无人空镜不添加人物。",
-      tideweProfile.presenter ? `整支视频出镜人物固定为${tidewePresenterAnchor(tideweProfile.presenter)}，所有有人镜头沿用同一主播，不因换景重新选人。` : "",
-      refs?.characterSheet ? "第 1 张参考图为所选主播身份参考（可能是定妆照或上传的人像）：锁定脸型、发型、体型；不要将其背景、分格、边框带入各格。该图不是商品图，也不是可直接复用的分镜。" : "",
+      TIDEWE_IMAGE_CAPTURE_POLICY,
+      "上述统一画面风格适用于全部九格，包括全景、中景、近景、特写、人物镜、产品镜、环境空镜及占位格。每格直接生成该镜头动作开始前的首帧画面；按脚本换场景时仍保持同一 iPhone 8 原生相机成像风格。",
+      TIDEWE_GRID_STRUCTURE_POLICY,
+      "同 sceneId 的人物、衣物、产品状态、环境、天气与光线连续；按脚本换场景。逐格保留景别、机位、视线、人与商品距离及接触位置。只画 actionStart 的一瞬，为一次后续小动作留空间，不拼入动作终点。",
+      "本镜指定商品观察对象：该商品或部位必须清楚入画，构图容纳指定部件与接触位置；人物交流不能替代商品展示。只呈现参考支持的外观和普通使用，不由外观推断隐藏结构、性能或无依据效果测试；不展示独立电池。",
+      hasPerson && presenterAnchor ? `固定出镜人物：${presenterAnchor}；有人或手的格沿用同一身份、衣袖与体型。` : "",
+      refs?.characterSheet ? "第 1 张参考图为主播身份参考，只锁定脸型、发型与体型。人物在各格自身环境中重新成像，光线与焦点服从本格；不复制参考的背景、分格、虚化与影棚效果。" : "",
       ...Array.from({ length: productCount }, (_, i) => `第 ${i + 1 + offset} 张参考图为当前同一商品的第 ${i + 1}/${productCount} 个视角，只锁定商品外观和结构，不能替换主播身份。`),
+      productCount ? "商品参考仅用于产品可见的格；商品在本格环境中重新成像，共享自然光、原生成像质感、清晰度和接触阴影，不复制参考的背景、虚化与影棚效果。" : "",
       ...Array.from({ length: GRID_MAX_SHOTS }, (_, index) => cells[index]
-        ? `第 ${index + 1} 格：${compileTideweVisualPrompt(cells[index], "image", tideweProfile.speechMode, tideweProfile.presenter).prompt}`
+        ? `第 ${index + 1} 格（第 ${Math.floor(index / GRID_COLS) + 1} 行第 ${index % GRID_COLS + 1} 列）：${tideweGridCellBrief(cells[index], tideweProfile, presenterAnchor)}`
         : `第 ${index + 1} 格为占位：重复最后一个有效格，不增加叙事，不跨格合并。`),
-      "严格九格。产品身份参考不得把背景带入环境空镜；所有新增字幕、价格、营销字与水印均禁止。",
-    ].join("\n");
+      "严格九格，仅保留商品原有真实标识，不新增文字、字幕、编号、价格、营销字、Logo或水印。",
+    ].filter(Boolean).join("\n");
   }
   const aspect = promptAspectRatio(refs?.aspectRatio);
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { enqueueGenerationRun, GenerationRunError, listGenerationRuns, wakeGenerationRunner, type EnqueueGenerationRunInput } from "@/lib/generation-runs";
+import { deleteGenerationRuns, enqueueGenerationRun, GenerationRunError, listGenerationRuns, wakeGenerationRunner, type EnqueueGenerationRunInput } from "@/lib/generation-runs";
 
 export const runtime = "nodejs";
 export async function GET(req: NextRequest) {
@@ -10,6 +10,10 @@ export async function GET(req: NextRequest) {
 }
 export async function POST(req: NextRequest) {
   try { return NextResponse.json(enqueueGenerationRun(await req.json() as EnqueueGenerationRunInput), { status: 202 }); }
+  catch (error) { return failure(error); }
+}
+export async function DELETE(req: NextRequest) {
+  try { return NextResponse.json(deleteGenerationRuns(req.nextUrl.searchParams.get("projectId"))); }
   catch (error) { return failure(error); }
 }
 function failure(error: unknown) {

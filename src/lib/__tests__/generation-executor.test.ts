@@ -28,6 +28,7 @@ import { getDb } from "@/lib/db";
 import { projects, scripts, assets, aiTasks } from "@/lib/db/schema";
 import { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
+import { generationRuns } from "@/lib/generation-schema";
 import { executeGenerationItem } from "@/lib/generation-executor";
 import { beforeGenerationSubmission, generationCheckpoint, generationContextCheckpoint } from "@/lib/generation-context";
 import { recordAiTask } from "@/lib/ai-tasks";
@@ -53,6 +54,21 @@ beforeEach(() => {
 afterAll(() => state.sqlite?.close());
 
 describe("generation executor recovery", () => {
+  it("blocks a stale worker before billing when its parent task was deleted", async () => {
+    const input = item();
+    getDb().insert(generationRuns).values({ id: input.runId, projectId: input.projectId, clientRequestId: "deleted-request", requestHash: "test",
+      kind: "video", deletedAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now() }).run();
+    const paidSubmit = vi.fn();
+    state.submit.mockImplementationOnce(async () => {
+      beforeGenerationSubmission();
+      paidSubmit();
+      return Response.json({ taskId: "must-not-submit" });
+    });
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_RUN_DELETED" });
+    expect(paidSubmit).not.toHaveBeenCalled();
+    expect(state.query).not.toHaveBeenCalled();
+    expect(input.checkpoint?.submissionState).toBe("not_submitted");
+  });
   it("blocks the first paid submission when a confirmed local reference disappeared", async () => {
     const input = item();
     input.payload.snapshot!.referenceInputs = [{ url: "/api/files/A/missing-confirmed-frame.png", hash: "a".repeat(64) }];
@@ -171,6 +187,44 @@ describe("generation executor recovery", () => {
     expect(await run(input)).toMatchObject({ historical: true, scripts: [expect.objectContaining({ id: "historical-script", selected: false })] });
     expect(await run(input)).toHaveProperty("scripts"); expect(state.script).toHaveBeenCalledOnce();
     expect(getDb().select().from(scripts).where(eq(scripts.id, "script-A")).get()?.selected).toBe(true);
+  });
+  it("keeps a completed local script validation failure terminal across worker restarts", async () => {
+    const input = item(); input.kind = "script"; input.shotId = null;
+    const message = "Shot 2 has on_camera speech in detail framing; use off_camera narration or choose a framing that includes the speaking face.";
+    state.script.mockImplementationOnce(async () => {
+      beforeGenerationSubmission();
+      generationCheckpoint({ submissionState: "acknowledged", stage: "failed", scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED", message } });
+      return Response.json({ error: message, code: "TIDEWE_VALIDATION_FAILED" }, { status: 502 });
+    });
+    await expect(run(input)).rejects.toMatchObject({ message, code: "TIDEWE_VALIDATION_FAILED", retryable: false });
+    await expect(run(input)).rejects.toMatchObject({ message, code: "TIDEWE_VALIDATION_FAILED", retryable: false });
+    expect(state.script).toHaveBeenCalledOnce();
+    expect(getDb().select().from(scripts).all()).toMatchObject([{ id: "script-A", selected: true }]);
+  });
+  it("does not repeat an interrupted script submission whose acceptance remains unknown", async () => {
+    const input = item(); input.kind = "script"; input.shotId = null;
+    state.script.mockImplementationOnce(async () => {
+      beforeGenerationSubmission();
+      return Response.json({ error: "network interrupted" }, { status: 500 });
+    });
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION", retryable: false });
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION", retryable: false });
+    expect(state.script).toHaveBeenCalledOnce();
+  });
+  it("prioritizes recoverable generated scripts over a stale local validation marker", async () => {
+    const input = item(); input.kind = "script"; input.shotId = null;
+    input.checkpoint = { submissionState: "acknowledged", generatedScripts: [{ title: "paid valid result" }],
+      scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED", message: "stale marker" } };
+    state.script.mockResolvedValueOnce(Response.json({ error: "temporary save failure" }, { status: 500 }));
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+    expect(state.script).toHaveBeenCalledOnce();
+  });
+  it("keeps conflicting paid output evidence for review without resubmitting a validation failure", async () => {
+    const input = item(); input.kind = "script"; input.shotId = null;
+    input.checkpoint = { submissionState: "acknowledged", resultUrls: ["https://example.test/paid-result"],
+      scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED", message: "stale marker" } };
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION" });
+    expect(state.script).not.toHaveBeenCalled();
   });
   it.each(["/api/llm/script", "/api/topic/script"])("recovers the paid scripts after a database save failure through %s without rebilling", async (endpoint) => {
     const input = item(); input.kind = "script"; input.shotId = null;

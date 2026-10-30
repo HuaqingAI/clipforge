@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { compileTideweVisualPrompt, TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
+import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 const shot = (shotId: number, type: string, description: string) =>
   ({ shotId, type, duration: 3, description, voiceover: "词", visualSource: "ai_generate", transition: "cut" }) as unknown as Shot;
@@ -10,6 +13,118 @@ describe("buildStoryboardGridPrompt", () => {
   const cast: ScriptCharacter[] = [
     { id: "char_a", name: "小美", gender: "female", persona: "活泼", appearance: "22 岁高马尾白 T 恤" } as ScriptCharacter,
   ];
+
+  it("applies initial TIDEWE anatomy and optical quality once while keeping each approved cell's action and framing", () => {
+    const profile = createTideweOutdoorProfile();
+    const planned: Shot[] = [
+      { ...shots[0], description: "主播在树林边已扶住当前商品边缘。", camera: "全景显示人与商品及中远景小径。", tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "显示商品使用空间", productVisible: true, personVisible: true, factRefs: [], sceneId: "woods", visualPlan: { framing: "wide", visualRole: "demonstration", productFocus: "当前商品外轮廓及手部接触处", actionStart: "手已扶住商品边缘", action: "轻触可见边缘一次", actionEnd: "完成动作后手自然放稳" } } },
+      { ...shots[1], description: "无人出镜，商品现有连接处与支撑面局部可见。", camera: "固定局部特写", tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "观察实际连接处", productVisible: true, personVisible: false, factRefs: [], sceneId: "woods", visualPlan: { framing: "detail", visualRole: "detail", productFocus: "商品现有连接处与邻近支撑面", actionStart: "连接处已稳定入画", action: "静态观察已有连接状态", actionEnd: "连接处继续保持稳定" } } },
+    ];
+    const before = structuredClone(planned);
+    const prompt = buildStoryboardGridPrompt(planned, null, { creativeProfile: profile, characterSheet: true, productImageCount: 2 });
+    expect(prompt.split(TIDEWE_IMAGE_FOCUS_TARGET)).toHaveLength(2);
+    expect(prompt).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(prompt.split("画面结构：")).toHaveLength(2);
+    expect(prompt).toContain("肩、肘、前臂、手腕与手自然连续");
+    expect(prompt).toContain("左右手、掌背、拇指侧别与关节符合真实姿态");
+    expect(prompt).toContain("保留自然遮挡");
+    expect(prompt).toContain("可见部件数量和连接关系以参考为准");
+    expect(prompt).toContain("光线与焦点服从本格");
+    expect(prompt).toContain("商品在本格环境中重新成像");
+    expect(prompt.match(/合焦目标：近前景—接触处—商品共同合焦/g)).toHaveLength(planned.length);
+    for (const cell of planned) {
+      expect(prompt).toContain(cell.description);
+      expect(prompt).toContain(cell.camera!);
+      expect(prompt).toContain(cell.tidewe!.visualPlan!.productFocus!);
+      expect(prompt).toContain(cell.tidewe!.visualPlan!.actionStart);
+      expect(prompt).toContain(cell.tidewe!.visualPlan!.action);
+      expect(prompt).not.toContain(cell.tidewe!.visualPlan!.actionEnd);
+    }
+    expect(prompt).toContain("已确认景别：全景／使用空间");
+    expect(prompt).toContain("已确认景别：特写／局部部件与接触");
+    expect(prompt).not.toMatch(/reference image 1|source image|repair report|Edit and regenerate|保留源图/i);
+    expect(planned).toEqual(before);
+    expect(buildStoryboardGridPrompt(shots)).not.toContain(TIDEWE_IMAGE_FOCUS_TARGET);
+  });
+
+  it.each(["靴子鞋底", "椅脚"])("keeps the lower-edge support surface readable in a low-angle close-up of %s", productPart => {
+    const planned: Shot = { ...shots[0], description: `${productPart}已稳定落在现有落叶地面，画面下沿至接触处为连续地面。`, camera: "固定低机位近景，保留原有局部构图。",
+      tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "观察现有支撑与接触关系", productVisible: true, personVisible: false, factRefs: [], sceneId: "woods", visualPlan: {
+        framing: "close_up", visualRole: "detail", productFocus: `${productPart}与落叶地面的现有接触位置`, actionStart: `${productPart}已踩稳或放稳在地面`, action: "静态观察当前接地状态", actionEnd: "商品继续保持稳定支撑",
+      } } };
+    const before = structuredClone(planned);
+    const prompt = buildStoryboardGridPrompt([planned], null, { creativeProfile: createTideweOutdoorProfile(), productImageCount: 2 });
+    expect(prompt.split(TIDEWE_IMAGE_FOCUS_TARGET)).toHaveLength(2);
+    expect(prompt).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(prompt).toContain("合焦目标：近前景—接触处—商品共同合焦，仅限本格已有表面");
+    expect(prompt).toContain("已确认景别：近景／较大操作区域");
+    expect(prompt).toContain(planned.description);
+    expect(prompt).toContain(planned.camera!);
+    expect(prompt).toContain(planned.tidewe!.visualPlan!.productFocus!);
+    expect(prompt).toContain(planned.tidewe!.visualPlan!.actionStart);
+    expect(prompt).toContain(planned.tidewe!.visualPlan!.action);
+    expect(prompt).not.toContain(planned.tidewe!.visualPlan!.actionEnd);
+    expect(prompt).toContain("第 1 张参考图为当前同一商品的第 1/2 个视角");
+    expect(prompt).toContain("第 2 张参考图为当前同一商品的第 2/2 个视角");
+    expect(planned).toEqual(before);
+  });
+
+  it.each([5, 9])("uses concise image briefs for %i shots with one identity and no repeated audio or safety template", count => {
+    const presenter = { id: "host", name: "Sam", appearance: "成年男性，棕色短发，灰色户外夹克，普通使用者体型", referenceImages: ["/api/files/test/presenter.png"] };
+    const profile = createTideweOutdoorProfile({ presenter, speechMode: "voiceover" });
+    const anchor = tidewePresenterAnchor(presenter);
+    const planned: Shot[] = Array.from({ length: count }, (_, index) => ({ ...shots[0], shotId: index + 1,
+      description: `${anchor}在林边稳稳扶住迷彩靴筒，靴底与落叶地面相接。`, visualIntent: `观察商品第${index + 1}处可见表面`, camera: "固定低机位，保留完整靴筒与近前景。",
+      tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "观察穿戴后的部件和接地关系", productVisible: true, personVisible: true, sceneId: "woods", presenter, factRefs: [],
+        visualPlan: { framing: index % 2 ? "detail" : "wide", visualRole: index % 2 ? "detail" : "demonstration", productFocus: `第${index + 1}处现有靴筒与接触部位`, actionStart: "手已轻扶靴筒，靴底稳固接地", action: "轻整一次靴筒", actionEnd: "手已完成轻整并回到体侧" } },
+    }));
+    const before = structuredClone(planned);
+    const prompt = buildStoryboardGridPrompt(planned, undefined, { characterSheet: true, productImageCount: 2 }, { creativeProfile: profile });
+    const cellLines = prompt.split("\n").filter(line => /^第 \d+ 格（/.test(line));
+    expect(cellLines).toHaveLength(count);
+    expect(prompt.split(anchor)).toHaveLength(2);
+    expect(prompt.split(TIDEWE_IMAGE_FOCUS_TARGET)).toHaveLength(2);
+    expect(prompt.match(/合焦目标：近前景—接触处—商品共同合焦/g)).toHaveLength(count);
+    expect(cellLines.join("\n")).not.toMatch(/固定出镜人物|当前商品参考锁定|首版不展示独立电池|英文画外旁白|音轨分开|No audio|嘴部清晰可见|摄影基准/);
+    for (const [index, line] of cellLines.entries()) {
+      const cell = planned[index];
+      expect(line).toContain(cell.description.replace(anchor, "主播"));
+      expect(line).toContain(cell.visualIntent!);
+      expect(line).toContain(cell.tidewe!.shotGoal);
+      expect(line).toContain(cell.camera!);
+      expect(line).toContain(cell.tidewe!.visualPlan!.productFocus!);
+      expect(line).toContain(cell.tidewe!.visualPlan!.actionStart);
+      expect(line).toContain(cell.tidewe!.visualPlan!.action);
+      expect(line).not.toContain(cell.tidewe!.visualPlan!.actionEnd);
+    }
+    // Compare against standalone per-shot compilers: this catches accidentally
+    // putting the full repeated video/image policy back into every grid cell.
+    const standaloneLength = planned.reduce((sum, cell) => sum + compileTideweVisualPrompt(cell, "image", profile.speechMode, presenter).prompt.length, 0);
+    expect(prompt.length).toBeLessThan(standaloneLength * 0.5);
+    expect(planned).toEqual(before);
+  });
+
+  it("preserves per-cell person, product and native/off-camera speech exceptions", () => {
+    const profile = createTideweOutdoorProfile({ speechMode: "on_camera" });
+    const base: Shot = { ...shots[0], voiceover: "Look at this.", tidewe: { copySpan: { start: 0, end: 13 }, translation: "看看。", shotGoal: "观察", productVisible: true, personVisible: true, factRefs: [], sceneId: "woods", visualPlan: { framing: "detail", visualRole: "detail", productFocus: "原有可见连接处", actionStart: "手已扶稳部件", action: "轻触一次", actionEnd: "手放开" } } };
+    const planned: Shot[] = [
+      base,
+      { ...base, shotId: 2, tidewe: { ...base.tidewe!, speechDelivery: "off_camera" } },
+      { ...base, shotId: 3, tidewe: { ...base.tidewe!, speechDelivery: "off_camera", personVisible: false, productVisible: false } },
+    ];
+    const lines = buildStoryboardGridPrompt(planned, undefined, { creativeProfile: profile }).split("\n").filter(line => /^第 \d+ 格（/.test(line));
+    expect(lines[0]).toContain("嘴部清晰可见");
+    expect(lines[0]).toContain("保留本镜景别");
+    expect(lines[1]).toContain("画外讲解：安静操作");
+    expect(lines[1]).toContain("不要求脸部或嘴部入画");
+    expect(lines[1]).not.toContain("嘴部清晰可见");
+    expect(lines[2]).toContain("无人出镜，不加入人脸、路人或手");
+    expect(lines[2]).toContain("产品不出镜");
+    expect(lines[2]).not.toContain("原有可见连接处");
+    expect(lines[2]).not.toContain("近前景—接触处—商品共同合焦");
+    expect(lines.every(line => line.includes("特写／局部部件与接触"))).toBe(true);
+    expect(lines.join("\n")).not.toContain(base.voiceover!);
+  });
 
   it("全局一致性块 + 人物设定 + 逐格行 + 真实感规则 + 无文字硬约束", () => {
     const p = buildStoryboardGridPrompt(shots, cast);

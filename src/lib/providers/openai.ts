@@ -17,6 +17,7 @@
 
 import { BaseProvider, ProviderError } from './base'
 import { normalizeOpenAIBaseUrl } from '@/lib/openai-config'
+import { OPENAI_MASK_IMAGE_MODELS } from '@/lib/openai-image-capabilities'
 import type {
   ProviderConfig,
   ImageOptions,
@@ -39,6 +40,27 @@ interface OpenAIImageResponse {
   [key: string]: unknown
 }
 
+const MASK_IMAGE_MODELS = new Set(OPENAI_MASK_IMAGE_MODELS)
+
+/** Header/chunk validation needs neither a filesystem nor an image decoder. */
+function pngInfo(bytes: Buffer): { width: number; height: number; alpha: boolean } | undefined {
+  if (bytes.length < 45 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    || bytes.readUInt32BE(8) !== 13 || bytes.toString('ascii', 12, 16) !== 'IHDR') return
+  const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20)
+  const depth = bytes[24], color = bytes[25]
+  const depths: Record<number, number[]> = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] }
+  if (!width || !height || !depths[color]?.includes(depth) || bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] > 1) return
+  let imageData = false
+  for (let offset = 33; offset + 12 <= bytes.length;) {
+    const length = bytes.readUInt32BE(offset), type = bytes.toString('ascii', offset + 4, offset + 8)
+    const next = offset + 12 + length
+    if (next > bytes.length) return
+    if (type === 'IDAT' && length > 0) imageData = true
+    if (type === 'IEND') return length === 0 && imageData && next === bytes.length ? { width, height, alpha: color === 4 || color === 6 } : undefined
+    offset = next
+  }
+}
+
 // ==================== Provider 实现 ====================
 
 export class OpenAIProvider extends BaseProvider {
@@ -58,6 +80,11 @@ export class OpenAIProvider extends BaseProvider {
    */
   async generateImage(options: ImageOptions): Promise<ImageResult> {
     const references = this.imageReferences(options)
+    if (options.maskImageUrl !== undefined) {
+      if (!MASK_IMAGE_MODELS.has(options.modelId)) throw this.rejectedBeforeSubmission('当前图片模型不支持蒙版编辑，请选择支持的 GPT Image 编辑模型', 'MASK_MODEL_UNSUPPORTED')
+      if (!references.length) throw this.rejectedBeforeSubmission('蒙版编辑需要第一张源图，不能用于无参考图的文生图', 'MASK_SOURCE_REQUIRED')
+      if (typeof options.maskImageUrl !== 'string' || !options.maskImageUrl.trim()) throw this.rejectedBeforeSubmission('蒙版图片地址无效', 'BAD_MASK')
+    }
     if (options.mode === 'image-to-image' || references.length > 0) {
       return this.editImage(options, references)
     }
@@ -134,6 +161,7 @@ export class OpenAIProvider extends BaseProvider {
     const model = options.modelId
     const isGptImage = model.startsWith('gpt-image')
     const isDalle3 = model.startsWith('dall-e-3')
+    const imageControls = this.explicitImageControls(options)
 
     const body: Record<string, unknown> = {
       model,
@@ -144,6 +172,7 @@ export class OpenAIProvider extends BaseProvider {
       // 仅 DALL·E 系列支持 response_format；gpt-image-* 恒返回 b64_json，不能传该字段
       ...(isGptImage ? {} : { response_format: 'url' }),
       ...options.extra,
+      ...imageControls,
     }
 
     const response = await this.request<OpenAIImageResponse>('/images/generations', {
@@ -158,6 +187,7 @@ export class OpenAIProvider extends BaseProvider {
   /** 图生图（编辑）：POST /images/edits（multipart） */
   private async editImage(options: ImageOptions, references: string[]): Promise<ImageResult> {
     const model = options.modelId
+    const imageControls = this.explicitImageControls(options)
     if (model.startsWith('dall-e-3')) {
       throw this.rejectedBeforeSubmission('DALL·E 3 不支持图生图（图片编辑），请改用 gpt-image-1', 'NOT_SUPPORTED')
     }
@@ -174,21 +204,62 @@ export class OpenAIProvider extends BaseProvider {
       if (error instanceof ProviderError) { error.submissionRejected = true; throw error }
       throw this.rejectedBeforeSubmission(`参考图读取失败: ${error instanceof Error ? error.message : String(error)}`, 'BAD_REFERENCE')
     })
+    let mask: Blob | undefined
+    if (options.maskImageUrl !== undefined) {
+      try {
+        const uploaded = await this.fetchReferenceImage(options.maskImageUrl.trim())
+        if (uploaded.blob.size >= 4 * 1024 * 1024) throw this.rejectedBeforeSubmission('蒙版 PNG 必须小于 4MB', 'MASK_TOO_LARGE')
+        const maskBytes = Buffer.from(await uploaded.blob.arrayBuffer())
+        const maskInfo = pngInfo(maskBytes)
+        if (!maskInfo || !maskInfo.alpha) throw this.rejectedBeforeSubmission('蒙版必须是带透明通道的有效 PNG（RGBA 或灰度加 alpha），alpha 为 0 的区域表示需要编辑', 'BAD_MASK')
+        const sourceInfo = pngInfo(Buffer.from(await images[0].blob.arrayBuffer()))
+        if (!sourceInfo) throw this.rejectedBeforeSubmission('当前蒙版编辑仅支持 PNG 源图，请先将第一张源图转换为 PNG；无蒙版的全图编辑不受影响', 'MASK_SOURCE_UNSUPPORTED')
+        if (maskInfo.width !== sourceInfo.width || maskInfo.height !== sourceInfo.height) throw this.rejectedBeforeSubmission('蒙版尺寸必须与第一张 PNG 源图完全一致', 'MASK_DIMENSIONS_MISMATCH')
+        mask = new Blob([new Uint8Array(maskBytes)], { type: 'image/png' })
+      } catch (error) {
+        if (error instanceof ProviderError) { error.submissionRejected = true; throw error }
+        throw this.rejectedBeforeSubmission(`蒙版读取失败: ${error instanceof Error ? error.message : String(error)}`, 'BAD_MASK')
+      }
+    }
 
     const form = new FormData()
     form.append('model', model)
     form.append('prompt', options.prompt)
     form.append('n', String(isDalle2 ? 1 : (options.count ?? 1)))
     form.append('size', this.pickSize(model, options.width, options.height, options.imageResolution))
+    for (const [field, value] of Object.entries(imageControls)) form.append(field, value)
     // gpt-image-* 用数组字段 image[]；dall-e-2 用单字段 image
     for (const { blob, filename } of images) {
       form.append(isDalle2 ? 'image' : 'image[]', blob, filename)
     }
+    if (mask) form.append('mask', mask, 'mask.png')
     // 仅 dall-e-2 支持 response_format；gpt-image-* 恒返回 b64_json
     if (isDalle2) form.append('response_format', 'url')
 
     const response = await this.postMultipart<OpenAIImageResponse>('/images/edits', form, this.imageTimeout(options))
     return this.mapResult(model, response)
+  }
+
+  /** New controls are opt-in; legacy DALL·E requests retain their existing parameter contract. */
+  private explicitImageControls(options: ImageOptions): Record<string, string> {
+    if (!options.modelId.startsWith('gpt-image') && options.modelId !== 'chatgpt-image-latest') return {}
+    const fields: Record<string, string> = {}
+    if (options.quality !== undefined) {
+      if (!['auto', 'low', 'medium', 'high', 'xhigh'].includes(options.quality)) {
+        throw this.rejectedBeforeSubmission('图片质量选项无效', 'BAD_IMAGE_QUALITY')
+      }
+      if (options.quality === 'xhigh' && !/^gpt-image-2\.5-(?:sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?$/.test(options.modelId)) {
+        throw this.rejectedBeforeSubmission('xhigh 图片质量仅支持 GPT Image 2.5 Sunburst / Flare', 'IMAGE_QUALITY_UNSUPPORTED')
+      }
+      fields.quality = options.quality
+    }
+    if (options.outputFormat !== undefined) {
+      if (!['png', 'jpeg', 'webp'].includes(options.outputFormat)) {
+        throw this.rejectedBeforeSubmission('图片输出格式选项无效', 'BAD_IMAGE_OUTPUT_FORMAT')
+      }
+      fields.output_format = options.outputFormat
+    }
+    return fields
   }
 
   /** Ordered multi-image references take precedence; retain the legacy single-image input. */
@@ -207,8 +278,9 @@ export class OpenAIProvider extends BaseProvider {
 
   /** 解析图片响应：url 直接用，b64_json 包成 data URI */
   private mapResult(model: string, response: OpenAIImageResponse): ImageResult {
+    const mime = response.output_format === 'jpeg' ? 'image/jpeg' : response.output_format === 'webp' ? 'image/webp' : 'image/png'
     const imageUrls = (response.data ?? [])
-      .map((d) => d.url ?? (d.b64_json ? `data:image/png;base64,${d.b64_json}` : undefined))
+      .map((d) => d.url ?? (d.b64_json ? `data:${mime};base64,${d.b64_json}` : undefined))
       .filter((u): u is string => Boolean(u))
 
     if (imageUrls.length === 0) {

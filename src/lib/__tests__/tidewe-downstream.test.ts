@@ -6,7 +6,8 @@ import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
 import { buildStoryboardGridPrompt } from "@/lib/storyboard-grid";
 import { buildStoryboardFilmPrompt } from "@/lib/storyboard-film";
-import { assertTideweMediaDuration, compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { assertTideweMediaDuration, compileTideweVisualPrompt, TIDEWE_IMAGE_CAPTURE_POLICY, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
+import { validateVideoPrompt } from "@/lib/video-prompt";
 
 const profile = createTideweOutdoorProfile({ speechMode: "voiceover" });
 const shot: Shot = {
@@ -17,13 +18,127 @@ const shot: Shot = {
 };
 
 describe("TIDEWE downstream visual and narration policy", () => {
+  const frozenPresenter = { id: "host", name: "Host", appearance: "成年户外主播", referenceImages: ["/api/files/host.png"] };
+
+  it("carries the concrete boot observation through still, grid and video composition", () => {
+    const productFocus = "参考中的高筒迷彩狩猎靴与小腿同框，筒口扣带清楚可见";
+    const planned: Shot = { ...shot, description: "所选主播已穿好参考中的狩猎靴，手指搭在现有筒口扣带。", tidewe: { ...shot.tidewe!, productVisible: true, personVisible: true, speechDelivery: "off_camera", visualPlan: { framing: "detail", visualRole: "detail", productFocus, actionStart: "手指已搭住靴筒扣带", action: "沿可见扣带轻触一次", actionEnd: "手停在扣带边缘" } } };
+    const outputs = [
+      compileTideweVisualPrompt(planned, "image", "on_camera").prompt,
+      buildShotVideoPrompt({ shot: planned, ordinal: 0, creativeProfile: createTideweOutdoorProfile() }).prompt,
+      buildStoryboardFilmPrompt([planned], null, { creativeProfile: createTideweOutdoorProfile() }),
+    ];
+    for (const prompt of outputs) {
+      expect(prompt).toContain(`本镜商品观察对象：${productFocus}`);
+      expect(prompt).toContain("画幅与构图须实际容纳观察对象");
+      expect(prompt).toContain("本镜由同一成年主播画外讲解");
+      expect(prompt).not.toContain("产品不出镜");
+    }
+    const grid = buildStoryboardGridPrompt([planned], null, { creativeProfile: createTideweOutdoorProfile() });
+    expect(grid).toContain(`本镜商品观察对象：${productFocus}`);
+    expect(grid).toContain("构图容纳指定部件与接触位置");
+    expect(grid).toContain("画外讲解：安静操作，按本镜构图，不要求脸部或嘴部入画");
+    expect(grid).not.toContain("产品不出镜");
+  });
+
+  it("uses the planned initial contact for stills and the complete action for video without leaking the ending into the first frame", () => {
+    const visualPlan = { framing: "detail" as const, visualRole: "detail" as const, actionStart: "指腹已经搭在坐垫前缘", action: "轻压现有软垫一次", actionEnd: "压力释放后手掌停在垫边" };
+    const planned = { ...shot, tidewe: { ...shot.tidewe!, visualPlan, personVisible: true, speechDelivery: "off_camera" as const } };
+    const before = structuredClone(planned);
+    const stills = [compileTideweVisualPrompt(planned, "image", "on_camera").prompt, buildStoryboardGridPrompt([planned], null, { creativeProfile: createTideweOutdoorProfile() })];
+    for (const prompt of stills) {
+      expect(prompt).toContain(visualPlan.actionStart);
+      expect(prompt).toContain(visualPlan.action);
+      expect(prompt).not.toContain(visualPlan.actionEnd);
+      expect(prompt).not.toContain(planned.voiceover);
+    }
+    const video = buildShotVideoPrompt({ shot: planned, ordinal: 0, creativeProfile: createTideweOutdoorProfile() });
+    expect(video.prompt).toContain(visualPlan.actionStart);
+    expect(video.prompt).toContain(visualPlan.action);
+    expect(video.prompt).toContain(visualPlan.actionEnd);
+    expect(video.prompt).toContain(JSON.stringify(planned.voiceover));
+    expect(video.prompt).not.toContain("嘴部清晰可见");
+    expect(planned).toEqual(before);
+  });
+
+  it.each(["image", "video"] as const)("applies the photographic baseline to %s without overwriting the approved scene", (kind) => {
+    const approved = { ...shot, description: "傍晚林边，主播在树影下检查椅脚。", camera: "低机位产品近景" };
+    const compiled = compileTideweVisualPrompt(approved, kind);
+    expect(compiled.prompt).toContain(kind === "image" ? TIDEWE_IMAGE_CAPTURE_POLICY : TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(compiled.prompt).toContain(approved.description);
+    expect(compiled.prompt).toContain(approved.camera);
+    expect(compiled.negativePrompt).toMatch(/过度背景虚化.*过度锐化.*油画纹理/);
+    expect(approved.description).toBe("傍晚林边，主播在树影下检查椅脚。");
+  });
+
+  it("allows the grid to own one shared photographic block while retaining each cell's scene and identity", () => {
+    const bound = { ...shot, tidewe: { ...shot.tidewe!, personVisible: true, presenter: frozenPresenter } };
+    const cell = compileTideweVisualPrompt(bound, "image", "on_camera", frozenPresenter, "native", { includePhotographicPolicy: false });
+    expect(cell.prompt).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
+    expect(cell.prompt).not.toContain(TIDEWE_IMAGE_CAPTURE_POLICY);
+    expect(cell.prompt).toContain(bound.description);
+    expect(cell.prompt).toContain("所选主播 Host（成年户外主播）");
+    expect(cell.negativePrompt).toContain("过度锐化");
+  });
+
+  it("keeps historical on-camera delivery and permits wider framing with a visible speaking face", () => {
+    const bound = { ...shot, camera: "膝上中全景展示整把椅子", tidewe: { ...shot.tidewe!, presenter: frozenPresenter } };
+    const historical = compileTideweVisualPrompt(bound, "video", "on_camera");
+    const explicit = compileTideweVisualPrompt({ ...bound, tidewe: { ...bound.tidewe!, speechDelivery: "on_camera" } }, "video", "on_camera");
+    expect(explicit).toEqual(historical);
+    expect(explicit.prompt).toContain(bound.camera);
+    expect(explicit.prompt).toContain("嘴部清晰可见");
+    expect(explicit.prompt).not.toContain("中近景或半身构图");
+    expect(explicit.negativePrompt).not.toMatch(/(?:^|、)说话口型(?:、|$)/);
+  });
+
+  it.each([true, false])("narrates the frozen line off camera without forcing a face, personVisible=%s", (personVisible) => {
+    const exact = "I'd check this part first. Keep it simple.";
+    const bound: Shot = { ...shot, voiceover: exact, camera: "低机位椅脚特写", description: "椅脚与落叶地面自然接触。", tidewe: { ...shot.tidewe!, speechDelivery: "off_camera", presenter: frozenPresenter, personVisible } };
+    const before = structuredClone(bound);
+    const compiled = compileTideweVisualPrompt(bound, "video", "on_camera");
+    expect(compiled.prompt).toContain(JSON.stringify(exact));
+    expect(compiled.prompt.split(exact)).toHaveLength(2);
+    expect(compiled.prompt).toContain("off-camera narration");
+    expect(compiled.prompt).toContain("no visible speaking, lip synchronization");
+    expect(compiled.prompt).toContain(bound.camera);
+    expect(compiled.prompt).not.toContain("嘴部清晰可见");
+    expect(compiled.prompt).not.toContain("must speak the following");
+    expect(compiled.negativePrompt).toContain("说话口型");
+    if (personVisible) expect(compiled.prompt).toContain("所选主播 Host（成年户外主播）");
+    else {
+      expect(compiled.prompt).toContain("不加入主播、路人、人脸或手");
+      expect(compiled.prompt).not.toContain("所选主播 Host");
+    }
+    const keyframe = compileTideweVisualPrompt(bound, "image", "on_camera");
+    expect(keyframe.prompt).not.toContain(exact);
+    expect(keyframe.prompt).not.toContain("适合后续生成开口说话的视频");
+    expect(bound).toEqual(before);
+  });
+
+  it("uses silent visual footage for off-camera narration added in post while preserving the frozen line", () => {
+    const exact = "Look at the seam before choosing your size.";
+    const bound: Shot = { ...shot, voiceover: exact, tidewe: { ...shot.tidewe!, speechDelivery: "off_camera", personVisible: false } };
+    const compiled = compileTideweVisualPrompt(bound, "video", "on_camera", undefined, "post");
+    expect(compiled.prompt).toContain("Generate silent video");
+    expect(compiled.prompt).toContain("narration to be added in post");
+    expect(compiled.prompt).toContain("no speaking or lip synchronization");
+    expect(compiled.prompt).not.toContain("must visibly articulate");
+    expect(compiled.prompt).not.toContain(exact);
+    expect(compiled.negativePrompt).toContain("说话口型");
+    expect(bound.voiceover).toBe(exact);
+    expect(validateVideoPrompt(compiled.prompt)).toEqual([]);
+    const historical = compileTideweVisualPrompt({ ...bound, tidewe: { ...bound.tidewe!, speechDelivery: undefined } }, "video", "voiceover");
+    expect(compileTideweVisualPrompt(bound, "video", "voiceover")).toEqual(historical);
+  });
+
   it("binds the saved presenter and keeps identity/product reference roles distinct", () => {
     const presenter = { id: "jerry", name: "Jerry", appearance: "成年女性，黑色短发", referenceImages: ["/api/files/jerry.png"] };
     const selected = createTideweOutdoorProfile({ presenter });
     const bound = { ...shot, tidewe: { ...shot.tidewe!, presenter, personVisible: true } };
     const grid = buildStoryboardGridPrompt([bound], null, { creativeProfile: selected, characterSheet: true, productImageCount: 2 });
-    expect(grid).toContain("整支视频出镜人物固定为所选主播 Jerry（成年女性，黑色短发）");
-    expect(grid).toContain("第 1 张参考图为所选主播身份参考");
+    expect(grid).toContain("固定出镜人物：所选主播 Jerry（成年女性，黑色短发）");
+    expect(grid).toContain("第 1 张参考图为主播身份参考");
     expect(grid).toContain("第 2 张参考图为当前同一商品的第 1/2 个视角");
     expect(grid).toContain("第 3 张参考图为当前同一商品的第 2/2 个视角");
     expect(grid).not.toContain("所有镜头同一对镜主播");
@@ -54,8 +169,9 @@ describe("TIDEWE downstream visual and narration policy", () => {
     expect(video.negativePrompt).not.toMatch(/(?:^|、)说话口型(?:、|$)/);
     const keyframe = compileTideweVisualPrompt(presenterShot, "image", "on_camera");
     const grid = buildStoryboardGridPrompt([presenterShot], null, { creativeProfile: nativeProfile });
+    expect(keyframe.prompt).toContain("适合后续生成开口说话的视频");
+    expect(grid).toContain("真人口播：回应镜头，嘴部清晰可见");
     for (const prompt of [keyframe.prompt, grid]) {
-      expect(prompt).toContain("适合后续生成开口说话的视频");
       expect(prompt).not.toContain(exact);
       expect(prompt).not.toContain("英文画外旁白由后期统一添加");
     }
@@ -120,7 +236,6 @@ describe("TIDEWE downstream visual and narration policy", () => {
     const outputs = [
       compileTideweVisualPrompt(presenterShot, "image"),
       buildShotVideoPrompt({ shot: presenterShot, ordinal: 0, creativeProfile: profile }),
-      { prompt: buildStoryboardGridPrompt([presenterShot], null, { creativeProfile: profile }) },
       { prompt: buildStoryboardFilmPrompt([presenterShot], null, { creativeProfile: profile }) },
     ];
     for (const output of outputs) {
@@ -133,8 +248,14 @@ describe("TIDEWE downstream visual and narration policy", () => {
       expect(output.prompt).not.toContain(presenterShot.voiceover);
       if ("negativePrompt" in output) expect(output.negativePrompt).not.toMatch(/人脸|露脸|真人出镜/);
     }
+    const grid = buildStoryboardGridPrompt([presenterShot], null, { creativeProfile: profile });
+    expect(grid).toContain(presenterShot.description);
+    expect(grid).toContain("人物按本镜构图自然互动，细节镜不强加人脸");
+    expect(grid).toContain("同 sceneId 的人物、衣物、产品状态、环境、天气与光线连续");
+    expect(grid).not.toMatch(/不露脸|不含人脸|仅背影|只拍手|真人口播/);
+    expect(grid).not.toContain(presenterShot.voiceover);
     expect(outputs[1].prompt).toContain("静音视觉素材");
-    expect(outputs[3].prompt).toContain("仅生成静音视觉素材");
+    expect(outputs[2].prompt).toContain("仅生成静音视觉素材");
   });
   it("plans continuity by scene and refuses silent grid truncation", () => {
     const prompt = buildStoryboardGridPrompt([shot], null, { creativeProfile: profile });
