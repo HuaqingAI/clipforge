@@ -930,7 +930,7 @@ Return:
  * Combines all templates, strategies, and constraints into a single generation instruction
  */
 export function buildUserPrompt(input: ScriptGenerationInput): string {
-  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input, 1);
+  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input);
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgUserPrompt(input, premiumProfile);
 
@@ -1081,7 +1081,7 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
  * Builds a batch generation prompt (generates multiple scripts with different styles in one call)
  */
 export function buildBatchPrompt(input: ScriptGenerationInput, count: number = 3): string {
-  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input, count);
+  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input);
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgBatchPrompt(input, premiumProfile, count);
 

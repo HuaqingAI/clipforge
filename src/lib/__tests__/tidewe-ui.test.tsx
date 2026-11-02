@@ -291,7 +291,7 @@ describe("TIDEWE creation and script editing", () => {
     const registered = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/generation-runs")![1].body);
     expect(registered).toMatchObject({ projectId: "new-tidewe", kind: "script", items: [{ kind: "script" }] });
     const generation = registered.items[0].request;
-    expect(generation).toMatchObject({ expectedCreativeConfigRevision: 2, requestId: expect.any(String), platforms: "tiktok", styleType: "tidewe_outdoor", productImages: ["/uploads/product.png"], videoMode });
+    expect(generation).toMatchObject({ expectedCreativeConfigRevision: 2, requestId: expect.any(String), platforms: "tiktok", styleType: "tidewe_outdoor", productImages: ["/uploads/product.png"], count: 1, videoMode });
     expect(generation.creativeProfile).toEqual(creation.creativeProfile);
     expect(generation.creativeProfileDrafts.tidewe_outdoor).toEqual(creation.creativeProfile);
     expect(generation).not.toHaveProperty("templateId");

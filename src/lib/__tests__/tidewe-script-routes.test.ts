@@ -218,13 +218,13 @@ describe("TIDEWE project context", () => {
 });
 
 describe("TIDEWE optional AI scene direction", () => {
-  it("forwards a trimmed scene brief to the default three-candidate AI generation without treating it as full copy", async () => {
+  it("forwards a trimmed scene brief to single-copy AI generation without treating it as full copy", async () => {
     const sceneDescription = "清晨湖边，一位猎人穿着当前装备，在浅水旁自然展示外观。";
-    calls.generate.mockResolvedValueOnce([generated(), generated(), generated()]);
+    calls.generate.mockResolvedValueOnce([generated()]);
     const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription: `  ${sceneDescription}\r\n` }));
     expect(response.status).toBe(200);
-    expect((await response.json()).scripts).toHaveLength(3);
-    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ sceneDescription, count: 3 }));
+    expect((await response.json()).scripts).toHaveLength(1);
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ sceneDescription, count: 1 }));
     expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("copyText");
   });
 
@@ -232,7 +232,7 @@ describe("TIDEWE optional AI scene direction", () => {
     const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription }));
     expect(response.status).toBe(200);
     expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
-    expect(calls.generate.mock.calls[0][0]).toMatchObject({ count: 3 });
+    expect(calls.generate.mock.calls[0][0]).toMatchObject({ count: 1 });
   });
 
   it.each([null, false, 123, [], { scene: "lake" }])("rejects a non-text AI scene brief before paid generation: %j", async sceneDescription => {
@@ -270,6 +270,7 @@ describe("TIDEWE generation, history and concurrency", () => {
     }));
     expect(response.status).toBe(200);
     const result = await response.json();
+    expect(result.scripts).toHaveLength(1);
     expect(result.scripts[0].shots).toHaveLength(shotCount);
     expect(result.scripts[0].copyDocument.text).toBe(copyText);
     expect(result.scripts[0].selected).toBe(true);
@@ -278,7 +279,41 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(rows.find(row => row.selected)?.shots).toHaveLength(shotCount);
     if (source) expect(rows.find(row => row.id === source.id)).toMatchObject({ selected: false, shots: source.shots, copyDocument: source.copyDocument });
     expect(calls.generate).toHaveBeenCalledOnce();
-    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ creativeProfile: expect.objectContaining({ targetDuration }) }));
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ count: 1, creativeProfile: expect.objectContaining({ targetDuration }) }));
+  });
+
+  it.each([2, 3].flatMap(count => [false, true].map(regenerate => ({ count, regenerate }))))("normalizes legacy count=$count to one copy on initial generation or regeneration=$regenerate", async ({ count, regenerate }) => {
+    const source = regenerate ? seedScript() : undefined;
+    const response = await generate(req("/api/llm/script", {
+      ...generationBody(), count, ...(source && { sourceScriptId: source.id, expectedScriptHash: scriptRevision(source) }),
+    }));
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.scripts).toHaveLength(1);
+    expect(calls.generate).toHaveBeenCalledOnce();
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ count: 1 }));
+    expect(db.select().from(schema.scripts).all()).toHaveLength(regenerate ? 2 : 1);
+  });
+
+  it.each([1, 2, 3])("recovers all %s previously paid copies and replays their request without generating again", async count => {
+    const paidScripts = Array.from({ length: count }, (_, index) => ({ ...generated(), title: `Recovered copy ${index + 1}` }));
+    const body = generationBody(`paid-checkpoint-${count}`);
+    let checkpoint: Record<string, unknown> = { generatedScripts: paidScripts, submissionState: "acknowledged", analysisComplete: true, productAnalysis: "observed green jacket" };
+    const response = await withGenerationContext({ itemId: `paid-checkpoint-${count}`, checkpoint, save: value => { checkpoint = structuredClone(value); } },
+      () => generate(req("/api/llm/script", body)));
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.scripts).toHaveLength(count);
+    expect(result.scripts.map((script: { title: string }) => script.title)).toEqual(paidScripts.map(script => script.title));
+    expect(result.scripts.filter((script: { selected: boolean }) => script.selected)).toHaveLength(1);
+    expect(checkpoint.generatedScripts).toEqual(paidScripts);
+    const replay = await generate(req("/api/llm/script", body));
+    expect(replay.status).toBe(200);
+    expect((await replay.json()).scripts.map((script: { id: string }) => script.id)).toEqual(result.scripts.map((script: { id: string }) => script.id));
+    expect(db.select().from(schema.scripts).all()).toHaveLength(count);
+    expect(calls.generate).not.toHaveBeenCalled();
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.analyze).not.toHaveBeenCalled();
   });
 
   it.each([5, 7, 9, 10])("rejects a completed %s-shot checkpoint for the 40-second target without saving or buying generation again", async shotCount => {
@@ -316,14 +351,29 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(calls.generate).toHaveBeenCalledOnce();
   });
 
-  it("checks the duration-based shot count independently for every candidate before saving any", async () => {
+  it.each([2, 3])("rejects %s newly generated copies without saving them or replacing the selected historical script", async count => {
+    seedScript();
     const before = db.select().from(schema.scripts).all();
-    calls.generate.mockResolvedValueOnce([generated(), generated(copyText, undefined, 7)]);
-    const response = await generate(req("/api/llm/script", { ...generationBody(), count: 2 }));
+    calls.generate.mockResolvedValueOnce(Array.from({ length: count }, () => generated()));
+    const response = await generate(req("/api/llm/script", { ...generationBody(), count }));
     expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining("TIDEWE copy 2 must contain exactly 8 shots for the 40s target; received 7") });
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED" });
     expect(db.select().from(schema.scripts).all()).toEqual(before);
     expect(calls.generate).toHaveBeenCalledOnce();
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ count: 1 }));
+  });
+
+  it("checks the duration-based shot count of every previously paid copy before recovering any", async () => {
+    const before = db.select().from(schema.scripts).all();
+    const paidScripts = [generated(), generated(copyText, undefined, 7)];
+    let checkpoint: Record<string, unknown> = { generatedScripts: paidScripts, submissionState: "acknowledged", analysisComplete: true, productAnalysis: "observed green jacket" };
+    const response = await withGenerationContext({ itemId: "paid-invalid-second-copy", checkpoint, save: value => { checkpoint = structuredClone(value); } },
+      () => generate(req("/api/llm/script", generationBody("paid-invalid-second-copy"))));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining("TIDEWE copy 2 must contain exactly 8 shots for the 40s target; received 7") });
+    expect(checkpoint.generatedScripts).toEqual(paidScripts);
+    expect(db.select().from(schema.scripts).all()).toEqual(before);
+    expect(calls.generate).not.toHaveBeenCalled();
   });
 
   it.each(["planner rejection", "empty candidates", "missing canonical copy", "invalid shot"])("records %s as a completed local failure without recoverable scripts", async failure => {

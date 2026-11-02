@@ -304,7 +304,8 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       const requested = validateCreativeProfileInput(body.creativeProfile ?? body.profile);
       if (!requested.profile || !isTideweOutdoorProfile(requested.profile)) return NextResponse.json({ error: "The requested profile does not match the project.", code: "CREATIVE_PROFILE_MISMATCH" }, { status: 400 });
     }
-    if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1 || body.count > 3)) return apiError(req, "候选数量只能为1到3", "count must be between 1 and 3", 400);
+    // Accept legacy counts for compatibility; every fresh TIDEWE request generates one copy.
+    if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1 || body.count > 3)) return apiError(req, "无效的脚本数量参数", "Invalid script count", 400);
     if (body.copyText !== undefined) {
       try { assertTideweImportedCopy(body.copyText); }
       catch (error) {
@@ -405,7 +406,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         productFacts: normalizeProductFacts(project?.productFacts) ?? productFactsFromDescription(productDescription ?? "", typeof effectiveCategory === "string" ? effectiveCategory : undefined),
         ...(body.copyText !== undefined && { copyText: body.copyText }),
         ...(body.copyText === undefined && body.sceneDescription?.trim() && { sceneDescription: body.sceneDescription.trim() }),
-        count: body.copyText !== undefined ? 1 : body.count ?? 3,
+        count: 1,
       }),
       ...(premiumProfile && { narrationMode: premiumProfile.narrationMode }),
       priceRange: body.priceRange,
@@ -425,7 +426,9 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       llmConfig,
     });
     if (tideweProfile) {
-      if (!scripts.length || scripts.length > 3) throw new TideweValidationError("TIDEWE returned an invalid candidate count.");
+      // Restore previously paid checkpoints without discarding their older three-copy result.
+      const maxCopyCount = savedGenerated ? 3 : 1;
+      if (!scripts.length || scripts.length > maxCopyCount) throw new TideweValidationError("TIDEWE returned an invalid script count; new generation requires exactly one script.");
       for (const [copyIndex, script] of scripts.entries()) {
         if (!script.copyDocument) throw new TideweValidationError("TIDEWE generation returned no canonical copy document.");
         assertTideweScript(script, tideweProfile.presenter ?? null);

@@ -243,8 +243,8 @@ export default function ScriptPage() {
           }
         : {
             projectId: id,
-            ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: projectMeta.creativeConfigRevision, ...(scripts[selectedScript]?.scriptHash && { sourceScriptId: scripts[selectedScript].id, expectedScriptHash: scripts[selectedScript].scriptHash }) }),
-            ...(manualTideweCopy && { copyText: tideweCopyText, count: 1 }),
+            ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: projectMeta.creativeConfigRevision, count: 1, ...(scripts[selectedScript]?.scriptHash && { sourceScriptId: scripts[selectedScript].id, expectedScriptHash: scripts[selectedScript].scriptHash }) }),
+            ...(manualTideweCopy && { copyText: tideweCopyText }),
             ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && !manualTideweCopy && tideweSceneDescription.trim() && { sceneDescription: tideweSceneDescription.trim() }),
             productName: projectMeta.productName,
             category: projectMeta.category,

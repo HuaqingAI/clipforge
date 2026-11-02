@@ -112,7 +112,7 @@ describe("TIDEWE employee copy on existing projects", () => {
     const request = JSON.parse(generationCalls()[0][1].body);
     expect(request).toMatchObject({ sceneDescription: scene.trim(), sourceScriptId: "original", expectedScriptHash: "hash-original", expectedCreativeConfigRevision: 7 });
     expect(request).not.toHaveProperty("copyText");
-    expect(request).not.toHaveProperty("count");
+    expect(request).toHaveProperty("count", 1);
     expect((container.querySelector(selector) as HTMLTextAreaElement).disabled).toBe(true);
     expect(container.querySelector('input[type="radio"][value="manual"]')?.matches(":disabled")).toBe(true);
     await act(async () => complete(Response.json({ scripts: [script("scene-next", originalText, 2)] })));
@@ -281,7 +281,7 @@ describe("TIDEWE employee copy on existing projects", () => {
     await click("regenerate"); await click("regenConfirmOk");
     const request = JSON.parse(generationCalls()[0][1].body);
     expect(request).not.toHaveProperty("copyText");
-    expect(request).not.toHaveProperty("count");
+    expect(request).toHaveProperty("count", 1);
     expect(request).not.toHaveProperty("sceneDescription");
   });
 

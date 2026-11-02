@@ -418,7 +418,7 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
       model: input.llmConfig.model, messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
       temperature: 0.65, max_tokens: 16000, ...reasoningParams(input.llmConfig.baseUrl), ...jsonModeParams(input.llmConfig.baseUrl),
     }, input.llmConfig, parse);
-    return generateTideweScripts({ ...input, count: batchCountFor(input.llmConfig.baseUrl, input.count ?? 3) }, complete);
+    return generateTideweScripts({ ...input, count: 1 }, complete);
   }
   const userPrompt = buildBatchPrompt(input, batchCountFor(input.llmConfig.baseUrl));
   const premiumProfile = premiumProductCgProfileForInput(input);

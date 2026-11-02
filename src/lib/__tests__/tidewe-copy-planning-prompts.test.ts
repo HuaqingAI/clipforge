@@ -26,11 +26,11 @@ const input: ScriptGenerationInput = {
 };
 
 describe("TIDEWE copy and planning prompt boundaries", () => {
-  it("treats an optional scene as direction for every candidate while retaining product evidence boundaries", () => {
+  it("treats an optional scene as direction for the copy while retaining product evidence boundaries", () => {
     const sceneDescription = "清晨林缘，猎人穿当前外套观察湖面，然后展示外套袖口。";
-    const payload = JSON.parse(buildTideweCopyPrompt({ ...input, sceneDescription }, 3));
+    const payload = JSON.parse(buildTideweCopyPrompt({ ...input, sceneDescription }));
     expect(payload.sceneDescription).toBe(sceneDescription);
-    expect(payload.sceneDirectionGuidance).toContain("EVERY candidate");
+    expect(payload.sceneDirectionGuidance).toContain("central to the copy and its visual beats and storyboard");
     expect(payload.sceneDirectionGuidance).toContain("not complete spoken copy");
     expect(payload.sceneDirectionGuidance).toContain("original coherent English narration");
     expect(payload.sceneDirectionGuidance).toContain("faithful Chinese review translation");
@@ -56,7 +56,7 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     { targetDuration: 40, shotCount: 8 },
     { targetDuration: 60, shotCount: 9 },
   ] as const)("requires $shotCount shots for a $targetDuration-second AI copy", ({ targetDuration, shotCount }) => {
-    const payload = JSON.parse(buildTideweCopyPrompt({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) }, 3));
+    const payload = JSON.parse(buildTideweCopyPrompt({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) }));
     expect(payload.targetDuration).toBe(targetDuration);
     expect(payload.shotCount).toBe(shotCount);
     for (const system of [TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT]) {
@@ -65,9 +65,9 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     }
   });
 
-  it("keeps the duration-specific count for every candidate, regeneration and supplied-copy planning", () => {
-    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("Each complete copy must support exactly the requested shotCount semantic shots");
-    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("every candidate on initial generation and regeneration");
+  it("keeps the duration-specific shot count for the copy, regeneration and supplied-copy planning", () => {
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("The complete copy must support exactly the requested shotCount semantic shots");
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("This applies on initial generation and regeneration");
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("visualBeats are meaning blocks, not the shot count");
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("wordCount / 2.6 + shotCount * 0.3 must fit targetDuration");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Every copy MUST have exactly the requested shotCount shots, fixed by targetDuration");
@@ -81,8 +81,8 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
   });
 
   it("grounds AI copy in the current facts while supplying attributed visual patterns instead of borrowed product specifications", () => {
-    const payload = JSON.parse(buildTideweCopyPrompt(input, 2));
-    expect(payload.task).toContain("2 distinct complete spoken pieces");
+    const payload = JSON.parse(buildTideweCopyPrompt(input));
+    expect(payload.outputFormat.copies).toHaveLength(1);
     expect(payload.product.facts).toEqual(facts);
     expect(payload.copyBrief).toMatchObject({
       progression: expect.stringContaining("one supported value"),
@@ -126,7 +126,7 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
   it("keeps staff copy annotation isolated from the new AI writing brief and pattern guidance", () => {
     const original = "“I've used this for 3 seasons.”\r\n\r\nWait.  Wait. Buy now if it fits.";
     const imported = { ...input, copyText: original };
-    const payload = JSON.parse(buildTideweCopyPrompt(imported, 3));
+    const payload = JSON.parse(buildTideweCopyPrompt(imported));
     expect(payload).toEqual(JSON.parse(buildTideweImportedCopyPrompt(imported)));
     expect(payload.frozenImportedCopy).toBe(original);
     for (const key of ["copyBrief", "approvedKlingPatterns", "styleExamples", "targetDuration", "shotCount"]) {

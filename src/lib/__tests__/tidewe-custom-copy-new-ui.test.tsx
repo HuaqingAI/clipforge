@@ -99,7 +99,7 @@ describe("TIDEWE custom copy before project creation", () => {
     await click("submit");
     expect(generationBodies()).toHaveLength(1);
     expect(generationBodies()[0]).not.toHaveProperty("copyText");
-    expect(generationBodies()[0]).not.toHaveProperty("count");
+    expect(generationBodies()[0]).toHaveProperty("count", 1);
     expect(generationBodies()[0]).not.toHaveProperty("sceneDescription");
   });
 
@@ -125,9 +125,10 @@ describe("TIDEWE custom copy before project creation", () => {
     expect(requests).toHaveLength(4);
     expect(requests[0]).toMatchObject({ copyText: original, count: 1 });
     expect(requests[0]).not.toHaveProperty("sceneDescription");
-    expect(requests[1]).toMatchObject({ sceneDescription: scene.trim(), styleType: "tidewe_outdoor" });
+    expect(requests[1]).toMatchObject({ sceneDescription: scene.trim(), styleType: "tidewe_outdoor", count: 1 });
     expect(requests[1]).not.toHaveProperty("copyText");
-    expect(requests[1]).not.toHaveProperty("count");
+    expect(requests[2]).not.toHaveProperty("count");
+    expect(requests[3]).not.toHaveProperty("count");
     expect(requests[2]).not.toHaveProperty("sceneDescription");
     expect(requests[3]).not.toHaveProperty("sceneDescription");
     await click("label");
@@ -216,8 +217,11 @@ describe("TIDEWE custom copy before project creation", () => {
     expect(container.querySelector("#tidewe-copy-input")).toBeNull();
     await click("submitGenerateCg");
     expect(generationBodies()).toHaveLength(3);
+    expect(generationBodies()[0]).toHaveProperty("count", 1);
     for (const body of generationBodies()) {
       expect(body).not.toHaveProperty("copyText");
+    }
+    for (const body of generationBodies().slice(1)) {
       expect(body).not.toHaveProperty("count");
     }
     await click("label");

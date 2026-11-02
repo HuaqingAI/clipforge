@@ -31,10 +31,10 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
   if (input.copyText !== undefined) assertTideweImportedCopy(input.copyText);
   const facts = tideweFactsForInput(input);
   const imported = input.copyText?.trim();
-  const count = imported !== undefined ? 1 : Math.max(1, Math.min(3, Math.floor(input.count ?? 3)));
+  const count = 1;
   const examples = selectTideweExamples(facts, profile.narrativeAngle);
   const copies = await complete(imported !== undefined ? TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT : TIDEWE_COPY_SYSTEM_PROMPT,
-    imported !== undefined ? buildTideweImportedCopyPrompt({ ...input, copyText: imported }) : buildTideweCopyPrompt(input, count), text => {
+    imported !== undefined ? buildTideweImportedCopyPrompt({ ...input, copyText: imported }) : buildTideweCopyPrompt(input), text => {
     const parsed = json(text);
     if (!Array.isArray(parsed.copies) || parsed.copies.length !== count) throw new TideweValidationError(`Expected ${count} full-copy candidates`);
     return parsed.copies.map((raw: unknown) => {
@@ -63,7 +63,7 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
     });
   });
   return complete(TIDEWE_PLAN_SYSTEM_PROMPT, JSON.stringify({
-    task: "Allocate each frozen copy to semantic shots. Return all candidates in their original order.",
+    task: "Allocate the frozen copy to semantic shots. Return exactly one script with copyIndex 0.",
     ...tideweSceneDirectionForInput(input),
     shotCount,
     targetDuration: profile.targetDuration, videoMode: profile.videoMode, speechMode: profile.speechMode, facts,

@@ -108,22 +108,21 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(script.shots.map(shot => shot.voiceover).join(" ")).toBe(text);
   });
 
-  it("carries one scene direction through writing and planning all three AI candidates", async () => {
-    const fixture = countedPlanFixture([7, 7, 7]);
+  it("carries one scene direction through writing and planning a single AI copy", async () => {
+    const fixture = countedPlanFixture([7]);
     const sceneDescription = "傍晚湖边，猎人穿着当前外套向拍摄朋友展示衣服，氛围轻松自然。";
     model.replies = [fixture.copy, fixture.plan];
     const scripts = await generateScript({ ...input, count: 3, sceneDescription: `  ${sceneDescription}\n` });
-    expect(scripts).toHaveLength(3);
+    expect(scripts).toHaveLength(1);
     expect(scripts.map(script => script.copyDocument?.text)).toEqual(fixture.copy.copies.map(candidate => candidate.text));
     expect(scripts.every(script => script.copyDocument?.source === "ai_generated")).toBe(true);
     expect(model.create).toHaveBeenCalledTimes(2);
     const [writing, planning] = model.create.mock.calls.map(([params]) => JSON.parse(params.messages[1].content));
     for (const payload of [writing, planning]) {
       expect(payload.sceneDescription).toBe(sceneDescription);
-      expect(payload.sceneDirectionGuidance).toContain("EVERY candidate");
       expect(payload.sceneDirectionGuidance).toContain("not complete spoken copy");
     }
-    expect(writing.task).toContain("3 distinct complete spoken pieces");
+    expect(planning.copies).toHaveLength(1);
     expect(planning.copies.map((candidate: { copyIndex: number; text: string }) => ({ copyIndex: candidate.copyIndex, text: candidate.text })))
       .toEqual(fixture.copy.copies.map((candidate, copyIndex) => ({ copyIndex, text: candidate.text })));
   });
@@ -166,16 +165,19 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(regenerated.shots).toHaveLength(7);
     expect(model.create).toHaveBeenCalledTimes(4);
   });
-  it("emits only validated completion for both stream adapters", async () => {
+  it.each([undefined, 2, 3])("emits one validated copy through both stream adapters when requested count is %s", async count => {
+    const generationInput = { ...input, count };
     const onToken = vi.fn();
-    const scripts = await new Promise<unknown>((resolve, reject) => { generateScriptStream(input, { onToken, onComplete: resolve, onError: reject }); });
+    const scripts = await new Promise<unknown>((resolve, reject) => { generateScriptStream(generationInput, { onToken, onComplete: resolve, onError: reject }); });
     expect(scripts).toHaveLength(1);
     expect(onToken).toHaveBeenCalledTimes(1);
     expect(JSON.parse(onToken.mock.calls[0][0]).scripts[0].copyDocument.text).toBe(text);
     model.replies = [copy, plan];
-    const reader = createScriptStream(input).getReader();
+    const reader = createScriptStream(generationInput).getReader();
     const result = await reader.read();
-    expect(JSON.parse(new TextDecoder().decode(result.value)).scripts[0].copyDocument.text).toBe(text);
+    const streamed = JSON.parse(new TextDecoder().decode(result.value));
+    expect(streamed.scripts).toHaveLength(1);
+    expect(streamed.scripts[0].copyDocument.text).toBe(text);
     expect((await reader.read()).done).toBe(true);
   });
   it("repairs each invalid stage once, retaining frozen copy during planner repair", async () => {
@@ -261,26 +263,23 @@ describe("shared TIDEWE generator dispatch", () => {
     }
   });
 
-  it.each(shotTargets)("gives all three candidates exactly $shotCount shots for $targetDuration seconds", async ({ targetDuration, shotCount }) => {
-    const fixture = countedPlanFixture([shotCount, shotCount, shotCount]);
+  it.each(shotTargets.flatMap(target => [undefined, 1, 2, 3].map(count => ({ ...target, count }))))("returns one $shotCount-shot copy for $targetDuration seconds when requested count is $count", async ({ targetDuration, shotCount, count }) => {
+    const fixture = countedPlanFixture([shotCount]);
     model.replies = [fixture.copy, fixture.plan];
-    const scripts = await generateScript({ ...input, count: 3, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
-    expect(scripts.map(script => script.shots.length)).toEqual([shotCount, shotCount, shotCount]);
+    const scripts = await generateScript({ ...input, count, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0].shots).toHaveLength(shotCount);
     expect(scripts.map(script => script.copyDocument?.text)).toEqual(fixture.copy.copies.map(candidate => candidate.text));
+    expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content).copies).toHaveLength(1);
     expect(model.create).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    { counts: [7, 8, 8], invalidCopy: 1, received: 7 },
-    { counts: [8, 9, 8], invalidCopy: 2, received: 9 },
-    { counts: [8, 8, 7], invalidCopy: 3, received: 7 },
-    { counts: [8, 10, 8], invalidCopy: 2, received: 10 },
-  ])("rejects candidate $invalidCopy with $received shots even when the other two match the target", async ({ counts, invalidCopy, received }) => {
-    const fixture = countedPlanFixture(counts);
-    model.replies = [fixture.copy, fixture.plan, fixture.plan];
-    await expect(generateScript({ ...input, count: 3, creativeProfile: createTideweOutdoorProfile({ targetDuration: 40 }) }))
-      .rejects.toThrow(`TIDEWE copy ${invalidCopy} must contain exactly 8 shots for the 40s target; received ${received}.`);
-    expect(model.create).toHaveBeenCalledTimes(3);
+  it.each([2, 3])("rejects a persistent %s-copy writing response before storyboard planning", async count => {
+    const fixture = countedPlanFixture(Array.from({ length: count }, () => 7));
+    model.replies = [fixture.copy, fixture.copy];
+    await expect(generateScript({ ...input, count })).rejects.toThrow(/Expected 1 full-copy candidates/);
+    expect(model.create).toHaveBeenCalledTimes(2);
+    expect(model.create.mock.calls[1][0].messages).toHaveLength(4);
   });
 
   it.each([

@@ -888,8 +888,8 @@ export default function NewProjectPage() {
         projectId: project.id, clientRequestId: crypto.randomUUID(), kind: "script",
         items: [{ kind: "script", request: {
           projectId: project.id,
-          ...(isTidewe && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: updatedProject.creativeConfigRevision ?? project.creativeConfigRevision ?? 0 }),
-          ...(useTideweOriginal && { copyText: tideweCopyText, count: 1 }),
+          ...(isTidewe && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: updatedProject.creativeConfigRevision ?? project.creativeConfigRevision ?? 0, count: 1 }),
+          ...(useTideweOriginal && { copyText: tideweCopyText }),
           ...(isTidewe && !useTideweOriginal && tideweSceneDescription.trim() && { sceneDescription: tideweSceneDescription.trim() }),
           productName,
           category: isTidewe ? tideweProduct.category : category,
