@@ -2,7 +2,7 @@ import { act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GenerationRunsPanel } from "@/components/generation-runs-panel";
-import { GENERATION_RUNS_REFRESH_EVENT, submitGenerationRun, useGenerationRuns, type GenerationRun, type GenerationRunInput } from "@/lib/hooks/use-generation-runs";
+import { GENERATION_RUNS_REFRESH_EVENT, GenerationRunSubmissionError, submitGenerationRun, useGenerationRuns, type GenerationRun, type GenerationRunInput } from "@/lib/hooks/use-generation-runs";
 import { TASK_FEED_REFRESH_EVENT } from "@/lib/task-feed";
 
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(window.location.search) }));
@@ -23,6 +23,11 @@ function Probe({ projectId }: { projectId: string }) {
   const value = useGenerationRuns(projectId);
   useEffect(() => { observed = value; });
   return <div>{value.runs.map((run) => run.id).join(",")}{value.error}</div>;
+}
+function SharedPanel({ projectId, onCompleted }: { projectId: string; onCompleted?(run: GenerationRun): void | Promise<void> }) {
+  const controller = useGenerationRuns(projectId);
+  useEffect(() => { observed = controller; });
+  return <GenerationRunsPanel projectId={projectId} controller={controller} onCompleted={onCompleted} />;
 }
 function run(id: string, projectId = "A", overrides: Partial<GenerationRun> = {}): GenerationRun {
   return { id, projectId, kind: "video_batch", status: "running", total: 2, done: 0, failed: 0, items: [{ id: `${id}-1`, kind: "video", scriptId: "old-script", shotId: 1, status: "running", stage: "cloud_running" }, { id: `${id}-2`, kind: "video", scriptId: "new-script", shotId: 2, status: "queued" }], ...overrides };
@@ -117,13 +122,50 @@ describe("project background run recovery", () => {
     await expect(promise).resolves.toMatchObject({ id: "submitted" });
   });
 
+  it.each([
+    { status: 409, code: "GENERATION_ALREADY_ACTIVE", message: "该镜头或生成阶段已有未结束任务，请查看原任务。" },
+    { status: 400, code: "INVALID_GENERATION_RUN", message: "任务条目无效。" },
+  ])("preserves a definite $status registration rejection without marking its outcome unknown", async ({ status, code, message }) => {
+    request.mockResolvedValueOnce(Response.json({ error: message, code }, { status }));
+    const failure = await submitGenerationRun(input()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(GenerationRunSubmissionError);
+    expect(failure).toMatchObject({ message, status, code, clientRequestId: "stable-confirmation", outcomeUnknown: false });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0][0]).toBe("/api/generation-runs");
+  });
+
+  it.each([
+    { label: "request timeout", response: () => Response.json({ error: "请求超时", code: "REQUEST_TIMEOUT" }, { status: 408 }) },
+    { label: "existing request conflict", response: () => Response.json({ error: "相同请求编号的内容已变化，请重新确认。", code: "GENERATION_REQUEST_CONFLICT" }, { status: 409 }) },
+    { label: "server error", response: () => Response.json({ error: "暂时无法读取任务", code: "GENERATION_FAILED" }, { status: 500 }) },
+    { label: "unreadable gateway response", response: () => new Response("<html>Bad gateway</html>", { status: 502 }) },
+    { label: "success without a task ID", response: () => Response.json({ accepted: true }, { status: 202 }) },
+    { label: "unstructured client error", response: () => Response.json({ error: "请求被拒绝" }, { status: 400 }) },
+    { label: "unreadable client error", response: () => new Response("<html>Unavailable</html>", { status: 400 }) },
+  ])("keeps $label blocked as an unknown registration outcome", async ({ response }) => {
+    request.mockResolvedValueOnce(response());
+    const failure = await submitGenerationRun(input()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(GenerationRunSubmissionError);
+    expect(failure).toMatchObject({ clientRequestId: "stable-confirmation", outcomeUnknown: true });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a transport failure unknown and preserves the request key for reconciliation", async () => {
+    request.mockRejectedValueOnce(new TypeError("Network interrupted"));
+    const failure = await submitGenerationRun(input()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(GenerationRunSubmissionError);
+    expect(failure).toMatchObject({ message: "Network interrupted", clientRequestId: "stable-confirmation", outcomeUnknown: true });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds a missing submission acknowledgement and signals the task list to reconcile", async () => {
     vi.useFakeTimers();
     request.mockResolvedValueOnce({ ok: true, json: () => new Promise(() => {}) });
     const changed = vi.fn(); window.addEventListener(GENERATION_RUNS_REFRESH_EVENT, changed);
     const promise = submitGenerationRun(input());
-    const failed = expect(promise).rejects.toThrow("后台任务提交超时，请刷新任务列表核对提交结果。");
+    const failed = expect(promise).rejects.toMatchObject({ message: "后台任务提交超时，请刷新任务列表核对提交结果。", clientRequestId: "stable-confirmation", outcomeUnknown: true });
     await tick(15_000); await failed;
+    await expect(promise).rejects.toBeInstanceOf(GenerationRunSubmissionError);
     expect(request.mock.calls[0][1].signal.aborted).toBe(true);
     expect(changed).toHaveBeenCalledTimes(1);
     window.removeEventListener(GENERATION_RUNS_REFRESH_EVENT, changed);
@@ -131,6 +173,126 @@ describe("project background run recovery", () => {
 });
 
 describe("generation run history panel", () => {
+  it("shares the page controller for initial reads, polling and refresh without a redundant deep-link read", async () => {
+    vi.useFakeTimers();
+    window.history.replaceState(null, "", "/project/A/assets?runId=shared-active");
+    request.mockImplementation(() => Promise.resolve(Response.json({ runs: [run("shared-active")] })));
+    await act(async () => root.render(<SharedPanel projectId="A" />));
+    expect(request.mock.calls.map(([url]) => url)).toEqual(["/api/generation-runs?projectId=A"]);
+    expect(container.querySelector('details[data-run-id="shared-active"]')?.hasAttribute("open")).toBe(true);
+    await tick(2500);
+    expect(request).toHaveBeenCalledTimes(2);
+    await click("刷新任务");
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("baselines all historical completions and notifies for a newly saved batch after the initial list", async () => {
+    const completed = vi.fn();
+    let current = [finished("history-one"), finished("history-two"), finished("history-three"), finished("history-failed", "A", "failed")];
+    request.mockImplementation(() => Promise.resolve(Response.json({ runs: current })));
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    expect(completed).not.toHaveBeenCalled();
+    expect(container.querySelectorAll("details")).toHaveLength(4);
+    current = [...current, finished("newly-saved")];
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledExactlyOnceWith(current[4]);
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledOnce();
+  });
+
+  it.each(["ISO", "milliseconds"])("reconciles a completion during the initial asset read from a %s timestamp without reloading history", async (format) => {
+    vi.useFakeTimers();
+    const mountedAt = Date.parse("2026-11-02T00:00:00.750Z");
+    vi.setSystemTime(mountedAt);
+    const completed = vi.fn();
+    const recent = { ...finished("completed-during-initial-read"), updatedAt: format === "ISO" ? "2026-11-02T00:00:00.000Z" : mountedAt };
+    const current = [
+      { ...finished("older-than-session"), updatedAt: "2026-11-01T23:59:59.999Z" },
+      finished("timestamp-unknown"),
+      { ...finished("timestamp-invalid"), updatedAt: "unreadable" },
+      recent,
+    ];
+    let finishInitial!: (response: Response) => void;
+    request.mockImplementationOnce(() => new Promise((resolve) => { finishInitial = resolve; }))
+      .mockImplementation(() => Promise.resolve(Response.json({ runs: current })));
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    // The page's parallel asset GET may already have captured the old assets
+    // before the task list first reports this completion.
+    await tick(1250);
+    await act(async () => finishInitial(Response.json({ runs: current })));
+    expect(completed).toHaveBeenCalledExactlyOnceWith(recent);
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles a newly completed deep link while retaining the historical-list baseline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-02T00:00:00.750Z"));
+    window.history.replaceState(null, "", "/project/A/assets?runId=recent-linked");
+    const completed = vi.fn();
+    const recent = { ...finished("recent-linked"), updatedAt: "2026-11-02T00:00:00.000Z" };
+    request.mockImplementation((url: string) => Promise.resolve(Response.json(url === "/api/generation-runs/recent-linked" ? recent : { runs: [finished("linked-old-history")] })));
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    expect(completed).toHaveBeenCalledExactlyOnceWith(recent);
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledOnce();
+  });
+
+  it("waits for a successful initial list before baselining history after a read failure", async () => {
+    const completed = vi.fn();
+    request.mockResolvedValueOnce(Response.json({ error: "读取暂不可用" }, { status: 503 }));
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    expect(container.textContent).toContain("读取暂不可用");
+    request.mockImplementation(() => Promise.resolve(Response.json({ runs: [finished("recovered-history")] })));
+    await click("刷新任务");
+    expect(completed).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("读取暂不可用");
+  });
+
+  it("tracks an active linked run through completion and does not notify again when it enters the list", async () => {
+    window.history.replaceState(null, "", "/project/A/assets?runId=linked-active");
+    const completed = vi.fn();
+    let linked = run("linked-active");
+    let listed: GenerationRun[] = [];
+    request.mockImplementation((url: string) => Promise.resolve(Response.json(url === "/api/generation-runs/linked-active" ? linked : { runs: listed })));
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    expect(completed).not.toHaveBeenCalled();
+    linked = finished("linked-active");
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledExactlyOnceWith(linked);
+    listed = [linked];
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledOnce();
+    expect(container.querySelectorAll("details")).toHaveLength(1);
+  });
+
+  it("baselines the next project's history and still observes its active work completing", async () => {
+    const completed = vi.fn();
+    let projectB = [finished("B-history", "B"), run("B-active", "B")];
+    request.mockImplementation((url: string) => Promise.resolve(Response.json({ runs: url.includes("projectId=A") ? [finished("A-history")] : projectB })));
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    await act(async () => root.render(<SharedPanel projectId="B" onCompleted={completed} />));
+    expect(completed).not.toHaveBeenCalled();
+    projectB = [projectB[0], finished("B-active", "B")];
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledExactlyOnceWith(projectB[1]);
+  });
+
+  it.each(["synchronous", "asynchronous"])("shows a recoverable error for a %s completion callback failure", async (mode) => {
+    let current = run(`callback-${mode}`);
+    request.mockImplementation(() => Promise.resolve(Response.json({ runs: [current] })));
+    const completed = vi.fn(() => {
+      if (mode === "synchronous") throw new Error("refresh failed");
+      return Promise.reject(new Error("refresh failed"));
+    });
+    await act(async () => root.render(<SharedPanel projectId="A" onCompleted={completed} />));
+    current = finished(current.id);
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("任务已完成，刷新素材失败，请重新读取。");
+    expect(container.querySelector(`details[data-run-id="${current.id}"]`)).not.toBeNull();
+  });
+
   it("offers deletion only when every item is completed or failed and confirms bulk cleanup", async () => {
     let current = [finished("cleanup-done"), finished("cleanup-failed", "A", "failed"), run("cleanup-active"),
       run("cleanup-attention", "A", { status: "needs_attention" }), run("cleanup-cancelled", "A", { status: "cancelled" }),
@@ -324,7 +486,7 @@ describe("generation run history panel", () => {
     expect(container.textContent).not.toContain("查看精修候选");
   });
 
-  it("opens a historical deep link and refreshes saved results without selecting its old script", async () => {
+  it("opens a historical deep link without reloading saved results or selecting its old script", async () => {
     window.history.replaceState(null, "", "/project/A/assets?runId=old-batch");
     const old = run("old-batch", "A", { status: "completed", done: 1, items: [{ id: "old-shot", kind: "video", scriptId: "historical-script", shotId: 7, status: "completed", result: { childJobId: "child-job" } }] });
     request.mockImplementation((url: string) => Promise.resolve(Response.json(url === "/api/generation-runs/old-batch" ? old : { runs: [run("current")] })));
@@ -333,7 +495,7 @@ describe("generation run history panel", () => {
     expect(container.querySelector('details[data-run-id="old-batch"]')?.hasAttribute("open")).toBe(true);
     expect(container.textContent).toContain("historical-script");
     expect(container.querySelector('a')?.getAttribute("href")).toBe("/project/A/assets?klingJob=child-job");
-    expect(completed).toHaveBeenCalledWith(old);
+    expect(completed).not.toHaveBeenCalled();
     expect(container.querySelectorAll("details")).toHaveLength(2);
   });
 
@@ -350,16 +512,19 @@ describe("generation run history panel", () => {
     let current = run("batch", "A", { done: 1, items: [{ id: "one", kind: "image", scriptId: "old-script", shotId: 1, status: "completed", result: { assetId: "asset-one" } }, { id: "two", kind: "video", scriptId: "new-script", shotId: 2, status: "running", stage: "internal_raw_phase" }] });
     request.mockImplementation(() => Promise.resolve(Response.json({ runs: [current, run("older", "A", { status: "cancelled" })] })));
     await act(async () => root.render(<GenerationRunsPanel projectId="A" onCompleted={completed} />));
-    expect(completed).toHaveBeenCalledTimes(1);
+    expect(completed).not.toHaveBeenCalled();
     expect(container.textContent).toContain("old-script");
     expect(container.textContent).toContain("new-script");
     expect(container.textContent).not.toContain("internal_raw_phase");
     await click("刷新任务");
-    expect(completed).toHaveBeenCalledTimes(1);
+    expect(completed).not.toHaveBeenCalled();
     current = { ...current, status: "completed", done: 2, items: current.items.map((item) => ({ ...item, status: "completed", result: { assetId: item.id } })) };
     await click("刷新任务");
-    expect(completed).toHaveBeenCalledTimes(2);
+    expect(completed).toHaveBeenCalledOnce();
     expect(container.querySelectorAll("details")).toHaveLength(2);
+    current = { ...current, items: current.items.map((item) => item.id === "one" ? { ...item, result: { assetId: "replacement" } } : item) };
+    await click("刷新任务");
+    expect(completed).toHaveBeenCalledTimes(2);
   });
 
   it("offers stopping queued work and recovering saved outputs as distinct server actions", async () => {

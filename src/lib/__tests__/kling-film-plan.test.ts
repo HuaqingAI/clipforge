@@ -23,6 +23,14 @@ vi.mock("@/lib/kling/auth", () => ({ refreshProfile: (...args: unknown[]) => sta
 vi.mock("@/lib/media-probe", () => ({ probeMedia: (...args: unknown[]) => state.probe(...args) }));
 vi.mock("@/lib/kling/download", () => ({ downloadPublicFile: (...args: unknown[]) => state.download(...args) }));
 
+// Translation/cache behavior is covered separately; integration uses one prepared English direction.
+vi.mock("@/lib/server/tidewe-video-direction", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/server/tidewe-video-direction")>(),
+  resolveTideweVideoDirection: vi.fn(() => ({ action: "The hunter pauses at the woodland edge and checks the gear, then rests.", camera: "Hold the existing phone framing with a small natural handheld drift." })),
+  prepareTideweVideoDirections: vi.fn(async () => undefined),
+}));
+import { prepareTideweVideoDirections, resolveTideweVideoDirection } from "@/lib/server/tidewe-video-direction";
+
 import { getDb } from "@/lib/db";
 import { projects, scripts, assets, type Shot } from "@/lib/db/schema";
 import { assetScopeForShot } from "@/lib/asset-context";
@@ -98,6 +106,16 @@ function useTidewe(productVisible = true, speechMode: "on_camera" | "voiceover" 
 
 describe("TIDEWE frozen film planning", () => {
   const presenter: TidewePresenterSnapshot = { id: "chosen-host", name: "Sam", appearance: "短发户外主播", referenceImages: ["/api/files/presenter.png"] };
+  it.each(["script", "project", "product"])("rejects a %s edit made while English directions are prepared", async (changed) => {
+    useTidewe(false);
+    vi.mocked(prepareTideweVideoDirections).mockImplementationOnce(async () => {
+      if (changed === "script") setShots([{ ...currentScript().shots![0], camera: "Edited camera direction" }]);
+      else if (changed === "project") getDb().update(projects).set({ productCategory: "Edited category" }).run();
+      else getDb().update(projects).set({ productImages: ["/api/files/changed-product.png"] }).run();
+    });
+    await expect(previewKlingFilm(request())).rejects.toMatchObject({ code: "KLING_CONTEXT_CHANGED", status: 409 });
+    expect(getDb().select().from(klingFilmRuns).all()).toHaveLength(0);
+  });
   it.each([false, true])("freezes native off-camera narration without adding a portrait to a person-free shot, productVisible=%s", async (productVisible) => {
     useImageModel();
     const descriptor = state.profile!.catalogSnapshot[0];
@@ -139,7 +157,8 @@ describe("TIDEWE frozen film planning", () => {
     expect(ready.missingKeyframes).toEqual([]);
     const planned = getKlingFilmShots(ready.runId)[0];
     expect(planned.data.inputs.map(input => input.sourceUrl)).toEqual(["/api/files/presenter-frame.png", "/api/files/presenter.png"]);
-    expect(planned.data.prompt).toContain(presenter.name);
+    expect(planned.data.prompt).toContain("preserve the presenter's identity and clothing");
+    expect(planned.data.prompt).not.toMatch(/\p{Script=Han}/u);
   });
   it("freezes presenter reference bytes regardless of missing multi-image capability declarations", async () => {
     useImageModel();
@@ -247,7 +266,7 @@ describe("TIDEWE frozen film planning", () => {
     const planned = getKlingFilmShots(view.runId)[0];
     expect(view.output).toMatchObject({ audioStrategy: "edge-tts", voice: "en-US-GuyNeural", subtitles: false });
     expect(run.data.scriptSnapshot.copyDocument).toEqual(copyDocument);
-    expect(planned.data.prompt).toBe(compileTideweVisualPrompt(shot).prompt);
+    expect(planned.data.prompt).toBe(compileTideweVisualPrompt(shot, "video", "voiceover", undefined, "post", { direction: resolveTideweVideoDirection(shot) }).prompt);
     expect(planned.data.prompt).not.toContain(shot.voiceover);
     expect(planned.data.keyframeUrl).toBe("/api/files/frame.png");
     expect(buildFilmShotJobRequest(run, planned).prompt).toBe(planned.data.prompt);

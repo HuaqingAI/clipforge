@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { aiTasks, assets, projects, scripts } from "@/lib/db/schema";
+import { aiTasks, assets, projects, scripts, type Shot } from "@/lib/db/schema";
 import { filterAssetsForScript, scriptRevision, shotKey } from "@/lib/asset-context";
 import { getDataDir } from "@/lib/paths";
 import { klingJobs, klingJobOutputs, type KlingJob, type KlingJobData } from "./job-schema";
@@ -43,12 +43,22 @@ import type { VideoPromptContext } from "@/lib/video-prompt-request";
 import { buildVideoControlPlan, sanitizeVideoControlSummary } from "@/lib/video-control-plan";
 import { generationContextItemId, generationContextSnapshot } from "@/lib/generation-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
+import { resolveTideweVideoDirection, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
 const runtime = globalState.__clipforgeKlingJobs ??= { bootId: randomUUID(), busy: false, bindingSecret: randomUUID() };
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const GENERATION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+
+function tideweDirection(shot: Shot, reviewed = false) {
+  try { return resolveTideweVideoDirection(shot); }
+  catch (error) {
+    if (error instanceof TideweVideoDirectionError) throw new KlingError(reviewed ? "TIDEWE_PROMPT_REVIEW_REQUIRED" : error.code,
+      reviewed ? "待提交的 TIDEWE 提示词需要重新预览并确认英文镜头方向，请重新创建任务。" : error.message, reviewed ? 409 : error.status);
+    throw error;
+  }
+}
 
 function disabledAudioValue(parameter: KlingParameter): string | number | boolean | undefined {
   const candidates = parameter.allowedValues ?? (parameter.default !== undefined ? [parameter.default] : []);
@@ -350,7 +360,11 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   let reviewed: ReturnType<typeof assertReviewedVideoPrompt> | undefined;
   if (request.promptContext) {
     try { reviewed = assertReviewedVideoPrompt(request.projectId, request.promptContext, request.prompt, { scriptId: request.scriptId, shotId: request.shotId, provider: "kling-cli", model: request.selectionKey }); }
-    catch (error) { if (error instanceof VideoPromptError) throw new KlingError("KLING_" + error.code, error.message, error.status); throw error; }
+    catch (error) {
+      if (error instanceof VideoPromptError) throw new KlingError("KLING_" + error.code, error.message, error.status);
+      if (error instanceof TideweVideoDirectionError) throw new KlingError(error.code, error.message, error.status);
+      throw error;
+    }
   }
   let mode = request.mode;
   let prompt = request.prompt;
@@ -376,12 +390,13 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     const nativeSpeech = isTideweNativeSpeech(profile)
       && (reviewed ? reviewed.controlPlan.audioMode === "native" : parent?.data.output.audioStrategy !== "edge-tts" && parent?.data.output.narrationMode !== "none");
     const postNarration = isTideweNativeSpeech(profile) && !nativeSpeech;
-    const compiled = compileTideweVisualPrompt(shot, "video", isTideweOutdoorProfile(profile) ? profile.speechMode : "voiceover", isTideweOutdoorProfile(profile) ? profile.presenter : undefined, postNarration ? "post" : "native");
+    const compiled = compileTideweVisualPrompt(shot, "video", isTideweOutdoorProfile(profile) ? profile.speechMode : "voiceover", isTideweOutdoorProfile(profile) ? profile.presenter : undefined, postNarration ? "post" : "native", { direction: tideweDirection(shot) });
     if (film && prompt !== compiled.prompt) throw new KlingError("CREATIVE_POLICY_VIOLATION", "TIDEWE 整片镜头未使用当前脚本的服务端视觉提示词。", 422);
     prompt = reviewed?.prompt ?? compiled.prompt;
-    options = nativeSpeech ? controlledNativeVideoOptions(model, request.options ?? {}, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(model, request.options ?? {}, compiled.negativePrompt, postNarration ? shot.duration : undefined);
+    const negativePrompt = reviewed?.negativePrompt ?? compiled.negativePrompt;
+    options = nativeSpeech ? controlledNativeVideoOptions(model, request.options ?? {}, negativePrompt, shot.duration) : controlledSilentVideoOptions(model, request.options ?? {}, negativePrompt, postNarration ? shot.duration : undefined);
     generationPlan = sanitizeVideoControlSummary(buildVideoControlPlan({
-      provider: "kling-cli", modelId: model.selectionKey, supportsAudio: true, generateAudio: nativeSpeech, voiceover: shot.voiceover, locale: "zh",
+      provider: "kling-cli", modelId: model.selectionKey, supportsAudio: true, generateAudio: nativeSpeech, voiceover: shot.voiceover, locale: "en",
       firstFrameUrl: refs.find((ref) => ref.role === "image")?.sourceUrl, lastFrameUrl: refs.find((ref) => ref.role === "tailImage")?.sourceUrl,
     })) ?? undefined;
   } else {
@@ -562,9 +577,9 @@ function assertCurrentContext(job: KlingJob): void {
     const nativeSpeech = isTideweNativeSpeech(creativeContext.projectProfile)
       && (job.data.generationPlan ? job.data.generationPlan.audioMode === "native" : job.data.promptContext?.generateAudio !== false);
     const postNarration = isTideweNativeSpeech(creativeContext.projectProfile) && !nativeSpeech;
-    const compiled = compileTideweVisualPrompt(shot, "video", creativeContext.projectProfile.speechMode, creativeContext.projectProfile.presenter, postNarration ? "post" : "native");
+    const compiled = compileTideweVisualPrompt(shot, "video", creativeContext.projectProfile.speechMode, creativeContext.projectProfile.presenter, postNarration ? "post" : "native", { direction: tideweDirection(shot, true) });
     if (!job.data.filmRunId && !job.data.promptContext) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 单镜缺少提示词预览，请重新创建任务。", 409);
-    if (job.data.filmRunId && job.data.prompt !== compiled.prompt) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 整片镜头未使用当前脚本的服务端视觉提示词。", 422);
+    if (job.data.prompt !== compiled.prompt && !job.data.prompt.startsWith(compiled.prompt + "\n")) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 提示词版本已更新，请重新预览、确认并创建任务。", 409);
     const expectedOptions = nativeSpeech ? controlledNativeVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, postNarration ? shot.duration : undefined);
     if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头未满足当前口播及视觉提示词策略，请重新创建任务。", 422);
     const expectedArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, expectedOptions, job.data.inputs, job.id, postNarration);

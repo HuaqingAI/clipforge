@@ -90,6 +90,36 @@ afterEach(async () => {
 });
 
 describe("TIDEWE employee copy on existing projects", () => {
+  it.each(["simple", "pro"] as const)("uses the scene direction for AI regeneration in %s mode and keeps it through source switches", async (uiMode) => {
+    useSettingsStore.setState({ uiMode });
+    let complete!: (response: Response) => void;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === projectUrl) return Response.json(project);
+      if (url === scriptsUrl) return Response.json([script()]);
+      if (url === generationUrl) return new Promise<Response>((resolve) => { complete = resolve; });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const scene = "  在清晨湿地走过浅水，再到岸边展示涉水服。\n重点展示穿脱过程。  ";
+    const selector = "#tidewe-custom-copy-text-scene-description";
+    await act(async () => root.render(createElement(ScriptPage)));
+    await enterCopy(scene, selector);
+    await click("copySourceManual");
+    expect(container.querySelector(selector)).toBeNull();
+    await enterCopy("A retained complete employee original.");
+    await click("copySourceAi");
+    expect((container.querySelector(selector) as HTMLTextAreaElement).value).toBe(scene);
+    await click("regenerate"); await click("regenConfirmOk");
+    const request = JSON.parse(generationCalls()[0][1].body);
+    expect(request).toMatchObject({ sceneDescription: scene.trim(), sourceScriptId: "original", expectedScriptHash: "hash-original", expectedCreativeConfigRevision: 7 });
+    expect(request).not.toHaveProperty("copyText");
+    expect(request).not.toHaveProperty("count");
+    expect((container.querySelector(selector) as HTMLTextAreaElement).disabled).toBe(true);
+    expect(container.querySelector('input[type="radio"][value="manual"]')?.matches(":disabled")).toBe(true);
+    await act(async () => complete(Response.json({ scripts: [script("scene-next", originalText, 2)] })));
+    expect((container.querySelector(selector) as HTMLTextAreaElement).value).toBe(scene);
+    expect((container.querySelector(selector) as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
   it("reopens a saved employee original in manual mode and replans that same text by default", async () => {
     const saved = script();
     saved.copyDocument.source = "user_provided";
@@ -175,12 +205,14 @@ describe("TIDEWE employee copy on existing projects", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     await act(async () => root.render(createElement(ScriptPage)));
+    await enterCopy("清晨湿地的画面方向", "#tidewe-custom-copy-text-scene-description");
     await click("copySourceManual");
     expect(button("copyInputGenerate").disabled).toBe(true);
     await enterCopy(employeeCopy);
     await click("copyInputGenerate");
     expect(posted).toMatchObject({ projectId: "custom-copy-project", copyText: employeeCopy, count: 1, expectedCreativeConfigRevision: 7, requestId: expect.any(String), creativeProfile: { presenter } });
     expect(posted).not.toHaveProperty("sourceScriptId");
+    expect(posted).not.toHaveProperty("sceneDescription");
     expect(container.textContent).toContain("TIDEWE employee-first");
     expect(container.textContent).toContain("These are the waders I brought today.");
   });
@@ -250,6 +282,7 @@ describe("TIDEWE employee copy on existing projects", () => {
     const request = JSON.parse(generationCalls()[0][1].body);
     expect(request).not.toHaveProperty("copyText");
     expect(request).not.toHaveProperty("count");
+    expect(request).not.toHaveProperty("sceneDescription");
   });
 
   it.each([createShortVideoSalesProfile(), createPremiumProductCgProfile()])("keeps the manual TIDEWE source control out of other creation types: $creationType", async (creativeProfile) => {
@@ -261,5 +294,6 @@ describe("TIDEWE employee copy on existing projects", () => {
     await act(async () => root.render(createElement(ScriptPage)));
     expect(container.textContent).not.toContain("copySourceManual");
     expect(container.querySelector("#tidewe-custom-copy-text")).toBeNull();
+    expect(container.querySelector("#tidewe-custom-copy-text-scene-description")).toBeNull();
   });
 });

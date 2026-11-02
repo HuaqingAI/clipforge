@@ -1,6 +1,8 @@
 import type { Shot } from "@/lib/db/schema";
 import type { TideweOutdoorProfile } from "@/lib/creative-profiles";
 import { tidewePresenterAnchor, tidewePresenterReference } from "./presenter";
+import { compileTideweVideoPrompt } from "./video-prompt";
+import type { TideweVideoDirection } from "./video-direction";
 
 /** The same native-camera style governs initial frames and subsequent animation. */
 export const TIDEWE_NATIVE_CAMERA_STYLE = "iPhone 8原生相机拍摄的随性影像，仅采用现有的自然环境光。保留真实的阴影细节与环境色彩；严禁使用辅助光、补光、闪光灯、反光板、轮廓光、HDR处理、美颜修饰、锐化处理、电影级调色、人工噪点或全局模糊效果。";
@@ -33,10 +35,11 @@ export const TIDEWE_PHOTOGRAPHIC_POLICY = [
 
 export const TIDEWE_VISUAL_NEGATIVE_PROMPT = "新增字幕、营销文字、价格卡、水印、新增Logo、说话口型、夸张叫卖表演、热成像、发光热区、透视剖面、虚构产品结构、独立电池展示、抠图白边、人物悬浮、过度背景虚化、人像模式蒙版虚化、主体周围近景糊成色块、底边前景虚化带、连续支撑面失焦、上下边缘移轴虚化、中远景糊成色块、奶油散景、明显散景光斑、极浅景深、主体与环境清晰度断层、橙黄滤镜、过度锐化、HDR光晕、油画纹理、蜡质皮肤、辅助光、补光、闪光灯、反光板、轮廓光、HDR处理、美颜修饰、锐化处理、电影级调色、人工噪点、全局模糊效果";
 
-type VisualShot = Partial<Pick<Shot, "description" | "visualIntent" | "camera" | "tidewe" | "voiceover">>;
+type VisualShot = Partial<Pick<Shot, "description" | "visualIntent" | "camera" | "tidewe" | "voiceover" | "duration">>;
 
 /** Bind native speech to the frozen copy, keeping historical offscreen narration explicit. */
-export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "video" = "video", speechMode: TideweOutdoorProfile["speechMode"] = "voiceover", presenter = shot.tidewe?.presenter, audioMode: "native" | "post" = "native", options: { includePhotographicPolicy?: boolean } = {}): { prompt: string; negativePrompt: string } {
+export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "video" = "video", speechMode: TideweOutdoorProfile["speechMode"] = "voiceover", presenter = shot.tidewe?.presenter, audioMode: "native" | "post" = "native", options: { includePhotographicPolicy?: boolean; direction?: TideweVideoDirection } = {}): { prompt: string; negativePrompt: string } {
+  if (kind === "video") return compileTideweVideoPrompt(shot, speechMode, presenter, audioMode, options.direction);
   const productVisible = shot.tidewe?.productVisible !== false;
   const native = speechMode === "on_camera";
   const offCameraSpeech = native && shot.tidewe?.speechDelivery === "off_camera" && Boolean(shot.voiceover?.trim());
@@ -47,18 +50,15 @@ export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "vid
   const visualPlan = shot.tidewe?.visualPlan;
   return {
     prompt: [
-      `TIDEWE 户外装备${personVisible ? "真人展示与真实使用" : "产品细节与环境"}${kind === "image" ? "关键帧" : "视频素材"}，采用自然的 TikTok 户外产品演示风格。画面服从本镜语义，保持真实场景与动作。`,
-      options.includePhotographicPolicy !== false ? kind === "image" ? TIDEWE_IMAGE_CAPTURE_POLICY : TIDEWE_PHOTOGRAPHIC_POLICY : "",
-      kind === "video" ? "转动态时全程保持上述 iPhone 8 原生相机画面风格，维持已确认首帧的构图、场景、人物与商品既有状态，以及自然光线、环境色彩、真实阴影、曝光与材质细节；按本镜要求发展动作，不在动作或运镜过程中新增照明、滤镜、锐化、人工噪点、全局模糊效果或人为虚化。" : "",
+      `TIDEWE 户外装备${personVisible ? "真人展示与真实使用" : "产品细节与环境"}关键帧，采用自然的 TikTok 户外产品演示风格。画面服从本镜语义，保持真实场景与动作。`,
+      options.includePhotographicPolicy !== false ? TIDEWE_IMAGE_CAPTURE_POLICY : "",
       description ? `本镜画面：${description}` : "本镜为自然户外环境建立画面。",
       visualIntent ? `视觉意图补充：${visualIntent}` : "",
       shot.tidewe?.shotGoal ? `画面目标：${shot.tidewe.shotGoal}` : "",
       shot.camera?.trim() ? `运镜/构图：${shot.camera.trim()}` : "",
       visualPlan ? `已确认景别：${({ wide: "全景／使用空间", medium: "中景／人物与装备交流", close_up: "近景／较大操作区域", detail: "特写／局部部件与接触" })[visualPlan.framing]}；画面任务：${({ presenter: "人物交流", demonstration: "真实使用演示", detail: "可见细节观察", context: "使用情境与空间关系" })[visualPlan.visualRole]}。` : "",
       productVisible && visualPlan?.productFocus ? `本镜商品观察对象：${visualPlan.productFocus}。该商品或部位必须清楚入画，画幅与构图须实际容纳观察对象和所需接触位置；单独的人脸、空手手势或环境不能替代商品画面。只呈现参考支持的外观与普通使用，不把可见外观当作性能测试结论。` : "",
-      visualPlan ? kind === "image"
-        ? `首帧已有状态：${visualPlan.actionStart}。本格只画这一瞬，不把后续动作或结束状态拼入首帧；为后续「${visualPlan.action}」保留操作空间。`
-        : `动作起点：${visualPlan.actionStart}。本镜动作：${visualPlan.action}。自然结束：${visualPlan.actionEnd}。按正常速度完成一次后停稳；静态观察保持既有状态，不编造额外动作。` : "",
+      visualPlan ? `首帧已有状态：${visualPlan.actionStart}。本格只画这一瞬，不把后续动作或结束状态拼入首帧；为后续「${visualPlan.action}」保留操作空间。` : "",
       personVisible && presenter ? `固定出镜人物：${tidewePresenterAnchor(presenter)}。只使用这位主播，不另行生成其他年龄、性别、发型、胡须或面容设定。${tidewePresenterReference({ presenter }) ? "主播参考图优先锁定身份、脸型、发型和体型；文字描述辅助解释，不将人物参考图中的背景、分格或边框带入场景。商品参考图只锁商品，不能替换主播身份。" : "严格沿用保存的主播外貌描述。"}` : "",
       !personVisible ? "本镜为无人出镜的产品或环境空镜，不加入主播、路人、人脸或手；所选主播参考仅供其他人物镜头使用。" : "",
       shot.tidewe?.sceneId ? `连续场景标识 ${shot.tidewe.sceneId}：同场景${personVisible ? "人物的面容、年龄感、发型、帽子、服装、" : ""}产品状态、天气与光线连续。` : `同一连续场景保持${personVisible ? "人物的面容、年龄感、发型、帽子、服装、" : ""}产品状态、天气与光线一致。`,
@@ -70,20 +70,8 @@ export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "vid
         : offCameraSpeech
           ? "本镜由同一成年主播画外讲解，画面按已保存构图展示实际操作、产品细节或环境，不要求出现脸部或嘴部；有人出镜时自然安静操作，不做可见说话或口型同步。局部手部镜头保持所选主播的衣袖与体型连续，不为露出人脸改变景别。"
           : personVisible ? "本镜需要人物时，采用写实真人出镜，允许自然露脸；可面向镜头展示装备，自然穿戴、操作、坐下体验或与产品互动。按本镜构图呈现人物，产品细节与环境空镜不强加人脸。" : "",
-      kind === "image"
-        ? `画面是动作开始前可独立使用的关键帧。${spoken ? "口播人物正面或轻微侧脸、嘴部清楚可见，适合后续生成开口说话的视频。静态画面不绘制对白或字幕。" : ""}`
-        : offCameraSpeech
-          ? audioMode === "post"
-            ? "Generate silent video for the exact frozen narration to be added in post. Follow the approved visual action and framing. Any visible person performs silently with no speaking or lip synchronization; do not add a face or mouth to a detail-only shot. No audio track. No dialogue. No music. No sound effects."
-            : `Generate native audio and video with off-camera narration. The same established adult presenter voice must narrate the following exact US English script once, in order, with no added, omitted or paraphrased words. Keep that voice, accent and conversational pace consistent with the other shots. Complete the entire line within this clip, with a brief natural pause at each end. Any visible person performs silently; no visible speaking, lip synchronization or additional speakers. Preserve the approved framing, including detail-only or person-free shots. No music or extra dialogue. Exact spoken text (JSON string): ${JSON.stringify(shot.voiceover!.trim())}`
-          : spoken
-          ? audioMode === "post"
-            ? `Generate silent video for narration added in post. The visible adult presenter must visibly articulate the following exact US English script once, in order, with no added, omitted or paraphrased words. Their lips, jaw and mouth must move naturally and match the English phonemes, syllables, pauses and timing as closely as possible. Start and finish the entire line within this clip, leaving a brief natural pause at each end. Do not generate an audio track; the exact English narration will be added automatically during composition. Exact spoken text (JSON string): ${JSON.stringify(shot.voiceover!.trim())}`
-            : `Generate native synchronized audio and video. The visible adult presenter must speak the following exact US English script once, in order, with no added, omitted or paraphrased words. Their lips, jaw and mouth must move throughout the actual speech and match the English phonemes, syllables, pauses and timing as closely as possible; keep the speech audible and visibly articulated, with accurate lip timing. Start and finish the entire line within this clip, leave a brief natural pause at each end, and do not cut off the last word. Natural conversational delivery with a consistent voice; no music, extra dialogue or other speakers. Exact spoken text (JSON string): ${JSON.stringify(shot.voiceover!.trim())}`
-          : native
-            ? `本镜没有口播文案：不编造对白或说话口型，无音乐；${audioMode === "post" ? "仅生成静音视觉素材和一个清晰真实动作。" : "只保留轻微自然环境声和一个清晰真实动作。"}`
-            : "人物演示与口播音轨分开，不生成说话口型或额外对白。英文画外旁白由后期统一添加。仅生成静音视觉素材，无对白、口播、音乐和音效；一个清晰动作由起点自然发展到终点，避免无目的转头和复杂动作。",
-      !native && kind === "image" ? "人物演示与口播音轨分开，不生成说话口型或额外对白。英文画外旁白由后期统一添加。" : "",
+      `画面是动作开始前可独立使用的关键帧。${spoken ? "口播人物正面或轻微侧脸、嘴部清楚可见，适合后续生成开口说话的视频。静态画面不绘制对白或字幕。" : ""}`,
+      !native ? "人物演示与口播音轨分开，不生成说话口型或额外对白。英文画外旁白由后期统一添加。" : "",
       "不新增屏幕文字、字幕、营销字、价格、购买条或水印；只保留参考中真实产品已有标识。不生成热成像、发光热区、透视剖面、浸泡带电系统或无依据效果测试。首版不展示独立电池，尤其不得暗示 HJ006 随附电池。",
     ].filter(Boolean).join("\n"),
     negativePrompt: spoken ? TIDEWE_VISUAL_NEGATIVE_PROMPT.replace("说话口型、", "") + "、口播时闭嘴、声画错位、口型不匹配、口部遮挡、额外对白、背景音乐" : TIDEWE_VISUAL_NEGATIVE_PROMPT,

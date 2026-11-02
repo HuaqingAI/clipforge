@@ -36,6 +36,16 @@ describe("backend video prompt transport", () => {
     await expect(fetchVideoPrompt("project-1", request)).rejects.toThrow("后端未返回有效的视频提示词");
   });
 
+  it("sends text-model credentials only for preparation and omits them from the paid review context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(response));
+    vi.stubGlobal("fetch", fetchMock);
+    const llmConfig = { baseUrl: "https://text.invalid/v1", apiKey: "transient-key", model: "text-model" };
+    const result = await fetchVideoPrompt("project-1", request, undefined, llmConfig);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ...request, llmConfig });
+    expect(result.promptContext).toEqual({ ...request, contextKey: "server-context" });
+    expect(JSON.stringify(result.promptContext)).not.toContain(llmConfig.apiKey);
+  });
+
   it.each(["fetch", "body"])("releases a stalled %s even when the transport ignores abort", async (stage) => {
     vi.useFakeTimers();
     const stalled = new Promise<Response>(() => {});

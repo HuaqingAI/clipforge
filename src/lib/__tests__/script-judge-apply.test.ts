@@ -120,10 +120,13 @@ describe("apply TIDEWE feedback without desynchronizing frozen copy", () => {
     expect(result.copyDocument?.visualBeats).toEqual(script.copyDocument!.visualBeats);
     expect(script.shots![0].tidewe!.visualPlan).toBeDefined();
     for (const kind of ["image", "video"] as const) {
-      const compiled = compileTideweVisualPrompt(result.shots[0], kind);
+      const translatedAction = field === "prompt" ? "The presenter shows the boots at the woodland edge." : "The presenter takes one steady step in the boots at the woodland edge.";
+      const compiled = compileTideweVisualPrompt(result.shots[0], kind, "voiceover", undefined, "native", kind === "video"
+        ? { direction: { action: translatedAction, camera: "Static medium shot." } } : {});
       expect(compiled.prompt).not.toContain(oldAction);
       expect(compiled.prompt).not.toContain("指腹已接触靴口边缘");
-      if (field !== "prompt") expect(compiled.prompt).toContain(description);
+      if (kind === "video") expect(compiled.prompt).toContain(translatedAction);
+      else if (field !== "prompt") expect(compiled.prompt).toContain(description);
     }
   });
 

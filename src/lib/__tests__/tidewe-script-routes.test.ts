@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { productFactsHash, englishWordCount, TideweValidationError } from "@/lib/tidewe/validation";
 import { withGenerationContext } from "@/lib/generation-context";
 import { assetMatchesScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
@@ -213,6 +213,49 @@ describe("TIDEWE project context", () => {
       expect(response.status).toBe(409);
       expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.characterId).toBe(presenterB.id);
     } finally { select.mockRestore(); }
+  });
+});
+
+describe("TIDEWE optional AI scene direction", () => {
+  it("forwards a trimmed scene brief to the default three-candidate AI generation without treating it as full copy", async () => {
+    const sceneDescription = "清晨湖边，一位猎人穿着当前装备，在浅水旁自然展示外观。";
+    calls.generate.mockResolvedValueOnce([generated(), generated(), generated()]);
+    const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription: `  ${sceneDescription}\r\n` }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).scripts).toHaveLength(3);
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ sceneDescription, count: 3 }));
+    expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("copyText");
+  });
+
+  it.each([undefined, "", " \r\n\t "])("preserves the original AI input when the scene brief is %j", async sceneDescription => {
+    const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription }));
+    expect(response.status).toBe(200);
+    expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
+    expect(calls.generate.mock.calls[0][0]).toMatchObject({ count: 3 });
+  });
+
+  it.each([null, false, 123, [], { scene: "lake" }])("rejects a non-text AI scene brief before paid generation: %j", async sceneDescription => {
+    const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_SCENE_DESCRIPTION_INVALID" });
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.generate).not.toHaveBeenCalled();
+    expect(db.select().from(schema.scripts).all()).toEqual([]);
+  });
+
+  it.each(["希望在湖边展示", { scene: "lake" }])("ignores stale scene direction when complete English copy is provided: %j", async sceneDescription => {
+    const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription, copyText }));
+    expect(response.status).toBe(200);
+    expect(calls.generate.mock.calls[0][0]).toMatchObject({ copyText, count: 1 });
+    expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
+  });
+
+  it.each([createShortVideoSalesProfile(), createPremiumProductCgProfile()])("keeps scene direction out of $creationType generation", async creativeProfile => {
+    db.update(schema.projects).set({ creativeProfile }).where(eq(schema.projects.id, projectId)).run();
+    const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription: { scene: "lake" } }));
+    expect(response.status).toBe(200);
+    expect(calls.generate).toHaveBeenCalledOnce();
+    expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
   });
 });
 

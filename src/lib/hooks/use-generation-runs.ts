@@ -36,6 +36,21 @@ export interface GenerationRunInput {
   label?: string;
   items: Array<{ kind: GenerationItemKind; scriptId?: string; shotId?: number; request: Record<string, unknown>; asset?: Record<string, unknown> }>;
 }
+export class GenerationRunSubmissionError extends Error {
+  readonly status?: number;
+  readonly code?: string;
+  readonly clientRequestId: string;
+  readonly outcomeUnknown: boolean;
+
+  constructor(message: string, details: { clientRequestId: string; status?: number; code?: string; outcomeUnknown: boolean }) {
+    super(message);
+    this.name = "GenerationRunSubmissionError";
+    this.status = details.status;
+    this.code = details.code;
+    this.clientRequestId = details.clientRequestId;
+    this.outcomeUnknown = details.outcomeUnknown;
+  }
+}
 export const GENERATION_RUNS_REFRESH_EVENT = "clipforge:generation-runs-refresh";
 export const generationRunActive = (run: Pick<GenerationRun, "status">) => ["queued", "running", "waiting", "importing"].includes(run.status);
 export const generationRunDeletable = (run: Pick<GenerationRun, "status" | "items">) => ["completed", "failed"].includes(run.status)
@@ -78,11 +93,22 @@ function changed() {
   window.dispatchEvent(new Event(GENERATION_RUNS_REFRESH_EVENT));
   window.dispatchEvent(new Event(TASK_FEED_REFRESH_EVENT));
 }
-async function responseBody(response: Response): Promise<GenerationRun> {
+async function responseBody(response: Response, clientRequestId?: string): Promise<GenerationRun> {
   const body = await response.json().catch(() => null);
-  if (!body) throw new Error("后台任务响应无法读取，请刷新任务列表核对提交结果。");
-  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : body.error?.message || "后台任务请求失败");
-  if (!body || typeof body.id !== "string") throw new Error("未收到后台任务编号，请刷新任务列表核对提交结果。");
+  const failure = (message: string, code?: string, outcomeUnknown = true) => clientRequestId === undefined
+    ? new Error(message)
+    : new GenerationRunSubmissionError(message, { clientRequestId, status: response.status, code, outcomeUnknown });
+  if (!body) throw failure("后台任务响应无法读取，请刷新任务列表核对提交结果。");
+  if (!response.ok) {
+    const message = typeof body.error === "string" ? body.error : typeof body.error?.message === "string" ? body.error.message : undefined;
+    const code = typeof body.code === "string" ? body.code : undefined;
+    // Only a readable API rejection proves that this confirmation did not enqueue work.
+    // A conflicting request ID can refer to existing work and still needs reconciliation.
+    const rejected = response.status >= 400 && response.status < 500 && response.status !== 408
+      && code !== "GENERATION_REQUEST_CONFLICT" && Boolean(message && code);
+    throw failure(message || "后台任务请求失败", code, !rejected);
+  }
+  if (typeof body.id !== "string" || !body.id) throw failure("未收到后台任务编号，请刷新任务列表核对提交结果。");
   return body as GenerationRun;
 }
 /** Inputs are sent once; execution and result import belong to the server. */
@@ -93,8 +119,13 @@ export async function submitGenerationRun(input: GenerationRunInput): Promise<Ge
   try {
     const request = fetch("/api/generation-runs", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal: controller.signal,
-    }).then(responseBody);
+    }).then((response) => responseBody(response, input.clientRequestId));
     return await Promise.race([request, deadline]);
+  } catch (failure) {
+    if (failure instanceof GenerationRunSubmissionError) throw failure;
+    throw new GenerationRunSubmissionError(failure instanceof Error ? failure.message : "后台任务提交结果待核对。", {
+      clientRequestId: input.clientRequestId, outcomeUnknown: true,
+    });
   } finally { clearTimeout(timeout); changed(); }
 }
 

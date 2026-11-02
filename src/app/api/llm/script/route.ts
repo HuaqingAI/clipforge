@@ -71,6 +71,7 @@ interface ScriptRequestBody {
   sourceScriptId?: string;
   expectedScriptHash?: string;
   copyText?: string;
+  sceneDescription?: string;
   count?: number;
 }
 
@@ -309,6 +310,8 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       catch (error) {
         return NextResponse.json({ error: error instanceof Error ? error.message : "请输入完整英文口播文案。", code: "TIDEWE_IMPORTED_COPY_INVALID", requestId: body.requestId }, { status: 400 });
       }
+    } else if (body.sceneDescription !== undefined && typeof body.sceneDescription !== "string") {
+      return NextResponse.json({ error: "请用文字描述想要的场景画面。", code: "TIDEWE_SCENE_DESCRIPTION_INVALID", requestId: body.requestId }, { status: 400 });
     }
     const selected = frozenContext ? frozenContext.script as typeof scriptsTable.$inferSelect | undefined : existing.find((row) => row.selected);
     originalSelection = selected ? { id: selected.id, hash: scriptRevision(selected) } : undefined;
@@ -401,6 +404,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       ...(tideweProfile && {
         productFacts: normalizeProductFacts(project?.productFacts) ?? productFactsFromDescription(productDescription ?? "", typeof effectiveCategory === "string" ? effectiveCategory : undefined),
         ...(body.copyText !== undefined && { copyText: body.copyText }),
+        ...(body.copyText === undefined && body.sceneDescription?.trim() && { sceneDescription: body.sceneDescription.trim() }),
         count: body.copyText !== undefined ? 1 : body.count ?? 3,
       }),
       ...(premiumProfile && { narrationMode: premiumProfile.narrationMode }),

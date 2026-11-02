@@ -44,6 +44,7 @@ import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingSubmitRequest } from "./job-types";
 import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
+import { normalizeTideweVideoDirectionConfig, prepareTideweVideoDirections, resolveTideweVideoDirection, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const VIDEO = /\.(?:mp4|webm|mov|m4v|mkv)(?:$|[?#])/i;
@@ -161,7 +162,10 @@ function promptFor(shot: Shot, model: KlingVideoModelDescriptor, output: KlingFi
   const audioMode: VideoAudioMode = output.audioStrategy === "edge-tts" ? "silent" : output.audioStrategy === "edge-tts-mix" ? "ambient" : "native";
   const premiumCg = isPremiumProductCgProfile(creativeProfile);
   if (premiumCg) return compilePremiumCgVideoPrompt(shot, creativeProfile);
-  const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible, creativeProfile, locale: "zh" });
+  const tidewe = isTideweOutdoorProfile(creativeProfile);
+  const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible, creativeProfile,
+    audioMode: audioMode === "native" && output.narrationMode !== "none" ? "native" : "post",
+    ...(tidewe ? { tideweVideoDirection: resolveTideweVideoDirection(shot) } : {}), locale: tidewe ? "en" : "zh" });
   if (isTideweOutdoorProfile(creativeProfile)) return direction;
   // A legacy free-form prompt can contain sales language. CG always compiles from the controlled
   // visual direction and profile policy instead of inheriting that older prompt field.
@@ -235,6 +239,18 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
   }
   const output = outputSettings(body.output, creativeProfile);
   if (!shots.length || shots.length > MAX_SHOTS || new Set(shots.map((shot) => shot.shotId)).size !== shots.length || shots.some((shot) => !Number.isSafeInteger(shot.shotId) || shot.shotId < 0 || !Number.isFinite(shot.duration) || shot.duration <= 0) || shots.reduce((sum, shot) => sum + shot.duration, 0) > MAX_SECONDS) throw fail("KLING_FILM_LIMIT_EXCEEDED", "整片需要 1–50 个有效镜头，总时长不能超过 600 秒。");
+  if (tidewe) {
+    const sourceRevision = scriptRevision(script);
+    const sourceProjectRevision = contentHash({ prompt: projectPromptRevision(project), productImages: project.productImages });
+    try { await prepareTideweVideoDirections(shots, normalizeTideweVideoDirectionConfig(body.llmConfig)); }
+    catch (error) { if (error instanceof TideweVideoDirectionError) throw new KlingError(error.code, error.message, error.status); throw error; }
+    const currentProject = db.select().from(projects).where(eq(projects.id, project.id)).get();
+    const currentScript = resolveCurrentScript(db.select().from(scripts).where(eq(scripts.projectId, project.id)).all());
+    if (!currentProject || !currentScript || currentScript.id !== script.id || scriptRevision(currentScript) !== sourceRevision
+      || contentHash({ prompt: projectPromptRevision(currentProject), productImages: currentProject.productImages }) !== sourceProjectRevision) {
+      throw fail("KLING_CONTEXT_CHANGED", "英文动态描述准备期间脚本或项目设置已变化，请重新预览整片。");
+    }
+  }
   const scopedSelectedAssets = filterAssetsForScript(
     db.select().from(assets).where(and(eq(assets.projectId, project.id), eq(assets.selected, true))).all(),
     script,

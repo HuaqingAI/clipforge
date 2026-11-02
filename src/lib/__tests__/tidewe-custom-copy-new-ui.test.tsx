@@ -88,15 +88,69 @@ afterEach(async () => {
 });
 
 describe("TIDEWE custom copy before project creation", () => {
-  it("defaults to AI copy without sending a user original", async () => {
+  it.each(["", " \n\t "])("defaults to AI copy and omits a blank scene direction (%j)", async (scene) => {
     await act(async () => root.render(createElement(NewProjectPage)));
     expect((container.querySelector('input[type="radio"][value="ai"]') as HTMLInputElement).checked).toBe(true);
     expect(container.querySelector("#tidewe-copy-input")).toBeNull();
+    expect(container.querySelector("#tidewe-copy-input-scene-description")).not.toBeNull();
+    expect(container.textContent).toContain("sceneDescriptionHint");
+    await input("#tidewe-copy-input-scene-description", scene);
     await product();
     await click("submit");
     expect(generationBodies()).toHaveLength(1);
     expect(generationBodies()[0]).not.toHaveProperty("copyText");
     expect(generationBodies()[0]).not.toHaveProperty("count");
+    expect(generationBodies()[0]).not.toHaveProperty("sceneDescription");
+  });
+
+  it("keeps the scene draft across source and style switches and sends it only for TIDEWE AI copy", async () => {
+    const scene = "  清晨湿地，主播穿涉水服走过浅水，靠岸展示靴底。\n用近景表现穿脱动作。  ";
+    await act(async () => root.render(createElement(NewProjectPage)));
+    await product();
+    await input("#tidewe-copy-input-scene-description", scene);
+    await source("manual");
+    expect(container.querySelector("#tidewe-copy-input-scene-description")).toBeNull();
+    await input("#tidewe-copy-input", original);
+    await click("copyInputGenerate");
+    await source("ai");
+    expect((container.querySelector("#tidewe-copy-input-scene-description") as HTMLTextAreaElement).value).toBe(scene);
+    await click("submit");
+    await click("creationTypeSalesLabel");
+    expect(container.querySelector("#tidewe-copy-input-scene-description")).toBeNull();
+    await click("submitGenerate");
+    await click("creationTypeCgLabel");
+    expect(container.querySelector("#tidewe-copy-input-scene-description")).toBeNull();
+    await click("submitGenerateCg");
+    const requests = generationBodies();
+    expect(requests).toHaveLength(4);
+    expect(requests[0]).toMatchObject({ copyText: original, count: 1 });
+    expect(requests[0]).not.toHaveProperty("sceneDescription");
+    expect(requests[1]).toMatchObject({ sceneDescription: scene.trim(), styleType: "tidewe_outdoor" });
+    expect(requests[1]).not.toHaveProperty("copyText");
+    expect(requests[1]).not.toHaveProperty("count");
+    expect(requests[2]).not.toHaveProperty("sceneDescription");
+    expect(requests[3]).not.toHaveProperty("sceneDescription");
+    await click("label");
+    expect((container.querySelector("#tidewe-copy-input-scene-description") as HTMLTextAreaElement).value).toBe(scene);
+  });
+
+  it("disables the scene direction while AI background registration is pending and keeps it after failure", async () => {
+    let finish!: (response: Response) => void;
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs"
+      ? new Promise<Response>((resolve) => { finish = resolve; })
+      : fallback(url, init));
+    await act(async () => root.render(createElement(NewProjectPage)));
+    await product();
+    await input("#tidewe-copy-input-scene-description", "清晨河岸的涉水服演示");
+    await click("submit");
+    const textarea = container.querySelector("#tidewe-copy-input-scene-description") as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(true);
+    expect(container.querySelector('input[name="tidewe-copy-input-source"]')?.matches(":disabled")).toBe(true);
+    expect(generationBodies()[0]).toHaveProperty("sceneDescription", textarea.value);
+    await act(async () => finish(Response.json({ error: "Retry background registration." }, { status: 503 })));
+    expect(textarea.disabled).toBe(false);
+    expect(textarea.value).toBe("清晨河岸的涉水服演示");
   });
 
   it.each([false, true])("sends the exact multiline original as one plan with the latest revision and optional frozen presenter, selected=%s", async (selected) => {

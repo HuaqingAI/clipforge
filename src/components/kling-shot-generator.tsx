@@ -13,6 +13,7 @@ import { videoParameterLabel, videoParameterDescription, videoParameterValueLabe
 import { validateVideoPrompt } from "@/lib/video-prompt";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
 import type { BatchMotionDraft } from "@/lib/batch-motion";
+import { GenerationRunSubmissionError } from "@/lib/hooks/use-generation-runs";
 
 const FRAME_INPUTS = [{ name: "firstFrame", label: "首帧" }, { name: "tailFrame", label: "尾帧" }] as const;
 
@@ -185,6 +186,14 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
   const capacityBlocked = Boolean(capacity?.blockedByUnknownSubmission);
   const canSubmit = Boolean(status?.loggedIn && status.configured !== false && !status.profile?.disabledAt && (!profileId || !status.profile?.id || status.profile.id === profileId) && model && confirmed && submissionPrompt && !promptIssues.length && !missingInput && scriptId && !submitting && !reviewingFrames && !frameReviewFailed && !uncertain && !capacityBlocked);
 
+  async function refreshTasks() {
+    try { await onRefreshTasks(); }
+    catch {
+      // A failed list refresh cannot resolve an unknown submission or hide its original error.
+      setError((previous) => previous || "刷新任务列表失败，请稍后重试。");
+    }
+  }
+
   async function submit() {
     if (!canSubmit || !model || !asset || submitLock.current) return;
     submitLock.current = true; setSubmitting(true); setError(null);
@@ -217,9 +226,10 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
       if (typeof body.jobId !== "string") { setUncertain(true); throw new Error("未取得本地作业 ID，请先核对任务列表"); }
       onSubmitted(body.jobId);
     } catch (failure) {
+      if (failure instanceof GenerationRunSubmissionError) requiresReconciliation = failure.outcomeUnknown;
       if (requiresReconciliation) setUncertain(true);
       setError(failure instanceof Error ? failure.message : "提交结果待核对");
-      await onRefreshTasks();
+      await refreshTasks();
     } finally { setSubmitting(false); submitLock.current = false; setConfirmed(false); }
   }
 
@@ -246,6 +256,6 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
         <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm">此操作调用 Kling 官方账号生成视频，可能消耗积分。实际扣费以 Kling 为准；本应用未获得精确积分报价时不会把费用显示为免费。</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={confirmed} disabled={submitting || uncertain || reviewingFrames} onChange={(event) => setConfirmed(event.target.checked)} />我已核对当前镜头、模型、图片和参数，确认本次生成可能扣除 Kling 积分。</label></div>
         {missingInput && <p className="text-xs text-amber-600">请为图生视频添加一张输入图片。</p>}
       </>}
-      {uncertain ? <div className="space-y-2"><p className="text-sm text-amber-600">本机提交结果待核对，请先刷新任务列表，找到原任务后继续查询或恢复保存。</p><Button variant="outline" onClick={() => void onRefreshTasks()}>核对任务列表</Button></div> : <Button disabled={!canSubmit} onClick={() => void submit()}>{submitting ? "正在登记作业，请勿重复操作…" : "确认生成此镜头（消耗积分）"}</Button>}
+      {uncertain ? <div className="space-y-2"><p className="text-sm text-amber-600">本机提交结果待核对，请先刷新任务列表，找到原任务后继续查询或恢复保存。</p><Button variant="outline" onClick={() => void refreshTasks()}>核对任务列表</Button></div> : <Button disabled={!canSubmit} onClick={() => void submit()}>{submitting ? "正在登记作业，请勿重复操作…" : "确认生成此镜头（消耗积分）"}</Button>}
   </VideoGenerationDialog>;
 }

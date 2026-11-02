@@ -24,6 +24,14 @@ vi.mock("@/lib/kling/auth", () => ({ refreshProfile: (...args: unknown[]) => sta
 vi.mock("@/lib/kling/cli-runner", () => ({ runKling: (...args: unknown[]) => state.cli(...args), withKlingLease: (...args: unknown[]) => state.lease(...args) }));
 vi.mock("@/lib/kling/inputs", async (original) => ({ ...await original<typeof import("@/lib/kling/inputs")>(), prepareKlingInputs: (...args: unknown[]) => state.prepare(...args) }));
 
+// Translation/cache behavior is covered separately; integration uses one prepared English direction.
+vi.mock("@/lib/server/tidewe-video-direction", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/server/tidewe-video-direction")>(),
+  resolveTideweVideoDirection: vi.fn(() => ({ action: "The hunter pauses at the woodland edge and checks the gear, then rests.", camera: "Hold the existing phone framing with a small natural handheld drift." })),
+  prepareTideweVideoDirections: vi.fn(async () => undefined),
+}));
+import { resolveTideweVideoDirection, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
+
 import { getDb } from "@/lib/db";
 import { assets, projects, scripts, type Shot } from "@/lib/db/schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
@@ -101,7 +109,7 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     const now = Date.now();
     getDb().insert(klingFilmRuns).values({ id: context.filmRunId, projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: state.profile!.principalKey!, status: "running", createdAt: now, updatedAt: now,
       data: { scriptRevision: "fixture", scriptSnapshot: { shots: [detail] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: "native", voice: "en-US-GuyNeural", subtitles: false }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
-    const compiled = compileTideweVisualPrompt(detail, "video", "on_camera", presenter);
+    const compiled = compileTideweVisualPrompt(detail, "video", "on_camera", presenter, "native", { direction: resolveTideweVideoDirection(detail) });
     const job = await createKlingFilmShotJob(request({ prompt: compiled.prompt }), context);
     expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), []);
     expect(job.data.prompt).toContain(JSON.stringify(text));
@@ -109,7 +117,7 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(job.data.prompt).not.toContain("must visibly articulate");
     expect(job.data.prompt).not.toContain("嘴部清晰可见");
     expect(job.data.options.generate_audio).toBe(true);
-    expect(job.data.options.negative_prompt).toContain("说话口型");
+    expect(job.data.options.negative_prompt).toContain("visible speaking, lip synchronization");
     const guard = vi.fn();
     await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
     expect(guard).toHaveBeenCalledTimes(2);
@@ -136,7 +144,7 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     const { imageModel, shot: presenterShot } = selectedPresenterContext();
     const imageUrl = presenterKeyframe(presenterShot);
     const job = await createKlingJob(reviewedRequest({ selectionKey: imageModel.selectionKey, mode: "image-to-video", imageUrl, expectedSelectedAssetId: "presenter-keyframe" }, { firstFrameUrl: imageUrl }));
-    expect(job.data.prompt).toContain(presenter.name);
+    expect(job.data.prompt).toContain("preserve the presenter's identity and clothing");
     expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), [{ role: "image", sourceUrl: imageUrl }]);
     expect(state.cli).not.toHaveBeenCalled();
   });
@@ -197,7 +205,7 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(job.data.args[job.data.args.indexOf("--generate_audio") + 1]).toBe("true");
     expect(job.data.prompt).toContain(text);
     expect(job.data.prompt).not.toContain("仅生成静音视觉素材");
-    expect(String(job.data.options.negative_prompt)).not.toContain("说话口型");
+    expect(String(job.data.options.negative_prompt)).not.toContain("visible speaking, lip synchronization");
     expect(state.cli).not.toHaveBeenCalled();
   });
   it.each(["text_to_video", "image_to_video"] as const)("dispatches arbitrary Kling %s native speech without an invented audio switch", async (tool) => {
@@ -221,7 +229,8 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     const raw = reviewedRequest({ selectionKey: selectedModel.selectionKey, mode: tool === "image_to_video" ? "image-to-video" : "text-to-video", ...(imageUrl && { imageUrl }), options: { generate_audio: true, audioEnabled: true } }, imageUrl ? { firstFrameUrl: imageUrl } : undefined, true);
     const job = await createKlingJob(raw);
     expect(job.data.prompt).toBe(raw.prompt);
-    expect(job.data.prompt).toContain("Generate native synchronized audio and video");
+    expect(job.data.prompt).toContain("Audio: the visible presenter says the exact US English line below once");
+    expect(job.data.prompt.split(text)).toHaveLength(2);
     expect(job.data.prompt).toContain(text);
     expect(job.data.prompt).not.toContain("Generate silent video");
     expect(job.data.generationPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
@@ -246,7 +255,8 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     const job = await createKlingJob(raw);
     expect(job.data.prompt).toBe(raw.prompt);
     expect(job.data.prompt).toContain(text);
-    expect(job.data.prompt).toContain("Generate native synchronized audio and video");
+    expect(job.data.prompt).toContain("Audio: the visible presenter says the exact US English line below once");
+    expect(job.data.prompt.split(text)).toHaveLength(2);
     expect(job.data.generationPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
     expect(job.data.options).not.toHaveProperty("enable_audio");
     expect(job.data.options).not.toHaveProperty("audioEnabled");
@@ -401,6 +411,35 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true });
   });
+  it("requires a fresh review of an outdated unsubmitted prompt without rewriting the frozen payload", async () => {
+    const job = await createKlingJob(reviewedRequest());
+    const prompt = "旧版中文视频提示词，尚未向平台提交。";
+    const args = [...job.data.args.slice(0, -1), prompt];
+    getDb().update(klingJobs).set({ data: { ...job.data, prompt, args } }).where(eq(klingJobs.id, job.id)).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true,
+      data: { prompt, args, error: { code: "TIDEWE_PROMPT_REVIEW_REQUIRED" } } });
+  });
+  it("requires re-preview when a prepared English direction is no longer cached", async () => {
+    const job = await createKlingJob(reviewedRequest());
+    vi.mocked(resolveTideweVideoDirection).mockImplementationOnce(() => { throw new TideweVideoDirectionError("TIDEWE_VIDEO_DIRECTION_REQUIRED", "Preview required."); });
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true,
+      data: { prompt: job.data.prompt, args: job.data.args, error: { code: "TIDEWE_PROMPT_REVIEW_REQUIRED" } } });
+  });
+  it("keeps paid acknowledged jobs frozen when their prompt predates the current compiler", async () => {
+    const job = await createKlingJob(reviewedRequest());
+    const prompt = "Paid legacy prompt.";
+    const args = [...job.data.args.slice(0, -1), prompt];
+    getDb().update(klingJobs).set({ submissionState: "acknowledged", remoteGenerationId: "already-paid", data: { ...job.data, prompt, args } }).where(eq(klingJobs.id, job.id)).run();
+    vi.mocked(resolveTideweVideoDirection).mockClear();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(resolveTideweVideoDirection).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "already-paid", data: { prompt, args } });
+  });
   it("does not dispatch a recovered job whose stored options enable native audio", async () => {
     const job = await createKlingJob(reviewedRequest());
     getDb().update(klingJobs).set({ data: { ...job.data, options: { ...job.data.options, generate_audio: true } } }).where(eq(klingJobs.id, job.id)).run();
@@ -416,7 +455,7 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
       data: { scriptRevision: "fixture", scriptSnapshot: { shots: [shot] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: speechMode === "on_camera" ? "native" : "edge-tts", voice: "en-US-GuyNeural", subtitles: false }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
     getDb().update(scripts).set({ version: 8, shots: [{ ...shot, camera: "中文慢速向左横移" }] }).where(eq(scripts.id, "script-1")).run();
     getDb().update(projects).set({ creativeConfigRevision: 9 }).run();
-    const job = await createKlingFilmShotJob(request({ prompt: compileTideweVisualPrompt(shot, "video", speechMode).prompt }), context);
+    const job = await createKlingFilmShotJob(request({ prompt: compileTideweVisualPrompt(shot, "video", speechMode, undefined, "native", { direction: resolveTideweVideoDirection(shot) }).prompt }), context);
     expect(job.data.videoPromptAudit?.sourceShot).toEqual(shot);
     await expect(dispatchKlingJob(job.id)).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
     const guard = vi.fn();

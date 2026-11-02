@@ -275,6 +275,7 @@ export default function NewProjectPage() {
   const [tideweProduct, setTideweProduct] = useState<TideweProductInput>({ category: "other", sku: "", specifications: "", source: "" });
   const [tideweCopySource, setTideweCopySource] = useState<TideweCopySource>("ai");
   const [tideweCopyText, setTideweCopyText] = useState("");
+  const [tideweSceneDescription, setTideweSceneDescription] = useState("");
   const useTideweOriginal = isTidewe && tideweCopySource === "manual";
   const tideweDraft = creativeProfileDrafts.tidewe_outdoor;
   const updateTideweDraft = (update: Partial<TideweOutdoorProfile>) => setCreativeProfileDrafts((previous) => ({ ...previous, tidewe_outdoor: { ...previous.tidewe_outdoor, ...update } }));
@@ -889,6 +890,7 @@ export default function NewProjectPage() {
           projectId: project.id,
           ...(isTidewe && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: updatedProject.creativeConfigRevision ?? project.creativeConfigRevision ?? 0 }),
           ...(useTideweOriginal && { copyText: tideweCopyText, count: 1 }),
+          ...(isTidewe && !useTideweOriginal && tideweSceneDescription.trim() && { sceneDescription: tideweSceneDescription.trim() }),
           productName,
           category: isTidewe ? tideweProduct.category : category,
           productDescription: isTidewe ? tideweProduct.specifications : sellingPoints,
@@ -1186,7 +1188,7 @@ export default function NewProjectPage() {
               </div>
 
               {isTidewe && <TideweProductFields value={tideweProduct} onChange={setTideweProduct} />}
-              {isTidewe && <TideweCopyInput source={tideweCopySource} text={tideweCopyText} onSourceChange={setTideweCopySource} onTextChange={setTideweCopyText} disabled={isSubmitting} />}
+              {isTidewe && <TideweCopyInput source={tideweCopySource} text={tideweCopyText} sceneDescription={tideweSceneDescription} onSourceChange={setTideweCopySource} onTextChange={setTideweCopyText} onSceneDescriptionChange={setTideweSceneDescription} disabled={isSubmitting} />}
               {/* product selling points */}
               {!isTidewe && <div className="space-y-2">
                 <div className="flex items-center justify-between">

@@ -4,7 +4,7 @@ import { assertSupportedTideweProfile, createTideweOutdoorProfile } from "@/lib/
 import { stripThinkBlocks } from "@/lib/llm-clean";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_MIN_SHOTS, TIDEWE_MAX_SHOTS, type TideweCopyDocument } from "./types";
 import { assertTideweCopyClaims, assertTideweGeneratedShotCount, assertTideweImportedCopy, assertTideweImportedCopyClaims, assertTideweScript, canonicalizeTideweCopy, englishWordCount, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
-import { buildTideweCopyPrompt, buildTideweImportedCopyPrompt, selectTideweExamples, tideweFactsForInput, tideweProductSafeguards, tideweProfileForInput, TIDEWE_APPROVED_KLING_PATTERNS, TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT } from "./prompts";
+import { buildTideweCopyPrompt, buildTideweImportedCopyPrompt, selectTideweExamples, tideweFactsForInput, tideweProductSafeguards, tideweProfileForInput, tideweSceneDirectionForInput, TIDEWE_APPROVED_KLING_PATTERNS, TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT } from "./prompts";
 import { buildTideweCategoryGuidance } from "./category-guidance";
 import { tidewePresenterAnchor, tidewePresenterForPrompt, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
 import { assertTidewePlanQuality, parseTideweCopyBeats, parseTideweVisualPlan } from "./planning-quality";
@@ -63,6 +63,7 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
   });
   return complete(TIDEWE_PLAN_SYSTEM_PROMPT, JSON.stringify({
     task: "Allocate each frozen copy to semantic shots. Return all candidates in their original order.",
+    ...tideweSceneDirectionForInput(input),
     shotCount: { min: TIDEWE_MIN_SHOTS, max: TIDEWE_MAX_SHOTS },
     targetDuration: profile.targetDuration, videoMode: profile.videoMode, speechMode: profile.speechMode, facts,
     product: { name: input.productName, visualObservations: input.productAnalysis ?? "" },

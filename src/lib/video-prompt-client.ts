@@ -1,21 +1,23 @@
 import { abortable } from "@/lib/script-generation-client";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
+import type { LLMConfig } from "@/lib/script-engine/generator";
 
 export type ServerVideoPrompt = VideoPromptPreview & { promptContext: VideoPromptContext };
 
 /** Fetch the complete execution prompt. The browser displays this text without rewriting it. */
-export async function fetchVideoPrompt(projectId: string, request: VideoPromptRequest, signal?: AbortSignal): Promise<ServerVideoPrompt> {
+export async function fetchVideoPrompt(projectId: string, request: VideoPromptRequest, signal?: AbortSignal, llmConfig?: LLMConfig): Promise<ServerVideoPrompt> {
   const controller = new AbortController();
   const cancel = () => controller.abort(signal?.reason);
   if (signal?.aborted) cancel();
   else signal?.addEventListener("abort", cancel, { once: true });
-  const timeout = setTimeout(() => controller.abort(new Error("读取视频提示词超时，请重试。")), 15_000);
+  const timeout = setTimeout(() => controller.abort(new Error("读取视频提示词超时，请重试。")), llmConfig ? 120_000 : 15_000);
   try {
     return await abortable((async () => {
       const response = await fetch(`/api/project/${encodeURIComponent(projectId)}/video-prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
+        // Translation credentials are transient preparation inputs, never part of a review receipt.
+        body: JSON.stringify({ ...request, ...(llmConfig && { llmConfig: { baseUrl: llmConfig.baseUrl, apiKey: llmConfig.apiKey, model: llmConfig.model } }) }),
         signal: controller.signal,
       });
       const data = await response.json();

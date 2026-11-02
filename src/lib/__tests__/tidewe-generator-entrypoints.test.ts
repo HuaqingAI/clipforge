@@ -13,6 +13,8 @@ vi.mock("@/lib/llm-error", async importOriginal => ({
   createLLMClient: () => ({ chat: { completions: { create: model.create } } }),
 }));
 const input: ScriptInput = { productName: "TIDEWE outdoor jacket", category: "fashion", styleType: "tidewe_outdoor", creativeProfile: createTideweOutdoorProfile(), count: 1, llmConfig: { baseUrl: "https://example.test/v1", apiKey: "test", model: "test" } };
+// English direction preparation is verified separately; these generator checks bind speech delivery.
+const preparedVideoDirection = { action: "Observe the visible product and its established physical contacts.", camera: "Hold the approved framing." };
 const text = "Walking warms you up. Waiting is different. Check the fit before your next trip.";
 const visualBeats = [
   { text: "Walking warms you up.", visualRole: "demonstration", visualIdea: "人物已经站在小径上，向前走一步。", factRefs: [] },
@@ -92,6 +94,61 @@ beforeEach(() => {
   model.create.mockReset().mockImplementation(async () => ({ choices: [{ message: { content: JSON.stringify(model.replies.shift()) } }] }));
 });
 describe("shared TIDEWE generator dispatch", () => {
+  it.each([false, true])("sends duration-aware physical pacing to the planner with staff copy=%s without rewriting narration", async imported => {
+    const [script] = await generateScript({ ...input, ...(imported ? { copyText: text } : {}) });
+    expect(model.create).toHaveBeenCalledTimes(2);
+    const planningMessages = model.create.mock.calls[1][0].messages;
+    expect(planningMessages[0].content).toContain("Plan physical pacing independently from narration length");
+    expect(planningMessages[0].content).toContain("more continuing steps, not a fixed single step stretched across the clip");
+    expect(planningMessages[0].content).toContain("complete the operation once at its ordinary physical speed");
+    expect(planningMessages[0].content).toContain("Preserve an explicitly requested slow or cautious physical action");
+    expect(JSON.parse(planningMessages[1].content).copies[0].text).toBe(text);
+    expect(script.copyDocument?.text).toBe(text);
+    expect(script.shots.map(shot => shot.voiceover).join(" ")).toBe(text);
+  });
+
+  it("carries one scene direction through writing and planning all three AI candidates", async () => {
+    const fixture = countedPlanFixture([7, 8, 9]);
+    const sceneDescription = "傍晚湖边，猎人穿着当前外套向拍摄朋友展示衣服，氛围轻松自然。";
+    model.replies = [fixture.copy, fixture.plan];
+    const scripts = await generateScript({ ...input, count: 3, sceneDescription: `  ${sceneDescription}\n` });
+    expect(scripts).toHaveLength(3);
+    expect(scripts.map(script => script.copyDocument?.text)).toEqual(fixture.copy.copies.map(candidate => candidate.text));
+    expect(scripts.every(script => script.copyDocument?.source === "ai_generated")).toBe(true);
+    expect(model.create).toHaveBeenCalledTimes(2);
+    const [writing, planning] = model.create.mock.calls.map(([params]) => JSON.parse(params.messages[1].content));
+    for (const payload of [writing, planning]) {
+      expect(payload.sceneDescription).toBe(sceneDescription);
+      expect(payload.sceneDirectionGuidance).toContain("EVERY candidate");
+      expect(payload.sceneDirectionGuidance).toContain("not complete spoken copy");
+    }
+    expect(writing.task).toContain("3 distinct complete spoken pieces");
+    expect(planning.copies.map((candidate: { copyIndex: number; text: string }) => ({ copyIndex: candidate.copyIndex, text: candidate.text })))
+      .toEqual(fixture.copy.copies.map((candidate, copyIndex) => ({ copyIndex, text: candidate.text })));
+  });
+
+  it.each(["", " \r\n\t "])("leaves both AI stages unchanged for a blank scene direction %j", async sceneDescription => {
+    await generateScript(input);
+    const originalPrompts = model.create.mock.calls.map(([params]) => params.messages);
+    model.create.mockClear();
+    model.replies = [copy, plan];
+    await generateScript({ ...input, sceneDescription });
+    expect(model.create.mock.calls.map(([params]) => params.messages)).toEqual(originalPrompts);
+  });
+
+  it("keeps a stale AI scene brief out of both supplied-copy stages and preserves the complete text", async () => {
+    const sceneDescription = "改成沙漠徒步的全新故事。";
+    const [script] = await generateScript({ ...input, copyText: text, sceneDescription });
+    expect(script.copyDocument).toMatchObject({ text, source: "user_provided" });
+    expect(model.create).toHaveBeenCalledTimes(2);
+    for (const [params] of model.create.mock.calls) {
+      const payload = JSON.parse(params.messages[1].content);
+      expect(payload).not.toHaveProperty("sceneDescription");
+      expect(payload).not.toHaveProperty("sceneDirectionGuidance");
+      expect(params.messages[1].content).not.toContain(sceneDescription);
+    }
+  });
+
   it("routes batch and single generation through two complete-copy stages", async () => {
     const scripts = await generateScript(input);
     expect(scripts[0].shots).toHaveLength(7);
@@ -348,20 +405,22 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(script.shots[2].tidewe?.speechDelivery).toBe("on_camera");
 
     const firstFrame = compileTideweVisualPrompt(detail, "image", "on_camera");
-    const nativeVideo = compileTideweVisualPrompt(detail, "video", "on_camera");
-    const postVideo = compileTideweVisualPrompt(detail, "video", "on_camera", undefined, "post");
-    for (const compiled of [firstFrame, nativeVideo, postVideo]) {
-      expect(compiled.prompt).toContain("完整高筒轮廓、迷彩边界与黑色鞋底沟槽");
-      expect(compiled.prompt).toContain("不要求出现脸部或嘴部");
+    const nativeVideo = compileTideweVisualPrompt(detail, "video", "on_camera", undefined, "native", { direction: preparedVideoDirection });
+    const postVideo = compileTideweVisualPrompt(detail, "video", "on_camera", undefined, "post", { direction: preparedVideoDirection });
+    expect(firstFrame.prompt).toContain("完整高筒轮廓、迷彩边界与黑色鞋底沟槽");
+    expect(firstFrame.prompt).toContain("不要求出现脸部或嘴部");
+    expect(firstFrame.negativePrompt).toContain("说话口型");
+    for (const compiled of [nativeVideo, postVideo]) {
+      expect(compiled.prompt).toContain(preparedVideoDirection.action);
+      expect(compiled.prompt).not.toMatch(/\p{Script=Han}/u);
       expect(compiled.prompt).not.toContain("本镜为写实成年户外使用者真人口播");
       expect(compiled.prompt).not.toContain("must visibly articulate");
       expect(compiled.prompt).not.toContain("lips, jaw and mouth must move");
-      expect(compiled.negativePrompt).toContain("说话口型");
+      expect(compiled.negativePrompt).toContain("visible speaking, lip synchronization");
     }
-    expect(nativeVideo.prompt).toContain("Generate native audio and video with off-camera narration.");
+    expect(nativeVideo.prompt).toContain("off-camera narration");
     expect(nativeVideo.prompt).toContain(JSON.stringify(fixture.segments[1]));
-    expect(postVideo.prompt).toContain("no speaking or lip synchronization");
-    expect(postVideo.prompt).toContain("No audio track.");
+    expect(postVideo.prompt).toContain("no audio track, visible speaking or lip synchronization");
   });
 
   it("keeps global post-production voiceover and product-image details free of native speech delivery", async () => {
@@ -380,10 +439,10 @@ describe("shared TIDEWE generator dispatch", () => {
     script.shots.forEach(shot => { expect(shot.tidewe).not.toHaveProperty("speechDelivery"); });
     const detail = script.shots[1];
     expect(detail).toMatchObject({ visualSource: "product_image", tidewe: { personVisible: false, productVisible: true, visualPlan: plannedDetail.visualPlan } });
-    const compiled = compileTideweVisualPrompt(detail, "video", "voiceover");
-    expect(compiled.prompt).toContain("英文画外旁白由后期统一添加");
+    const compiled = compileTideweVisualPrompt(detail, "video", "voiceover", undefined, "post", { direction: preparedVideoDirection });
+    expect(compiled.prompt).toContain("silent footage for narration added in post");
     expect(compiled.prompt).not.toContain("Generate native audio and video");
-    expect(compiled.negativePrompt).toContain("说话口型");
+    expect(compiled.negativePrompt).toContain("visible speaking, lip synchronization");
     expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content).outputFormat.scripts[0].shots[0]).not.toHaveProperty("speechDelivery");
   });
 
@@ -402,13 +461,13 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(model.create).toHaveBeenCalledTimes(2);
     expect(script.copyDocument?.text).toBe(text);
     expect(script.shots[0].tidewe).toMatchObject({ personVisible: true, speechDelivery: expected, visualPlan: { framing: "close_up" } });
-    const compiled = compileTideweVisualPrompt(script.shots[0], "video", "on_camera");
+    const compiled = compileTideweVisualPrompt(script.shots[0], "video", "on_camera", undefined, "native", { direction: preparedVideoDirection });
     if (expected === "on_camera") {
-      expect(compiled.prompt).toContain("Generate native synchronized audio and video.");
-      expect(compiled.negativePrompt).not.toContain("说话口型");
+      expect(compiled.prompt).toContain("the visible presenter says the exact US English line");
+      expect(compiled.negativePrompt).not.toContain("visible speaking, lip synchronization");
     } else {
-      expect(compiled.prompt).toContain("Generate native audio and video with off-camera narration.");
-      expect(compiled.negativePrompt).toContain("说话口型");
+      expect(compiled.prompt).toContain("off-camera narration");
+      expect(compiled.negativePrompt).toContain("visible speaking, lip synchronization");
     }
   });
 

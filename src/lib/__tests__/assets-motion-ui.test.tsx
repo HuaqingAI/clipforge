@@ -18,11 +18,11 @@ import type { Shot } from "@/lib/db/schema";
 const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, runs: [] as Array<Record<string, unknown>>, showMaterialLibrary: false }));
 const batch = vi.hoisted(() => ({ props: null as ComponentProps<typeof BatchMotionPanel> | null }));
 const refinement = vi.hoisted(() => ({ props: null as KeyframeRefinementDialogProps | null }));
-const navigation = vi.hoisted(() => ({ router: { replace: vi.fn() }, listeners: new Set<() => void>() }));
+const navigation = vi.hoisted(() => ({ projectId: "project", router: { replace: vi.fn() }, listeners: new Set<() => void>() }));
 vi.mock("next/navigation", async () => {
   const { useSyncExternalStore } = await import("react");
   return {
-    useParams: () => ({ id: "project" }),
+    useParams: () => ({ id: navigation.projectId }),
     useRouter: () => navigation.router,
     useSearchParams: () => new URLSearchParams(useSyncExternalStore(
       (listener) => { navigation.listeners.add(listener); return () => { navigation.listeners.delete(listener); }; },
@@ -112,6 +112,7 @@ function deleteVideoButton() { return container.querySelector('[aria-label="åˆ é
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("fetch", fetchMock);
+  navigation.projectId = "project";
   navigation.router.replace.mockReset().mockImplementation((url: string) => changeUrl(url));
   useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: ark, providers: { volcengine: { enabled: true, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
   useCharacterStore.setState({ ...initialCharacters, characters: [] });
@@ -135,7 +136,72 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/project/project/assets");
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); useCharacterStore.setState(initialCharacters); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+describe("asset page loading recovery", () => {
+  it("loads the storyboard once for historical completed runs and shares task polling", async () => {
+    api.runs = [1, 2, 3].map((index) => ({ id: `historical-${index}`, projectId: "project", kind: "image", status: "completed", total: 1, done: 1, failed: 0,
+      items: [{ id: `completed-${index}`, kind: "image", status: "completed", result: { assetId: `asset-${index}` } }] }));
+    await navigate("/project/project/assets?runId=historical-1");
+    await mount(ark);
+    for (const path of ["/api/project/project", "/api/project/project/scripts", "/api/project/project/assets", "/api/generation-runs?projectId=project"]) {
+      expect(fetchMock.mock.calls.filter(([url]) => url === path)).toHaveLength(1);
+    }
+    expect(container.textContent).not.toContain("loadingShots");
+    expect(container.textContent).toContain("Product rotates");
+  });
+
+  it("ends a stalled storyboard load and lets the user retry successfully", async () => {
+    vi.useFakeTimers();
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve({ ok: true, json: () => new Promise(() => {}) })
+      : normal(url, init));
+    await mount(ark);
+    expect(container.textContent).toContain("loadingShots");
+    await act(async () => vi.advanceTimersByTimeAsync(20_300));
+    expect(container.textContent).not.toContain("loadingShots");
+    expect(container.textContent).toContain("errorLoadTimeout");
+    expect(container.textContent).not.toContain("errorNoScript");
+    fetchMock.mockImplementation(normal);
+    await click("retry");
+    expect(container.textContent).not.toContain("errorLoadTimeout");
+    expect(container.textContent).toContain("Product rotates");
+    expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
+  });
+
+  it("reports a failed script request separately from a project with no script", async () => {
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
+      ? Promise.resolve(Response.json({ error: "Not found" }, { status: 404 }))
+      : normal(url, init));
+    await mount(ark);
+    expect(container.textContent).toContain("errorLoadFailed");
+    expect(container.textContent).not.toContain("errorNoScript");
+    expect(button("retry")).toBeDefined();
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/scripts"))).toHaveLength(1);
+  });
+
+  it("ignores a previous project's delayed refresh callback after navigation", async () => {
+    await mount(ark);
+    await click("keyframeRefine");
+    const oldRefresh = refinement.props!.onApplied;
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/project/project-B") return Promise.resolve(Response.json({ name: "Project B", productImages: [] }));
+      if (url === "/api/project/project-B/assets") return Promise.resolve(Response.json([{ id: "asset-B", shotId: 1, status: "done", selected: true, filePath: "/api/files/frame-B.jpg" }]));
+      if (url === "/api/generation-runs?projectId=project-B") return Promise.resolve(Response.json({ runs: [] }));
+      return normal(url, init);
+    });
+    navigation.projectId = "project-B";
+    await mount(ark);
+    expect(container.querySelector('img[src="/api/files/frame-B.jpg"]')).not.toBeNull();
+    const before = fetchMock.mock.calls.length;
+    await act(async () => { await oldRefresh(); });
+    expect(fetchMock.mock.calls).toHaveLength(before);
+    expect(container.querySelector('img[src="/api/files/frame-B.jpg"]')).not.toBeNull();
+  });
+});
 
 describe("image background result reconciliation", () => {
   function enableImages() {

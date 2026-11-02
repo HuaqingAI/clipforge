@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LanguageToggle } from "@/components/language-toggle";
 import { TaskCenter } from "@/components/task-center";
+import { useTaskFeed } from "@/lib/hooks/use-task-feed";
 import { useT } from "@/lib/i18n";
 import {
   DropdownMenu,
@@ -92,6 +93,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const t = useT("common");
   const pathname = usePathname();
   const router = useRouter();
+  // Both responsive task centers stay mounted; share one request/polling lifecycle.
+  const taskFeed = useTaskFeed();
 
   // collapsed preference (loaded post-mount so SSR markup stays stable)
   const [collapsed, setCollapsed] = useState(false);
@@ -166,7 +169,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
           {/* task center: cross-project running/attention feed (the "global" word would make eslint parse this comment as a globals directive) */}
           <div className={collapsed ? "flex justify-center" : ""}>
-            <TaskCenter collapsed={collapsed} />
+            <TaskCenter collapsed={collapsed} taskFeed={taskFeed} />
           </div>
           <Link
             href="/settings"
@@ -203,7 +206,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="text-sm font-bold tracking-tight">ClipForge</span>
           </Link>
           <div className="flex items-center gap-1">
-            <TaskCenter collapsed />
+            <TaskCenter collapsed taskFeed={taskFeed} />
             <LanguageToggle />
             <DropdownMenu>
               <DropdownMenuTrigger

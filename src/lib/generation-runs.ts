@@ -223,7 +223,8 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
       seen.add(dedupeKey);
       const overlap = tx.select({ id: generationItems.id }).from(generationItems).where(and(eq(generationItems.projectId, input.projectId), eq(generationItems.kind, inputItem.kind),
         scriptId ? eq(generationItems.scriptId, scriptId) : isNull(generationItems.scriptId), shotId === null ? isNull(generationItems.shotId) : eq(generationItems.shotId, shotId),
-        inArray(generationItems.status, [...ACTIVE, "needs_attention"]))).get();
+        inArray(generationItems.status, [...ACTIVE, "needs_attention"]),
+        inArray(generationItems.runId, tx.select({ id: generationRuns.id }).from(generationRuns).where(isNull(generationRuns.deletedAt))))).get();
       if (overlap) throw new GenerationRunError("该镜头或生成阶段已有未结束任务，请查看原任务。", 409, "GENERATION_ALREADY_ACTIVE");
       const itemId = randomUUID();
       const request: Record<string, unknown> = { ...inputItem.request, projectId: input.projectId, ...(scriptId ? { scriptId } : {}), ...(shotId !== null ? { shotId } : {}), ...(inputItem.kind === "script" ? { requestId: itemId } : {}) };

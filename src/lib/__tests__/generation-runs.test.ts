@@ -200,6 +200,27 @@ describe("finished generation record deletion", () => {
     expect(state.execute).not.toHaveBeenCalled();
     expect(db.select().from(generationItems).get()?.status).toBe("queued");
   });
+  it.each(["queued", "running", "waiting", "importing", "needs_attention"])("ignores a deleted parent's legacy %s item for overlap while retaining its request tombstone", (status) => {
+    const db = getDb(), request = input(), deleted = enqueueGenerationRun(request);
+    const [item] = finish(deleted.id, ["failed"]);
+    deleteGenerationRuns("A", deleted.id);
+    db.update(generationItems).set({ status, checkpoint: encryptGenerationValue({ taskId: "retained-paid-task" }) }).where(eq(generationItems.id, item.id)).run();
+    const hiddenRun = db.select().from(generationRuns).where(eq(generationRuns.id, deleted.id)).get();
+    const hiddenItem = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get();
+
+    const replacement = enqueueGenerationRun({ ...request, clientRequestId: "replacement-request" });
+    expect(replacement.id).not.toBe(deleted.id);
+    expect(replacement.items[0]).toMatchObject({ kind: item.kind, scriptId: item.scriptId, shotId: item.shotId, status: "queued" });
+    expect(() => enqueueGenerationRun(request)).toThrow(expect.objectContaining({ status: 410, code: "GENERATION_RUN_DELETED" }));
+    expect(db.select().from(generationRuns).where(eq(generationRuns.id, deleted.id)).get()).toEqual(hiddenRun);
+    expect(db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(hiddenItem);
+    expect(listGenerationRuns("A").map((run) => run.id)).toEqual([replacement.id]);
+
+    db.update(generationItems).set({ status }).where(eq(generationItems.runId, replacement.id)).run();
+    expect(() => enqueueGenerationRun({ ...request, clientRequestId: "overlapping-live-request" })).toThrow(expect.objectContaining({ status: 409, code: "GENERATION_ALREADY_ACTIVE" }));
+    expect(db.select().from(generationRuns).all()).toHaveLength(2);
+    expect(state.execute).not.toHaveBeenCalled();
+  });
 });
 
 describe("durable cross-project generation", () => {

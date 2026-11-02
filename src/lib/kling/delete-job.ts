@@ -1,4 +1,3 @@
-import { resolveCurrentScript } from "@/lib/current-script";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -120,14 +119,14 @@ export function deleteKlingJob(id: string): { deleted: true; jobId: string } {
         tx.update(videoClips).set({ assetId: null }).where(inArray(videoClips.assetId, removedIds)).run();
         tx.update(assets).set({ derivedFromAssetId: null }).where(inArray(assets.derivedFromAssetId, removedIds)).run();
         tx.delete(assets).where(inArray(assets.id, removedIds)).run();
-        // Restore the pre-generation take if the deleted output was still the selected take.
-        if (allAssets.some((asset) => removed.has(asset.id) && asset.selected) && row.data.expectedSelectedAssetId &&
-          !allAssets.some((asset) => !removed.has(asset.id) && asset.projectId === row.projectId && asset.shotId === row.shotId && asset.selected)) {
+        // Each script alternative owns its selection, including scripts that are not current.
+        // A selected take from another script must not prevent restoring this job's baseline.
+        const script = tx.select().from(scripts).where(and(eq(scripts.id, row.scriptId), eq(scripts.projectId, row.projectId))).get();
+        if (script && allAssets.some((asset) => removed.has(asset.id) && asset.selected && assetMatchesScript(asset, script)) && row.data.expectedSelectedAssetId &&
+          !allAssets.some((asset) => !removed.has(asset.id) && asset.projectId === row.projectId && asset.shotId === row.shotId && asset.selected && assetMatchesScript(asset, script))) {
           const baseline = allAssets.find((asset) => asset.id === row.data.expectedSelectedAssetId && !removed.has(asset.id) &&
             asset.projectId === row.projectId && asset.shotId === row.shotId && asset.status === "done");
-          const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, row.projectId)).all();
-          const currentScript = resolveCurrentScript(scriptRows);
-          if (baseline && currentScript && assetMatchesScript(baseline, currentScript)) tx.update(assets).set({ selected: true }).where(eq(assets.id, baseline.id)).run();
+          if (baseline && assetMatchesScript(baseline, script)) tx.update(assets).set({ selected: true }).where(eq(assets.id, baseline.id)).run();
         }
       }
       tx.delete(klingJobOutputs).where(eq(klingJobOutputs.jobId, id)).run();

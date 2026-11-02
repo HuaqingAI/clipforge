@@ -17,6 +17,7 @@ import { withVideoAudioMode } from "@/lib/video-audio";
 import { joinVideoPromptParts, validateVideoPrompt, VIDEO_PROMPT_MAX_LENGTH } from "@/lib/video-prompt";
 import { checkPromptConsistency, sanitizeVisualBible } from "@/lib/production-system";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
+import { resolveTideweVideoDirection } from "@/lib/server/tidewe-video-direction";
 
 export class VideoPromptError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 400) {
@@ -116,8 +117,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     if (request.controlInputs?.characterReferenceUrl && request.controlInputs.characterReferenceUrl !== frozenPresenter) throw new VideoPromptError("TIDEWE_PRESENTER_REFERENCE_INVALID", "TIDEWE 主播已随脚本冻结，请使用当前主播参考，或回到脚本设置更换并重新规划。");
     if (!tideweNative && request.generateAudio === true) throw new VideoPromptError("TIDEWE_VISUAL_AUDIO_FORBIDDEN", "此 TIDEWE 项目使用画外旁白，分镜保持静音并在合成时添加英语配音。");
   }
-  // Prompt templates use Chinese regardless of the UI language. Product facts remain verbatim.
-  const locale = "zh" as const;
+  const locale = tidewe ? "en" as const : "zh" as const;
   const silent = tidewe ? !tideweGenerateAudio : request.batch || request.generateAudio === false || (premiumCg && profile.narrationMode === "none");
   const controlPlan = buildVideoControlPlan({
     ...request.controlInputs,
@@ -128,7 +128,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     generateAudio: !silent,
     voiceover: silent && !tideweNative ? "" : shot.narration?.trim() || shot.voiceover?.trim(),
     speakerVisible: tideweNative ? onCameraSpeech : !silent && !premiumCg && Boolean(shot.characterId),
-    description: shot.description,
+    description: tidewe ? undefined : shot.description,
     locale,
   });
   if (frozenPresenter && !controlPlan.referenceInputs.some((reference) => reference.role === "character")) {
@@ -158,6 +158,7 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
       visualBible: project.visualBible,
       creativeProfile: profile,
       audioMode: tideweGenerateAudio ? "native" : "post",
+      ...(tidewe ? { tideweVideoDirection: resolveTideweVideoDirection(shot) } : {}),
       locale,
     });
     if (!tidewe) {
@@ -168,10 +169,12 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     // creative direction. Keep these labels for a reviewed TIDEWE reference pack.
     // TIDEWE's compiler already binds the exact English line once. Keep reference
     // labels, without appending a second spoken-copy instruction from the generic plan.
-    const controlSuffix = tideweNative && controlPlan.audioPrompt ? controlPlan.promptSuffix.replace(controlPlan.audioPrompt, "").trim().replace(/。$/, "") : controlPlan.promptSuffix;
-    if (controlSuffix) compiled.prompt = joinVideoPromptParts([compiled.prompt, controlSuffix], locale, "\n");
-    compiled.prompt = withVideoAudioMode(compiled.prompt, tidewe ? tideweGenerateAudio ? "native" : "silent"
-      : silent ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
+    const controlSuffix = tidewe && controlPlan.audioPrompt ? controlPlan.promptSuffix.replace(controlPlan.audioPrompt, "").trim().replace(/。$/, "") : controlPlan.promptSuffix;
+    if (controlSuffix) compiled.prompt = tidewe
+      ? [compiled.prompt, controlSuffix].join("\n")
+      : joinVideoPromptParts([compiled.prompt, controlSuffix], locale, "\n");
+    if (!tidewe) compiled.prompt = withVideoAudioMode(compiled.prompt,
+      silent ? "silent" : controlPlan.audioMode === "native" ? "native" : "ambient", locale);
     if (!tidewe) {
       const conflict = checkPromptConsistency(compiled.prompt, sanitizeVisualBible(project.visualBible)).find((issue) => issue.severity === "fail");
       if (conflict) throw new VideoPromptError("VIDEO_PROMPT_CONSISTENCY_FAILED", `提示词违反项目一致性要求：${conflict.anchor}`);

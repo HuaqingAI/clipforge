@@ -10,6 +10,7 @@ import { VIDEO_AUDIO_DIRECTIONS } from "@/lib/video-audio";
 import type { VideoPromptContext } from "@/lib/video-prompt-request";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { BatchMotionDraft } from "@/lib/batch-motion";
+import { GenerationRunSubmissionError } from "@/lib/hooks/use-generation-runs";
 
 const api = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/lib/kling/client", () => ({ klingFetch: api.request, klingErrorMessage: (body: { error?: string | { message?: string } }) => typeof body.error === "string" ? body.error : body.error?.message ?? "Kling 操作失败" }));
@@ -44,9 +45,9 @@ const silentAudioDirection = `${VIDEO_AUDIO_DIRECTIONS.silent.en}.`;
 function serverPromptContext(generateAudio = false): VideoPromptContext {
   return { scriptId: "script", shotId: 1, provider: "kling-cli", model: model.selectionKey, settings: { ...DEFAULT_VIDEO_PROMPT_SETTINGS }, generateAudio, contextKey: "server-context" };
 }
-async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; promptContext?: VideoPromptContext; negativePrompt?: string; referenceImages?: string[]; lastFrameUrl?: string; frameChoices?: Array<{ label: string; url: string }>; onFramesChange?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft> } = {}) {
+async function mountGenerator(defaultModel = model.selectionKey, defaultParameters?: Record<string, unknown>, overrides: { open?: boolean; preparedPrompt?: string; profileId?: string; promptContext?: VideoPromptContext; negativePrompt?: string; referenceImages?: string[]; lastFrameUrl?: string; frameChoices?: Array<{ label: string; url: string }>; onFramesChange?(firstFrameUrl: string, lastFrameUrl?: string): Promise<BatchMotionDraft>; onGenerateRequest?(request: Record<string, unknown>): Promise<void>; onRefreshTasks?(): Promise<void> } = {}) {
   const preparedPrompt = overrides.preparedPrompt ?? `${originalPrompt}\n\n${silentAudioDirection}`;
-  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={preparedPrompt} promptContext={overrides.promptContext ?? serverPromptContext()} negativePrompt={overrides.negativePrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={overrides.referenceImages ?? []} lastFrameUrl={overrides.lastFrameUrl} frameChoices={overrides.frameChoices} onFramesChange={overrides.onFramesChange} onSubmitted={onSubmitted} onRefreshTasks={refreshTasks} />));
+  await act(async () => root.render(<KlingShotGenerator open={overrides.open ?? true} onOpenChange={() => undefined} projectId="project" scriptId="script" profileId={overrides.profileId ?? "profile"} defaultModel={defaultModel} defaultParameters={defaultParameters} preparedPrompt={preparedPrompt} promptContext={overrides.promptContext ?? serverPromptContext()} negativePrompt={overrides.negativePrompt} firstFrameUrl="/api/files/project/input.jpg" asset={{ assetId: "original-asset", shotId: 1, type: "hook", duration: 3, description: "A product", prompt: "Static image composition, not a motion prompt", visualSource: "ai_generate", status: "done", thumbnailUrl: "/api/files/project/input.jpg" }} referenceImages={overrides.referenceImages ?? []} lastFrameUrl={overrides.lastFrameUrl} frameChoices={overrides.frameChoices} onFramesChange={overrides.onFramesChange} onSubmitted={onSubmitted} onRefreshTasks={overrides.onRefreshTasks ?? refreshTasks} onGenerateRequest={overrides.onGenerateRequest} />));
 }
 function confirmCheckbox() { return container.querySelector('input[type="checkbox"]') as HTMLInputElement; }
 function submitButton() { return Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("确认生成此镜头"))!; }
@@ -663,6 +664,63 @@ describe("Kling single-shot UI", () => {
     expect(submitButton()).toBeUndefined();
     expect(refreshTasks).toHaveBeenCalledOnce();
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(1);
+  });
+
+  it.each([false, true])("keeps an explicit callback rejection correctable even when task refresh fails: %s", async (refreshFails) => {
+    const message = "该镜头或生成阶段已有未结束任务，请查看原任务。";
+    const generate = vi.fn().mockRejectedValueOnce(new GenerationRunSubmissionError(message, {
+      clientRequestId: "rejected-request", status: 409, code: "GENERATION_ALREADY_ACTIVE", outcomeUnknown: false,
+    })).mockResolvedValue(undefined);
+    const refresh = refreshFails ? vi.fn().mockRejectedValue(new Error("任务列表刷新失败")) : vi.fn().mockResolvedValue(undefined);
+    await mountGenerator(model.selectionKey, undefined, { onGenerateRequest: generate, onRefreshTasks: refresh });
+    await act(async () => confirmCheckbox().click());
+    await act(async () => submitButton().click());
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.textContent).not.toContain("本机提交结果待核对");
+    expect(confirmCheckbox().checked).toBe(false);
+    expect(confirmCheckbox().disabled).toBe(false);
+    expect(submitButton().disabled).toBe(true);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(generate).toHaveBeenCalledOnce();
+    await act(async () => submitButton().click());
+    expect(generate).toHaveBeenCalledOnce();
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => submitButton().click());
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate.mock.calls[1][0].clientRequestId).not.toBe(generate.mock.calls[0][0].clientRequestId);
+    expect(api.request.mock.calls.some(([url]) => url === "/api/ai/video")).toBe(false);
+    expect(onSubmitted).not.toHaveBeenCalled();
+  });
+
+  it.each(["typed", "network"])("keeps %s callback failures locked through failed automatic and manual task refreshes", async (failureKind) => {
+    const message = "提交连接中断，结果未知";
+    const failure = failureKind === "typed" ? new GenerationRunSubmissionError(message, {
+      clientRequestId: "unknown-request", status: 503, code: "GENERATION_SUBMISSION_UNKNOWN", outcomeUnknown: true,
+    }) : new TypeError(message);
+    const generate = vi.fn().mockRejectedValue(failure);
+    const refresh = vi.fn().mockRejectedValue(new Error("任务列表刷新失败"));
+    await mountGenerator(model.selectionKey, undefined, { onGenerateRequest: generate, onRefreshTasks: refresh });
+    await act(async () => confirmCheckbox().click());
+    await act(async () => submitButton().click());
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.textContent).toContain("本机提交结果待核对");
+    expect(confirmCheckbox().checked).toBe(false);
+    expect(confirmCheckbox().disabled).toBe(true);
+    expect(submitButton()).toBeUndefined();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
+    const reconcile = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "核对任务列表")!;
+    await act(async () => reconcile.click());
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.textContent).toContain("本机提交结果待核对");
+    expect(confirmCheckbox().disabled).toBe(true);
+    expect(submitButton()).toBeUndefined();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(api.request.mock.calls.some(([url]) => url === "/api/ai/video")).toBe(false);
   });
 
   it("treats an unreadable response after dispatch as ambiguous instead of offering retry", async () => {

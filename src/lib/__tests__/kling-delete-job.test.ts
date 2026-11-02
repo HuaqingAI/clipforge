@@ -25,7 +25,7 @@ vi.mock("@/lib/kling/local-access", async (original) => ({ ...await original<typ
   assertKlingLocalRequest: (...args: unknown[]) => state.assertLocal(...args) }));
 
 import { getDb } from "@/lib/db";
-import { aiTasks, assets, compositions, videoClips } from "@/lib/db/schema";
+import { aiTasks, assets, compositions, scripts, videoClips } from "@/lib/db/schema";
 import { klingJobs, klingJobOutputs, type KlingJob, type KlingJobData } from "@/lib/kling/job-schema";
 import { klingFilmRuns, klingFilmShots, type KlingFilmRun } from "@/lib/kling/film-schema";
 import { klingFilmView } from "@/lib/kling/film-repository";
@@ -64,6 +64,10 @@ function film(status: KlingFilmRun["status"], expiresAt = Date.now() + 60_000) {
     createdAt: Date.now(), updatedAt: Date.now() }).run();
   getDb().insert(klingFilmShots).values({ id: "film-shot-1", runId: "film-1", shotId: 1, ordinal: 0, status: "ready", jobId: "job-1", assetId: "generated-asset",
     data: { shot: { shotId: 1 } as never, source: "reuse", prompt: "prompt", options: {}, missingKeyframe: false, inputs: [], baselineAssetId: "generated-asset", attempt: 0 }, updatedAt: Date.now() }).run();
+}
+function scopeFixturesToScript() {
+  getDb().update(scripts).set({ shots: [{ shotId: 1 } as never] }).where(eq(scripts.id, "script-1")).run();
+  getDb().update(assets).set({ sourceScriptId: "script-1" }).run();
 }
 
 beforeAll(() => { state.root = mkdtempSync(join(tmpdir(), "clipforge-kling-delete-")); });
@@ -112,6 +116,63 @@ describe("deleting locally generated Kling videos", () => {
     expect(deleteKlingJob(row.id)).toEqual({ deleted: true, jobId: row.id });
     expect(() => getKlingJob(row.id)).toThrowError("已删除");
     expect(() => patchKlingJob(row.id, { autoQueryPaused: false })).toThrowError("已删除");
+  });
+  it("restores the exact adopted refinement despite another script's selected image for the same shot", () => {
+    const row = job(); video(); scopeFixturesToScript();
+    getDb().insert(scripts).values({ id: "other-script", projectId: "project-1", styleType: "scene", shots: [{ shotId: 1 } as never] }).run();
+    for (const [id, scriptId, selected] of [
+      ["refined-image", "script-1", false], ["unadopted-refinement", "script-1", false], ["other-script-image", "other-script", true],
+    ] as const) getDb().insert(assets).values({ id, projectId: "project-1", shotId: 1, sourceScriptId: scriptId,
+      type: "ai_generated", filePath: `/api/files/${id}.png`, derivedFromAssetId: "original-image", status: "done", selected }).run();
+    patchKlingJob(row.id, {}, { expectedSelectedAssetId: "refined-image" });
+
+    deleteKlingJob(row.id);
+
+    const remaining = getDb().select().from(assets).all();
+    expect(remaining.filter((asset) => asset.selected).map((asset) => asset.id).sort()).toEqual(["other-script-image", "refined-image"]);
+    expect(remaining.find((asset) => asset.id === "original-image")?.selected).toBe(false);
+    expect(remaining.find((asset) => asset.id === "unadopted-refinement")?.selected).toBe(false);
+  });
+  it("preserves an existing selection in the same script instead of restoring its baseline", () => {
+    job(); video(); scopeFixturesToScript();
+    getDb().insert(assets).values({ id: "replacement", projectId: "project-1", shotId: 1, sourceScriptId: "script-1",
+      type: "user_upload", filePath: "/api/files/replacement.png", status: "done", selected: true }).run();
+
+    deleteKlingJob("job-1");
+
+    expect(getDb().select().from(assets).where(eq(assets.id, "original-image")).get()?.selected).toBe(false);
+    expect(getDb().select().from(assets).where(eq(assets.id, "replacement")).get()?.selected).toBe(true);
+  });
+  it("restores a historical script's baseline without changing the current script's selection", () => {
+    job(); video(); scopeFixturesToScript();
+    getDb().update(scripts).set({ selected: false }).run();
+    getDb().insert(scripts).values({ id: "other-script", projectId: "project-1", styleType: "scene", shots: [{ shotId: 1 } as never], selected: true }).run();
+    getDb().insert(assets).values({ id: "current-image", projectId: "project-1", shotId: 1, sourceScriptId: "other-script",
+      type: "product_image", filePath: "/api/files/current.png", status: "done", selected: true }).run();
+
+    deleteKlingJob("job-1");
+
+    expect(getDb().select().from(assets).where(eq(assets.id, "original-image")).get()?.selected).toBe(true);
+    expect(getDb().select().from(assets).where(eq(assets.id, "current-image")).get()?.selected).toBe(true);
+    expect(getDb().select().from(scripts).where(eq(scripts.id, "other-script")).get()?.selected).toBe(true);
+  });
+  it("does not restore a baseline from another script or pick an unadopted candidate", () => {
+    job(); video(); scopeFixturesToScript();
+    getDb().update(assets).set({ sourceScriptId: "other-script" }).where(eq(assets.id, "original-image")).run();
+    getDb().insert(assets).values({ id: "unadopted", projectId: "project-1", shotId: 1, sourceScriptId: "script-1",
+      type: "ai_generated", filePath: "/api/files/unadopted.png", status: "done", selected: false }).run();
+
+    deleteKlingJob("job-1");
+
+    expect(getDb().select().from(assets).all().some((asset) => asset.selected)).toBe(false);
+  });
+  it("does not change selections when deleting an unselected video alternative", () => {
+    job(); video(); scopeFixturesToScript();
+    getDb().update(assets).set({ selected: false }).where(eq(assets.id, "generated-asset")).run();
+
+    deleteKlingJob("job-1");
+
+    expect(getDb().select().from(assets).where(eq(assets.id, "original-image")).get()?.selected).toBe(false);
   });
   it.each([
     { submissionState: "prepared" }, { submissionState: "submitting" }, { submissionState: "submission_unknown", remoteState: "failed" },

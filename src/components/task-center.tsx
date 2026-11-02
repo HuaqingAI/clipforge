@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useT, useLocale } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/relative-time";
-import { useTaskFeed } from "@/lib/hooks/use-task-feed";
+import type { useTaskFeed } from "@/lib/hooks/use-task-feed";
 import { taskHref, type TaskRow } from "@/lib/task-feed";
 import {
   DropdownMenu,
@@ -13,11 +13,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 /** 跨项目任务状态与恢复入口。 */
-export function TaskCenter({ collapsed = false }: { collapsed?: boolean }) {
+export function TaskCenter({ collapsed = false, taskFeed }: { collapsed?: boolean; taskFeed: ReturnType<typeof useTaskFeed> }) {
   const t = useT("common");
   const locale = useLocale();
   const router = useRouter();
-  const { feed, loading, error, updatedAt, refresh } = useTaskFeed();
+  const { feed, loading, error, updatedAt, refresh } = taskFeed;
 
   const badgeCount = feed.active.length + feed.attention.length;
 

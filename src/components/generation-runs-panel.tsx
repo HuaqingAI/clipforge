@@ -25,25 +25,48 @@ function refinementCandidatePath(value: unknown): string | null {
   return value;
 }
 
-export function GenerationRunsPanel({ projectId, onCompleted }: { projectId: string; onCompleted?(run: GenerationRun): void | Promise<void> }) {
-  return <GenerationRunsSession key={projectId} projectId={projectId} onCompleted={onCompleted} />;
+function runUpdatedAt(run: GenerationRun): number {
+  // The API uses ISO dates; numeric snapshots use epoch milliseconds.
+  return typeof run.updatedAt === "number" ? run.updatedAt : typeof run.updatedAt === "string" ? Date.parse(run.updatedAt) : NaN;
 }
 
-function GenerationRunsSession({ projectId, onCompleted }: { projectId: string; onCompleted?(run: GenerationRun): void | Promise<void> }) {
-  const { runs, loading, error, refresh, cancelRun, retryImport, deleteRun, clearFinished, isRunDeleted } = useGenerationRuns(projectId);
+type GenerationRunsController = ReturnType<typeof useGenerationRuns>;
+interface GenerationRunsPanelProps {
+  projectId: string;
+  controller?: GenerationRunsController;
+  onCompleted?(run: GenerationRun): void | Promise<void>;
+}
+
+export function GenerationRunsPanel({ projectId, controller, onCompleted }: GenerationRunsPanelProps) {
+  return controller
+    ? <GenerationRunsSession key={projectId} projectId={projectId} controller={controller} onCompleted={onCompleted} />
+    : <ConnectedGenerationRunsPanel key={projectId} projectId={projectId} onCompleted={onCompleted} />;
+}
+
+function ConnectedGenerationRunsPanel({ projectId, onCompleted }: Omit<GenerationRunsPanelProps, "controller">) {
+  const controller = useGenerationRuns(projectId);
+  return <GenerationRunsSession projectId={projectId} controller={controller} onCompleted={onCompleted} />;
+}
+
+function GenerationRunsSession({ projectId, controller, onCompleted }: GenerationRunsPanelProps & { controller: GenerationRunsController }) {
+  const { runs, loading, error, refresh, cancelRun, retryImport, deleteRun, clearFinished, isRunDeleted } = controller;
   const requestedId = useSearchParams().get("runId");
   const [linked, setLinked] = useState<GenerationRun | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [observedAfter] = useState(() => Math.floor(Date.now() / 1000) * 1000);
   const actionLock = useRef(false);
   const alive = useRef(true);
   const signatures = useRef(new Map<string, string>());
+  const hasSnapshot = useRef(false);
   const completed = useRef(onCompleted); completed.current = onCompleted;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     if (!requestedId || isRunDeleted(requestedId) || runs.some((run) => run.id === requestedId)) { setLinked(null); return; }
+    // The project list usually includes the requested run; wait before making a second read.
+    if (loading) return;
     const controller = new AbortController();
     void fetch(`/api/generation-runs/${encodeURIComponent(requestedId)}`, { signal: controller.signal, cache: "no-store" }).then(async (response) => {
       const run = await response.json();
@@ -52,17 +75,26 @@ function GenerationRunsSession({ projectId, onCompleted }: { projectId: string; 
       if (!controller.signal.aborted && run.projectId === projectId && !isRunDeleted(run.id)) setLinked(run);
     }).catch((failure) => { if (!controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : "读取后台任务失败"); });
     return () => controller.abort();
-  }, [requestedId, runs, projectId, isRunDeleted]);
+  }, [requestedId, runs, loading, projectId, isRunDeleted]);
   useEffect(() => {
-    for (const run of linked ? [linked, ...runs] : runs) {
-      if (run.projectId !== projectId || isRunDeleted(run.id)) continue;
+    const observe = (run: GenerationRun, baseline: boolean) => {
+      if (run.projectId !== projectId || isRunDeleted(run.id)) return;
       const signature = JSON.stringify(run.items.filter((item) => item.status === "completed").map((item) => [item.id, item.result]));
-      if (signature !== "[]" && signatures.current.get(run.id) !== signature) {
-        signatures.current.set(run.id, signature);
-        void Promise.resolve(completed.current?.(run)).catch(() => { if (alive.current) setActionError("任务已完成，刷新素材失败，请重新读取。"); });
+      const previous = signatures.current.get(run.id);
+      signatures.current.set(run.id, signature);
+      const updatedAt = runUpdatedAt(run);
+      const completedDuringLoad = Number.isFinite(updatedAt) && updatedAt >= observedAfter;
+      if (signature !== "[]" && previous !== signature && (previous !== undefined || !baseline || completedDuringLoad)) {
+        const callback = completed.current;
+        void Promise.resolve().then(() => { if (alive.current) return callback?.(run); }).catch(() => { if (alive.current) setActionError("任务已完成，刷新素材失败，请重新读取。"); });
       }
-    }
-  }, [runs, linked, projectId, isRunDeleted]);
+    };
+    // Initial saved results are loaded by the page itself. Remember history
+    // without callbacks, but reconcile completions newer than that initial read.
+    for (const run of runs) observe(run, !hasSnapshot.current);
+    if (linked && !runs.some((run) => run.id === linked.id)) observe(linked, true);
+    if (!loading && !error) hasSnapshot.current = true;
+  }, [runs, linked, loading, error, projectId, isRunDeleted, observedAfter]);
   const shown = (linked && !runs.some((run) => run.id === linked.id) ? [linked, ...runs] : runs).filter((run) => run.projectId === projectId && !isRunDeleted(run.id));
   const cleanable = shown.filter(generationRunDeletable);
   async function actOn(run: GenerationRun, action: "cancel" | "retry_import" | "delete") {

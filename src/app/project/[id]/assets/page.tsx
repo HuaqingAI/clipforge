@@ -61,6 +61,7 @@ import { ShotMaterialPreview } from "./_components/shot-material-preview";
 import { AssetImagePreview } from "./_components/asset-image-preview";
 import { classifyMaterial, MATERIAL_ACCEPT, type PublicLocalMaterial } from "@/lib/material-library";
 import { uploadLocalMaterial, type MaterialUploadProgress } from "@/lib/upload-local-material";
+import { AssetPageLoadError, createAssetPageLoader, type AssetPageSnapshot } from "@/lib/asset-page-loader";
 import { ProjectHeader } from "@/components/project-header";
 import { ModelCapabilityPreflight } from "@/components/model-capability-preflight";
 import {
@@ -185,7 +186,11 @@ function AssetsPageContent() {
   const [unresolvedMotionShots, setUnresolvedMotionShots] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [canRetryLoad, setCanRetryLoad] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const assetsRequest = useRef(0);
+  const assetRefresh = useMemo(() => ({ projectId: id, loader: createAssetPageLoader(), pending: null as Promise<void> | null, queued: false, initialized: false, active: false, epoch: 0 }), [id]);
+  const assetLoader = assetRefresh.loader;
   // state for "auto-fill visuals (free stock)" feature
   const [isFillingStock, setIsFillingStock] = useState(false);
   const [stockMsg, setStockMsg] = useState<string | null>(null);
@@ -237,7 +242,8 @@ function AssetsPageContent() {
   const [isGridSubmitting, setIsGridGenerating] = useState(false);
   const [isBatchKeyframesSubmitting, setIsBatchKeyframesSubmitting] = useState(false);
   const batchKeyframeSubmission = useRef<AbortController | null>(null);
-  const { runs: generationRuns } = useGenerationRuns(id);
+  const generationController = useGenerationRuns(id);
+  const { runs: generationRuns } = generationController;
   const backgroundShots = useMemo(() => new Set(generationRuns.filter(run => generationRunActive(run) || run.status === "needs_attention").flatMap(run => run.items.filter(item => item.scriptId === scriptId && item.shotId != null && !["completed", "failed", "cancelled"].includes(item.status)).map(item => item.shotId!))), [generationRuns, scriptId]);
   const isGridGenerating = isGridSubmitting || generationRuns.some(run => run.kind === "storyboard_grid" && generationRunActive(run) && run.items.some(item => item.scriptId === scriptId));
   const [gridResolution, setGridResolution] = useState<StoryboardGridResolution>(DEFAULT_STORYBOARD_GRID_RESOLUTION);
@@ -321,104 +327,31 @@ function AssetsPageContent() {
   // only show the "configure a model" warning when there are still AI shots that need generating (no warning once everything is ready, to avoid contradicting the "all done" state)
   const showModelWarning = !loading && needsImageModelWarning(assets, modelTarget !== null);
 
-  // load real data: project info + selected script shots + resolve the provider for the default image model
-  useEffect(() => {
-    let cancelled = false;
-    const request = ++assetsRequest.current;
-    (async () => {
-      setLoading(true);
-      setLoadError(null);
-      try {
-        const [projectRes, scriptsRes, assetsRes] = await Promise.all([
-          fetch(`/api/project/${id}`),
-          fetch(`/api/project/${id}/scripts`),
-          fetch(`/api/project/${id}/assets`),
-        ]);
-
-        const project = projectRes.ok ? await projectRes.json() : null;
-        const scripts = scriptsRes.ok ? await scriptsRes.json() : [];
-        const savedAssets = assetsRes.ok ? await assetsRes.json() : [];
-        if (cancelled) return;
-
-        const imgs: string[] = project && Array.isArray(project.productImages) ? project.productImages : [];
-        if (project) {
-          setProjectName(project.name ?? project.productName ?? "");
-          setProductImages(imgs);
-          setContentType(typeof project.contentType === "string" ? project.contentType : "");
-          setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
-          setProjectCreativeProfile(project.creativeProfile);
-          setCreativeConfigRevision(project.creativeConfigRevision ?? 0);
-          setProjectCreativeIntent(sanitizeCreativeIntent(project.creativeIntent));
-          setProjectVisualBible(sanitizeVisualBible(project.visualBible));
-          const requestedPresenter = new URLSearchParams(window.location.search).get("presenter");
-          setPresenterId(isTideweOutdoorProfile(project.creativeProfile) ? project.creativeProfile.presenter?.id ?? "" : requestedPresenter || (typeof project.characterId === "string" ? project.characterId : ""));
-          if (Array.isArray(project.productionWorkflow)) {
-            const motionStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "motion");
-            if (motionStage) setAutoMotion(motionStage.enabled !== false);
-          }
-        }
-        if (request !== assetsRequest.current) return;
-
-        // Historical scripts remain available, but only an explicit selection is current.
-        const selected = Array.isArray(scripts)
-          ? scripts.find((s: { selected?: boolean }) => s.selected)
-          : null;
-
-        if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
-          setScriptId("");
-          setScriptHash("");
-          setScriptTitle("");
-          lastFrameByShot.current.clear();
-          setAssets([]);
-          setLoadError(t("errorNoScript"));
-          return;
-        }
-        // remember which script row the view came from — camera edits PATCH back into it
-        setScriptId(typeof selected.id === "string" ? selected.id : "");
-        setScriptHash(typeof selected.scriptHash === "string" ? selected.scriptHash : "");
-        setScriptTitle(typeof selected.title === "string" ? selected.title.trim() : "");
-
-        // selected script shots + persisted assets → view rows (shared pure function used by "refresh after filling visuals")
-        const rows = buildAssetRows(selected.shots as Shot[], Array.isArray(savedAssets) ? savedAssets : [], imgs);
-        lastFrameByShot.current.clear();
-        for (const row of rows) if (row.lastFrameUrl) lastFrameByShot.current.set(row.shotId, row.lastFrameUrl);
-        setAssets(rows);
-      } catch (e) {
-        if (!cancelled && request === assetsRequest.current) setLoadError(e instanceof Error ? e.message : t("errorLoadFailed"));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  // re-fetch project / scripts / assets and rebuild view rows (refresh thumbnails after filling visuals, reuses the same pure function)
-  const reloadAssets = useCallback(async () => {
-    const request = ++assetsRequest.current;
-    const [projectRes, scriptsRes, assetsRes] = await Promise.all([
-      fetch(`/api/project/${id}`),
-      fetch(`/api/project/${id}/scripts`),
-      fetch(`/api/project/${id}/assets`),
-    ]);
-    const project = projectRes.ok ? await projectRes.json() : null;
-    const scripts = scriptsRes.ok ? await scriptsRes.json() : [];
-    const savedAssets = assetsRes.ok ? await assetsRes.json() : [];
-    if (request !== assetsRequest.current) return;
-    const imgs: string[] = project && Array.isArray(project.productImages) ? project.productImages : [];
-    setProjectCreativeProfile(project?.creativeProfile);
-    setCreativeConfigRevision(project?.creativeConfigRevision ?? 0);
+  const applyAssetSnapshot = useCallback(({ project, scripts, savedAssets }: AssetPageSnapshot) => {
+    const imgs = Array.isArray(project.productImages) ? project.productImages : [];
+    if (!assetRefresh.initialized) {
+      setProjectName(project.name ?? project.productName ?? "");
+      setContentType(project.contentType ?? "");
+      setProjectCategory(project.productCategory ?? "");
+      setProjectCreativeIntent(sanitizeCreativeIntent(project.creativeIntent));
+      setProjectVisualBible(sanitizeVisualBible(project.visualBible));
+      const requestedPresenter = new URLSearchParams(window.location.search).get("presenter");
+      setPresenterId(isTideweOutdoorProfile(project.creativeProfile) ? project.creativeProfile.presenter?.id ?? "" : requestedPresenter || project.characterId || "");
+      const motionStage = project.productionWorkflow?.find((stage) => stage.id === "motion");
+      if (motionStage) setAutoMotion(motionStage.enabled !== false);
+      assetRefresh.initialized = true;
+    }
+    setProjectCreativeProfile(project.creativeProfile);
+    setCreativeConfigRevision(project.creativeConfigRevision ?? 0);
     setProductImages(imgs);
-    const selected = Array.isArray(scripts)
-      ? scripts.find((s: { selected?: boolean }) => s.selected)
-      : null;
+    setCanRetryLoad(false);
+    const selected = scripts.find((script) => script.selected);
     if (selected && Array.isArray(selected.shots) && selected.shots.length > 0) {
       setLoadError(null);
       setScriptId(typeof selected.id === "string" ? selected.id : "");
       setScriptHash(typeof selected.scriptHash === "string" ? selected.scriptHash : "");
       setScriptTitle(typeof selected.title === "string" ? selected.title.trim() : "");
-      const rows = buildAssetRows(selected.shots as Shot[], Array.isArray(savedAssets) ? savedAssets : [], imgs);
+      const rows = buildAssetRows(selected.shots, savedAssets, imgs);
       lastFrameByShot.current.clear();
       for (const row of rows) if (row.lastFrameUrl) lastFrameByShot.current.set(row.shotId, row.lastFrameUrl);
       setAssets(rows);
@@ -430,7 +363,54 @@ function AssetsPageContent() {
       setAssets([]);
       setLoadError(t("errorNoScript"));
     }
-  }, [id, t]);
+  }, [assetRefresh, t]);
+
+  // Refresh bursts share one request. A change during that request queues one
+  // fresh snapshot so a mutation cannot be hidden by an older in-flight read.
+  const reloadAssets = useCallback(async () => {
+    if (!assetRefresh.active) return;
+    const epoch = assetRefresh.epoch;
+    if (assetRefresh.pending) {
+      assetRefresh.queued = true;
+      return assetRefresh.pending;
+    }
+    const operation = (async () => {
+      do {
+        assetRefresh.queued = false;
+        const request = ++assetsRequest.current;
+        const snapshot = await assetLoader.load(id);
+        if (!assetRefresh.active || epoch !== assetRefresh.epoch) return;
+        if (request === assetsRequest.current && !assetRefresh.queued) applyAssetSnapshot(snapshot);
+      } while (assetRefresh.queued);
+    })();
+    assetRefresh.pending = operation;
+    try { await operation; }
+    finally { if (assetRefresh.pending === operation) assetRefresh.pending = null; }
+  }, [id, assetLoader, assetRefresh, applyAssetSnapshot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const requestGuard = assetsRequest;
+    assetRefresh.active = true;
+    assetRefresh.epoch++;
+    assetRefresh.pending = null;
+    assetRefresh.queued = false;
+    setLoading(true);
+    setLoadError(null);
+    setCanRetryLoad(false);
+    void reloadAssets().catch((error) => {
+      if (cancelled) return;
+      setLoadError(t(error instanceof AssetPageLoadError && error.code === "timeout" ? "errorLoadTimeout" : "errorLoadFailed"));
+      setCanRetryLoad(true);
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => {
+      cancelled = true;
+      assetRefresh.active = false;
+      assetRefresh.epoch++;
+      requestGuard.current++;
+      assetLoader.cancel();
+    };
+  }, [assetLoader, assetRefresh, reloadAssets, loadAttempt, t]);
 
   const importedKlingSignature = useRef("");
   const klingJobsRequest = useRef({ serial: 0 });
@@ -863,7 +843,7 @@ function AssetsPageContent() {
           continuityReferenceUrl: isKling || batch ? undefined : previousTail,
         },
       };
-      const preview = await fetchVideoPrompt(id, promptRequest, signal);
+      const preview = await fetchVideoPrompt(id, promptRequest, signal, tidewe ? llm : undefined);
       if (signal?.aborted) return;
       if (!validate()) throw new Error("脚本、素材或生成设置已更改，请重新打开视频生成确认。");
       const finalPrompt = preview.prompt;
@@ -971,7 +951,7 @@ function AssetsPageContent() {
             },
       };
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, premiumCg, premiumCgVisualOnly, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, premiumCg, premiumCgVisualOnly, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
   );
 
   const generateMotion = useCallback(async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom) => {
@@ -1333,12 +1313,16 @@ function AssetsPageContent() {
           </section>
         )}
         <ModelCatalogStatus statuses={catalog.statuses} pending={catalog.pending} onRetry={catalog.retry} />
-        <GenerationRunsPanel projectId={id} onCompleted={reloadAssets} />
+        <GenerationRunsPanel projectId={id} controller={generationController} onCompleted={reloadAssets} />
         {isKlingDefault && <p className="mb-4 text-sm text-muted-foreground">Kling 镜头通过后台队列生成，支持单镜头或批量提交，可切换项目继续创作。</p>}
         {(klingEnabled || klingJobs.length > 0) && klingJobsError && <p role="alert" className="mb-4 rounded-lg border border-amber-500/40 p-3 text-sm">Kling 任务暂时无法读取：{klingJobsError}。请先恢复任务列表，再提交新视频。<button className="ml-2 text-primary underline" onClick={() => void reloadKlingJobs()}>重新读取</button></p>}
         <KlingJobsList jobs={klingJobs.filter((job) => job.scriptId === scriptId)} onOpenJob={setKlingJobId} onRefresh={reloadKlingJobs} onDeleted={async (jobId) => {
           klingJobsRequest.current.serial++;
           assetsRequest.current++;
+          assetRefresh.epoch++;
+          assetLoader.cancel();
+          assetRefresh.pending = null;
+          assetRefresh.queued = false;
           setKlingJobs((current) => current.filter((job) => job.jobId !== jobId));
           setKlingJobId((current) => current === jobId ? null : current);
           setMaterialLibraryRevision((current) => current + 1);
@@ -1700,6 +1684,7 @@ function AssetsPageContent() {
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <LuImage className="w-10 h-10 text-muted-foreground/40 mb-3" />
             <p className="text-sm text-muted-foreground mb-4">{loadError}</p>
+            {canRetryLoad && <Button variant="outline" size="sm" className="mb-3" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>{tc("retry")}</Button>}
             <Link href={`/project/${id}/script`}>
               <Button variant="outline" size="sm">{t("backToScriptStep")}</Button>
             </Link>
@@ -1907,7 +1892,7 @@ function AssetsPageContent() {
                                   className="block h-full w-full"
                                 >
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img src={asset.thumbnailUrl} alt={t("assetPreviewAlt")} className="w-full h-full object-cover" />
+                                  <img src={asset.thumbnailUrl} alt={t("assetPreviewAlt")} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                                 </AssetImagePreview>
                               )
                             ) : asset.status === "done" ? (

@@ -18,6 +18,7 @@ import { arkSeedanceVersion } from "@/lib/ark-video-models";
 import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
 import { sanitizeCreativeProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import type { TideweVideoDirection } from "@/lib/tidewe/video-direction";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 /** Seedance 2.5 duration bounds (schema: integer 4-30 seconds) */
@@ -284,6 +285,8 @@ export function buildStoryboardFilmPrompt(
     realism?: boolean;
     creativeProfile?: unknown;
     outputPolicy?: unknown;
+    /** Prepared directions keep timed TIDEWE shots on the same pure video compiler. */
+    tideweVideoDirections?: Record<number, TideweVideoDirection>;
   }
 ): string {
   const profileValue = opts?.creativeProfile ?? opts?.outputPolicy ?? refs?.creativeProfile ?? refs?.outputPolicy;
@@ -306,7 +309,7 @@ export function buildStoryboardFilmPrompt(
       ...shots.map((shot, index) => {
         const start = cursor;
         cursor += shot.duration;
-        return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${index + 1}，构图参考第${index + 1 + offset}张图片：${compileTideweVisualPrompt(shot, "video", profileValue.speechMode, profileValue.presenter).prompt}`;
+        return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${index + 1}，构图参考第${index + 1 + offset}张图片：${compileTideweVisualPrompt(shot, "video", profileValue.speechMode, profileValue.presenter, "native", { direction: opts?.tideweVideoDirections?.[shot.shotId] }).prompt}`;
       }),
     ].join("\n");
   }

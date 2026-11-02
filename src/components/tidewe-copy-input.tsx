@@ -6,11 +6,13 @@ import { tideweCopyInputError, TIDEWE_COPY_INPUT_MAX_LENGTH, type TideweCopySour
 
 export type { TideweCopySource } from "@/lib/tidewe/copy-input";
 
-export function TideweCopyInput({ source, text, onSourceChange, onTextChange, disabled = false, id = "tidewe-copy-input" }: {
+export function TideweCopyInput({ source, text, sceneDescription, onSourceChange, onTextChange, onSceneDescriptionChange, disabled = false, id = "tidewe-copy-input" }: {
   source: TideweCopySource;
   text: string;
+  sceneDescription: string;
   onSourceChange(source: TideweCopySource): void;
   onTextChange(text: string): void;
+  onSceneDescriptionChange(description: string): void;
   disabled?: boolean;
   id?: string;
 }) {
@@ -26,6 +28,11 @@ export function TideweCopyInput({ source, text, onSourceChange, onTextChange, di
         </label>)}
       </div>
     </fieldset>
+    {source === "ai" && <div className="space-y-2">
+      <label htmlFor={`${id}-scene-description`} className="block text-sm font-medium">{t("sceneDescriptionLabel")}</label>
+      <Textarea id={`${id}-scene-description`} rows={4} value={sceneDescription} disabled={disabled} placeholder={t("sceneDescriptionPlaceholder")} aria-describedby={`${id}-scene-description-hint`} onChange={(event) => onSceneDescriptionChange(event.target.value)} className="field-sizing-fixed resize-y bg-muted/20" />
+      <p id={`${id}-scene-description-hint`} className="text-xs leading-relaxed text-muted-foreground">{t("sceneDescriptionHint")}</p>
+    </div>}
     {source === "manual" && <div className="space-y-2">
       <label htmlFor={id} className="block text-sm font-medium">{t("copyInputLabel")}</label>
       <Textarea id={id} lang="en-US" rows={8} value={text} disabled={disabled} placeholder={t("copyInputPlaceholder")} aria-invalid={Boolean(error)} aria-describedby={`${id}-hint${error ? ` ${id}-error` : ""}`} onChange={(event) => onTextChange(event.target.value)} className="field-sizing-fixed resize-y bg-muted/20" />

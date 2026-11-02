@@ -12,7 +12,7 @@ import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
-import { TIDEWE_VISUAL_NEGATIVE_PROMPT } from "@/lib/tidewe/visual-policy";
+import { compileTideweVideoPrompt } from "@/lib/tidewe/video-prompt";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { shotKey, scriptRevision } from "@/lib/asset-context";
 import { sanitizeVideoControlSummary } from "@/lib/video-control-plan";
@@ -26,6 +26,14 @@ vi.mock("@/lib/remote-image", () => ({ toRemoteUsableImage: state.remoteImage, r
 vi.mock("@/lib/ai-tasks", () => ({ recordAiTask: state.recordTask, updateAiTask: state.updateTask }));
 vi.mock("@/lib/kling/jobs", () => ({ createKlingJob: vi.fn() }));
 vi.mock("@/lib/kling/repository", () => ({ klingJobView: vi.fn() }));
+
+// Translation/cache behavior is covered separately; integration uses one prepared English direction.
+vi.mock("@/lib/server/tidewe-video-direction", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/server/tidewe-video-direction")>(),
+  resolveTideweVideoDirection: vi.fn(() => ({ action: "The hunter pauses at the woodland edge and checks the gear, then rests.", camera: "Hold the existing phone framing with a small natural handheld drift." })),
+  prepareTideweVideoDirections: vi.fn(async () => undefined),
+}));
+import { resolveTideweVideoDirection, prepareTideweVideoDirections, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
 
 import { POST as preview } from "@/app/api/project/[id]/video-prompt/route";
 import { POST as generate } from "@/app/api/ai/video/route";
@@ -95,10 +103,12 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     expect(response.status).toBe(200);
     expect(value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true, warnings: [], firstFrameUrl: "/api/files/keyframe.png", referenceInputs: [], referenceRoles: ["keyframe"], referenceCount: 1 });
     expect(value.controlPlan.lastFrameUrl).toBeUndefined();
-    expect(value.prompt).toContain("Host");
+    expect(value.prompt).toContain("preserve the presenter's identity and clothing");
     expect(value.prompt).toContain(shot.voiceover);
     expect(value.prompt).not.toContain("参考映射：");
     expect(value.prompt).not.toContain("Do not generate an audio track");
+    expect(value.prompt).not.toMatch(/\p{Script=Han}/u);
+    expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
   });
 
   it("requires a saved presenter keyframe without making a model capability claim", async () => {
@@ -127,8 +137,9 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     expect(value.prompt).not.toContain("嘴部清晰可见");
     if (generateAudio) {
       expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
-      expect(value.controlPlan.audioPrompt).toContain("旁白只自然说一遍");
-      expect(value.controlPlan.audioPrompt).not.toContain("画面中的说话人");
+      expect(value.prompt).toContain("off-camera narration");
+      expect(value.prompt).not.toContain("Audio direction:");
+      expect(value.controlPlan.audioPrompt).not.toMatch(/\p{Script=Han}/u);
     }
     const result = await submit(value, request);
     expect(result.status).toBe(200);
@@ -142,7 +153,7 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     const { response, value } = await getPreview(input({ provider: "kling-cli", model: "future-model", generateAudio: true }));
     expect(response.status).toBe(200);
     expect(value.controlPlan).toMatchObject({ audioMode: "native", referenceInputs: [], referenceRoles: ["keyframe"] });
-    expect(value.controlPlan.audioPrompt).toContain("旁白只自然说一遍");
+    expect(value.prompt).toContain("off-camera narration");
     expect(value.prompt).not.toContain("match the English phonemes");
   });
   it("binds the frozen presenter in preview and sends the actual portrait to reference-capable video generation", async () => {
@@ -151,11 +162,38 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     const { response, value } = await getPreview(request);
     expect(response.status).toBe(200);
     expect(value.controlPlan.referenceInputs).toContainEqual(expect.objectContaining({ role: "character", url: presenter.referenceImages[0] }));
-    expect(value.prompt).toContain(presenter.name);
+    expect(value.prompt).toContain("preserve the presenter's identity and clothing");
+    expect(value.prompt).toContain("@Image1=shot composition; @Image2=character identity");
     const result = await submit(value, request);
     expect(result.status).toBe(200);
-    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ mode: "video-to-video", referenceImageUrls: [presenter.referenceImages[0], "/api/files/product.png"] }));
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ mode: "video-to-video", prompt: value.prompt, referenceImageUrls: ["/api/files/product.png", presenter.referenceImages[0]] }));
     expect(state.generate.mock.calls[0][0].firstFrameUrl).toBeUndefined();
+  });
+  it("preserves the exact compact compiler text before a native reference-pack map", async () => {
+    const { shot } = useTidewe("on_camera", presenter);
+    const request = input({ generateAudio: true });
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    const compiled = compileTideweVideoPrompt(shot, "on_camera", presenter, "native", resolveTideweVideoDirection(shot));
+    expect(value.prompt.startsWith(compiled.prompt + "\nReference map:")).toBe(true);
+    expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
+    expect(value.prompt).not.toMatch(/\p{Script=Han}/u);
+    const result = await submit(value, request);
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ prompt: value.prompt,
+      referenceImageUrls: value.controlPlan.referenceInputs.map((reference) => reference.url) }));
+  });
+  it("requires a new preview if English direction is missing at submission without translating or paying", async () => {
+    useTidewe();
+    const request = input();
+    const { value } = await getPreview(request);
+    vi.mocked(prepareTideweVideoDirections).mockClear();
+    vi.mocked(resolveTideweVideoDirection).mockImplementationOnce(() => { throw new TideweVideoDirectionError("TIDEWE_VIDEO_DIRECTION_REQUIRED", "Preview required."); });
+    const result = await submit(value, request);
+    expect(result.status).toBe(422);
+    expect(await result.json()).toMatchObject({ code: "TIDEWE_VIDEO_DIRECTION_REQUIRED" });
+    expect(prepareTideweVideoDirections).not.toHaveBeenCalled();
+    expect(state.provider).not.toHaveBeenCalled();
   });
   it("rejects changing the frozen presenter or silently dropping an unreadable portrait", async () => {
     useTidewe("voiceover", presenter);
@@ -170,7 +208,7 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     expect(await result.json()).toMatchObject({ code: "TIDEWE_REFERENCE_UNAVAILABLE" });
     expect(state.generate).not.toHaveBeenCalled();
   });
-  it.each([false, true])("rejects an unreadable extra product reference with appearance-only presenter=%s", async (hasPresenter) => {
+  it.each([false, true])("rejects an unreviewed extra product reference with appearance-only presenter=%s", async (hasPresenter) => {
     useTidewe("voiceover", hasPresenter ? { ...presenter, referenceImages: [] } : undefined);
     const missingProduct = "/api/files/missing-product-side.png";
     db.update(schema.projects).set({ productImages: ["/api/files/product.png", missingProduct] }).run();
@@ -179,8 +217,8 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     expect(response.status).toBe(200);
     state.remoteImage.mockImplementation(async (url: unknown) => url === missingProduct ? undefined : url);
     const result = await submit(value, request, { referenceImageUrls: ["/api/files/product.png", missingProduct] });
-    expect(result.status).toBe(400);
-    expect(await result.json()).toMatchObject({ code: "TIDEWE_REFERENCE_UNAVAILABLE" });
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({ code: "VIDEO_PROMPT_CONTEXT_CHANGED" });
     expect(state.generate).not.toHaveBeenCalled();
   });
   it("binds native English speech in a reviewed batch and enables the exact model's audio before dispatch", async () => {
@@ -216,9 +254,9 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     expect(value.controlPlan.referenceInputs.every((reference) => reference.mediaType === "image")).toBe(true);
     expect(value.prompt).toContain(JSON.stringify(shot.voiceover));
     expect(value.prompt.split(shot.voiceover)).toHaveLength(2);
-    expect(value.prompt).toContain("match the English phonemes");
-    expect(value.prompt).toContain("Do not generate an audio track");
-    expect(value.prompt).toContain("narration will be added automatically during composition");
+    expect(value.prompt).toContain("silently articulates");
+    expect(value.prompt).toContain("Audio: no audio track");
+    expect(value.prompt).toContain("natural lip timing for later dubbing");
     expect(value.prompt).not.toContain("Generate native synchronized audio and video");
     const listModels = vi.fn().mockRejectedValue(new Error("No catalog is required for silent generation"));
     state.provider.mockReturnValue({ generateVideo: state.generate, listModels });
@@ -229,25 +267,26 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
     const generated = state.generate.mock.calls[0][0];
     for (const key of ["voiceover", "audioPrompt", "extra", "referenceAudioUrls"]) expect(generated[key]).toBeUndefined();
   });
-  it("keeps saved outdoor descriptions and reference labels while ignoring legacy sales controls", async () => {
+  it("uses prepared English outdoor direction and reference labels while ignoring legacy sales controls", async () => {
     const { shot } = useTidewe();
     const request = input({ retake: "background_dead", negativePrompt: "avoid outdoor scenes", controlInputs: { firstFrameUrl: "/api/files/product.png", productReferenceUrl: "/api/files/product.png", supportsAudio: true, audioReferenceUrl: "https://example.test/voice.mp3" } });
     const { response, value } = await getPreview(request);
     expect(response.status).toBe(200);
-    expect(value.prompt).toContain(`本镜画面：${shot.description}`);
-    expect(value.prompt).toContain(shot.visualIntent);
-    expect(value.prompt).toContain("参考映射：");
-    expect(value.prompt).toContain("静音视觉素材");
+    const compiled = compileTideweVideoPrompt(shot, "voiceover", undefined, "post", resolveTideweVideoDirection(shot));
+    expect(value.prompt).toContain(compiled.prompt);
+    expect(value.prompt).toContain("Reference map:");
+    expect(value.prompt).toContain("silent footage for narration added in post");
+    expect(value.prompt).not.toMatch(/\p{Script=Han}/u);
     expect(value.prompt).not.toContain(shot.voiceover);
     expect(value.prompt).not.toContain("卧室主播卖货");
     expect(value.prompt).not.toContain("窗帘轻晃");
     expect(value.controlPlan.audioMode).toBe("none");
     expect(value.controlPlan.referenceInputs.every((item) => item.mediaType === "image")).toBe(true);
-    expect(value.negativePrompt).toBe(TIDEWE_VISUAL_NEGATIVE_PROMPT);
+    expect(value.negativePrompt).toBe(compiled.negativePrompt);
     const result = await submit(value, request, { options: { audioEnabled: true, voiceover: "Different narration", audioPrompt: "Speak now", extra: { generate_audio: true, arbitrary_audio_flag: true } }, referenceAudioUrls: ["https://example.test/voice.mp3"], referenceVideoUrls: ["https://example.test/motion.mp4"] });
     expect(result.status).toBe(200);
     const generated = state.generate.mock.calls[0][0];
-    expect(generated).toMatchObject({ prompt: value.prompt, audioEnabled: false, negativePrompt: TIDEWE_VISUAL_NEGATIVE_PROMPT });
+    expect(generated).toMatchObject({ prompt: value.prompt, audioEnabled: false, negativePrompt: value.negativePrompt });
     for (const key of ["voiceover", "audioPrompt", "extra", "referenceAudioUrls", "referenceVideoUrls"]) expect(generated[key]).toBeUndefined();
   });
   it("rejects native narration and unreviewed dispatch before creating a provider", async () => {

@@ -16,7 +16,6 @@ import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
-import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
@@ -27,6 +26,7 @@ import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import type { VideoOptions } from "@/lib/providers/types";
 import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
 import { beforeGenerationSubmission, generationCheckpoint, generationContextDefersPolling, GenerationTaskPending } from "@/lib/generation-context";
+import { TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
 
 export const runtime = "nodejs";
 
@@ -162,11 +162,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    if (body.promptContext !== undefined) {
-      if (!projectId) return apiError(req, "提示词预览缺少项目", "Reviewed video prompts require a project id", 400);
-      reviewedPrompt = assertReviewedVideoPrompt(projectId, body.promptContext, prompt, { scriptId, shotId, provider: providerName, model });
-      options.negativePrompt = reviewedPrompt.negativePrompt;
-    }
+    if (body.promptContext !== undefined && !projectId) return apiError(req, "提示词预览缺少项目", "Reviewed video prompts require a project id", 400);
     if (projectId) {
       const db = getDb();
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -192,12 +188,18 @@ export async function POST(req: NextRequest) {
       }
       const profile = context.projectProfile;
       if (isTideweOutdoorProfile(profile)) {
+        try { assertTideweScript(selected, profile.presenter ?? null); }
+        catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
+      }
+      if (body.promptContext !== undefined) {
+        reviewedPrompt = assertReviewedVideoPrompt(projectId, body.promptContext, prompt, { scriptId, shotId, provider: providerName, model });
+        options.negativePrompt = reviewedPrompt.negativePrompt;
+      }
+      if (isTideweOutdoorProfile(profile)) {
         tideweNative = isTideweNativeSpeech(profile);
         if (!scriptId || shotId === undefined || !reviewedPrompt) {
           return NextResponse.json({ error: "TIDEWE 视频生成须指定当前脚本、镜头并预览确认提示词。", code: "TIDEWE_PROJECT_CONTEXT_REQUIRED" }, { status: 400 });
         }
-        try { assertTideweScript(selected, profile.presenter ?? null); }
-        catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "TIDEWE 原文覆盖无效", code: "TIDEWE_SCRIPT_INVALID" }, { status: 409 }); }
         const shot = selected.shots?.find((item) => item.shotId === shotId);
         if (!shot) return apiError(req, "镜头不存在", "Shot not found", 404);
         tideweProductVisible = shot.tidewe?.productVisible === true;
@@ -216,15 +218,25 @@ export async function POST(req: NextRequest) {
         if (requestedImages.some((value) => !knownImages.has(value))) return NextResponse.json({ error: "TIDEWE 只能使用当前脚本已保存的关键帧及商品参考。", code: "TIDEWE_PRODUCT_REFERENCE_INVALID" }, { status: 400 });
         if (shot.tidewe?.productVisible && !project.productImages?.length) return NextResponse.json({ error: "TIDEWE 产品镜需要当前商品参考图。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
         if (tideweProductVisible && (!requestedImages.some((reference) => reference !== tidewePresenterImage) || mode === "text-to-video")) return NextResponse.json({ error: "TIDEWE 产品镜须使用当前脚本的关键帧或商品参考图生成视频。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
-        if (tidewePresenterImage && reviewedPrompt.controlPlan.referenceInputs.some((reference) => reference.role === "character" && reference.url === tidewePresenterImage)) {
+        const reviewedImages = new Set([
+          reviewedPrompt.controlPlan.firstFrameUrl, reviewedPrompt.controlPlan.lastFrameUrl,
+          ...reviewedPrompt.controlPlan.referenceInputs.filter((reference) => reference.mediaType === "image").map((reference) => reference.url),
+        ].filter(Boolean));
+        if (requestedImages.some((reference) => !reviewedImages.has(reference))) return NextResponse.json({ error: "提交图片与已确认的参考映射不一致，请重新预览并确认。", code: "VIDEO_PROMPT_CONTEXT_CHANGED" }, { status: 409 });
+        if (reviewedPrompt.controlPlan.strategy === "reference-pack") {
           const references = reviewedPrompt.controlPlan.referenceInputs.filter((reference) => reference.mediaType === "image").map((reference) => reference.url);
-          referenceImageUrls = [...new Set([tidewePresenterImage, ...references, ...requestedImages])];
+          referenceImageUrls = references;
           mode = "video-to-video";
           imageUrl = undefined;
           lastImageUrl = undefined;
+        } else {
+          imageUrl = reviewedPrompt.controlPlan.firstFrameUrl;
+          lastImageUrl = reviewedPrompt.controlPlan.lastFrameUrl;
+          referenceImageUrls = undefined;
+          mode = "image-to-video";
         }
         prompt = reviewedPrompt.prompt;
-        options.negativePrompt = compileTideweVisualPrompt(shot, "video", profile.speechMode, profile.presenter).negativePrompt;
+        options.negativePrompt = reviewedPrompt.negativePrompt;
         stripCgAudioControls(options);
         options.audioEnabled = tideweNative && reviewedPrompt.controlPlan.audioMode === "native";
         if (tideweNative) {
@@ -480,6 +492,7 @@ export async function POST(req: NextRequest) {
     if (error instanceof GenerationTaskPending) return NextResponse.json({ taskId: error.taskId, modelId: model, status: "processing" }, { status: 202 });
     if (error instanceof ProviderError && error.submissionRejected && !error.taskId) generationCheckpoint({ submissionState: "not_submitted" });
     if (error instanceof VideoPromptError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+    if (error instanceof TideweVideoDirectionError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     console.error("生视频失败:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : errText(req, "生视频失败", "Video generation failed"), ...(error instanceof ProviderError && { code: error.code, ...(error.taskId && { taskId: error.taskId }) }) },

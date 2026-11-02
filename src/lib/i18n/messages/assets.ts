@@ -139,6 +139,7 @@ export const assets: NamespaceMessages = {
     // 错误信息
     errorNoScript: "尚未生成脚本，请先返回脚本步骤生成分镜",
     errorLoadFailed: "加载失败",
+    errorLoadTimeout: "脚本分镜加载超时，请检查本地服务后重试。",
     errorNoVideoModel: "未配置默认生视频模型，请先在设置中选择",
     errorImageToVideoFailed: "图生视频失败",
     visualBibleBlocked: "项目视觉记忆禁止“{anchor}”发生变化，请先修改当前提示词或项目记忆。",
@@ -350,6 +351,7 @@ export const assets: NamespaceMessages = {
     backToScriptStep: "Back to script step",
     errorNoScript: "No script yet — go back to the script step to generate shots first",
     errorLoadFailed: "Failed to load",
+    errorLoadTimeout: "Script shots took too long to load. Check the local service and retry.",
     errorNoVideoModel: "No default video model set — please choose one in Settings first",
     errorImageToVideoFailed: "Image-to-video failed",
     visualBibleBlocked: "Project visual memory forbids changing “{anchor}”. Update the prompt or project memory before generating.",

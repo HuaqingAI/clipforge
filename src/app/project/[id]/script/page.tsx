@@ -171,6 +171,7 @@ export default function ScriptPage() {
   const [genError, setGenError] = useState("");
   const [tideweCopySource, setTideweCopySource] = useState<TideweCopySource>("ai");
   const [tideweCopyText, setTideweCopyText] = useState("");
+  const [tideweSceneDescription, setTideweSceneDescription] = useState("");
   const tideweCopyDraftTouched = useRef(false);
   const { llm } = useSettingsStore();
   // beginner/director split: simple mode swaps the 3-column editor for a read-and-go card
@@ -196,6 +197,7 @@ export default function ScriptPage() {
     setJudgeApplying(false);
     setTideweCopySource("ai");
     setTideweCopyText("");
+    setTideweSceneDescription("");
     tideweCopyDraftTouched.current = false;
     return () => {
       generationAbort.current?.abort();
@@ -243,6 +245,7 @@ export default function ScriptPage() {
             projectId: id,
             ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: projectMeta.creativeConfigRevision, ...(scripts[selectedScript]?.scriptHash && { sourceScriptId: scripts[selectedScript].id, expectedScriptHash: scripts[selectedScript].scriptHash }) }),
             ...(manualTideweCopy && { copyText: tideweCopyText, count: 1 }),
+            ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && !manualTideweCopy && tideweSceneDescription.trim() && { sceneDescription: tideweSceneDescription.trim() }),
             productName: projectMeta.productName,
             category: projectMeta.category,
             productDescription: projectMeta.description,
@@ -882,7 +885,7 @@ export default function ScriptPage() {
   const tideweGenerationInput = isTideweProject ? (
     <Card className="glass-card mb-5 w-full text-left">
       <CardContent className="space-y-4 p-5">
-        <TideweCopyInput id="tidewe-custom-copy-text" source={tideweCopySource} text={tideweCopyText} onSourceChange={(source) => { tideweCopyDraftTouched.current = true; setTideweCopySource(source); }} onTextChange={(text) => { tideweCopyDraftTouched.current = true; setTideweCopyText(text); }} disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} />
+        <TideweCopyInput id="tidewe-custom-copy-text" source={tideweCopySource} text={tideweCopyText} sceneDescription={tideweSceneDescription} onSourceChange={(source) => { tideweCopyDraftTouched.current = true; setTideweCopySource(source); }} onTextChange={(text) => { tideweCopyDraftTouched.current = true; setTideweCopyText(text); }} onSceneDescriptionChange={(description) => { tideweCopyDraftTouched.current = true; setTideweSceneDescription(description); }} disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} />
         {scripts.length > 0 && <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={generationDisabled} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
             {isGenerating ? <LuLoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" /> : <LuWand className="mr-1 h-3.5 w-3.5" />}

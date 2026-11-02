@@ -42,12 +42,19 @@ describe("TIDEWE mixed framing across storyboard outputs", () => {
   });
 
   it("keeps exact speech once per film segment and does not turn narrated details into a talking head", () => {
-    const film = buildStoryboardFilmPrompt(shots, null, { creativeProfile: createTideweOutdoorProfile() });
+    const englishShots = shots.map((shot, index) => ({ ...shot,
+      description: index === 0 ? "The presenter rests a hand on the chair back." : "The chair feet rest on the leaf-covered ground.",
+      visualIntent: "", camera: index === 0 ? "Full body and complete chair in frame." : "Low-angle chair-foot detail.",
+      tidewe: { ...shot.tidewe!, shotGoal: "" },
+    }));
+    const film = buildStoryboardFilmPrompt(englishShots, null, { creativeProfile: createTideweOutdoorProfile() }, {
+      tideweVideoDirections: Object.fromEntries(englishShots.map(shot => [shot.shotId, { action: shot.description, camera: shot.camera }])),
+    });
     expect(film).not.toContain("每段文案由画面中嘴部清晰可见");
     expect(film).toContain("[0-4秒] 镜头1");
     const detailSegment = film.split("[4-8秒] 镜头2")[1];
     expect(detailSegment).toContain("off-camera narration");
-    expect(detailSegment).toContain("本镜为无人出镜");
+    expect(detailSegment).toContain("No people, faces or hands.");
     expect(detailSegment).not.toContain("must speak the following");
     for (const shot of shots) expect(film.split(shot.voiceover)).toHaveLength(2);
   });

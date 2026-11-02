@@ -274,7 +274,7 @@ describe("keyframe refinement review and adoption", () => {
     expect(calls("POST")[0][0]).toBe("/api/generation-runs");
     expect(JSON.parse(calls("POST")[0][1].body)).toMatchObject({ projectId: "project", kind: "keyframe_refine", items: [{ kind: "keyframe_refine", scriptId: "script", shotId: 1, request: { scriptId: "script", shotId: 1, sourceAssetId: "crop-1", sourceImageUrl: "/api/files/crop-1.png", provider: "atlas-cloud", model: "openai/gpt-image-2/edit", resolution: "1080p", instructions: "去掉身后的第二把椅子", issues: ["hands", "anatomy", "duplicates", "product", "integration", "details"] } }] });
     expect(calls("PATCH")).toHaveLength(0);
-    expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
     expect(container.querySelector('img[alt="分镜 1 精修候选"]')).toBeNull();
     expect(container.textContent).toContain("已进入后台任务");
     expect(onBusyChange.mock.calls.at(-1)).toEqual([false]);
@@ -285,9 +285,12 @@ describe("keyframe refinement review and adoption", () => {
     await click("采用为关键帧");
     expect(JSON.parse(calls("PATCH")[0][1].body)).toEqual({ assetId: "refined-1" });
     expect(onApplied).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
+    expect(container.querySelector('img[src="/api/files/crop-1.png"]')).toBeNull();
     await click("恢复原图为关键帧");
     expect(JSON.parse(calls("PATCH")[1][1].body)).toEqual({ assetId: "crop-1" });
     expect(onApplied).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
   });
 
   it.each([
@@ -330,7 +333,7 @@ describe("keyframe refinement review and adoption", () => {
     fetchMock.mockImplementation((url, init) => init?.method === "POST" ? Promise.resolve(json({ error: "平台余额不足" }, 422)) : normal(url, init));
     await mount({ initialShotId: 1 }); await click("生成高清候选");
     expect(container.textContent).toContain("平台余额不足");
-    expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
     expect(calls("PATCH")).toHaveLength(0);
     await mount({ open: false }); await mount({ initialShotId: 1 });
     expect(container.querySelector('img[alt="分镜 1 精修候选"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
@@ -372,7 +375,7 @@ describe("keyframe refinement review and adoption", () => {
     expect(container.textContent).toContain("平台提交结果待核对");
     expect(container.textContent).toContain("等待平台");
     expect(container.querySelector('a[href="/project/project/assets?runId=uncertain"]')).not.toBeNull();
-    expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
     expect(container.querySelector('img[alt="分镜 1 精修候选"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
     await click("采用为关键帧");
     expect(JSON.parse(calls("PATCH")[0][1].body)).toEqual({ assetId: "refined-1" });
@@ -380,8 +383,13 @@ describe("keyframe refinement review and adoption", () => {
 
   it("only locks closing during registration and ignores its late response after switching project", async () => {
     let finish!: (value: Response) => void;
+    const newShots = [{ ...shots[0], assetId: "new-crop", imageUrl: "/api/files/new-crop.png" }, shots[1]];
     const normal = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url, init) => {
+      if (url.startsWith("/api/project/B/keyframe-refine?")) {
+        const shotId = Number(new URL(url, "http://local").searchParams.get("shotId"));
+        return Promise.resolve(json({ candidates: newShots.filter((shot) => shot.shotId === shotId).map((shot) => ({ ...source(shotId), id: shot.assetId, filePath: shot.imageUrl })) }));
+      }
       if (init?.method === "POST") {
         const run = register(JSON.parse(init.body));
         return new Promise<Response>((resolve) => { finish = () => resolve(json(run, 202)); });
@@ -394,13 +402,12 @@ describe("keyframe refinement review and adoption", () => {
     expect(container.querySelector("fieldset")?.disabled).toBe(true);
     await act(async () => dialog.close!(false));
     expect(onOpenChange).not.toHaveBeenCalled();
-    const newShots = [{ ...shots[0], assetId: "new-crop", imageUrl: "/api/files/new-crop.png" }, shots[1]];
     await mount({ projectId: "B", scriptId: "new-script", shots: newShots });
     await act(async () => finish(json({})));
     expect(calls("POST")).toHaveLength(1);
     expect(calls("PATCH")).toHaveLength(0);
     expect(container.querySelector('img[alt="分镜 1 精修候选"]')).toBeNull();
-    expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/new-crop.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/new-crop.png");
     expect(container.textContent).not.toContain("排队中");
     await mount();
     expect(checkbox("分镜 1").disabled).toBe(true);
@@ -522,11 +529,12 @@ describe("keyframe refinement review and adoption", () => {
   it("traces an adopted refined image back to the storyboard crop for rollback", async () => {
     saved[1] = [{ ...source(1), selected: false }, { ...refined(1), selected: true }];
     await mount({ initialShotId: 1, shots: [{ ...shots[0], assetId: "refined-1", imageUrl: "/api/files/refined-1.png" }] });
-    expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
     expect(button("恢复原图为关键帧").disabled).toBe(false);
     expect(button("采用为关键帧").disabled).toBe(true);
     await click("恢复原图为关键帧");
     expect(JSON.parse(calls("PATCH")[0][1].body)).toEqual({ assetId: "crop-1" });
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
   });
 
   it("refines the adopted candidate again in the same dialog even while previewing a newer unadopted candidate", async () => {
@@ -539,13 +547,14 @@ describe("keyframe refinement review and adoption", () => {
     const select = container.querySelector<HTMLSelectElement>('select[aria-label="分镜 1 精修候选"]')!;
     await act(async () => { select.value = "refined-1-newer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     expect(container.querySelector('img[alt="分镜 1 精修候选"]')?.getAttribute("src")).toBe("/api/files/refined-1-newer.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
     await act(async () => checkbox("分镜 1").click());
     await click("生成高清候选");
 
     expect(calls("POST")).toHaveLength(2);
     expect(JSON.parse(calls("POST")[1][1].body).items[0].request).toMatchObject({ sourceAssetId: "refined-1", sourceImageUrl: "/api/files/refined-1.png" });
     expect(calls("PATCH")).toHaveLength(1);
-    expect(container.querySelector('img[alt="分镜 1 原图"]')?.getAttribute("src")).toBe("/api/files/crop-1.png");
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
   });
 
   it.each([true, false])("continues refining the original when candidates have not been adopted (original selected: %s)", async (selected) => {
@@ -565,6 +574,8 @@ describe("keyframe refinement review and adoption", () => {
     await click("采用为关键帧");
     await mount({ open: false });
     await mount();
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
+    expect(container.querySelector('img[alt="分镜 2 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/crop-2.png");
     await click("生成高清候选");
 
     expect(JSON.parse(calls("POST")[0][1].body)).toMatchObject({ kind: "keyframe_refine_batch", items: [
@@ -589,6 +600,7 @@ describe("keyframe refinement review and adoption", () => {
     expect(button("生成高清候选").disabled).toBe(false);
     await act(async () => finishRefresh());
     expect(button("采用为关键帧").disabled).toBe(true);
+    expect(container.querySelector('img[alt="分镜 1 当前关键帧"]')?.getAttribute("src")).toBe("/api/files/refined-1.png");
     await click("生成高清候选");
 
     expect(JSON.parse(calls("POST")[0][1].body).items[0].request).toMatchObject({ sourceAssetId: "refined-1", sourceImageUrl: "/api/files/refined-1.png" });

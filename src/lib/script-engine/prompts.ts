@@ -732,6 +732,8 @@ export const PRODUCT_ANALYSIS_PROMPT = `你是一位专业的电商选品分析�
 export interface ScriptGenerationInput {
   productFacts?: ProductFacts;
   copyText?: string;
+  /** Optional TIDEWE AI scene/visual direction, separate from complete supplied copy. */
+  sceneDescription?: string;
   count?: number;
   /** product name */
   productName: string;
