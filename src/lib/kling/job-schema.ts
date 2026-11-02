@@ -52,6 +52,8 @@ export interface KlingJobData {
   lastCheckedAt?: number;
   rawStatus?: string;
   queryAttempts: number;
+  /** User released local submission protection; retain the original remote outcome and audit. */
+  blockingReleasedAt?: number;
   /** Deletion retains the paid-task audit while preventing recovery or reimport. */
   deletedAt?: number;
   deletePendingFiles?: string[];

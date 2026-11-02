@@ -63,6 +63,96 @@ async function confirmAndSubmit() { await act(async () => checkbox("确认批量
 function runRequests() { return runFetch.mock.calls.filter(([url]) => url === "/api/generation-runs").map(([, init]) => JSON.parse(String(init.body))); }
 
 describe("batch shot animation", () => {
+  it("reuses a recently verified catalog on open and reopen while requiring a new billing confirmation", async () => {
+    api.request.mockImplementation(() => Promise.resolve(json(status({ profile: { ...readyProfile, catalogCheckedAt: Date.now() } }))));
+    await mount();
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/refresh"))).toHaveLength(0);
+    expect(container.textContent).not.toContain("正在读取当前账号可用模型");
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    expect(button("确认提交").disabled).toBe(true);
+    expect(runRequests()).toHaveLength(0);
+    await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(false);
+
+    await mount({ open: false });
+    await mount();
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/status"))).toHaveLength(2);
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/refresh"))).toHaveLength(0);
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    expect(button("确认提交").disabled).toBe(true);
+    await confirmAndSubmit();
+    expect(runRequests()).toHaveLength(1);
+    expect(runRequests()[0].items).toHaveLength(2);
+  });
+
+  it.each(["expired", "missing timestamp", "missing identity", "wrong profile", "wrong model revision"])("waits for a refreshed catalog when the cached catalog has %s", async (reason) => {
+    const profile = { ...readyProfile, catalogCheckedAt: Date.now() };
+    const cached = reason === "expired" ? status({ profile: { ...profile, catalogCheckedAt: Date.now() - 300_001 } })
+      : reason === "missing timestamp" ? status({ profile: { ...profile, catalogCheckedAt: undefined } })
+        : reason === "missing identity" ? status({ profile: { ...profile, principalKey: undefined } })
+          : reason === "wrong profile" ? status({ profile: { ...profile, id: "other-profile" } })
+            : status({ profile, models: [{ ...model, catalogRevision: "different-revision" }] });
+    let finishRefresh!: (response: Response) => void;
+    api.request.mockImplementation((url: string) => url.includes("/status") ? Promise.resolve(json(cached))
+      : new Promise<Response>((resolve) => { finishRefresh = resolve; }));
+    await mount();
+    expect(api.request.mock.calls.find(([url]) => url.includes("/refresh"))?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ profileId: cached.profile.id, credits: false }) });
+    await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(true);
+    expect(runRequests()).toHaveLength(0);
+    await act(async () => finishRefresh(json(status({ profile }))));
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    await confirmAndSubmit();
+    expect(runRequests()).toHaveLength(1);
+  });
+
+  it("invalidates a cached confirmation when polling observes changed authentication or logout", async () => {
+    vi.useFakeTimers();
+    const catalogCheckedAt = Date.now();
+    let authRevision = 1;
+    let loggedIn = true;
+    api.request.mockImplementation(() => Promise.resolve(json(status({ loggedIn, profile: { ...readyProfile, catalogCheckedAt, authRevision, authState: loggedIn ? "authenticated" : "logged_out" }, models: loggedIn ? [model] : [] }))));
+    await mount();
+    await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(false);
+    authRevision = 2;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    expect(button("确认提交").disabled).toBe(true);
+    await act(async () => checkbox("确认批量生成费用").click());
+    loggedIn = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(button("确认提交").disabled).toBe(true);
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/refresh"))).toHaveLength(0);
+    expect(runRequests()).toHaveLength(0);
+  });
+
+  it("keeps a failed refresh blocked when a recent cached status is followed by a busy retry", async () => {
+    vi.useFakeTimers();
+    let statusReads = 0;
+    let refreshes = 0;
+    api.request.mockImplementation((url: string) => {
+      if (url.includes("/status")) return Promise.resolve(json(status({ profile: { ...readyProfile, catalogCheckedAt: ++statusReads === 1 ? 1 : Date.now() } })));
+      refreshes++;
+      return Promise.resolve(refreshes === 1 ? json({ error: { code: "KLING_AUTH_REQUIRED", message: "Kling 登录已失效" } }, 401)
+        : refreshes === 2 ? json({ error: { code: "KLING_PROFILE_BUSY", message: "账号繁忙" } }, 409)
+          : json(status({ profile: { ...readyProfile, catalogCheckedAt: Date.now() } })));
+    });
+    await mount();
+    expect(container.textContent).toContain("Kling 登录已失效");
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(refreshes).toBe(2);
+    await act(async () => checkbox("确认批量生成费用").click());
+    expect(button("确认提交").disabled).toBe(true);
+    expect(runRequests()).toHaveLength(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(refreshes).toBe(3);
+    expect(checkbox("确认批量生成费用").checked).toBe(false);
+    await confirmAndSubmit();
+    expect(runRequests()).toHaveLength(1);
+  });
+
   it("registers the complete selection atomically and closes without waiting for generation", async () => {
     shots.push({ ...shot(3), disabledReason: "此分镜已有视频" });
     await mount();

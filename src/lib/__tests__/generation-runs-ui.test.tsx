@@ -536,3 +536,120 @@ describe("generation run history panel", () => {
     expect(actions).toEqual([["/api/generation-runs/active", { action: "cancel" }], ["/api/generation-runs/recover", { action: "retry_import" }]]);
   });
 });
+
+describe("interrupted Kling shot release", () => {
+  function interrupted(projectId = "A"): GenerationRun {
+    return run(`interrupted-${projectId}`, projectId, { status: "needs_attention", total: 2, done: 1, failed: 1, items: [
+      { id: `uncertain-${projectId}`, kind: "video", scriptId: `script-${projectId}`, shotId: 4, status: "needs_attention", canReleaseBlock: true, error: "提交进程已中断，平台可能已受理", result: { childJobId: `original-${projectId}` } },
+      { id: `saved-${projectId}`, kind: "video", shotId: 5, status: "completed", result: { assetId: "saved-video" } },
+    ] });
+  }
+  function released(before: GenerationRun): GenerationRun {
+    return { ...before, status: "cancelled", failed: 0, items: before.items.map((item) => item.status === "needs_attention"
+      ? { ...item, status: "cancelled", stage: "released", canReleaseBlock: false } : item) };
+  }
+  it("requires explicit confirmation, releases only that item once and retains original results without generating", async () => {
+    let current = interrupted();
+    let finish!: (response: Response) => void;
+    request.mockImplementation((_url: string, init?: RequestInit) => init?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve(Response.json({ runs: [current] })));
+    const onReleased = vi.fn(), onCompleted = vi.fn(), generationChanged = vi.fn(), feedChanged = vi.fn();
+    window.addEventListener(GENERATION_RUNS_REFRESH_EVENT, generationChanged);
+    window.addEventListener(TASK_FEED_REFRESH_EVENT, feedChanged);
+    try {
+      await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} onCompleted={onCompleted} />));
+      await click("解除阻塞");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("原云端任务可能仍在运行或已扣费");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("重新生成可能再次消耗积分");
+      expect(request.mock.calls.some(([, init]) => init?.method)).toBe(false);
+      const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认解除阻塞")!;
+      await act(async () => { confirm.click(); confirm.click(); });
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("正在解除…");
+      expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "暂不解除")?.disabled).toBe(true);
+      const actions = request.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(actions).toHaveLength(1);
+      expect(actions[0][0]).toBe("/api/generation-runs/interrupted-A");
+      expect(JSON.parse(actions[0][1].body)).toEqual({ action: "release_block", itemId: "uncertain-A", acknowledgePossibleCharge: true, projectId: "A" });
+      current = released(current);
+      await act(async () => finish(Response.json(current)));
+      expect(onReleased).toHaveBeenCalledOnce();
+      expect(onCompleted).not.toHaveBeenCalled();
+      expect(generationChanged).toHaveBeenCalledOnce(); expect(feedChanged).toHaveBeenCalledOnce();
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(container.textContent).toContain("镜头 4 · 已解除阻塞");
+      expect(container.textContent).toContain("镜头 5 · 已完成");
+      expect(container.querySelector('summary')?.textContent).toContain("已结束");
+      expect(container.textContent).toContain("提交进程已中断");
+      expect(container.querySelector('a[href="/project/A/assets?klingJob=original-A"]')).not.toBeNull();
+      expect(request.mock.calls.some(([url, init]) => url === "/api/generation-runs" && init?.method === "POST")).toBe(false);
+    } finally {
+      window.removeEventListener(GENERATION_RUNS_REFRESH_EVENT, generationChanged);
+      window.removeEventListener(TASK_FEED_REFRESH_EVENT, feedChanged);
+    }
+  });
+
+  it("only offers release when the server explicitly marks the item releasable", async () => {
+    const current = interrupted();
+    current.items[0].canReleaseBlock = undefined;
+    current.items.push({ ...current.items[0], id: "explicitly-blocked", canReleaseBlock: false });
+    request.mockImplementation(() => Promise.resolve(Response.json({ runs: [current] })));
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "解除阻塞")).toBe(false);
+    expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  });
+
+  it("keeps a rejected release visible and allows an explicit retry", async () => {
+    let current = interrupted();
+    let attempts = 0;
+    request.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method !== "POST") return Promise.resolve(Response.json({ runs: [current] }));
+      if (++attempts === 1) return Promise.resolve(Response.json({ error: "原任务仍在处理，请稍后重试" }, { status: 409 }));
+      current = released(current); return Promise.resolve(Response.json(current));
+    });
+    const onReleased = vi.fn();
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} />));
+    await click("解除阻塞"); await click("确认解除阻塞");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("原任务仍在处理");
+    expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认解除阻塞")?.disabled).toBe(false);
+    expect(onReleased).not.toHaveBeenCalled();
+    await click("确认解除阻塞");
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(onReleased).toHaveBeenCalledOnce();
+    expect(attempts).toBe(2);
+  });
+
+  it("bounds a stalled release response and leaves the original item for reconciliation", async () => {
+    vi.useFakeTimers();
+    request.mockImplementation((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
+      ? { ok: true, json: () => new Promise(() => {}) } : Response.json({ runs: [interrupted()] })));
+    const onReleased = vi.fn();
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} />));
+    await click("解除阻塞"); await click("确认解除阻塞");
+    await tick(15_000);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("解除阻塞超时，请刷新任务列表核对结果");
+    const action = request.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(action[1].signal.aborted).toBe(true);
+    expect(container.textContent).toContain("镜头 4 · 需要处理");
+    expect(onReleased).not.toHaveBeenCalled();
+  });
+
+  it("discards late release responses and callbacks after the project changes", async () => {
+    let finish!: (response: Response) => void;
+    request.mockImplementation((url: string, init?: RequestInit) => init?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve(Response.json({ runs: [interrupted(url.includes("projectId=B") ? "B" : "A")] })));
+    const onReleased = vi.fn();
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} />));
+    await click("解除阻塞"); await click("确认解除阻塞");
+    await act(async () => root.render(<GenerationRunsPanel projectId="B" onReleased={onReleased} />));
+    await act(async () => finish(Response.json(released(interrupted()))));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector('details[data-run-id="interrupted-B"]')).not.toBeNull();
+    expect(container.querySelector('details[data-run-id="interrupted-A"]')).toBeNull();
+    expect(onReleased).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("可以重新转动态");
+    await click("解除阻塞");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("解除镜头 4");
+    const actions = request.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(actions).toHaveLength(1); expect(JSON.parse(actions[0][1].body).projectId).toBe("A");
+  });
+});

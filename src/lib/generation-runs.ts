@@ -6,7 +6,7 @@ import { assetMatchesScript } from "@/lib/asset-context";
 import { resolveCurrentScript } from "@/lib/current-script";
 import { generationRuns, generationItems } from "@/lib/generation-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
-import { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
+import { klingJobs, klingJobOutputs, type KlingJob } from "@/lib/kling/job-schema";
 import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation-secrets";
 import { captureGenerationInputs } from "@/lib/generation-inputs";
 import type { GenerationKind, GenerationPayload } from "@/lib/generation-types";
@@ -60,6 +60,7 @@ function runView(run: typeof generationRuns.$inferSelect, items: Item[]) {
     createdAt: new Date(run.createdAt).toISOString(), updatedAt: new Date(Math.max(run.updatedAt, ...items.map((i) => i.updatedAt))).toISOString(),
     items: items.map((item) => ({ id: item.id, kind: item.kind, scriptId: item.scriptId, shotId: item.shotId, status: item.status,
       stage: item.stage, result: publicResult(item.result), error: item.error, errorCode: item.errorCode,
+      canReleaseBlock: Boolean(releasableKlingJob(item, getDb())),
       createdAt: new Date(item.createdAt).toISOString(), updatedAt: new Date(item.updatedAt).toISOString() })) };
 }
 
@@ -101,6 +102,33 @@ function safelyUnsubmitted(item: Item): boolean {
   if (!item.checkpoint) return true;
   const checkpoint = decryptGenerationValue<Record<string, unknown>>(item.checkpoint);
   return checkpoint.submissionState === "not_submitted" && !hasRecoverableResult(checkpoint);
+}
+
+function leaseStillActive(row: { leaseOwner: string | null; leaseExpiresAt: number | null }): boolean {
+  if (!row.leaseOwner) return false;
+  const pid = Number(row.leaseOwner.split(":")[0]);
+  return !Number.isSafeInteger(pid) || pid <= 0 || (row.leaseExpiresAt ?? 0) > Date.now() || processAlive(row.leaseOwner);
+}
+
+/** Release only a stopped, unidentified Kling submission; known cloud work keeps its recovery path. */
+function releasableKlingJob(item: Item, tx: GenerationStore): KlingJob | null {
+  if (item.kind !== "video" || item.status !== "needs_attention" || !item.scriptId || item.shotId == null || leaseStillActive(item)) return null;
+  let payload: GenerationPayload, checkpoint: Record<string, unknown>;
+  try {
+    payload = decryptGenerationValue<GenerationPayload>(item.payload);
+    checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
+  } catch { return null; }
+  if (payload.request.provider !== "kling-cli" || checkpoint.remoteTaskId || checkpoint.taskId || checkpoint.completedResult) return null;
+  const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
+  if (jobs.length !== 1) return null;
+  const job = jobs[0];
+  if (job.profileId !== payload.request.profileId || job.scriptId !== item.scriptId || job.shotId !== item.shotId
+    || (job.data.generationItemId && job.data.generationItemId !== item.id)
+    || (checkpoint.childJobId && checkpoint.childJobId !== job.id)
+    || (item.result?.childJobId && item.result.childJobId !== job.id)
+    || job.data.blockingReleasedAt || job.submissionState !== "submission_unknown"
+    || job.remoteGenerationId || leaseStillActive(job)) return null;
+  return job;
 }
 
 /** The child may finish saving after its parent stopped observing it. Reconcile local records only. */
@@ -292,13 +320,33 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
   return getGenerationRun(runId);
 }
 
-export function generationRunAction(id: string, action: string) {
+export function generationRunAction(id: string, action: string, options: { itemId?: unknown; projectId?: unknown; acknowledgePossibleCharge?: unknown } = {}) {
   const db = getDb();
   const result = db.transaction((tx) => {
     const run = liveRun(tx, id);
     const items = reconciledItems(tx, runItems(tx, id));
     if (action === "retry_import" && runView(run, items).status === "completed") return runView(run, items);
-    if (action === "cancel") {
+    if (action === "release_block") {
+      if (typeof options.projectId !== "string" || options.projectId !== run.projectId) throw new GenerationRunError("请在原项目中解除该镜头的阻塞。", 404, "GENERATION_ITEM_NOT_FOUND");
+      if (options.acknowledgePossibleCharge !== true) throw new GenerationRunError("请先确认原任务可能仍在云端运行或计费，再解除阻塞。", 400, "GENERATION_RELEASE_ACK_REQUIRED");
+      const item = items.find((candidate) => candidate.id === options.itemId);
+      if (!item) throw new GenerationRunError("没有找到此镜头任务。", 404, "GENERATION_ITEM_NOT_FOUND");
+      // Repeated clicks and lost acknowledgements refer to this same local release.
+      if (item.status === "cancelled" && item.stage === "released") return runView(run, items);
+      const job = releasableKlingJob(item, tx);
+      if (!job) throw new GenerationRunError("此任务状态已变化或仍在执行，不能解除。请刷新并核对原镜头任务。", 409, "GENERATION_RELEASE_CONFLICT");
+      const now = Date.now();
+      const checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
+      tx.update(klingJobs).set({ autoQueryPaused: true, needsConfirmation: false, nextQueryAt: null,
+        leaseOwner: null, leaseExpiresAt: null, revision: job.revision + 1, updatedAt: now,
+        data: { ...job.data, blockingReleasedAt: now, authorizedUntil: 0 },
+      }).where(eq(klingJobs.id, job.id)).run();
+      tx.update(generationItems).set({ status: "cancelled", stage: "released", leaseOwner: null, leaseExpiresAt: null,
+        result: { ...item.result, childJobId: job.id },
+        checkpoint: encryptGenerationValue({ ...checkpoint, childJobId: job.id, blockingReleasedAt: now, acknowledgedPossibleCharge: true }), updatedAt: now,
+      }).where(eq(generationItems.id, item.id)).run();
+      tx.update(generationRuns).set({ updatedAt: now }).where(eq(generationRuns.id, id)).run();
+    } else if (action === "cancel") {
       tx.update(generationRuns).set({ cancelRequested: true, updatedAt: Date.now() }).where(eq(generationRuns.id, id)).run();
       // Already dispatched cloud work is still observed and imported; cancellation never loses a paid result.
       for (const item of tx.select().from(generationItems).where(and(eq(generationItems.runId, id), inArray(generationItems.status, ["queued", "waiting"]), isNull(generationItems.leaseOwner))).all()) {

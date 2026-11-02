@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Shot } from "@/lib/db/schema";
 import { claimableFacts, normalizeProductFacts } from "./facts";
-import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_MIN_SHOTS, TIDEWE_MAX_SHOTS, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, getTideweShotCount, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
 import { isValidTidewePresenterInput, tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
 
 export class TideweValidationError extends Error {
@@ -16,9 +16,10 @@ export class TideweImportedCopyError extends Error {
 function fail(message: string): never { throw new TideweValidationError(message); }
 
 /** Generation-only constraint; saved historical scripts remain readable and editable. */
-export function assertTideweGeneratedShotCount(shotCount: number, copyIndex = 0): void {
-  if (!Number.isInteger(shotCount) || shotCount < TIDEWE_MIN_SHOTS || shotCount > TIDEWE_MAX_SHOTS) {
-    fail(`TIDEWE copy ${copyIndex + 1} must contain ${TIDEWE_MIN_SHOTS}-${TIDEWE_MAX_SHOTS} shots; received ${shotCount}. Replan this copy within that range, preserving its complete narration exactly once.`);
+export function assertTideweGeneratedShotCount(shotCount: number, targetDuration: 30 | 40 | 60, copyIndex = 0): void {
+  const expected = getTideweShotCount(targetDuration);
+  if (shotCount !== expected) {
+    fail(`TIDEWE copy ${copyIndex + 1} must contain exactly ${expected} shots for the ${targetDuration}s target; received ${shotCount}. Replan this copy to exactly ${expected} shots, preserving its complete narration exactly once.`);
   }
 }
 

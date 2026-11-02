@@ -46,7 +46,7 @@ vi.mock("@/components/batch-motion-panel", () => ({ BatchMotionPanel: (props: Co
   batch.props = props;
   return props.open ? <div aria-label="batch-motion-panel"><button aria-label="close-batch-motion-panel" onClick={() => props.onOpenChange(false)} />{props.shots.map(({ asset, draft, disabledReason }) => <button key={asset.shotId} aria-label={`batch-submit-${asset.shotId}`} disabled={!draft || !!disabledReason} onClick={async () => { await draft!.generate(); props.onSubmitted(asset.shotId); }}>镜头 {asset.shotId}</button>)}</div> : null;
 } }));
-vi.mock("@/components/kling-job-detail", () => ({ KlingJobDetail: ({ open, jobId, onOpenChange, onChanged }: { open: boolean; jobId: string | null; onOpenChange(open: boolean): void; onChanged?(): void }) => open ? <div aria-label="job-detail">{jobId}<button aria-label="close-job-detail" onClick={() => onOpenChange(false)} /><button aria-label="refresh-job-detail" onClick={() => onChanged?.()} /></div> : null, klingJobBlocksSubmission: (job: { submissionState: string }) => job.submissionState === "submission_unknown", klingJobStatus: () => "待核对" }));
+vi.mock("@/components/kling-job-detail", () => ({ KlingJobDetail: ({ open, jobId, onOpenChange, onChanged }: { open: boolean; jobId: string | null; onOpenChange(open: boolean): void; onChanged?(): void }) => open ? <div aria-label="job-detail">{jobId}<button aria-label="close-job-detail" onClick={() => onOpenChange(false)} /><button aria-label="refresh-job-detail" onClick={() => onChanged?.()} /></div> : null, klingJobBlocksSubmission: (job: { submissionState: string; blockingReleasedAt?: number }) => !job.blockingReleasedAt && job.submissionState === "submission_unknown", klingJobStatus: () => "待核对" }));
 vi.mock("@/lib/hooks/use-model-catalog", () => ({ useModelCatalog: () => ({ models: api.models, statuses: [], pending: false, retry: vi.fn() }) }));
 vi.mock("@/lib/kling/client", () => ({ klingFetch: api.kling, klingErrorMessage: (body: { error?: string | { message: string } }) => typeof body.error === "string" ? body.error : body.error?.message ?? "Kling 操作失败" }));
 vi.mock("@/lib/i18n", async () => {
@@ -1602,6 +1602,36 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(container.textContent).toContain("Import unavailable");
     await click("batchMotionButton");
     expect(batch.props!.shots[0].disabledReason).toBe("batchMotionExistingTask");
+    expect(submissions()).toHaveLength(0);
+  });
+
+  it("releases an interrupted motion item and refreshes its original Kling job before opening a new confirmation", async () => {
+    api.runs = [{ id: "interrupted-motion", projectId: "project", kind: "video_batch", status: "needs_attention", total: 1, done: 0, failed: 1,
+      items: [{ id: "interrupted-item", kind: "video", scriptId: "script", shotId: 1, status: "needs_attention", canReleaseBlock: true,
+        error: "提交进程已中断，平台可能已受理", result: { childJobId: "original-motion" } }] }];
+    api.jobs = [savedKlingJob({ jobId: "original-motion", submissionState: "submission_unknown", remoteState: "unknown", importState: "not_ready", outputs: [] })];
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/api/generation-runs/interrupted-motion" || init?.method !== "POST") return normal(url, init);
+      expect(JSON.parse(String(init.body))).toEqual({ action: "release_block", itemId: "interrupted-item", acknowledgePossibleCharge: true, projectId: "project" });
+      api.jobs = api.jobs.map((job) => ({ ...(job as KlingJobView), blockingReleasedAt: Date.now() }));
+      api.runs = [{ ...api.runs[0], status: "cancelled", failed: 0, items: [{ id: "interrupted-item", kind: "video", scriptId: "script", shotId: 1,
+        status: "cancelled", stage: "released", canReleaseBlock: false, error: "提交进程已中断，平台可能已受理", result: { childJobId: "original-motion" } }] }];
+      return Promise.resolve(Response.json(api.runs[0]));
+    });
+    await mount(kling.selectionKey);
+    expect(button("btnConvertMotion")?.disabled).toBe(true);
+    const initialJobReads = api.kling.mock.calls.filter(([url]) => url.includes("/jobs?")).length;
+    await click("解除阻塞");
+    expect(submissions()).toHaveLength(0);
+    await click("确认解除阻塞");
+    expect(api.kling.mock.calls.filter(([url]) => url.includes("/jobs?")).length).toBeGreaterThan(initialJobReads);
+    expect(button("btnConvertMotion")?.disabled).toBe(false);
+    expect(container.querySelector('a[href="/project/project/assets?klingJob=original-motion"]')).not.toBeNull();
+    expect(submissions()).toHaveLength(0);
+    await click("btnConvertMotion");
+    expect([...container.querySelectorAll("h2")].some((heading) => heading.textContent?.includes("确认镜头 1 视频生成"))).toBe(true);
+    expect(container.querySelector('[aria-label="job-detail"]')).toBeNull();
     expect(submissions()).toHaveLength(0);
   });
 

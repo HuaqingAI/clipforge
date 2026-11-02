@@ -246,7 +246,70 @@ describe("Kling single-shot UI", () => {
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(0);
   });
 
-  it("refreshes a persisted catalog before confirmation before using native audio options", async () => {
+  it("reuses a recent verified catalog across reopening, polls local status, and still requires billing confirmation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-02T04:00:00Z"));
+    const cached = readyStatus({ profile: { ...readyProfile, catalogCheckedAt: Date.now() - 60_000 } });
+    api.request.mockImplementation(async () => json(cached));
+    await mountGenerator();
+    expect(api.request.mock.calls.map(([url]) => url)).toEqual(["/api/integrations/kling/status?profileId=profile"]);
+    expect(container.textContent).not.toContain("正在读取当前账号可用模型");
+    expect(promptTextarea().value).toContain(originalPrompt);
+    expect(submitButton().disabled).toBe(true);
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(confirmCheckbox().checked).toBe(true);
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/status"))).toHaveLength(2);
+    await mountGenerator(model.selectionKey, undefined, { open: false });
+    await mountGenerator();
+    expect(confirmCheckbox().checked).toBe(false);
+    expect(submitButton().disabled).toBe(true);
+    expect(api.request.mock.calls.some(([url]) => url.includes("/refresh") || url === "/api/ai/video")).toBe(false);
+  });
+
+  it.each([
+    { label: "an expired catalog", age: 300_001 },
+    { label: "a future catalog timestamp", age: -1000 },
+    { label: "an unverified account", age: 1000, profile: { principalKey: undefined } },
+    { label: "a missing catalog timestamp", age: 1000, profile: { catalogCheckedAt: undefined } },
+    { label: "a different account", age: 1000, profile: { id: "other-profile" } },
+    { label: "a mismatched model revision", age: 1000, model: { catalogRevision: "other-revision" } },
+    { label: "a model from another account", age: 1000, model: { profileId: "other-profile" } },
+  ])("refreshes and blocks confirmation for $label", async ({ age, profile, model: modelOverrides }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-02T04:00:00Z"));
+    let finishRefresh!: (response: Response) => void;
+    api.request.mockImplementation(async (url: string) => url.includes("/status")
+      ? json(readyStatus({ profile: { ...readyProfile, catalogCheckedAt: Date.now() - age, ...profile }, models: [{ ...model, ...modelOverrides }] }))
+      : new Promise<Response>((resolve) => { finishRefresh = resolve; }));
+    await mountGenerator();
+    expect(api.request.mock.calls.filter(([url]) => url.endsWith("/refresh"))).toHaveLength(1);
+    expect(container.textContent).toContain("正在读取当前账号可用模型");
+    expect(submitButton().disabled).toBe(true);
+    expect(confirmCheckbox()).toBeNull();
+    await act(async () => finishRefresh(json(readyStatus())));
+    expect(confirmCheckbox().checked).toBe(false);
+    await act(async () => confirmCheckbox().click());
+    expect(submitButton().disabled).toBe(false);
+    expect(api.request.mock.calls.some(([url]) => url === "/api/ai/video")).toBe(false);
+  });
+
+  it("refreshes an expired catalog after reopening outside the five-minute lifetime", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-02T04:00:00Z"));
+    const cached = readyStatus({ profile: { ...readyProfile, catalogCheckedAt: Date.now() } });
+    api.request.mockImplementation(async () => json(cached));
+    await mountGenerator();
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/refresh"))).toHaveLength(0);
+    await mountGenerator(model.selectionKey, undefined, { open: false });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_001); });
+    await mountGenerator();
+    expect(api.request.mock.calls.filter(([url]) => url.includes("/refresh"))).toHaveLength(1);
+    expect(submitButton().disabled).toBe(true);
+  });
+
+  it("refreshes an unverified persisted catalog before confirmation before using native audio options", async () => {
     const audioModel = { ...model, parameters: [...model.parameters, { name: "enable_audio", type: "string" as const, required: false, allowedValues: ["true", "false"], default: "true" }], capabilities: { ...model.capabilities, audio: true } };
     let finishRefresh!: (response: Response) => void;
     api.request.mockImplementation(async (url: string) => {
@@ -353,11 +416,11 @@ describe("Kling single-shot UI", () => {
     expect(api.request.mock.calls.filter(([url]) => url === "/api/ai/video")).toHaveLength(0);
   });
 
-  it("does not restore stale cached eligibility after authentication failure followed by a busy retry", async () => {
+  it("does not restore even a recent cached catalog after authentication failure followed by a busy retry", async () => {
     vi.useFakeTimers();
     let refreshCount = 0;
     api.request.mockImplementation(async (url: string) => {
-      if (url.includes("/status")) return json(readyStatus());
+      if (url.includes("/status")) return json(readyStatus({ profile: { ...readyProfile, catalogCheckedAt: refreshCount ? Date.now() : 1 } }));
       if (++refreshCount === 1) return json({ error: { code: "KLING_AUTH_REQUIRED", message: "Kling 登录已失效" } }, 401);
       return refreshCount === 2 ? busyResponse() : json(readyStatus());
     });

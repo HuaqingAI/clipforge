@@ -214,11 +214,19 @@ describe("shared product coverage for generation, grid and review", () => {
 });
 
 describe("new storyboard quality within the existing planner repair", () => {
-  it.each([7, 8, 9])("accepts the generated-shot count boundary %i", count => {
-    expect(() => assertTideweGeneratedShotCount(count)).not.toThrow();
+  it.each([
+    { targetDuration: 30, count: 7 },
+    { targetDuration: 40, count: 8 },
+    { targetDuration: 60, count: 9 },
+  ] as const)("requires $count shots for a $targetDuration-second target", ({ targetDuration, count }) => {
+    expect(() => assertTideweGeneratedShotCount(count, targetDuration)).not.toThrow();
+    for (const otherCount of [7, 8, 9].filter(value => value !== count)) {
+      expect(() => assertTideweGeneratedShotCount(otherCount, targetDuration, 2))
+        .toThrow(`TIDEWE copy 3 must contain exactly ${count} shots for the ${targetDuration}s target; received ${otherCount}`);
+    }
   });
   it.each([0, 1, 6, 10, 30, 7.5, NaN, Infinity])("rejects invalid generated-shot count %s with the affected copy", count => {
-    expect(() => assertTideweGeneratedShotCount(count, 2)).toThrow(/TIDEWE copy 3 must contain 7-9 shots/);
+    expect(() => assertTideweGeneratedShotCount(count, 40, 2)).toThrow(/TIDEWE copy 3 must contain exactly 8 shots for the 40s target/);
   });
   it("checks actual words plus a pause and names the shot that needs a timing repair", () => {
     const voiceover = "Check the fit before you choose the gear for tomorrow.";
@@ -229,11 +237,11 @@ describe("new storyboard quality within the existing planner repair", () => {
   });
   it("keeps historical quality review count-compatible while new generation rejects short or oversized plans", () => {
     expect(() => assertTidewePlanQuality([makeShot(1)], { targetDuration: 40 })).not.toThrow();
-    expect(() => assertTideweGeneratedShotCount(1)).toThrow(/7-9 shots/);
+    expect(() => assertTideweGeneratedShotCount(1, 40)).toThrow(/exactly 8 shots/);
     const scales = ["wide", "medium", "close_up", "detail"] as const;
     const shots = Array.from({ length: 12 }, (_, index) => makeShot(index + 1, { framing: scales[index % scales.length], visualRole: index % 2 ? "detail" : "demonstration" }));
     expect(() => assertTidewePlanQuality(shots, { targetDuration: 60, source: "ai_generated" })).not.toThrow();
-    expect(() => assertTideweGeneratedShotCount(shots.length)).toThrow(/7-9 shots/);
+    expect(() => assertTideweGeneratedShotCount(shots.length, 60)).toThrow(/exactly 9 shots/);
   });
   it("requires varied framing and visual purpose in substantial plans", () => {
     const shots = Array.from({ length: 7 }, (_, index) => makeShot(index + 1));

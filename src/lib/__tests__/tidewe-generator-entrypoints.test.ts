@@ -12,7 +12,8 @@ vi.mock("@/lib/llm-error", async importOriginal => ({
   ...await importOriginal<typeof import("@/lib/llm-error")>(),
   createLLMClient: () => ({ chat: { completions: { create: model.create } } }),
 }));
-const input: ScriptInput = { productName: "TIDEWE outdoor jacket", category: "fashion", styleType: "tidewe_outdoor", creativeProfile: createTideweOutdoorProfile(), count: 1, llmConfig: { baseUrl: "https://example.test/v1", apiKey: "test", model: "test" } };
+const input: ScriptInput = { productName: "TIDEWE outdoor jacket", category: "fashion", styleType: "tidewe_outdoor", creativeProfile: createTideweOutdoorProfile({ targetDuration: 30 }), count: 1, llmConfig: { baseUrl: "https://example.test/v1", apiKey: "test", model: "test" } };
+const shotTargets = [{ targetDuration: 30, shotCount: 7 }, { targetDuration: 40, shotCount: 8 }, { targetDuration: 60, shotCount: 9 }] as const;
 // English direction preparation is verified separately; these generator checks bind speech delivery.
 const preparedVideoDirection = { action: "Observe the visible product and its established physical contacts.", camera: "Hold the approved framing." };
 const text = "Walking warms you up. Waiting is different. Check the fit before your next trip.";
@@ -25,11 +26,11 @@ const copy = { copies: [{ title: "静候时刻", text, translation: "走动暖�
 const plan = { scripts: [{ copyIndex: 0, shots: [{ scriptSegment: text, translation: copy.copies[0].translation, narrativeRole: "hook", duration: 10, description: "人物穿着当前外套在林边向拍摄朋友走一步，衣服与地面接触关系自然清楚。", camera: "稳定中景", shotGoal: "观察当前外套的实际穿着状态", visualIntent: "清晨户外穿着演示", prompt: "林边真实自然光，当前外套完整可辨。", productVisible: true, factRefs: [], sceneId: "woods", visualPlan: { framing: "medium", visualRole: "demonstration", productFocus: "当前外套的躯干轮廓与衣袖穿着状态", actionStart: "人物穿着当前外套，双脚已经踩稳林缘地面。", action: "穿着外套向拍摄朋友走一步。", actionEnd: "双脚站稳，外套自然垂落并保持清楚可见。" } }] }] };
 type PlannedShot = (typeof plan)["scripts"][number]["shots"][number];
 const planSegments = ["Walking warms you up.", "Waiting", "is different.", "Check the fit", "before", "your next", "trip."];
-function allocateSevenShots(frozenText: string, seed: PlannedShot): PlannedShot[] {
+function allocateShots(frozenText: string, seed: PlannedShot, shotCount = 7): PlannedShot[] {
   const words = [...frozenText.matchAll(/\S+/g)];
-  const segments = Array.from({ length: 7 }, (_, index) => {
-    const startWord = Math.floor(index * words.length / 7);
-    const endWord = Math.floor((index + 1) * words.length / 7) - 1;
+  const segments = Array.from({ length: shotCount }, (_, index) => {
+    const startWord = Math.floor(index * words.length / shotCount);
+    const endWord = Math.floor((index + 1) * words.length / shotCount) - 1;
     return frozenText.slice(words[startWord].index, words[endWord].index! + words[endWord][0].length);
   });
   return segments.map((scriptSegment, index) => ({
@@ -38,7 +39,7 @@ function allocateSevenShots(frozenText: string, seed: PlannedShot): PlannedShot[
     visualPlan: { ...seed.visualPlan, framing: ["medium", "close_up", "wide"][index % 3], visualRole: index === 1 ? "detail" : "demonstration", action: `观察当前商品第${index + 1}处可见状态。` },
   }));
 }
-plan.scripts[0].shots = allocateSevenShots(text, plan.scripts[0].shots[0]).map((shot, index) => ({ ...shot, scriptSegment: planSegments[index] }));
+plan.scripts[0].shots = allocateShots(text, plan.scripts[0].shots[0]).map((shot, index) => ({ ...shot, scriptSegment: planSegments[index] }));
 
 function countedPlanFixture(counts: number[]) {
   const parts = ["edge", "shape", "seam", "opening", "sleeve", "surface", "outline", "fabric", "fit", "hem"];
@@ -108,7 +109,7 @@ describe("shared TIDEWE generator dispatch", () => {
   });
 
   it("carries one scene direction through writing and planning all three AI candidates", async () => {
-    const fixture = countedPlanFixture([7, 8, 9]);
+    const fixture = countedPlanFixture([7, 7, 7]);
     const sceneDescription = "傍晚湖边，猎人穿着当前外套向拍摄朋友展示衣服，氛围轻松自然。";
     model.replies = [fixture.copy, fixture.plan];
     const scripts = await generateScript({ ...input, count: 3, sceneDescription: `  ${sceneDescription}\n` });
@@ -190,79 +191,123 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(model.create).toHaveBeenCalledTimes(3);
   });
 
-  it.each([7, 8, 9])("accepts %i shots per AI or supplied copy without spending a repair", async shotCount => {
+  it.each(shotTargets)("generates and regenerates exactly $shotCount shots for $targetDuration seconds with AI or supplied copy", async ({ targetDuration, shotCount }) => {
     for (const imported of [false, true]) {
       model.create.mockClear();
       const fixture = countedPlanFixture([shotCount]);
       model.replies = [fixture.copy, fixture.plan];
-      const [script] = await generateScript({ ...input, ...(imported && { copyText: fixture.copy.copies[0].text }) });
+      const durationInput = { ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }), ...(imported && { copyText: fixture.copy.copies[0].text }) };
+      const [script] = await generateScript(durationInput);
       expect(script.shots).toHaveLength(shotCount);
       expect(script.copyDocument?.text).toBe(fixture.copy.copies[0].text);
       expect(script.copyDocument?.source).toBe(imported ? "user_provided" : "ai_generated");
       expect(model.create).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content).shotCount).toEqual({ min: 7, max: 9 });
+      expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content)).toMatchObject({ targetDuration, shotCount });
+      model.replies = [fixture.copy, fixture.plan];
+      const regenerated = await generateSingleScript(durationInput);
+      expect(regenerated.shots).toHaveLength(shotCount);
+      expect(regenerated.copyDocument?.text).toBe(fixture.copy.copies[0].text);
+      expect(model.create).toHaveBeenCalledTimes(4);
+      expect(JSON.parse(model.create.mock.calls[3][0].messages[1].content)).toMatchObject({ targetDuration, shotCount });
     }
   });
 
-  it.each([6, 10])("rejects %i-shot AI and supplied-copy plans after the existing single repair", async shotCount => {
+  it("uses eight shots for the default 40 second profile when no explicit profile or duration is supplied", async () => {
+    const fixture = countedPlanFixture([8]);
+    model.replies = [fixture.copy, fixture.plan];
+    const [script] = await generateScript({ ...input, creativeProfile: undefined, targetDuration: undefined });
+    expect(script.shots).toHaveLength(8);
+    expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content)).toMatchObject({ targetDuration: 40, shotCount: 8 });
+    expect(model.create).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(shotTargets)("validates $shotCount shots for the $targetDuration second target through both streaming adapters", async ({ targetDuration, shotCount }) => {
+    const fixture = countedPlanFixture([shotCount]);
+    const durationInput = { ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) };
+    model.replies = [fixture.copy, fixture.plan];
+    const onToken = vi.fn();
+    const scripts = await new Promise<Awaited<ReturnType<typeof generateScript>>>((resolve, reject) => {
+      generateScriptStream(durationInput, { onToken, onComplete: resolve, onError: reject });
+    });
+    expect(scripts[0].shots).toHaveLength(shotCount);
+    expect(JSON.parse(onToken.mock.calls[0][0]).scripts[0].shots).toHaveLength(shotCount);
+    expect(onToken).toHaveBeenCalledTimes(1);
+    model.replies = [fixture.copy, fixture.plan];
+    const reader = createScriptStream(durationInput).getReader();
+    const result = await reader.read();
+    expect(JSON.parse(new TextDecoder().decode(result.value)).scripts[0].shots).toHaveLength(shotCount);
+    expect((await reader.read()).done).toBe(true);
+    expect(model.create).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    { targetDuration: 30, expected: 7, received: 6 },
+    { targetDuration: 30, expected: 7, received: 8 },
+    { targetDuration: 30, expected: 7, received: 9 },
+    { targetDuration: 40, expected: 8, received: 7 },
+    { targetDuration: 40, expected: 8, received: 9 },
+    { targetDuration: 60, expected: 9, received: 7 },
+    { targetDuration: 60, expected: 9, received: 8 },
+    { targetDuration: 60, expected: 9, received: 10 },
+  ] as const)("rejects a persistent $received-shot plan for $targetDuration seconds after one repair", async ({ targetDuration, expected, received }) => {
     for (const imported of [false, true]) {
       model.create.mockClear();
-      const fixture = countedPlanFixture([shotCount]);
+      const fixture = countedPlanFixture([received]);
       model.replies = [fixture.copy, fixture.plan, fixture.plan];
-      await expect(generateScript({ ...input, ...(imported && { copyText: fixture.copy.copies[0].text }) })).rejects.toThrow(new RegExp(`copy 1.*7-9 shots.*received ${shotCount}`, "i"));
+      await expect(generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }), ...(imported && { copyText: fixture.copy.copies[0].text }) }))
+        .rejects.toThrow(`TIDEWE copy 1 must contain exactly ${expected} shots for the ${targetDuration}s target; received ${received}.`);
       expect(model.create).toHaveBeenCalledTimes(3);
       expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
     }
   });
 
-  it("keeps every candidate within 7-9 shots independently", async () => {
-    const fixture = countedPlanFixture([7, 8, 9]);
+  it.each(shotTargets)("gives all three candidates exactly $shotCount shots for $targetDuration seconds", async ({ targetDuration, shotCount }) => {
+    const fixture = countedPlanFixture([shotCount, shotCount, shotCount]);
     model.replies = [fixture.copy, fixture.plan];
-    const scripts = await generateScript({ ...input, count: 3 });
-    expect(scripts.map(script => script.shots.length)).toEqual([7, 8, 9]);
+    const scripts = await generateScript({ ...input, count: 3, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
+    expect(scripts.map(script => script.shots.length)).toEqual([shotCount, shotCount, shotCount]);
     expect(scripts.map(script => script.copyDocument?.text)).toEqual(fixture.copy.copies.map(candidate => candidate.text));
     expect(model.create).toHaveBeenCalledTimes(2);
   });
 
   it.each([
-    { counts: [6, 8, 9], invalidCopy: 1, received: 6 },
-    { counts: [7, 6, 9], invalidCopy: 2, received: 6 },
-    { counts: [7, 8, 6], invalidCopy: 3, received: 6 },
-    { counts: [7, 10, 9], invalidCopy: 2, received: 10 },
-  ])("rejects candidate $invalidCopy with $received shots even when other candidates satisfy the range", async ({ counts, invalidCopy, received }) => {
+    { counts: [7, 8, 8], invalidCopy: 1, received: 7 },
+    { counts: [8, 9, 8], invalidCopy: 2, received: 9 },
+    { counts: [8, 8, 7], invalidCopy: 3, received: 7 },
+    { counts: [8, 10, 8], invalidCopy: 2, received: 10 },
+  ])("rejects candidate $invalidCopy with $received shots even when the other two match the target", async ({ counts, invalidCopy, received }) => {
     const fixture = countedPlanFixture(counts);
     model.replies = [fixture.copy, fixture.plan, fixture.plan];
-    await expect(generateScript({ ...input, count: 3 })).rejects.toThrow(new RegExp(`copy ${invalidCopy}.*7-9 shots.*received ${received}`, "i"));
+    await expect(generateScript({ ...input, count: 3, creativeProfile: createTideweOutdoorProfile({ targetDuration: 40 }) }))
+      .rejects.toThrow(`TIDEWE copy ${invalidCopy} must contain exactly 8 shots for the 40s target; received ${received}.`);
     expect(model.create).toHaveBeenCalledTimes(3);
   });
 
-  it.each([6, 10])("repairs a %i-shot plan by reallocating the same frozen copy without regenerating prose", async shotCount => {
-    const fixture = countedPlanFixture([shotCount === 6 ? 7 : 10]);
-    const merged = structuredClone(fixture.plan);
-    const shots = merged.scripts[0].shots;
-    const ending = shots.pop()!;
-    shots.at(-1)!.scriptSegment += ` ${ending.scriptSegment}`;
-    shots.at(-1)!.duration += ending.duration;
-    const initialPlan = shotCount === 6 ? merged : fixture.plan;
-    const repairedPlan = shotCount === 6 ? fixture.plan : merged;
-    model.replies = [fixture.copy, initialPlan, repairedPlan];
-    const [script] = await generateScript(input);
-    expect(script.shots).toHaveLength(shotCount === 6 ? 7 : 9);
+  it.each([
+    { targetDuration: 30, shotCount: 7, received: 8 },
+    { targetDuration: 40, shotCount: 8, received: 7 },
+    { targetDuration: 60, shotCount: 9, received: 8 },
+  ] as const)("repairs $received shots to $shotCount for $targetDuration seconds without regenerating frozen prose", async ({ targetDuration, shotCount, received }) => {
+    const fixture = countedPlanFixture([received]);
+    const repairedPlan = { scripts: [{ copyIndex: 0, shots: allocateShots(fixture.copy.copies[0].text, plan.scripts[0].shots[0], shotCount) }] };
+    model.replies = [fixture.copy, fixture.plan, repairedPlan];
+    const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
+    expect(script.shots).toHaveLength(shotCount);
     expect(script.copyDocument?.text).toBe(fixture.copy.copies[0].text);
     expect(script.shots.map(shot => shot.voiceover).join(" ")).toBe(fixture.copy.copies[0].text);
     expect(model.create).toHaveBeenCalledTimes(3);
     expect(model.create.mock.calls[2][0].messages[1].content).toBe(model.create.mock.calls[1][0].messages[1].content);
-    expect(model.create.mock.calls[2][0].messages[3].content).toContain("7-9 shots");
+    expect(model.create.mock.calls[2][0].messages[3].content).toContain(`exactly ${shotCount} shots for the ${targetDuration}s target; received ${received}`);
   });
 
   it("does not emit an undersized candidate while the planner repair is rejected", async () => {
-    const fixture = countedPlanFixture([6]);
+    const fixture = countedPlanFixture([7]);
     model.replies = [fixture.copy, fixture.plan, fixture.plan];
     const onToken = vi.fn();
     const onComplete = vi.fn();
     await expect(new Promise((resolve, reject) => {
-      generateScriptStream(input, { onToken, onComplete: scripts => { onComplete(scripts); resolve(scripts); }, onError: reject });
-    })).rejects.toThrow(/7-9 shots/);
+      generateScriptStream({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration: 40 }) }, { onToken, onComplete: scripts => { onComplete(scripts); resolve(scripts); }, onError: reject });
+    })).rejects.toThrow(/exactly 8 shots for the 40s target; received 7/);
     expect(onToken).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
   });
@@ -297,7 +342,7 @@ describe("shared TIDEWE generator dispatch", () => {
         description: "人物在真实户外环境中已扶住当前参考商品，轻触可见边缘后保持稳定。", shotGoal: "观察当前参考商品与接触位置。",
         visualIntent: "呈现当前商品普通接触状态。", prompt: "真实户外自然光，当前参考商品与接触的手完整入画。",
         visualPlan: { framing: "medium", visualRole: "demonstration", productFocus: "当前参考商品的完整轮廓与手部接触处", actionStart: "人物已站稳并扶住当前商品。", action: "轻触当前商品的可见边缘一次。", actionEnd: "手与商品保持稳定支撑。" } }] }] };
-      categoryPlan.scripts[0].shots = allocateSevenShots(frozenText, categoryPlan.scripts[0].shots[0]);
+      categoryPlan.scripts[0].shots = allocateShots(frozenText, categoryPlan.scripts[0].shots[0]);
       model.replies = [categoryCopy, categoryPlan];
       const [script] = await generateScript({ ...categoryInput, ...(imported && { copyText: frozenText }) });
       expect(model.create).toHaveBeenCalledTimes(2);
@@ -432,7 +477,7 @@ describe("shared TIDEWE generator dispatch", () => {
     Object.assign(plannedDetail, { visualSource: "product_image" });
     model.replies = [fixture.frozenCopy, planned];
 
-    const [script] = await generateScript({ ...fixture.bootInput, creativeProfile: createTideweOutdoorProfile({ speechMode: "voiceover" }) });
+    const [script] = await generateScript({ ...fixture.bootInput, creativeProfile: createTideweOutdoorProfile({ targetDuration: 30, speechMode: "voiceover" }) });
     expect(model.create).toHaveBeenCalledTimes(2);
     expect(script.copyDocument?.text).toBe(fixture.frozenText);
     expect(script.shots.map(shot => shot.voiceover)).toEqual(fixture.segments);
@@ -522,7 +567,7 @@ describe("shared TIDEWE generator dispatch", () => {
     const original = "“Don't rush,” I say.\r\n\r\nWait.  Wait.\r\nCheck the fit.";
     const annotation = { ...copy.copies[0], text: "An attempted rewrite.", visualBeats: [{ text: "Replace the original!", visualRole: "invented", visualIdea: "随意改写原文。", factRefs: ["unsupported"] }] };
     const importedPlan = structuredClone(plan);
-    importedPlan.scripts[0].shots = allocateSevenShots(original, importedPlan.scripts[0].shots[0]);
+    importedPlan.scripts[0].shots = allocateShots(original, importedPlan.scripts[0].shots[0]);
     model.replies = [{ copies: [annotation] }, importedPlan];
     const [script] = await generateScript({ ...input, copyText: original });
     expect(script.copyDocument).toMatchObject({ source: "user_provided", text: original });
@@ -551,18 +596,23 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
   });
 
-  it("reserves settling time for at least seven shots before freezing AI copy with only one meaning beat", async () => {
-    const withinBudget = "Before you choose your jacket, look at how it sits on your shoulders. Check the visible sleeve shape while your hands rest naturally by your sides. Then compare the outer fabric and the seam with the product pictures. I would use this view to decide what to inspect more closely. Keep the actual fit and your own trip in mind before you choose the gear you want to bring along next time.";
+  it.each([
+    { targetDuration: 30, shotCount: 7, wordCount: 72 },
+    { targetDuration: 40, shotCount: 8, wordCount: 97 },
+    { targetDuration: 60, shotCount: 9, wordCount: 148 },
+  ] as const)("reserves pauses for exactly $shotCount shots within the $targetDuration second copy budget", async ({ targetDuration, shotCount, wordCount }) => {
+    const words = "Before you choose your jacket look at how it sits on your shoulders Check the visible sleeve shape while your hands rest naturally by your sides Then compare the outer fabric and the seam with the product pictures I would use this view to decide what to inspect more closely Keep the actual fit and your own trip in mind before you choose the gear you want to bring along next time Look at the visible collar edge before turning to the sleeve and the hem Your hands can stay beside the jacket as you compare the outline with the pictures Move back to see the whole jacket in the same light Then look at the shape from the side while keeping the current product clearly in view These ordinary views can help you decide which visible detail to inspect before the next walk outdoors with the gear you have chosen for the trip".split(" ");
+    const withinBudget = `${words.slice(0, wordCount).join(" ")}.`;
     const budgetCopy = (frozenText: string) => ({ copies: [{ ...copy.copies[0], text: frozenText,
       visualBeats: [{ text: frozenText, visualRole: "demonstration", visualIdea: "观察当前外套的可见轮廓与实际穿着状态。", factRefs: [] }],
     }] });
     const repairedCopy = budgetCopy(withinBudget);
-    const budgetPlan = { scripts: [{ copyIndex: 0, shots: allocateSevenShots(withinBudget, plan.scripts[0].shots[0]).map(shot => ({ ...shot, duration: 5 })) }] };
-    // Both copies fit 30s with one beat pause; only the 72-word copy also reserves seven shot pauses.
+    const budgetPlan = { scripts: [{ copyIndex: 0, shots: allocateShots(withinBudget, plan.scripts[0].shots[0], shotCount).map(shot => ({ ...shot, duration: (Math.ceil(wordCount / shotCount) / 2.6) + 0.3 })) }] };
+    // One extra word fits the narration-only budget, but exceeds the budget with one pause per required shot.
     model.replies = [budgetCopy(`${withinBudget} Carefully.`), repairedCopy, budgetPlan];
-    const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration: 30 }) });
-    expect(script.copyDocument).toMatchObject({ text: withinBudget, wordCount: 72, visualBeats: repairedCopy.copies[0].visualBeats });
-    expect(script.shots).toHaveLength(7);
+    const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
+    expect(script.copyDocument).toMatchObject({ text: withinBudget, wordCount, visualBeats: repairedCopy.copies[0].visualBeats });
+    expect(script.shots).toHaveLength(shotCount);
     expect(model.create).toHaveBeenCalledTimes(3);
     expect(model.create.mock.calls[1][0].messages).toHaveLength(4);
     expect(model.create.mock.calls[1][0].messages[3].content).toContain("conversational speech budget");
@@ -577,7 +627,7 @@ describe("shared TIDEWE generator dispatch", () => {
     const framings = ["medium", "detail", "wide", "close_up", "medium", "detail", "wide"];
     const beats = segments.map((segment, index) => ({ text: segment, visualRole: roles[index], visualIdea: `观察林边装备的第${index + 1}处可见状态。`, factRefs: [] }));
     const frozenCopy = { copies: [{ ...copy.copies[0], text: frozenText, visualBeats: beats }] };
-    const repeated = { scripts: [{ copyIndex: 0, shots: segments.map((segment) => ({ ...structuredClone(plan.scripts[0].shots[0]), scriptSegment: segment, duration: 6, visualPlan: { ...plan.scripts[0].shots[0].visualPlan, visualRole: "presenter" } })) }] };
+    const repeated = { scripts: [{ copyIndex: 0, shots: segments.map((segment) => ({ ...structuredClone(plan.scripts[0].shots[0]), scriptSegment: segment, duration: 4, visualPlan: { ...plan.scripts[0].shots[0].visualPlan, visualRole: "presenter" } })) }] };
     const varied = structuredClone(repeated);
     varied.scripts[0].shots.forEach((shot, index) => {
       shot.visualPlan = { framing: framings[index], visualRole: roles[index], productFocus: `当前外套第${index + 1}处可见穿着状态与面料轮廓`, actionStart: `装备第${index + 1}处已经稳定入画。`, action: `静态观察第${index + 1}处已有穿着状态。`, actionEnd: "保持当前稳定构图。" };

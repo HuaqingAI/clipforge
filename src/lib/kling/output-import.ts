@@ -63,7 +63,7 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
       sourceRevision: job.data.scriptRevision, sourceShotKey: job.data.shotKey,
     }, selectedScript));
     const alreadySelectedOutput = tx.select().from(klingJobOutputs).where(eq(klingJobOutputs.jobId, job.id)).all().some((item) => item.data.selectionOutcome === "selected");
-    const selected = contextMatches && baselineMatches && !alreadySelectedOutput;
+    const selected = !getKlingJob(job.id).data.blockingReleasedAt && contextMatches && baselineMatches && !alreadySelectedOutput;
     const outcome = selected ? "selected" : contextMatches ? "kept_as_alternative" : "detached";
     if (selected && scopedRaw.length) tx.update(assets).set({ selected: false }).where(inArray(assets.id, scopedRaw.map((asset) => asset.id))).run();
     const id = randomUUID();

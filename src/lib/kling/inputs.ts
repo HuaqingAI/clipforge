@@ -11,7 +11,7 @@ import { downloadPublicFile } from "./download";
 import type { KlingInputSnapshot } from "./job-schema";
 import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 import { validateVideoPrompt } from "@/lib/video-prompt";
-import { KLING_AUDIO_PARAMETER_NAMES, klingPostNarrationModel } from "./model-options";
+import { KLING_AUDIO_PARAMETER_NAMES, klingPostNarrationModel, klingVideoParameterDefault } from "./model-options";
 
 const execFileAsync = promisify(execFile);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -113,7 +113,8 @@ export function normalizeVideoParameters(model: KlingVideoModelDescriptor, sourc
   for (const parameter of model.parameters) {
     if (parameter.name === "prompt") continue;
     if (KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)) continue;
-    if (!(parameter.name in normalized) && parameter.default !== undefined) normalized[parameter.name] = validateValue(parameter, parameter.default);
+    const defaultValue = klingVideoParameterDefault(parameter);
+    if (!(parameter.name in normalized) && defaultValue !== undefined) normalized[parameter.name] = validateValue(parameter, defaultValue);
   }
   // Frozen requests must replay the same argument vector even when defaults are
   // inserted or a speaking minimum rewrites a duration supplied in another order.

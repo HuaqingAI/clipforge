@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createTideweOutdoorProfile, sanitizeCreativeProfile, validateCreativeProfileInput, checkCreativeProfileContext, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { normalizeProductFacts, normalizeTideweCategory, productFactsFromDescription, claimableFacts } from "@/lib/tidewe/facts";
 import { resolveTideweShopCategory, TIDEWE_SHOP_CATEGORIES } from "@/lib/tidewe/categories";
-import { assertTideweCopyClaims, assertTideweImportedCopy, assertTideweScript, mapTideweCopySpans, productFactsHash } from "@/lib/tidewe/validation";
+import { assertTideweCopyClaims, assertTideweGeneratedShotCount, assertTideweImportedCopy, assertTideweScript, mapTideweCopySpans, productFactsHash } from "@/lib/tidewe/validation";
 import { generateTideweScripts, type TideweCompletion } from "@/lib/tidewe/generator";
 import { buildBatchPrompt } from "@/lib/script-engine/prompts";
 import type { ScriptInput } from "@/lib/script-engine/generator";
 import corpus from "@/lib/tidewe/corpus.json";
 import { snapshotTidewePresenter, tidewePresenterAnchor } from "@/lib/tidewe/presenter";
+import { getTideweShotCount } from "@/lib/tidewe/types";
 
 const facts = productFactsFromDescription("Fleece lining", "heated_apparel", "JTC001");
 const input: ScriptInput = { productName: "TIDEWE Jacket", category: "fashion", styleType: "tidewe_outdoor", creativeProfile: createTideweOutdoorProfile(), productFacts: facts, count: 1, llmConfig: { apiKey: "test", baseUrl: "https://example.test", model: "mock" } };
@@ -28,7 +29,7 @@ function completePlan(planned: Record<string, unknown>[], productCloseup = false
     { ...shot(""), duration: 2, personVisible: false, productVisible: false, description: "自然光下林缘小径的环境空镜，没有人物。", shotGoal: "建立林缘小径的空间关系", visualPlan: { framing: "wide", visualRole: "context", actionStart: "林缘小径与树木完整入画。", action: "静态观察小径的自然状态。", actionEnd: "保持林缘的稳定全景。" } },
     { ...shot(""), duration: 2, personVisible: !productCloseup, description: productCloseup ? "平放外套的衣领边缘清晰入画，没有人物。" : `${presenter}已穿好外套，扶住衣服下摆后自然松手。`, shotGoal: productCloseup ? "观察平放外套的衣领边缘" : "呈现外套穿着后的自然状态", visualPlan: { framing: productCloseup ? "close_up" : "medium", visualRole: productCloseup ? "detail" : "demonstration", productFocus: productCloseup ? "当前外套的衣领轮廓与可见缝边" : "穿在人物身上的外套下摆与完整轮廓", actionStart: productCloseup ? "外套衣领边缘已经清晰入画。" : "人物已穿好外套并扶住衣服下摆。", action: productCloseup ? "静态观察衣领的既有轮廓。" : "松开下摆并保持自然站姿。", actionEnd: productCloseup ? "保持衣领原有状态和构图。" : "双手自然放松，外套保持正常穿着。" } },
   ];
-  return [...planned, ...Array.from({ length: Math.max(0, 7 - planned.length) }, (_, index) => inserts[index % inserts.length])];
+  return [...planned, ...Array.from({ length: Math.max(0, 8 - planned.length) }, (_, index) => inserts[index % inserts.length])];
 }
 
 async function generateSelectedPresenterScript() {
@@ -43,6 +44,15 @@ async function generateSelectedPresenterScript() {
 }
 
 describe("TIDEWE core contracts", () => {
+  it.each([{ targetDuration: 30, shotCount: 7 }, { targetDuration: 40, shotCount: 8 }, { targetDuration: 60, shotCount: 9 }] as const)("requires exactly $shotCount generated shots for the $targetDuration second target", ({ targetDuration, shotCount }) => {
+    expect(getTideweShotCount(targetDuration)).toBe(shotCount);
+    expect(() => assertTideweGeneratedShotCount(shotCount, targetDuration)).not.toThrow();
+    for (const received of [6, 7, 8, 9, 10, 7.5, Number.NaN].filter(count => count !== shotCount)) {
+      expect(() => assertTideweGeneratedShotCount(received, targetDuration, 1))
+        .toThrow(`TIDEWE copy 2 must contain exactly ${shotCount} shots for the ${targetDuration}s target; received ${received}.`);
+    }
+  });
+
   it("has an independent English 40 second profile with isolated identity", () => {
     expect(createTideweOutdoorProfile()).toMatchObject({ creationType: "tidewe_outdoor", language: "en-US", targetDuration: 40, videoMode: "scene_demo", speechMode: "on_camera", composeSnapshot: { ttsEnabled: false, nativeAudio: true, subtitles: true, ctaEnabled: false } });
     const legacy = createTideweOutdoorProfile({ speechMode: "voiceover" });
@@ -125,6 +135,8 @@ describe("TIDEWE core contracts", () => {
     const complete: TideweCompletion = async (system, prompt, parse) => { calls(system, prompt); return parse(JSON.stringify(responses.shift())); };
     const [script] = await generateTideweScripts(input, complete);
     expect(calls).toHaveBeenCalledTimes(2);
+    expect(script.shots).toHaveLength(8);
+    expect(JSON.parse(calls.mock.calls[1][1])).toMatchObject({ targetDuration: 40, shotCount: 8 });
     expect(JSON.parse(calls.mock.calls[0][1]).speechMode).toContain("speaks directly to camera");
     expect(JSON.parse(calls.mock.calls[1][1]).speechMode).toBe("on_camera");
     expect(JSON.parse(calls.mock.calls[1][1]).copies[0].visualBeats).toEqual(visualBeats);
@@ -175,6 +187,15 @@ describe("TIDEWE core contracts", () => {
     expect(() => assertTideweScript(script)).not.toThrow();
     Object.assign(script.shots[0].tidewe!, { speechDelivery: "invented" });
     expect(() => assertTideweScript(script)).toThrow(/speechDelivery must be/);
+  });
+  it("keeps a saved seven-shot 40 second script readable while enforcing eight shots for new generation", async () => {
+    const { profile, script } = await generateSelectedPresenterScript();
+    expect(script.shots).toHaveLength(8);
+    expect(script.shots.at(-1)?.voiceover).toBe("");
+    script.shots.pop();
+    expect(script.shots).toHaveLength(7);
+    expect(() => assertTideweScript(script, profile.presenter)).not.toThrow();
+    expect(() => assertTideweGeneratedShotCount(script.shots.length, profile.targetDuration)).toThrow(/exactly 8 shots/);
   });
   it("preserves the global post-production voiceover path for person-free static product shots", async () => {
     const profile = createTideweOutdoorProfile({ speechMode: "voiceover", videoMode: "product_closeup" });

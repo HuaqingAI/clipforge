@@ -33,6 +33,7 @@ let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 const projectId = "tidewe-route-project";
 const profile = createTideweOutdoorProfile();
+const durationShotCounts = [{ targetDuration: 30, shotCount: 7 }, { targetDuration: 40, shotCount: 8 }, { targetDuration: 60, shotCount: 9 }];
 const presenterA = { id: "hunter-a", name: "Hunter A", appearance: "成年美国猎人，棕色短发，自然户外着装。", description: "平实自然的户外装备演示者。",
   referenceImages: ["/api/files/presenter-library/hunter-a.png"], sourceReferenceImages: ["https://example.test/hunter-a.png"] };
 const presenterB = { ...presenterA, id: "hunter-b", name: "Hunter B", appearance: "成年美国猎人，黑色短发，自然户外着装。",
@@ -44,7 +45,7 @@ const params = () => ({ params: Promise.resolve({ id: projectId }) });
 function req(path: string, body?: unknown, method = "POST") {
   return new NextRequest(`http://localhost${path}`, { method, ...(body !== undefined && { body: JSON.stringify(body) }), headers: { "Content-Type": "application/json" } });
 }
-function generated(text = copyText, presenter?: TidewePresenterSnapshot, shotCount = 7) {
+function generated(text = copyText, presenter?: TidewePresenterSnapshot, shotCount = 8) {
   const copyDocument: TideweCopyDocument = {
     version: 1, language: "en-US", text, translation: "坐着等候和走进林子感觉不同。适合的话可以看看。",
     angle: "long_wait", hookType: "scene", claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts),
@@ -260,7 +261,8 @@ describe("TIDEWE optional AI scene direction", () => {
 });
 
 describe("TIDEWE generation, history and concurrency", () => {
-  it.each([7, 8, 9].flatMap(shotCount => [false, true].map(regenerate => ({ shotCount, regenerate }))))("saves $shotCount shots for initial generation or regeneration=$regenerate", async ({ shotCount, regenerate }) => {
+  it.each(durationShotCounts.flatMap(setting => [false, true].map(regenerate => ({ ...setting, regenerate }))))("saves exactly $shotCount shots for the $targetDuration-second target on initial generation or regeneration=$regenerate", async ({ targetDuration, shotCount, regenerate }) => {
+    db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ targetDuration }) }).where(eq(schema.projects.id, projectId)).run();
     const source = regenerate ? seedScript() : undefined;
     calls.generate.mockResolvedValueOnce([generated(copyText, undefined, shotCount)]);
     const response = await generate(req("/api/llm/script", {
@@ -276,9 +278,10 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(rows.find(row => row.selected)?.shots).toHaveLength(shotCount);
     if (source) expect(rows.find(row => row.id === source.id)).toMatchObject({ selected: false, shots: source.shots, copyDocument: source.copyDocument });
     expect(calls.generate).toHaveBeenCalledOnce();
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ creativeProfile: expect.objectContaining({ targetDuration }) }));
   });
 
-  it.each([5, 10])("rejects a completed %s-shot checkpoint without saving or buying generation again", async shotCount => {
+  it.each([5, 7, 9, 10])("rejects a completed %s-shot checkpoint for the 40-second target without saving or buying generation again", async shotCount => {
     const source = seedScript();
     const before = db.select().from(schema.scripts).all();
     const paidScripts = [generated(copyText, undefined, shotCount)];
@@ -288,7 +291,7 @@ describe("TIDEWE generation, history and concurrency", () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await execute();
       expect(response.status).toBe(502);
-      expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain 7-9 shots; received ${shotCount}`) });
+      expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain exactly 8 shots for the 40s target; received ${shotCount}`) });
       expect(checkpoint.generatedScripts).toEqual(paidScripts);
       expect(db.select().from(schema.scripts).all()).toEqual(before);
     }
@@ -297,23 +300,28 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(calls.analyze).not.toHaveBeenCalled();
   });
 
-  it.each([5, 10])("rejects newly generated %s-shot output and preserves the selected historical script", async shotCount => {
+  it.each([
+    ...durationShotCounts.flatMap(({ targetDuration, shotCount: expectedShotCount }) => [7, 8, 9]
+      .filter(shotCount => shotCount !== expectedShotCount).map(shotCount => ({ targetDuration, expectedShotCount, shotCount }))),
+    ...[5, 10].map(shotCount => ({ targetDuration: 40, expectedShotCount: 8, shotCount })),
+  ])("rejects newly generated $shotCount-shot output for the $targetDuration-second target and preserves the selected historical script", async ({ targetDuration, expectedShotCount, shotCount }) => {
+    db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ targetDuration }) }).where(eq(schema.projects.id, projectId)).run();
     seedScript();
     const before = db.select().from(schema.scripts).all();
     calls.generate.mockResolvedValueOnce([generated(copyText, undefined, shotCount)]);
     const response = await generate(req("/api/llm/script", generationBody()));
     expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain 7-9 shots; received ${shotCount}`) });
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain exactly ${expectedShotCount} shots for the ${targetDuration}s target; received ${shotCount}`) });
     expect(db.select().from(schema.scripts).all()).toEqual(before);
     expect(calls.generate).toHaveBeenCalledOnce();
   });
 
-  it("checks the 7-9 shot rule independently for every candidate before saving any", async () => {
+  it("checks the duration-based shot count independently for every candidate before saving any", async () => {
     const before = db.select().from(schema.scripts).all();
-    calls.generate.mockResolvedValueOnce([generated(copyText, undefined, 7), generated(copyText, undefined, 10)]);
+    calls.generate.mockResolvedValueOnce([generated(), generated(copyText, undefined, 7)]);
     const response = await generate(req("/api/llm/script", { ...generationBody(), count: 2 }));
     expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining("TIDEWE copy 2 must contain 7-9 shots; received 10") });
+    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining("TIDEWE copy 2 must contain exactly 8 shots for the 40s target; received 7") });
     expect(db.select().from(schema.scripts).all()).toEqual(before);
     expect(calls.generate).toHaveBeenCalledOnce();
   });
@@ -680,7 +688,7 @@ describe("TIDEWE editing and import", () => {
     expect(rows).toHaveLength(2);
     expect(rows.find(row => row.id === source.id)?.copyDocument?.text).toBe(copyText);
     expect(rows.find(row => row.selected)?.copyDocument?.text).toBe(revised);
-    expect(rows.find(row => row.selected)?.shots).toHaveLength(7);
+    expect(rows.find(row => row.selected)?.shots).toHaveLength(8);
   });
   it("blocks the legacy per-shot voiceover edit channel", async () => {
     const source = seedScript();
@@ -704,7 +712,7 @@ describe("TIDEWE editing and import", () => {
     expect(response.status).toBe(200);
     expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ copyText, count: 1 }));
     expect(db.select().from(schema.scripts).get()?.styleType).toBe("tidewe_outdoor");
-    expect(db.select().from(schema.scripts).get()?.shots).toHaveLength(7);
+    expect(db.select().from(schema.scripts).get()?.shots).toHaveLength(8);
   });
 
   it("persists staff prose with original paragraphs and punctuation through the import entry point", async () => {
@@ -718,7 +726,7 @@ describe("TIDEWE editing and import", () => {
     const saved = db.select().from(schema.scripts).get()!;
     expect(saved.copyDocument).toMatchObject({ text, source: "user_provided", factsSnapshot: facts });
     expect(saved.shots?.[0].voiceover).toBe(text);
-    expect(saved.shots).toHaveLength(7);
+    expect(saved.shots).toHaveLength(8);
     expect(saved.selected).toBe(true);
   });
 

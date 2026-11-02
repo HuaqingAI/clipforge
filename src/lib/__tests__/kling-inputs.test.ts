@@ -50,6 +50,23 @@ describe("Kling submission preflight", () => {
     expect(normalizeVideoParameters(descriptor(), {}, 10.1).duration).toBe(11);
     expect(normalizeVideoParameters({ ...descriptor(), parameters: [] }, {}, 5)).toEqual({});
   });
+  it.each(["string", "boolean"] as const)("defaults %s multi-shot controls to off and leaves Elements empty through CLI submission", (type) => {
+    const model = descriptor();
+    const enabled = type === "string" ? "true" : true;
+    const disabled = type === "string" ? "false" : false;
+    const elements = '[{"id":"presenter-id","bindName":"Tom"}]';
+    model.parameters.push(
+      { name: "prefer_multi_shots", type, required: false, default: enabled },
+      { name: "elements", type: "string", required: false, default: elements },
+    );
+    const mapped = klingModelOptions(model).options;
+    expect(mapped).toEqual({ duration: 5, prefer_multi_shots: disabled });
+    expect(normalizeVideoParameters(model, { elements: "", prefer_multi_shots: "" })).toEqual(mapped);
+    const args = buildKlingVideoArguments(model, "A continuous product shot", mapped, [], "single-shot-defaults");
+    expect(args.slice(args.indexOf("--prefer_multi_shots"), args.indexOf("--prefer_multi_shots") + 2)).toEqual(["--prefer_multi_shots", "false"]);
+    expect(args).not.toContain("--elements");
+    expect(normalizeVideoParameters(model, { prefer_multi_shots: enabled, elements })).toMatchObject({ prefer_multi_shots: enabled, elements });
+  });
   it("keeps requested scalar settings and silence controls independent of stale catalog choices", () => {
     const model = descriptor();
     model.parameters.push({ name: "resolution", type: "string", required: false, allowedValues: ["720p"] });

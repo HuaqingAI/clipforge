@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { VideoGenerationDialog } from "@/components/video-generation-dialog";
 import type { AssetItem } from "@/lib/assets-view";
 import { klingErrorMessage, klingFetch } from "@/lib/kling/client";
+import { hasFreshKlingCatalog, hasVerifiedKlingCatalog } from "@/lib/kling/catalog-cache";
 import type { KlingPublicStatus } from "@/lib/kling/types";
 import type { KlingSubmitRequest } from "@/lib/kling/job-types";
 import { KLING_AUDIO_PARAMETER_NAMES, klingAudioParameterValue, klingModelOptions } from "@/lib/kling/model-options";
@@ -23,14 +24,6 @@ function mergeStatus(previous: KlingPublicStatus | null, next: KlingPublicStatus
     const existing = previous.models.find((item) => item.selectionKey === model.selectionKey);
     return existing && JSON.stringify(existing) === JSON.stringify(model) ? existing : model;
   }) };
-}
-
-function hasVerifiedCatalog(status: KlingPublicStatus, profileId?: string, selectionKey?: string): boolean {
-  const profile = status.profile;
-  return Boolean(status.loggedIn && status.configured && profile && (!profileId || profile.id === profileId)
-    && !profile.disabledAt && profile.environmentState === "ready" && profile.authState === "authenticated"
-    && profile.principalKey && profile.catalogRevision && profile.catalogCheckedAt
-    && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision));
 }
 
 export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, profileId, defaultModel, asset, preparedPrompt, promptContext, negativePrompt, firstFrameUrl, lastFrameUrl, defaultParameters, referenceImages, frameChoices, onFramesChange, onSubmitted, onRefreshTasks, onGenerateRequest }: {
@@ -81,6 +74,8 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
         if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(klingErrorMessage(body));
         let next = body;
+        // Reuse a recent verified catalog; paid dispatch still checks the live account and model.
+        if (refreshNeeded && !refreshFailed && hasFreshKlingCatalog(next, profileId, defaultModel)) refreshNeeded = false;
         if (refreshNeeded && next.loggedIn && next.profile?.id) {
           try {
             // Model discovery shares the CLI lock with submissions and queries; credits are unrelated.
@@ -92,7 +87,7 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
             if (!refreshed.ok) {
               if (refreshedBody?.error?.code === "KLING_PROFILE_BUSY") {
                 const cached = next;
-                const usableCache = !refreshFailed && hasVerifiedCatalog(cached, profileId, defaultModel);
+                const usableCache = !refreshFailed && hasVerifiedKlingCatalog(cached, profileId, defaultModel);
                 setStatus((previous) => usableCache ? mergeStatus(previous, cached) : null);
                 if (!refreshFailed) setStatusError(null);
                 setCatalogNotice("Kling 正在处理其他操作，模型刷新将自动重试；已有可用模型时可继续确认镜头。");
@@ -252,7 +247,7 @@ export function KlingShotGenerator({ open, onOpenChange, projectId, scriptId, pr
         {FRAME_INPUTS.map((slot) => <div key={slot.name} className="space-y-2 rounded-md border p-3"><label className="space-y-1 text-sm"><span>{slot.label}</span><select aria-label={`Kling ${slot.label}`} value={inputUrls[slot.name] ?? ""} className="w-full rounded-md border bg-background p-2" disabled={submitting || uncertain || reviewingFrames} onChange={(event) => { void changeFrame(slot.name, event.target.value); }}><option value="">不使用图片</option>{imageChoices.map(({ url, label }) => <option key={url} value={url}>{label}</option>)}</select></label>{inputUrls[slot.name] && <img src={inputUrls[slot.name]} alt={`${slot.label}图片`} className="max-h-32 max-w-full rounded object-contain" />}</div>)}
         {reviewingFrames && <p role="status" className="text-xs text-muted-foreground">正在更新首尾帧对应的提示词…</p>}
         <label className="space-y-1 text-sm"><span>实际提交的提示词</span><textarea aria-label="Kling 视频提示词" rows={12} className="min-h-64 w-full rounded-md border bg-background p-2 leading-relaxed" value={submissionPrompt} readOnly /></label>
-        <div className="grid gap-3 sm:grid-cols-2">{model.parameters.filter((parameter) => !KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name) && (negativePrompt === undefined || !["negative_prompt", "negativePrompt"].includes(parameter.name))).map((parameter) => <label key={parameter.name} className="space-y-1 text-sm"><span>{videoParameterLabel(parameter.name)}</span>{parameter.allowedValues ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.allowedValues!.find((value) => String(value) === event.target.value) ?? (parameter.type === "number" ? Number(event.target.value) : event.target.value))}><option value="">使用平台默认值</option>{options[parameter.name] !== undefined && !parameter.allowedValues.includes(options[parameter.name]) && <option value={String(options[parameter.name])}>{videoParameterValueLabel(parameter.name, options[parameter.name])}</option>}{parameter.allowedValues.map((value) => <option key={String(value)} value={String(value)}>{videoParameterValueLabel(parameter.name, value)}</option>)}</select> : parameter.type === "boolean" ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={options[parameter.name] === undefined ? "" : String(options[parameter.name])} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : event.target.value === "true")}><option value="">使用平台默认值</option><option value="true">开启</option><option value="false">关闭</option></select> : <input aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" type={parameter.type === "number" ? "number" : "text"} value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.type === "number" ? Number(event.target.value) : event.target.value)} />}{videoParameterDescription(parameter) && <p className="text-xs text-muted-foreground">{videoParameterDescription(parameter)}</p>}</label>)}</div>
+        <div className="grid gap-3 sm:grid-cols-2">{model.parameters.filter((parameter) => !KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name) && (negativePrompt === undefined || !["negative_prompt", "negativePrompt"].includes(parameter.name))).map((parameter) => <label key={parameter.name} className="space-y-1 text-sm"><span>{videoParameterLabel(parameter.name)}</span>{parameter.allowedValues ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.allowedValues!.find((value) => String(value) === event.target.value) ?? (parameter.type === "number" ? Number(event.target.value) : event.target.value))}><option value="">{parameter.name === "prefer_multi_shots" ? "使用默认值（关闭）" : "使用平台默认值"}</option>{options[parameter.name] !== undefined && !parameter.allowedValues.includes(options[parameter.name]) && <option value={String(options[parameter.name])}>{videoParameterValueLabel(parameter.name, options[parameter.name])}</option>}{parameter.allowedValues.map((value) => <option key={String(value)} value={String(value)}>{videoParameterValueLabel(parameter.name, value)}</option>)}</select> : parameter.type === "boolean" ? <select aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" value={options[parameter.name] === undefined ? "" : String(options[parameter.name])} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : event.target.value === "true")}><option value="">{parameter.name === "prefer_multi_shots" ? "使用默认值（关闭）" : "使用平台默认值"}</option><option value="true">开启</option><option value="false">关闭</option></select> : <input aria-label={`Kling 参数 ${videoParameterLabel(parameter.name)}`} className="w-full rounded-md border bg-background p-2" type={parameter.type === "number" ? "number" : "text"} value={String(options[parameter.name] ?? "")} disabled={submitting || uncertain} onChange={(event) => changeParameter(parameter.name, event.target.value === "" ? undefined : parameter.type === "number" ? Number(event.target.value) : event.target.value)} />}{videoParameterDescription(parameter) && <p className="text-xs text-muted-foreground">{videoParameterDescription(parameter)}</p>}</label>)}</div>
         <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm">此操作调用 Kling 官方账号生成视频，可能消耗积分。实际扣费以 Kling 为准；本应用未获得精确积分报价时不会把费用显示为免费。</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={confirmed} disabled={submitting || uncertain || reviewingFrames} onChange={(event) => setConfirmed(event.target.checked)} />我已核对当前镜头、模型、图片和参数，确认本次生成可能扣除 Kling 积分。</label></div>
         {missingInput && <p className="text-xs text-amber-600">请为图生视频添加一张输入图片。</p>}
       </>}

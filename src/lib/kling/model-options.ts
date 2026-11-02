@@ -2,6 +2,15 @@ import type { KlingParameter, KlingVideoModelDescriptor } from "./types";
 
 export const KLING_AUDIO_PARAMETER_NAMES = ["audio", "sound", "enable_audio", "generate_audio", "native_audio", "audio_enabled", "audioEnabled"];
 
+/** Keep single-shot defaults consistent between the confirmation UI and CLI submission. */
+export function klingVideoParameterDefault(parameter: KlingParameter): KlingParameter["default"] {
+  if (parameter.name === "prefer_multi_shots") {
+    return parameter.type === "string" ? "false" : parameter.type === "number" ? 0 : false;
+  }
+  if (parameter.name === "elements") return undefined;
+  return parameter.default;
+}
+
 /** Resolve an explicit CLI switch when one is declared; omission uses provider defaults. */
 export function klingAudioParameterValue(parameter: KlingParameter, enabled: boolean): string | number | boolean | undefined {
   const choices = parameter.allowedValues ?? (parameter.type === "boolean" ? [true, false] : parameter.default !== undefined ? [parameter.default] : []);
@@ -43,7 +52,10 @@ export function klingModelOptions(model: KlingVideoModelDescriptor, desired: Rec
   const options: Record<string, string | number | boolean> = {};
   const warnings: string[] = [];
   const unsupportedSettings: string[] = [];
-  for (const parameter of model.parameters) if (parameter.default !== undefined && !KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)) options[parameter.name] = parameter.default;
+  for (const parameter of model.parameters) {
+    const defaultValue = klingVideoParameterDefault(parameter);
+    if (defaultValue !== undefined && !KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name)) options[parameter.name] = defaultValue;
+  }
   for (const [setting, names] of Object.entries(aliases)) {
     const value = desired[setting];
     if (value === undefined || value === "") continue;

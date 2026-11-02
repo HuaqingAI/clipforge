@@ -162,24 +162,31 @@ describe("TIDEWE product facts input", () => {
 });
 
 describe("TIDEWE creation and script editing", () => {
-  it("shows people and visible faces only in TIDEWE's scene-mode copy while retaining sales and CG descriptions", async () => {
+  it("keeps TIDEWE video and speech choices independent and isolated from sales and CG", async () => {
     i18nOptions.showModeCopy = true;
     await act(async () => root.render(createElement(NewProjectPage)));
     await click("label");
     expect(button("真人场景演示").className).toContain("bg-primary/10");
-    expect(container.textContent).toContain("真人边演示边用英语口播，嘴部清晰可见");
-    expect(container.textContent).toContain("真人自然演示，可露脸出镜，用美式英语介绍装备，嘴型配合发音并保留原声；同步程度取决于视频模型。");
-    expect(container.textContent).toContain("真人口播介绍装备细节，穿插无口播特写");
-    expect(container.textContent).not.toContain("不含人脸");
+    const speechMode = container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")!;
+    expect(speechMode.value).toBe("on_camera");
+    expect([...speechMode.options].map((option) => option.value)).toEqual(["on_camera", "voiceover"]);
+    await changeSelect("#tidewe-speech-mode", "voiceover");
+    expect(button("真人场景演示").className).toContain("bg-primary/10");
     await click("产品特写");
     expect(button("产品特写").className).toContain("bg-primary/10");
+    expect(speechMode.value).toBe("voiceover");
     await click("creationTypeSalesLabel");
+    expect(container.querySelector("#tidewe-speech-mode")).toBeNull();
     expect(container.textContent).toContain("AI 生成使用场景，不含人脸");
     expect(container.textContent).not.toContain("真人场景演示");
     await click("creationTypeCgLabel");
+    expect(container.querySelector("#tidewe-speech-mode")).toBeNull();
     expect(container.textContent).toContain("使用场景 CG");
     expect(container.textContent).toContain("按产品品类匹配场景，以真实尺度与适度交互呈现产品");
     expect(container.textContent).not.toContain("人物可露脸");
+    await click("label");
+    expect(button("产品特写").className).toContain("bg-primary/10");
+    expect(container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")?.value).toBe("voiceover");
   });
   it("keeps three independent duration drafts and skips domestic sales choices", async () => {
     await act(async () => root.render(createElement(NewProjectPage)));
@@ -244,7 +251,12 @@ describe("TIDEWE creation and script editing", () => {
     await click("creationTypeSalesLabel");
     expect(button("modePresenterLabel").className).toContain("bg-primary/10");
   });
-  it.each([false, true])("creates a TIDEWE project with an optional frozen presenter and the latest image revision, selected=%s", async (selected) => {
+  it.each([
+    { selected: false, speechMode: "on_camera", videoMode: "scene_demo" },
+    { selected: true, speechMode: "on_camera", videoMode: "product_closeup" },
+    { selected: false, speechMode: "voiceover", videoMode: "product_closeup" },
+    { selected: true, speechMode: "voiceover", videoMode: "scene_demo" },
+  ] as const)("creates and generates $videoMode / $speechMode with frozen presenter=$selected and the latest image revision", async ({ selected, speechMode, videoMode }) => {
     useCharacterStore.setState({ characters: [hunter] });
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:tidewe-fixture");
     window.history.replaceState(null, "", "/project/new?creationType=tidewe_outdoor");
@@ -261,6 +273,10 @@ describe("TIDEWE creation and script editing", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     await act(async () => root.render(createElement(NewProjectPage)));
+    await changeSelect("#tidewe-speech-mode", "voiceover");
+    if (speechMode === "on_camera") await changeSelect("#tidewe-speech-mode", "on_camera");
+    await click(videoMode === "product_closeup" ? "modeCloseupLabel" : "modeSceneLabel");
+    expect(container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")?.value).toBe(speechMode);
     if (selected) await changeSelect("#tidewe-presenter", hunter.id);
     await changeInput("#productName", "TIDEWE outdoor jacket");
     const upload = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -268,13 +284,16 @@ describe("TIDEWE creation and script editing", () => {
     await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
     await click("submit");
     const creation = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/project")![1].body);
-    expect(creation).toMatchObject({ productFacts: { items: [] }, creativeProfile: { creationType: "tidewe_outdoor", targetDuration: 40, speechMode: "on_camera" } });
+    expect(creation).toMatchObject({ productFacts: { items: [] }, videoMode, creativeProfile: { creationType: "tidewe_outdoor", targetDuration: 40, speechMode, videoMode, composeSnapshot: { ttsEnabled: speechMode === "voiceover", nativeAudio: speechMode === "on_camera" } } });
+    expect(creation.creativeProfileDrafts.tidewe_outdoor).toEqual(creation.creativeProfile);
     if (selected) expect(creation.creativeProfile.presenter).toEqual(snapshotTidewePresenter(hunter));
     else expect(creation.creativeProfile).not.toHaveProperty("presenter");
     const registered = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/generation-runs")![1].body);
     expect(registered).toMatchObject({ projectId: "new-tidewe", kind: "script", items: [{ kind: "script" }] });
     const generation = registered.items[0].request;
-    expect(generation).toMatchObject({ expectedCreativeConfigRevision: 2, requestId: expect.any(String), platforms: "tiktok", styleType: "tidewe_outdoor", productImages: ["/uploads/product.png"] });
+    expect(generation).toMatchObject({ expectedCreativeConfigRevision: 2, requestId: expect.any(String), platforms: "tiktok", styleType: "tidewe_outdoor", productImages: ["/uploads/product.png"], videoMode });
+    expect(generation.creativeProfile).toEqual(creation.creativeProfile);
+    expect(generation.creativeProfileDrafts.tidewe_outdoor).toEqual(creation.creativeProfile);
     expect(generation).not.toHaveProperty("templateId");
     expect(generation).not.toHaveProperty("customRequirements");
     expect(generation.creativeProfile.presenter).toEqual(creation.creativeProfile.presenter);

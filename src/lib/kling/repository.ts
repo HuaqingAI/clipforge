@@ -67,7 +67,7 @@ export function klingJobView(row: KlingJob): KlingJobView {
   const actions = ["view_details"];
   if (row.remoteGenerationId) {
     actions.push("query");
-    if (!["failed", "cancelled", "completed"].includes(row.remoteState)) actions.push(row.autoQueryPaused ? "resume-query" : "pause-query");
+    if (!row.data.blockingReleasedAt && !["failed", "cancelled", "completed"].includes(row.remoteState)) actions.push(row.autoQueryPaused ? "resume-query" : "pause-query");
   }
   if (row.remoteState === "completed") actions.push("import");
   if (row.submissionState === "prepared" && row.needsConfirmation) actions.push("continue");
@@ -96,6 +96,7 @@ export function klingJobView(row: KlingJob): KlingJobView {
     modelId: row.data.model.remoteModelId, tool: row.data.model.tool, prompt: row.data.prompt,
     remoteGenerationId: row.remoteGenerationId ?? undefined,
     submissionState: row.submissionState, remoteState: row.remoteState, importState: row.importState,
+    blockingReleasedAt: row.data.blockingReleasedAt ? new Date(row.data.blockingReleasedAt).toISOString() : undefined,
     blockedReason: row.data.blockedReason, lastError: row.data.error,
     cliDiagnostics: row.data.cliDiagnostics,
     lastCheckedAt: row.data.lastCheckedAt ? new Date(row.data.lastCheckedAt).toISOString() : undefined,

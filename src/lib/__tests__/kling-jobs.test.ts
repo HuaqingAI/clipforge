@@ -506,6 +506,32 @@ describe("Kling durable submission and recovery", () => {
     await tick(); expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "recovered-unknown" });
     expect(state.cli).not.toHaveBeenCalled();
   });
+  it("retains a released unknown task's late receipt without restarting automatic work", async () => {
+    const job = await createKlingJob(request());
+    const blockingReleasedAt = Date.now();
+    patchKlingJob(job.id, { submissionState: "submission_unknown", remoteState: "unknown", autoQueryPaused: true, needsConfirmation: false, nextQueryAt: null }, { blockingReleasedAt });
+    const directory = path.join(state.directory, "integrations/kling/receipts"); await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, job.id + ".json"), JSON.stringify({ jobId: job.id, profileId: job.profileId, principalKey: job.principalKey, region: job.region, generationId: "released-receipt", requestHash: job.data.requestHash }));
+    await tick(); await tick();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "released-receipt", autoQueryPaused: true, nextQueryAt: null, data: { blockingReleasedAt, bindingMethod: "receipt" } });
+    expect(klingJobView(getKlingJob(job.id))).toMatchObject({ blockingReleasedAt: new Date(blockingReleasedAt).toISOString() });
+    expect(klingJobView(getKlingJob(job.id)).allowedActions).toContain("query");
+    expect(klingJobView(getKlingJob(job.id)).allowedActions).not.toContain("resume-query");
+    await expect(klingJobAction(job.id, "resume-query", {})).rejects.toMatchObject({ code: "KLING_JOB_RELEASED" });
+    expect(state.cli).not.toHaveBeenCalled(); expect(state.download).not.toHaveBeenCalled();
+  });
+  it("does not automatically poll or import released tasks with old persisted schedules", async () => {
+    useMultipleShots(2);
+    const polling = await createKlingJob(shotRequest(1));
+    patchKlingJob(polling.id, { submissionState: "acknowledged", remoteState: "processing", remoteGenerationId: "released-poll", autoQueryPaused: false, nextQueryAt: Date.now() - 1 }, { blockingReleasedAt: Date.now() });
+    const importing = await createKlingJob(shotRequest(2));
+    patchKlingJob(importing.id, { submissionState: "acknowledged", remoteState: "completed", remoteGenerationId: "released-import", importState: "pending" }, { blockingReleasedAt: Date.now() });
+    getDb().insert(klingJobOutputs).values({ id: "released-output", jobId: importing.id, workKey: "released-work", data: { providerWorkId: "released-work", url: "https://public.example.test/video.mp4", urlObtainedAt: Date.now() }, createdAt: Date.now(), updatedAt: Date.now() }).run();
+    await tick();
+    expect(state.cli).not.toHaveBeenCalled(); expect(state.download).not.toHaveBeenCalled();
+    expect(getKlingJob(importing.id).importState).toBe("pending");
+    expect(getDb().select().from(assets).all()).toEqual([]);
+  });
   it("rejects a receipt with an incorrect region or invalid remote ID", async () => {
     const job = await createKlingJob(request()); patchKlingJob(job.id, { submissionState: "submitting" });
     const directory = path.join(state.directory, "integrations/kling/receipts"); await fs.mkdir(directory, { recursive: true });
@@ -839,6 +865,17 @@ describe("Kling account concurrency without an application slot cap", () => {
     await dispatchKlingJob(waiting.id);
     expect(state.cli).not.toHaveBeenCalled(); expect(getKlingJob(waiting.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: false, data: { error: { code: "KLING_REQUEST_CONFLICT" } } });
   });
+  it("allows a new request for the same shot and other shots after explicit local release", async () => {
+    const original = await createKlingJob(shotRequest(1));
+    patchKlingJob(original.id, { submissionState: "submission_unknown", remoteState: "unknown", autoQueryPaused: true, nextQueryAt: null }, { blockingReleasedAt: Date.now() });
+    const replacement = await createKlingJob(shotRequest(1, { clientRequestId: "replacement-1", billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: "replacement-1" } }));
+    const sibling = await createKlingJob(shotRequest(2));
+    expect(replacement.id).not.toBe(original.id); expect(sibling.submissionState).toBe("prepared");
+    await dispatchKlingJob(replacement.id);
+    expect(getKlingJob(replacement.id).submissionState).toBe("acknowledged");
+    expect(getKlingJob(original.id)).toMatchObject({ submissionState: "submission_unknown", remoteGenerationId: null });
+    expect(state.cli).toHaveBeenCalledTimes(1);
+  });
   it("retries temporary CLI lock contention without requiring renewed billing confirmation", async () => {
     const job = await createKlingJob(shotRequest(1)); const authorization = job.data.authorizedUntil;
     state.lease.mockRejectedValueOnce(new KlingError("KLING_PROFILE_BUSY", "Another command owns this profile", 409));
@@ -1142,6 +1179,26 @@ describe("Kling output persistence and selection", () => {
     expect(getDb().select().from(assets).where(eq(assets.id, "new-user-take")).get()?.selected).toBe(true);
     const output = getKlingOutputs(job.id)[0]; expect(output.data.selectionOutcome).toBe("kept_as_alternative");
     expect(getDb().select().from(assets).where(eq(assets.id, output.assetId!)).get()?.selected).toBe(false);
+  });
+  it("manually recovers a released task as an alternative while preserving the original keyframe", async () => {
+    const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
+    getDb().insert(assets).values({ id: "original-keyframe", projectId: "project-1", shotId: 1, type: "ai_generated", filePath: "/api/files/project-1/original.png", selected: true, status: "done", ...assetScopeForShot(script, shot) }).run();
+    const job = await createKlingJob(request({ expectedSelectedAssetId: "original-keyframe" }));
+    const blockingReleasedAt = Date.now();
+    patchKlingJob(job.id, { submissionState: "submission_unknown", remoteState: "unknown", autoQueryPaused: true, nextQueryAt: null }, { blockingReleasedAt });
+    const preview = await bindKlingJob(job.id, { action: "preview", generationId: "released-manual" }) as { candidateToken: string };
+    await bindKlingJob(job.id, { action: "confirm", candidateToken: preview.candidateToken, explicitConfirmation: true });
+    state.cli.mockResolvedValueOnce({ ...cliResult(), json: { ok: true, body: { status: "completed", works: [{ id: "released-work", url: "https://public.example.test/video.mp4" }] } } });
+    await queryKlingJob(job.id);
+    const output = getKlingOutputs(job.id)[0];
+    expect(output).toMatchObject({ importState: "imported", data: { selectionOutcome: "kept_as_alternative" } });
+    expect(getDb().select().from(assets).where(eq(assets.id, "original-keyframe")).get()?.selected).toBe(true);
+    expect(getDb().select().from(assets).where(eq(assets.id, output.assetId!)).get()?.selected).toBe(false);
+    expect(getKlingJob(job.id)).toMatchObject({ importState: "completed", autoQueryPaused: true, nextQueryAt: null, data: { blockingReleasedAt } });
+    await tick(); expect(state.download).toHaveBeenCalledTimes(1);
+    expect(state.cli.mock.calls.every((call) => call[1][0] === "query_tasks")).toBe(true);
+    selectKlingOutput(job.id, output.id, false);
+    expect(getDb().select().from(assets).where(eq(assets.id, output.assetId!)).get()?.selected).toBe(true);
   });
   it("keeps a completed remote task after download failure and retries import without generating", async () => {
     const job = await acknowledge(await createKlingJob(request()));

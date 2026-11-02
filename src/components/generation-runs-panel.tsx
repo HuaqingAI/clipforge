@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -35,26 +36,30 @@ interface GenerationRunsPanelProps {
   projectId: string;
   controller?: GenerationRunsController;
   onCompleted?(run: GenerationRun): void | Promise<void>;
+  onReleased?(): void | Promise<void>;
 }
 
-export function GenerationRunsPanel({ projectId, controller, onCompleted }: GenerationRunsPanelProps) {
+export function GenerationRunsPanel({ projectId, controller, onCompleted, onReleased }: GenerationRunsPanelProps) {
   return controller
-    ? <GenerationRunsSession key={projectId} projectId={projectId} controller={controller} onCompleted={onCompleted} />
-    : <ConnectedGenerationRunsPanel key={projectId} projectId={projectId} onCompleted={onCompleted} />;
+    ? <GenerationRunsSession key={projectId} projectId={projectId} controller={controller} onCompleted={onCompleted} onReleased={onReleased} />
+    : <ConnectedGenerationRunsPanel key={projectId} projectId={projectId} onCompleted={onCompleted} onReleased={onReleased} />;
 }
 
-function ConnectedGenerationRunsPanel({ projectId, onCompleted }: Omit<GenerationRunsPanelProps, "controller">) {
+function ConnectedGenerationRunsPanel({ projectId, onCompleted, onReleased }: Omit<GenerationRunsPanelProps, "controller">) {
   const controller = useGenerationRuns(projectId);
-  return <GenerationRunsSession projectId={projectId} controller={controller} onCompleted={onCompleted} />;
+  return <GenerationRunsSession projectId={projectId} controller={controller} onCompleted={onCompleted} onReleased={onReleased} />;
 }
 
-function GenerationRunsSession({ projectId, controller, onCompleted }: GenerationRunsPanelProps & { controller: GenerationRunsController }) {
-  const { runs, loading, error, refresh, cancelRun, retryImport, deleteRun, clearFinished, isRunDeleted } = controller;
+function GenerationRunsSession({ projectId, controller, onCompleted, onReleased }: GenerationRunsPanelProps & { controller: GenerationRunsController }) {
+  const { runs, loading, error, refresh, cancelRun, retryImport, releaseBlock, deleteRun, clearFinished, isRunDeleted } = controller;
   const requestedId = useSearchParams().get("runId");
+  const contentId = useId();
+  const [expanded, setExpanded] = useState(true);
   const [linked, setLinked] = useState<GenerationRun | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
+  const [confirmRelease, setConfirmRelease] = useState<{ runId: string; itemId: string; shotId?: number | null } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [observedAfter] = useState(() => Math.floor(Date.now() / 1000) * 1000);
   const actionLock = useRef(false);
@@ -62,6 +67,7 @@ function GenerationRunsSession({ projectId, controller, onCompleted }: Generatio
   const signatures = useRef(new Map<string, string>());
   const hasSnapshot = useRef(false);
   const completed = useRef(onCompleted); completed.current = onCompleted;
+  useEffect(() => { if (requestedId) setExpanded(true); }, [requestedId]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     if (!requestedId || isRunDeleted(requestedId) || runs.some((run) => run.id === requestedId)) { setLinked(null); return; }
@@ -97,6 +103,23 @@ function GenerationRunsSession({ projectId, controller, onCompleted }: Generatio
   }, [runs, linked, loading, error, projectId, isRunDeleted, observedAfter]);
   const shown = (linked && !runs.some((run) => run.id === linked.id) ? [linked, ...runs] : runs).filter((run) => run.projectId === projectId && !isRunDeleted(run.id));
   const cleanable = shown.filter(generationRunDeletable);
+  const releaseEligible = !!confirmRelease && shown.some((run) => run.id === confirmRelease.runId
+    && run.items.some((item) => item.id === confirmRelease.itemId && item.canReleaseBlock === true));
+  async function release() {
+    if (actionLock.current || !confirmRelease || !releaseEligible) return;
+    const target = confirmRelease;
+    actionLock.current = true; setBusy(`release:${target.itemId}`); setActionError(null); setNotice(null);
+    try {
+      const updated = await releaseBlock(target.runId, target.itemId);
+      if (!alive.current) return;
+      setLinked((current) => current?.id === updated.id ? updated : current);
+      setConfirmRelease(null);
+      setNotice(`${target.shotId != null ? `镜头 ${target.shotId}` : "此任务"}已解除阻塞，可以重新转动态。原任务和素材已保留。`);
+      try { await onReleased?.(); }
+      catch { if (alive.current) setActionError("阻塞已解除，刷新 Kling 任务失败，请重新读取任务。"); }
+    } catch (failure) { if (alive.current) setActionError(failure instanceof Error ? failure.message : "解除阻塞失败"); }
+    finally { actionLock.current = false; if (alive.current) setBusy(null); }
+  }
   async function actOn(run: GenerationRun, action: "cancel" | "retry_import" | "delete") {
     if (actionLock.current || (action === "delete" && !generationRunDeletable(run))) return;
     actionLock.current = true; setBusy(`${action}:${run.id}`); setActionError(null); setNotice(null);
@@ -117,7 +140,9 @@ function GenerationRunsSession({ projectId, controller, onCompleted }: Generatio
     finally { actionLock.current = false; if (alive.current) setBusy(null); }
   }
   return <section aria-label="项目后台任务" className="mb-5 space-y-3 rounded-xl border border-border/60 bg-card/50 p-4">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-medium">后台任务</h2><p className="text-xs text-muted-foreground">可切换项目继续创作，回来后自动恢复全部批次进度。删除记录不影响生成素材。</p></div><div className="flex gap-2"><Button size="sm" variant="outline" disabled={!!busy || loading || !cleanable.length} onClick={() => { setActionError(null); setConfirmCleanup(true); }}>清理已完成和失败</Button><Button size="sm" variant="outline" onClick={() => void refresh()}>刷新任务</Button></div></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-medium"><button type="button" className="flex min-h-8 items-center gap-2 text-left" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded((value) => !value)}><ChevronDown aria-hidden="true" className={`size-4 shrink-0 transition-transform ${expanded ? "" : "-rotate-90"}`} />后台任务</button></h2><div className="flex gap-2"><Button size="sm" variant="outline" disabled={!!busy || loading || !cleanable.length} onClick={() => { setActionError(null); setConfirmCleanup(true); }}>清理已完成和失败</Button><Button size="sm" variant="outline" onClick={() => void refresh()}>刷新任务</Button></div></div>
+    <div id={contentId} hidden={!expanded} className="space-y-3">
+    <p className="text-xs text-muted-foreground">可切换项目继续创作，回来后自动恢复全部批次进度。删除记录不影响生成素材。</p>
     {(error || actionError) && <p role="alert" className="text-xs text-amber-600">{actionError || error}</p>}
     {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
     {!shown.length && <p className="text-xs text-muted-foreground">{loading ? "正在读取后台任务…" : "暂无后台任务"}</p>}
@@ -126,12 +151,12 @@ function GenerationRunsSession({ projectId, controller, onCompleted }: Generatio
       const attention = run.items.filter((item) => item.status === "needs_attention").length;
       return <div key={run.id} className="flex items-start gap-2 rounded-lg border border-border/60 p-3">
       <details open={requestedId === run.id ? true : undefined} className="min-w-0 flex-1" data-run-id={run.id}>
-      <summary className="cursor-pointer text-sm"><span>{run.label || kindLabels[run.kind]} · {statusLabels[run.status]} · {run.done}/{run.total}</span>{failed > 0 && <span className="ml-2 text-amber-600">失败 {failed}</span>}{attention > 0 && <span className="ml-2 text-amber-600">需处理 {attention}</span>}</summary>
+      <summary className="cursor-pointer text-sm"><span>{run.label || kindLabels[run.kind]} · {run.status === "cancelled" && run.items.some((item) => item.stage === "released") ? "已结束" : statusLabels[run.status]} · {run.done}/{run.total}</span>{failed > 0 && <span className="ml-2 text-amber-600">失败 {failed}</span>}{attention > 0 && <span className="ml-2 text-amber-600">需处理 {attention}</span>}</summary>
       <div className="mt-3 space-y-2">{run.items.map((item) => {
         const jobId = item.result?.childJobId || item.result?.jobId;
         const asset = item.result?.asset as { filePath?: unknown } | undefined;
         const candidate = item.kind === "keyframe_refine" && item.status === "completed" ? refinementCandidatePath(asset?.filePath) : null;
-        return <div key={item.id} className="rounded bg-muted/30 p-2 text-xs"><p>{item.shotId != null ? `镜头 ${item.shotId}` : kindLabels[item.kind]} · {statusLabels[item.status]}{item.stage && stageLabels[item.stage] ? ` · ${stageLabels[item.stage]}` : ""}</p>{item.scriptId && <p className="text-muted-foreground">脚本版本：{item.scriptId}</p>}{item.error && <p role="alert" className="text-amber-600">{item.error}</p>}{typeof jobId === "string" && <Link className="text-primary underline" href={`/project/${encodeURIComponent(projectId)}/assets?klingJob=${encodeURIComponent(jobId)}`}>查看原镜头任务</Link>}{candidate && <a className="block text-primary underline" href={candidate} target="_blank" rel="noopener noreferrer">查看精修候选</a>}</div>;
+        return <div key={item.id} className="rounded bg-muted/30 p-2 text-xs"><p>{item.shotId != null ? `镜头 ${item.shotId}` : kindLabels[item.kind]} · {item.stage === "released" ? "已解除阻塞" : statusLabels[item.status]}{item.stage && stageLabels[item.stage] ? ` · ${stageLabels[item.stage]}` : ""}</p>{item.scriptId && <p className="text-muted-foreground">脚本版本：{item.scriptId}</p>}{item.error && <p role="alert" className="text-amber-600">{item.error}</p>}{typeof jobId === "string" && <Link className="text-primary underline" href={`/project/${encodeURIComponent(projectId)}/assets?klingJob=${encodeURIComponent(jobId)}`}>查看原镜头任务</Link>}{candidate && <a className="block text-primary underline" href={candidate} target="_blank" rel="noopener noreferrer">查看精修候选</a>}{item.canReleaseBlock === true && <Button size="sm" variant="outline" className="mt-2 block" disabled={!!busy} onClick={() => { if (actionLock.current) return; setActionError(null); setConfirmRelease({ runId: run.id, itemId: item.id, shotId: item.shotId }); }}>解除阻塞</Button>}</div>;
       })}
         <div className="flex gap-2">{generationRunActive(run) && <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void actOn(run, "cancel")}>停止未提交镜头</Button>}{["needs_attention", "failed"].includes(run.status) && <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void actOn(run, "retry_import")}>恢复保存</Button>}</div>
       </div>
@@ -139,6 +164,15 @@ function GenerationRunsSession({ projectId, controller, onCompleted }: Generatio
     {generationRunDeletable(run) && <Button size="sm" variant="outline" className="shrink-0" aria-label={`删除任务记录 ${run.id}`} disabled={!!busy} onClick={() => void actOn(run, "delete")}>{busy === `delete:${run.id}` ? "正在删除…" : "删除记录"}</Button>}
     </div>;
     })}
+    </div>
+    <Dialog open={confirmRelease !== null} onOpenChange={(open) => { if (!actionLock.current && !open) setConfirmRelease(null); }}>
+      <DialogContent showCloseButton={!busy}>
+        <DialogHeader><DialogTitle>解除{confirmRelease?.shotId != null ? `镜头 ${confirmRelease.shotId}` : "此任务"}的阻塞？</DialogTitle><DialogDescription>解除后可重新转动态。原云端任务可能仍在运行或已扣费，此操作不会取消原云端任务；原任务记录和已生成素材会保留。重新生成可能再次消耗积分。</DialogDescription></DialogHeader>
+        {actionError && <p role="alert" className="text-xs text-amber-600">{actionError}</p>}
+        {!releaseEligible && <p role="status" className="text-xs text-muted-foreground">任务状态已变化，请刷新后重新核对。</p>}
+        <DialogFooter><Button variant="outline" disabled={!!busy} onClick={() => setConfirmRelease(null)}>暂不解除</Button><Button disabled={!!busy || !releaseEligible} onClick={() => void release()}>{busy?.startsWith("release:") ? "正在解除…" : "确认解除阻塞"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
     <Dialog open={confirmCleanup} onOpenChange={(open) => { if (!actionLock.current) setConfirmCleanup(open); }}>
       <DialogContent showCloseButton={!busy}>
         <DialogHeader><DialogTitle>清理当前项目的任务记录？</DialogTitle><DialogDescription>仅清理全部镜头均已完成或失败的任务记录，生成素材会保留。运行中、需要处理和已取消的任务不会清理。</DialogDescription></DialogHeader>

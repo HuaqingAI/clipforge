@@ -16,6 +16,14 @@ const PARAMETER_COPY: Record<string, { label: string; description: string }> = {
     label: "生成声音",
     description: "开启后，模型会同时生成画面和声音；关闭后仅生成画面。",
   },
+  preferMultiShots: {
+    label: "智能多镜头",
+    description: "开启后，允许在同一段视频中自动切换景别或机位；默认关闭，适合逐个分镜生成连续镜头。",
+  },
+  elements: {
+    label: "主体参考",
+    description: "用于保持人物或物品的外观一致。填写 JSON 数组，每项包含 id 与 bindName，并在提示词中用 <<<主体ID>>> 引用；未使用时留空。",
+  },
 };
 
 const PARAMETER_ALIASES: Record<string, string> = {
@@ -24,6 +32,8 @@ const PARAMETER_ALIASES: Record<string, string> = {
   aspect_ratio: "aspectRatio", aspectRatio: "aspectRatio", ratio: "aspectRatio",
   audio: "audioEnabled", sound: "audioEnabled", enable_audio: "audioEnabled", generate_audio: "audioEnabled",
   native_audio: "audioEnabled", audio_enabled: "audioEnabled", audioEnabled: "audioEnabled",
+  prefer_multi_shots: "preferMultiShots",
+  elements: "elements",
 };
 
 export function videoParameterLabel(name: string): string {

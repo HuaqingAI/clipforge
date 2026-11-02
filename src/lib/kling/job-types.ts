@@ -55,6 +55,7 @@ export interface KlingJobView {
   submissionState: KlingSubmissionState;
   remoteState: KlingRemoteState;
   importState: KlingImportState;
+  blockingReleasedAt?: string;
   blockedReason?: string;
   lastError?: { code: string; message: string; retryable: boolean };
   cliDiagnostics?: KlingCliDiagnostics;

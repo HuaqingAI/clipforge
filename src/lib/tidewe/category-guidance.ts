@@ -14,7 +14,7 @@ const ENVIRONMENT_FOCUS = "保留现有环境：近处与中景清楚可辨；�
 const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
   hunting_blind: {
     label: "狩猎帐篷",
-    copyAngles: ["从当前帐篷的实际布置、进出空间或可见开口，提出一个选用时会检查的问题。"],
+    copyAngles: ["围绕当前帐篷有依据的进出、等候或观察处境，用已确认功能说明对应的实际使用收益；参考支持的布置、空间或开口细节可让购买理由更具体。"],
     visualExamples: {
       context: "参考中的帐篷完整立在现有营位，保留真实尺寸与周围空间。",
       ordinaryUse: "人物已站在参考支持的现有入口旁，扶住可见边缘并完成一个小幅普通操作。",
@@ -26,7 +26,7 @@ const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
   },
   waders: {
     label: "涉水服",
-    copyAngles: ["围绕穿着准备、参考支持的版型和可见连接部位，解释一个实际选用问题。"],
+    copyAngles: ["围绕资料支持的穿着准备或实际使用处境，将当前涉水服已确认的结构、功能与对应使用收益联系起来；参考支持的版型和连接细节可用于具体说明。"],
     visualExamples: {
       context: "人物在平稳干燥岸边穿好参考中的涉水服，展示整体穿着关系。",
       ordinaryUse: "手已搭在参考支持的现有背带或扣件，作一次小幅整理后停稳。",
@@ -38,7 +38,7 @@ const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
   },
   heated_gear: {
     label: "加热装备",
-    copyAngles: ["围绕当前加热装备的实际形态、穿戴或使用准备，以及已确认的供电条件，展开一个具体选择。"],
+    copyAngles: ["围绕当前装备有依据的寒冷环境使用需求，用已确认的功能、实际形态和使用条件说明它能带来的具体帮助；加热部位、档位、续航或供电优势仅在当前商品事实支持时作为购买理由。"],
     visualExamples: {
       context: "在真实户外使用位置展示当前参考中的加热装备整体，保留它实际的穿戴或支撑方式。",
       ordinaryUse: "人物按当前装备的真实用途穿戴、持握或使用，手已接触一个参考支持的可见部位。",
@@ -50,7 +50,7 @@ const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
   },
   apparel: {
     label: "服装",
-    copyAngles: ["从当前服装的穿着搭配、版型或参考支持的面料细节，提出可实际观察的选择。"],
+    copyAngles: ["围绕当前服装的实际穿着或搭配处境，直接讲清已确认功能、版型或有依据的面料细节如何回应使用需求；购买理由应落在当前商品支持的具体用途和收益上。"],
     visualExamples: {
       context: "人物在真实使用环境中穿着参考服装，以适当景别显示整件衣服与身体的关系。",
       ordinaryUse: "人物整理当前衣服已有的袖口或衣摆，或做一次自然抬臂，保持衣料随身体受力。",
@@ -62,7 +62,7 @@ const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
   },
   boots: {
     label: "靴子",
-    copyAngles: ["从当前靴子的穿着关系、筒口或参考支持的鞋底外观，解释实际选用时要看的部位。"],
+    copyAngles: ["围绕当前靴子有依据的穿着和行走处境，用已确认功能说明对应的使用收益；靴筒、筒口或鞋底外观可作具体说明，性能理由须有商品资料支持。"],
     visualExamples: {
       context: "人物穿着参考中的靴子站在平稳地面，构图容纳实际靴筒、脚与周围环境。",
       ordinaryUse: "已经穿好的靴子完成一次普通短步并停稳，或手轻整参考中已有的筒口部件。",
@@ -74,7 +74,7 @@ const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
   },
   accessories: {
     label: "配件",
-    copyAngles: ["围绕当前配件的具体用途、可见结构及有依据的普通使用，展开一个实际选择问题。"],
+    copyAngles: ["围绕当前配件资料支持的具体用途和使用处境，说明已确认功能或可见结构对实际使用有什么帮助，以当前商品自身的用途建立购买理由。"],
     visualExamples: {
       context: "在当前配件真实的携带或使用位置展示整体，保持与人物及环境的实际尺度。",
       ordinaryUse: "仅按商品名称与参考支持的用途持握、携带或接触当前配件，完成一个小幅普通动作。",
@@ -87,7 +87,7 @@ const EXAMPLES: Record<TideweShopCategory, CategoryExamples> = {
 };
 
 const CHAIR_EXAMPLES: Partial<CategoryExamples> = {
-  copyAngles: ["从当前椅子的真实坐姿、支撑位置与可见座面结构，提出坐下使用前会检查的问题。"],
+  copyAngles: ["围绕当前椅子有依据的久坐、观察或户外使用处境，选择对使用者重要且有事实支持的需求，直接说明已确认功能带来的具体收益；真实坐姿、支撑位置与可见座面结构可让说明更具体，加热、旋转或调节等卖点仅在当前商品事实支持时采用。"],
   visualExamples: {
     context: "参考中的椅子放在平稳地面，构图显示完整座面、支撑与人物使用空间。",
     ordinaryUse: "人物已稳定坐在椅面上，保持受力与支撑，作一次自然姿态调整后停稳。",
@@ -105,7 +105,7 @@ export function buildTideweCategoryGuidance(category: unknown, context: { produc
     && (/\bchairs?\b|椅/i.test(context.productName ?? "") || category === "hunting_chair");
   const examples = resolved ? EXAMPLES[resolved] : {
     label: "尚未选择品类",
-    copyAngles: ["仅围绕当前商品资料和参考中实际可见的外观与使用情境展开。"],
+    copyAngles: ["围绕当前商品资料支持的具体使用处境，将已确认功能或参考中可见的细节与有依据的使用收益联系起来，说明适合当前需求的购买理由。"],
     visualExamples: {
       context: "展示参考中当前商品与真实使用空间的关系。",
       ordinaryUse: "仅安排当前参考支持的小幅普通使用或静态观察。",
@@ -121,6 +121,6 @@ export function buildTideweCategoryGuidance(category: unknown, context: { produc
     ...(chair ? { ...CHAIR_EXAMPLES, subtype: "chair" } : {}),
     // A heated chair still needs the main class's heating/evidence limits.
     ...(chair && resolved === "heated_gear" ? { evidenceLimits: `${EXAMPLES.heated_gear.evidenceLimits} ${CHAIR_EXAMPLES.evidenceLimits}` } : {}),
-    scope: "仅为当前品类的可选文案角度与画面示例，不是当前商品事实或固定镜头模板；仅采用商品资料和参考支持的结构、动作与性能。",
+    scope: "仅为当前品类的可选文案角度与画面示例，不是当前商品事实或固定镜头模板；文案不限定句式，人称、开头与叙述顺序随内容决定，可直接陈述处境、已确认功能和有依据的使用收益；仅采用商品资料和参考支持的结构、动作与性能。",
   };
 }

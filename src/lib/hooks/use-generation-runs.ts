@@ -14,6 +14,7 @@ export interface GenerationRunItem {
   stage?: string | null;
   result?: Record<string, unknown> | null;
   error?: string | null;
+  canReleaseBlock?: boolean;
 }
 export interface GenerationRun {
   id: string;
@@ -205,8 +206,22 @@ export function useGenerationRuns(projectId: string) {
   }, [refresh]);
   const cancelRun = useCallback((id: string) => action(id, "cancel"), [action]);
   const retryImport = useCallback((id: string) => action(id, "retry_import"), [action]);
+  const releaseBlock = useCallback(async (id: string, itemId: string) => {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => {
+      controller.abort(); reject(new Error("解除阻塞超时，请刷新任务列表核对结果。"));
+    }, 15_000); });
+    try {
+      const request = fetch(`/api/generation-runs/${encodeURIComponent(id)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+        body: JSON.stringify({ action: "release_block", itemId, acknowledgePossibleCharge: true, projectId }),
+      }).then((response) => responseBody(response));
+      return await Promise.race([request, deadline]);
+    } finally { clearTimeout(timeout); changed(); await refresh(); }
+  }, [projectId, refresh]);
   const deleteRun = useCallback((id: string) => deleteRecords(projectId, id), [projectId]);
   const clearFinished = useCallback(() => deleteRecords(projectId), [projectId]);
   const isRunDeleted = useCallback((id: string) => isDeletedRun(projectId, id), [projectId]);
-  return { runs, loading: loading || snapshot.projectId !== projectId, error: snapshot.projectId === projectId ? error : null, refresh, submitRun, cancelRun, retryImport, deleteRun, clearFinished, isRunDeleted };
+  return { runs, loading: loading || snapshot.projectId !== projectId, error: snapshot.projectId === projectId ? error : null, refresh, submitRun, cancelRun, retryImport, releaseBlock, deleteRun, clearFinished, isRunDeleted };
 }

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { prepareBatchMotionKling, type BatchMotionShot } from "@/lib/batch-motion";
 import { klingErrorMessage, klingFetch } from "@/lib/kling/client";
+import { hasFreshKlingCatalog, hasVerifiedKlingCatalog } from "@/lib/kling/catalog-cache";
 import { submitGenerationRun, type GenerationRunInput } from "@/lib/hooks/use-generation-runs";
 import type { KlingSubmitRequest } from "@/lib/kling/job-types";
 import type { KlingPublicStatus } from "@/lib/kling/types";
@@ -15,14 +16,6 @@ import { validateVideoPrompt } from "@/lib/video-prompt";
 type RowStatus = "pending" | "submitting" | "submitted" | "completed" | "failed" | "uncertain";
 type Row = BatchMotionShot & { selected: boolean; state: RowStatus; message?: string; taskId?: string; reviewing?: boolean; frameError?: string };
 const stateLabel: Record<RowStatus, string> = { pending: "待提交", submitting: "正在提交", submitted: "已提交", completed: "已完成", failed: "提交失败", uncertain: "提交结果待核对" };
-
-function verifiedCatalog(status: KlingPublicStatus, profileId: string | undefined, selectionKey: string) {
-  const profile = status.profile;
-  return Boolean(status.loggedIn && status.configured && profile && (!profileId || profile.id === profileId)
-    && !profile.disabledAt && profile.environmentState === "ready" && profile.authState === "authenticated"
-    && profile.principalKey && profile.catalogRevision && profile.catalogCheckedAt
-    && status.models.some((model) => model.selectionKey === selectionKey && model.profileId === profile.id && model.catalogRevision === profile.catalogRevision));
-}
 
 export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, modelLabel, selectionKey, profileId, provider, shots, valid, onRefreshTasks, onSubmitted, onBusyChange }: {
   open: boolean;
@@ -83,6 +76,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
         let next = await response.json() as KlingPublicStatus;
         if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(klingErrorMessage(next));
+        if (refreshNeeded && !refreshFailed && hasFreshKlingCatalog(next, profileId, selectionKey)) refreshNeeded = false;
         if (refreshNeeded && next.loggedIn && next.profile?.id) {
           try {
             const refreshed = await klingFetch("/api/integrations/kling/refresh", { method: "POST", body: JSON.stringify({ profileId: next.profile.id, credits: false }), signal: controller.signal });
@@ -90,7 +84,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
             if (controller.signal.aborted) return;
             if (!refreshed.ok) {
               if (body?.error?.code === "KLING_PROFILE_BUSY") {
-                setStatus(!refreshFailed && verifiedCatalog(next, profileId, selectionKey) ? next : null);
+                setStatus(!refreshFailed && hasVerifiedKlingCatalog(next, profileId, selectionKey) ? next : null);
                 setNotice("Kling 正在处理其他操作，模型刷新将自动重试；已验证的模型可继续使用。");
                 return;
               }
@@ -115,7 +109,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
   const model = status?.models.find((item) => item.selectionKey === selectionKey && item.profileId === status.profile?.id && item.catalogRevision === status.profile?.catalogRevision);
   const modelConfiguration = JSON.stringify([model, status?.profile?.authRevision, status?.profile?.principalKey]);
   useEffect(() => { setConfirmed(false); }, [modelConfiguration, valid]);
-  const modelReady = !isKling || Boolean(model && status && verifiedCatalog(status, profileId, selectionKey));
+  const modelReady = !isKling || Boolean(model && status && hasVerifiedKlingCatalog(status, profileId, selectionKey));
   const unresolved = rows.some((row) => row.state === "uncertain");
   function rowIssue(row: Row) {
     if (row.disabledReason) return row.disabledReason;

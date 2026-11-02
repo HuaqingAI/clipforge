@@ -8,7 +8,11 @@ export async function GET(_req: NextRequest, context: Context) {
   catch (error) { return failure(error); }
 }
 export async function POST(req: NextRequest, context: Context) {
-  try { return NextResponse.json(generationRunAction((await context.params).id, (await req.json()).action)); }
+  try {
+    const input = await req.json();
+    if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.action !== "string") throw new GenerationRunError("后台任务操作参数不正确。");
+    return NextResponse.json(generationRunAction((await context.params).id, input.action, input));
+  }
   catch (error) { return failure(error); }
 }
 export async function DELETE(req: NextRequest, context: Context) {

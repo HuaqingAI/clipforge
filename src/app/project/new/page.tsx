@@ -1441,6 +1441,25 @@ export default function NewProjectPage() {
                 })}
               </div>
 
+              {isTidewe && <div className="mt-5 space-y-2 border-t border-border/40 pt-5">
+                <Label htmlFor="tidewe-speech-mode" className="text-sm font-medium">{tt("speechMode")}</Label>
+                <select
+                  id="tidewe-speech-mode"
+                  aria-label={tt("speechMode")}
+                  aria-describedby="tidewe-speech-description"
+                  value={tideweDraft.speechMode}
+                  disabled={isSubmitting}
+                  onChange={(event) => updateTideweDraft({ speechMode: event.target.value as TideweOutdoorProfile["speechMode"] })}
+                  className="h-10 w-full rounded-md border border-border/50 bg-background px-3 text-sm"
+                >
+                  <option value="on_camera">{tt("speechOnCamera")}</option>
+                  <option value="voiceover">{tt("speechVoiceover")}</option>
+                </select>
+                <p id="tidewe-speech-description" className="text-xs leading-relaxed text-muted-foreground">
+                  {tt(tideweDraft.speechMode === "on_camera" ? "speechOnCameraDescription" : "speechVoiceoverDescription")}
+                </p>
+              </div>}
+
               {isPremiumCg && videoMode === "scene_demo" && (
                 <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3.5 py-3">
                   <p className="text-xs leading-relaxed text-amber-200/90">{t("cgSceneReferenceWarning")}</p>

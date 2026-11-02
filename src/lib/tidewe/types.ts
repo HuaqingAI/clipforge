@@ -2,8 +2,10 @@ import type { TideweShopCategory } from "./categories";
 
 export const TIDEWE_CORPUS_VERSION = "tidewe-2026-10-26-v1" as const;
 export const TIDEWE_COMPILER_VERSION = "tidewe-outdoor-1" as const;
-export const TIDEWE_MIN_SHOTS = 7;
-export const TIDEWE_MAX_SHOTS = 9;
+/** Use the selected target duration, never the generated timeline's actual duration. */
+export function getTideweShotCount(targetDuration: 30 | 40 | 60): 7 | 8 | 9 {
+  return targetDuration === 30 ? 7 : targetDuration === 60 ? 9 : 8;
+}
 
 /** Frozen library identity; later library edits must not silently recast a script. */
 export interface TidewePresenterSnapshot {

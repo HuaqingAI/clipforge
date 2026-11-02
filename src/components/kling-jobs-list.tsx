@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { klingJobStatus } from "@/components/kling-job-detail";
@@ -11,12 +12,15 @@ function deletionBlocked(job: KlingJobView): boolean {
   return !job.allowedActions?.includes("delete");
 }
 
-export function KlingJobsList({ jobs, onOpenJob, onRefresh, onDeleted }: {
+export function KlingJobsList({ jobs, description, onOpenJob, onRefresh, onDeleted }: {
   jobs: KlingJobView[];
+  description?: string;
   onOpenJob(jobId: string): void;
   onRefresh(): Promise<void>;
   onDeleted(jobId: string): Promise<void>;
 }) {
+  const [expanded, setExpanded] = useState(true);
+  const contentId = useId();
   const [pending, setPending] = useState<KlingJobView | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,9 +52,11 @@ export function KlingJobsList({ jobs, onOpenJob, onRefresh, onDeleted }: {
   return <>
     {jobs.length > 0 && <section aria-label="Kling 视频任务" className="mb-5 space-y-2 rounded-xl border border-border/60 p-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">Kling 单镜头任务</h3>
+        <h3 className="text-sm font-medium"><button type="button" className="flex min-h-8 items-center gap-2 text-left" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded((current) => !current)}><ChevronDown aria-hidden="true" className={`size-4 shrink-0 transition-transform${expanded ? "" : " -rotate-90"}`} />Kling 单镜头任务</button></h3>
         <button type="button" className="text-xs text-primary" onClick={() => void onRefresh()}>刷新本地记录</button>
       </div>
+      <div id={contentId} hidden={!expanded} className="space-y-2">
+      {description && <p className="text-sm text-muted-foreground">{description}</p>}
       {jobs.map((job) => <div key={job.jobId} className={`flex min-h-11 items-center gap-2 rounded-lg border p-2 text-xs ${job.blockedReason || job.submissionState === "submission_unknown" || job.importState === "failed" ? "border-amber-500/40 bg-amber-500/5" : "border-border/50"}`}>
         <button type="button" className="flex min-h-8 min-w-0 flex-1 flex-wrap items-center justify-between gap-2 text-left" onClick={() => onOpenJob(job.jobId)}>
           <span>镜头 {job.shotId} · {job.modelId}</span>
@@ -58,6 +64,7 @@ export function KlingJobsList({ jobs, onOpenJob, onRefresh, onDeleted }: {
         </button>
         <button type="button" aria-label={`删除镜头 ${job.shotId} 的任务`} className="shrink-0 rounded-md px-2 py-1.5 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40" disabled={deleting || deletionBlocked(job)} title={deletionBlocked(job) ? "任务正在处理或被其他任务使用，暂不能删除" : "删除本地任务和生成的视频"} onClick={() => { setPending(job); setError(null); }}>删除</button>
       </div>)}
+      </div>
     </section>}
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open && !deletingRef.current) { setPending(null); setError(null); } }}>
       <DialogContent showCloseButton={!deleting}>

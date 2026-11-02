@@ -51,18 +51,32 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     expect(buildTideweImportedCopyPrompt(withScene)).toBe(buildTideweImportedCopyPrompt(importedInput));
   });
 
-  it("requires 7-9 shots independently for initial generation, regeneration and supplied-copy planning", () => {
-    const payload = JSON.parse(buildTideweCopyPrompt(input, 3));
-    expect(payload.shotCount).toEqual({ min: 7, max: 9 });
-    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("Each complete copy must support 7-9 semantic shots");
+  it.each([
+    { targetDuration: 30, shotCount: 7 },
+    { targetDuration: 40, shotCount: 8 },
+    { targetDuration: 60, shotCount: 9 },
+  ] as const)("requires $shotCount shots for a $targetDuration-second AI copy", ({ targetDuration, shotCount }) => {
+    const payload = JSON.parse(buildTideweCopyPrompt({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) }, 3));
+    expect(payload.targetDuration).toBe(targetDuration);
+    expect(payload.shotCount).toBe(shotCount);
+    for (const system of [TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT]) {
+      expect(system).toContain(`${targetDuration}s=${shotCount} shots`);
+      expect(system).not.toMatch(/7-9|regardless of target duration|shot-count range/);
+    }
+  });
+
+  it("keeps the duration-specific count for every candidate, regeneration and supplied-copy planning", () => {
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("Each complete copy must support exactly the requested shotCount semantic shots");
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("every candidate on initial generation and regeneration");
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("visualBeats are meaning blocks, not the shot count");
-    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("wordCount / 2.6 + 7 * 0.3 must fit targetDuration");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Every copy MUST have 7-9 shots inclusive");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Never return fewer than 7 or more than 9 shots for any copy");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("regardless of target duration, copy source, initial generation or regeneration");
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("wordCount / 2.6 + shotCount * 0.3 must fit targetDuration");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Every copy MUST have exactly the requested shotCount shots, fixed by targetDuration");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Never return fewer or more than that fixed count for any copy source on initial generation or regeneration");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Apply this count to each candidate independently");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("extend the total duration within that shot-count range");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("For short copy, keep exactly the requested shotCount distinct useful shots");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("do not add, delete or repeat narration");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("extend the total duration without changing that fixed shot count");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Do not add or remove shots, truncate the text, repeat narration or speed up speech");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).not.toContain("fewer/more when meaning and duration require");
   });
 
@@ -115,7 +129,7 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     const payload = JSON.parse(buildTideweCopyPrompt(imported, 3));
     expect(payload).toEqual(JSON.parse(buildTideweImportedCopyPrompt(imported)));
     expect(payload.frozenImportedCopy).toBe(original);
-    for (const key of ["copyBrief", "approvedKlingPatterns", "styleExamples", "targetDuration"]) {
+    for (const key of ["copyBrief", "approvedKlingPatterns", "styleExamples", "targetDuration", "shotCount"]) {
       expect(payload).not.toHaveProperty(key);
     }
     expect(payload.outputFormat.copies).toHaveLength(1);

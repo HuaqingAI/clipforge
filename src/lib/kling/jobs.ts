@@ -517,7 +517,7 @@ function acknowledge(jobId: string, generationId: string, method: "cli" | "recei
     }).run();
     return tx.update(klingJobs).set({
       remoteGenerationId: generationId, submissionState: "acknowledged", remoteState: isTerminal(row) ? row.remoteState : "pending", needsConfirmation: false,
-      nextQueryAt: Date.now() + 5000, data: { ...row.data, aiTaskId, acknowledgedAt: Date.now(), bindingMethod: method,
+      nextQueryAt: row.data.blockingReleasedAt ? null : Date.now() + 5000, data: { ...row.data, aiTaskId, acknowledgedAt: Date.now(), bindingMethod: method,
         ...(method === "manual" ? { bindingConfirmedAt: Date.now(), bindingCandidateHash } : {}), error: undefined, blockedReason: undefined },
       revision: row.revision + 1, updatedAt: Date.now(),
     }).where(eq(klingJobs.id, row.id)).returning().get()!;
@@ -614,6 +614,7 @@ export async function dispatchKlingFilmShotJob(jobId: string, grant: KlingFilmDi
 async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promise<void> {
   await withKlingJobLease(jobId, async () => {
     let job = getKlingJob(jobId);
+    if (job.data.blockingReleasedAt) return;
     if (job.data.filmRunId) {
       if (!grant || grant.filmRunId !== job.data.filmRunId || grant.filmShotId !== job.data.filmShotId || grant.authorizationEpoch < (job.data.filmAuthorizationEpoch ?? 0)) throw new KlingError("KLING_FILM_MANAGED_JOB", "整片镜头只能由原整片编排服务授权派发。", 409);
       if (grant.expectedInputHashes !== undefined && canonicalJson(job.data.inputs.map(({ role, hash }) => ({ role, hash }))) !== canonicalJson(grant.expectedInputHashes)) throw new KlingError("KLING_INPUT_CHANGED", "整片镜头输入与原批次确认快照不一致，已阻止生成。", 409);
@@ -735,7 +736,7 @@ function saveRemoteResult(jobId: string, task: KlingNormalizedTask): void {
       state === "unknown" && !isTerminal(job) ? { code: "KLING_STATUS_UNKNOWN", message: "平台返回暂未识别的状态，请保留原任务继续查询", retryable: true } : undefined;
     tx.update(klingJobs).set({
       remoteState, importState: remoteState === "completed" && job.importState === "not_ready" ? "pending" : job.importState,
-      nextQueryAt: ["failed", "cancelled"].includes(remoteState) || (remoteState === "completed" && !completedWithoutWorks) ? null : Date.now() + Math.min(30_000, 5000 * Math.pow(2, Math.min(attempts, 3))),
+      nextQueryAt: job.data.blockingReleasedAt || ["failed", "cancelled"].includes(remoteState) || (remoteState === "completed" && !completedWithoutWorks) ? null : Date.now() + Math.min(30_000, 5000 * Math.pow(2, Math.min(attempts, 3))),
       data: { ...job.data, lastCheckedAt: Date.now(), rawStatus: task.rawStatus.slice(0, 120), queryAttempts: attempts, blockedReason: undefined, error },
       revision: job.revision + 1, updatedAt: Date.now(),
     }).where(eq(klingJobs.id, job.id)).run();
@@ -761,12 +762,12 @@ async function queryUnderLease(jobId: string): Promise<void> {
   } catch (error) {
     if (error instanceof KlingError && error.code === "KLING_PROFILE_BUSY") {
       // Other shot submissions share this CLI command lock. Contention says nothing about the cloud task.
-      patchKlingJob(jobId, { nextQueryAt: Date.now() + 5000 });
+      patchKlingJob(jobId, { nextQueryAt: getKlingJob(jobId).data.blockingReleasedAt ? null : Date.now() + 5000 });
       throw error;
     }
     const detail = failure(error);
     const current = getKlingJob(jobId);
-    patchKlingJob(jobId, { nextQueryAt: Date.now() + 30_000 }, {
+    patchKlingJob(jobId, { nextQueryAt: current.data.blockingReleasedAt ? null : Date.now() + 30_000 }, {
       error: detail, blockedReason: isAuthFailure(detail.code) ? detail.code === "KLING_ACCOUNT_MISMATCH" ? "account_mismatch" : "auth_required" : undefined,
     });
     // A known completed remote task stays completed even if refreshing a signed URL failed.
@@ -874,7 +875,10 @@ export async function klingJobAction(jobId: string, action: string, body: unknow
       patchKlingJob(jobId, { submissionState: "not_submitted", needsConfirmation: false, nextQueryAt: null }, { authorizedUntil: 0, error: undefined, blockedReason: undefined });
     }); break;
     case "pause-query": patchKlingJob(jobId, { autoQueryPaused: true }); break;
-    case "resume-query": patchKlingJob(jobId, { autoQueryPaused: false, nextQueryAt: Date.now() }); startKlingJobRunner(); wakeKlingJobRunner(); break;
+    case "resume-query": {
+      if (getKlingJob(jobId).data.blockingReleasedAt) throw new KlingError("KLING_JOB_RELEASED", "已解除占用的原任务仅支持手动查询和恢复保存。", 409);
+      patchKlingJob(jobId, { autoQueryPaused: false, nextQueryAt: Date.now() }); startKlingJobRunner(); wakeKlingJobRunner(); break;
+    }
     case "dismiss": patchKlingJob(jobId, { dismissedAt: Date.now() }); break;
     default: throw new KlingError("KLING_ACTION_UNSUPPORTED", "不支持的任务操作", 400);
   }
@@ -905,6 +909,7 @@ export async function runKlingJobTick(): Promise<void> {
     await reconcileKlingJobs();
     const rows = listKlingJobs().reverse();
     for (const job of rows) {
+      if (job.data.blockingReleasedAt) continue;
       if (!job.data.filmRunId && job.submissionState === "prepared" && !job.needsConfirmation && job.data.authorizedBootId === runtime.bootId) {
         await dispatchKlingJob(job.id).catch(() => {}); continue;
       }

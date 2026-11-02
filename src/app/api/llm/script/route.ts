@@ -429,7 +429,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       for (const [copyIndex, script] of scripts.entries()) {
         if (!script.copyDocument) throw new TideweValidationError("TIDEWE generation returned no canonical copy document.");
         assertTideweScript(script, tideweProfile.presenter ?? null);
-        assertTideweGeneratedShotCount(script.shots.length, copyIndex);
+        assertTideweGeneratedShotCount(script.shots.length, tideweProfile.targetDuration, copyIndex);
       }
     }
     generationCheckpoint({ generatedScripts: scripts, submissionState: "acknowledged", stage: "saving" });

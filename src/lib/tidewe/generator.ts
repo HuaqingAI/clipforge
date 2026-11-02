@@ -2,7 +2,7 @@ import type { GeneratedScript, ScriptInput } from "@/lib/script-engine/generator
 import type { Shot } from "@/lib/db/schema";
 import { assertSupportedTideweProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { stripThinkBlocks } from "@/lib/llm-clean";
-import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_MIN_SHOTS, TIDEWE_MAX_SHOTS, type TideweCopyDocument } from "./types";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, getTideweShotCount, type TideweCopyDocument } from "./types";
 import { assertTideweCopyClaims, assertTideweGeneratedShotCount, assertTideweImportedCopy, assertTideweImportedCopyClaims, assertTideweScript, canonicalizeTideweCopy, englishWordCount, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
 import { buildTideweCopyPrompt, buildTideweImportedCopyPrompt, selectTideweExamples, tideweFactsForInput, tideweProductSafeguards, tideweProfileForInput, tideweSceneDirectionForInput, TIDEWE_APPROVED_KLING_PATTERNS, TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT } from "./prompts";
 import { buildTideweCategoryGuidance } from "./category-guidance";
@@ -27,6 +27,7 @@ function json(text: string): Record<string, unknown> {
 export async function generateTideweScripts(input: ScriptInput, complete: TideweCompletion): Promise<GeneratedScript[]> {
   const profile = tideweProfileForInput(input) ?? createTideweOutdoorProfile(input);
   assertSupportedTideweProfile(profile);
+  const shotCount = getTideweShotCount(profile.targetDuration);
   if (input.copyText !== undefined) assertTideweImportedCopy(input.copyText);
   const facts = tideweFactsForInput(input);
   const imported = input.copyText?.trim();
@@ -45,7 +46,7 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
       else assertTideweCopyClaims(canonical, facts, claimedFactIds);
       const wordCount = englishWordCount(canonical);
       const visualBeats = imported === undefined ? parseTideweCopyBeats(raw.visualBeats, canonical, facts) : undefined;
-      if (imported === undefined && wordCount / 2.6 + Math.max(TIDEWE_MIN_SHOTS, visualBeats?.length ?? 0) * 0.3 > profile.targetDuration) {
+      if (imported === undefined && wordCount / 2.6 + shotCount * 0.3 > profile.targetDuration) {
         throw new TideweValidationError("AI copy exceeds the conversational speech budget. Shorten the copy before freezing it; preserve the main value and factual qualifications.");
       }
       const copyDocument: TideweCopyDocument = {
@@ -64,7 +65,7 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
   return complete(TIDEWE_PLAN_SYSTEM_PROMPT, JSON.stringify({
     task: "Allocate each frozen copy to semantic shots. Return all candidates in their original order.",
     ...tideweSceneDirectionForInput(input),
-    shotCount: { min: TIDEWE_MIN_SHOTS, max: TIDEWE_MAX_SHOTS },
+    shotCount,
     targetDuration: profile.targetDuration, videoMode: profile.videoMode, speechMode: profile.speechMode, facts,
     product: { name: input.productName, visualObservations: input.productAnalysis ?? "" },
     categoryGuidance: buildTideweCategoryGuidance(facts.category, { productName: input.productName, visualObservations: input.productAnalysis }),
@@ -78,7 +79,7 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
     if (!Array.isArray(parsed.scripts) || parsed.scripts.length !== copies.length) throw new TideweValidationError("Planner must return every frozen copy");
     return parsed.scripts.map((raw: unknown, index: number) => {
       if (!record(raw) || raw.copyIndex !== index || !Array.isArray(raw.shots)) throw new TideweValidationError("Invalid semantic plan or candidate order");
-      assertTideweGeneratedShotCount(raw.shots.length, index);
+      assertTideweGeneratedShotCount(raw.shots.length, profile.targetDuration, index);
       const planned = raw.shots.map((s: unknown) => { if (!record(s)) throw new TideweValidationError("Invalid shot"); return s; });
       const copy = copies[index];
       const spans = mapTideweCopySpans(copy.copyDocument.text, planned.map(s => ({ scriptSegment: typeof s.scriptSegment === "string" ? s.scriptSegment : requireText(s.scriptSegment, "scriptSegment") })));
