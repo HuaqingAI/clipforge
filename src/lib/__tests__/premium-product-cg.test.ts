@@ -284,17 +284,17 @@ describe("premium product CG response policy", () => {
     expect(scripts[1].shots[0].voiceover).toBe("The frame is walnut.");
   });
 
-  it("still rejects echoed placeholder voiceover in restrained CG mode", () => {
+  it("accepts generated narration in restrained CG mode without a quality gate", () => {
     const restrainedProfile = createPremiumProductCgProfile({ narrationMode: "restrained" });
     const response = {
       title: "Invalid material study",
       shots: [{ ...safeShot, voiceover: "english keyword" }],
     };
 
-    expect(() => parseScriptResponse(JSON.stringify(response), PREMIUM_PRODUCT_CG_STYLE, restrainedProfile)).toThrow(/口播/);
+    expect(parseScriptResponse(JSON.stringify(response), PREMIUM_PRODUCT_CG_STYLE, restrainedProfile)[0].shots[0].voiceover).toBe("english keyword");
   });
 
-  it("rejects a CG response that asks the renderer to add a promotional visual", () => {
+  it("applies generated CG prose directly for the creator to review", () => {
     const response = {
       title: "Unsafe film",
       shots: [{
@@ -303,6 +303,6 @@ describe("premium product CG response policy", () => {
       }],
     };
 
-    expect(() => parseScriptResponse(JSON.stringify(response), "premium_product_cg")).toThrow(/policy violation/);
+    expect(parseScriptResponse(JSON.stringify(response), "premium_product_cg")[0].shots[0].description).toBe("Show a discount label beside the chair.");
   });
 });

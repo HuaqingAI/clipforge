@@ -12,7 +12,7 @@ import {
   isTideweOutdoorProfile,
 } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
-import { assertTideweScript } from "@/lib/tidewe/validation";
+import { assertTideweScriptIntegrity } from "@/lib/tidewe/validation";
 import { POST as generateScripts } from "@/app/api/llm/script/route";
 
 function scriptView<T extends Parameters<typeof scriptRevision>[0]>(script: T) {
@@ -182,7 +182,7 @@ export async function PATCH(
               : "该历史方案的创作类型与当前项目不一致，暂时无法恢复。", conflict.error),
           }, { status: 409 });
         }
-        if (isTideweOutdoorProfile(context.scriptProfile)) assertTideweScript(target, context.scriptProfile.presenter ?? null);
+        if (isTideweOutdoorProfile(context.scriptProfile)) assertTideweScriptIntegrity(target, context.scriptProfile.presenter ?? null);
 
         // Restoring changes the project's active batch. Any unfinished work in the project
         // must settle first, including work bound to a different historical script.
@@ -263,7 +263,7 @@ export async function PATCH(
           const currentContext = checkCreativeProfileContext(currentProject, current);
           if (!currentContext.ok) return NextResponse.json(contextConflict(currentContext), { status: 409 });
           const currentShots = patchShots(current.shots ?? []);
-          assertTideweScript({ ...current, shots: currentShots }, isTideweOutdoorProfile(currentContext.scriptProfile) ? currentContext.scriptProfile.presenter ?? null : undefined);
+          assertTideweScriptIntegrity({ ...current, shots: currentShots }, isTideweOutdoorProfile(currentContext.scriptProfile) ? currentContext.scriptProfile.presenter ?? null : undefined);
           const updated = tx.update(scripts).set({ shots: currentShots }).where(eq(scripts.id, scriptId)).returning().get()!;
           return NextResponse.json({ success: true, script: scriptView(updated) });
         }, { behavior: "immediate" });
@@ -303,7 +303,7 @@ export async function PATCH(
       if (!target) return apiError(req, "脚本不存在", "Script not found", 404);
       const context = checkCreativeProfileContext(project, target);
       if (!context.ok) return NextResponse.json(contextConflict(context), { status: 409 });
-      if (isTideweOutdoorProfile(context.scriptProfile)) assertTideweScript(target, context.scriptProfile.presenter ?? null);
+      if (isTideweOutdoorProfile(context.scriptProfile)) assertTideweScriptIntegrity(target, context.scriptProfile.presenter ?? null);
       tx.update(scripts).set({ selected: false }).where(eq(scripts.projectId, id)).run();
       const updated = tx.update(scripts).set({ selected: true }).where(eq(scripts.id, selectedId)).returning().get();
       return NextResponse.json({ success: true, script: updated ? scriptView(updated) : updated });

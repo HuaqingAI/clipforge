@@ -695,9 +695,7 @@ describe("parseScriptResponse", () => {
     expect(shot.transition).toBe("ai_start_end");
   });
 
-  // 弱模型（实测 Ollama qwen2.5:0.5b）会返回结构完全合法、内容全空的脚本：分镜齐全但 voiceover 全是
-  // 空串。这种"成功"一路走到成片才暴露——视频没声音也没字幕。必须当场失败并说清怎么办（issue #19 追问）。
-  it("所有分镜口播都为空 → 抛错而不是返回一个会渲成哑片的脚本", () => {
+  it("所有分镜口播都为空仍直接应用，由用户决定是否重新生成", () => {
     const content = JSON.stringify({
       title: "测试",
       shots: [
@@ -705,18 +703,17 @@ describe("parseScriptResponse", () => {
         { shotId: 2, type: "cta", duration: 3, description: "b", visualSource: "ai_generate", voiceover: "   " },
       ],
     });
-    expect(() => parseScriptResponse(content, "pain_point")).toThrow(/口播/);
+    expect(parseScriptResponse(content, "pain_point")[0].shots.map((shot) => shot.voiceover)).toEqual(["", ""]);
   });
 
-  // 同一批小模型的另一种失败姿势：把我们 prompt 里的 JSON 字段说明当成内容抄回来（实测 0.5b 两种都出现过）
-  it("把格式说明原样抄回来的「口播」不算口播", () => {
+  it("口播内容不经过质量门槛，保留模型返回的文本", () => {
     const content = JSON.stringify({
       title: "测试",
       shots: [
         { shotId: 1, type: "hook", duration: 3, description: "a", visualSource: "ai_generate", voiceover: "配音文案：口语化的播音文案，控制字数与duration匹配（约3字/秒）" },
       ],
     });
-    expect(() => parseScriptResponse(content, "pain_point")).toThrow(/口播/);
+    expect(parseScriptResponse(content, "pain_point")[0].shots[0].voiceover).toBe("配音文案：口语化的播音文案，控制字数与duration匹配（约3字/秒）");
   });
 
   it("只要还有一个分镜有口播就照常返回（用户可以自己补另一条）", () => {

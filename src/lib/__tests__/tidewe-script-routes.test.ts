@@ -17,7 +17,10 @@ import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 
 const calls = vi.hoisted(() => ({ generate: vi.fn(), analyze: vi.fn(), observe: vi.fn(), complete: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
-vi.mock("@/lib/tidewe/image-analysis", () => ({ analyzeTideweProductImages: calls.observe }));
+vi.mock("@/lib/tidewe/image-analysis", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/tidewe/image-analysis")>(),
+  analyzeTideweProductImages: calls.observe,
+}));
 vi.mock("@/lib/script-engine/generator", () => ({
   generateScript: calls.generate, analyzeProduct: calls.analyze,
   completeWithJsonRetry: calls.complete, reasoningParams: () => ({}), extractJSON: (text: string) => text,
@@ -88,6 +91,145 @@ beforeEach(() => {
   calls.complete.mockReset().mockResolvedValue({ verdicts: [], rewrites: [{ shotId: 1, voiceover: "Buy now!", tier: "default" }], descriptionRewrites: [], summary: "意见" });
 });
 afterEach(() => { sqlite.close(); vi.clearAllMocks(); });
+
+describe("script product observation reuse", () => {
+  const legacyObservations = "UNVERIFIED VISUAL OBSERVATIONS ONLY (not product specifications): observed green jacket";
+  const controlObservations = "TIDEWE_REFERENCE_APPEARANCE_V2: 图3 observed 胸前控制器与按钮轮廓清楚可见。";
+  const currentObservations = "TIDEWE_REFERENCE_APPEARANCE_V3: 图1 observed 靴筒轮廓与鞋底纹路清楚可见。";
+
+  it.each([legacyObservations, controlObservations])("refreshes only known older project caches once: %s", async previousObservations => {
+    db.update(schema.projects).set({ productAnalysis: previousObservations }).run();
+    calls.observe.mockResolvedValue(currentObservations);
+    const first = await generate(req("/api/llm/script", generationBody("refresh-legacy-cache")));
+    expect(first.status).toBe(200);
+    expect(calls.generate.mock.calls[0][0].productAnalysis).toBe(currentObservations);
+    expect(db.select().from(schema.projects).get()?.productAnalysis).toBe(currentObservations);
+    const second = await generate(req("/api/llm/script", generationBody("reuse-refreshed-cache")));
+    expect(second.status).toBe(200);
+    expect(calls.observe).toHaveBeenCalledOnce();
+    expect(calls.generate.mock.calls[1][0].productAnalysis).toBe(currentObservations);
+  });
+
+  it("forwards all saved reference images to the single observation call", async () => {
+    const references = Array.from({ length: 6 }, (_, index) => `https://example.invalid/jacket-${index + 1}.png`);
+    db.update(schema.projects).set({ productImages: references }).run();
+    expect((await generate(req("/api/llm/script", generationBody("all-product-images")))).status).toBe(200);
+    expect(calls.observe).toHaveBeenCalledExactlyOnceWith(llmConfig, references);
+  });
+
+  it.each([legacyObservations, controlObservations])("preserves explicitly supplied older observations: %s", async explicitObservations => {
+    db.update(schema.projects).set({ productAnalysis: explicitObservations }).run();
+    const response = await generate(req("/api/llm/script", { ...generationBody(), productAnalysis: explicitObservations }));
+    expect(response.status).toBe(200);
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.generate.mock.calls[0][0].productAnalysis).toBe(explicitObservations);
+  });
+
+  it.each([legacyObservations, controlObservations].flatMap(previousObservations =>
+    ["checkpoint string", "completed unavailable analysis", "failed attempt", "generated result"].map(kind => ({ previousObservations, kind })),
+  ))("does not reanalyze older evidence while resuming a $kind: $previousObservations", async ({ previousObservations, kind }) => {
+    db.update(schema.projects).set({ productAnalysis: previousObservations }).run();
+    let checkpoint: Record<string, unknown> = kind === "checkpoint string" ? { productAnalysis: previousObservations }
+      : kind === "completed unavailable analysis" ? { analysisComplete: true, productAnalysis: null }
+      : kind === "failed attempt" ? { scriptValidationFailure: { code: "TIDEWE_VALIDATION_FAILED", message: "Invalid metadata" } }
+      : { generatedScripts: [generated()], submissionState: "acknowledged" };
+    const response = await withGenerationContext({ itemId: "legacy-checkpoint", checkpoint, save: value => { checkpoint = structuredClone(value); } },
+      () => generate(req("/api/llm/script", generationBody("legacy-checkpoint"))));
+    expect(response.status).toBe(200);
+    expect(calls.observe).not.toHaveBeenCalled();
+    if (kind === "generated result") expect(calls.generate).not.toHaveBeenCalled();
+    else expect(calls.generate.mock.calls[0][0].productAnalysis).toBe(previousObservations);
+  });
+
+  it.each(["custom product observations", "TIDEWE_REFERENCE_APPEARANCE_V4: newer product observations"])("preserves custom and unknown newer project evidence: %s", async savedObservations => {
+    db.update(schema.projects).set({ productAnalysis: savedObservations }).run();
+    expect((await generate(req("/api/llm/script", generationBody()))).status).toBe(200);
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.generate.mock.calls[0][0].productAnalysis).toBe(savedObservations);
+  });
+
+  it("reuses saved image observations for a fresh regeneration", async () => {
+    expect((await generate(req("/api/llm/script", generationBody("first-generation")))).status).toBe(200);
+    expect(calls.observe).toHaveBeenCalledOnce();
+    expect((await generate(req("/api/llm/script", generationBody("next-generation")))).status).toBe(200);
+    expect(calls.observe).toHaveBeenCalledOnce();
+    expect(calls.generate).toHaveBeenCalledTimes(2);
+    expect(calls.generate.mock.calls[1][0].productAnalysis).toBe("observed: visible green jacket");
+  });
+
+  it("honors explicitly supplied observations over the saved cache", async () => {
+    db.update(schema.projects).set({ productAnalysis: "old observations" }).run();
+    const response = await generate(req("/api/llm/script", { ...generationBody(), productAnalysis: "user-supplied observations" }));
+    expect(response.status).toBe(200);
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ productAnalysis: "user-supplied observations" }));
+  });
+
+  it("keeps the durable analysis checkpoint authoritative when resuming a frozen project", async () => {
+    db.update(schema.projects).set({ productAnalysis: "project observations" }).run();
+    const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
+    let checkpoint: Record<string, unknown> = { analysisComplete: true, productAnalysis: "checkpoint observations", submissionState: "not_submitted" };
+    const response = await withGenerationContext({
+      itemId: "resume-observations", checkpoint, snapshot: { project }, save: value => { checkpoint = structuredClone(value); },
+    }, () => generate(req("/api/llm/script", { ...generationBody(), productAnalysis: "request observations" })));
+    expect(response.status).toBe(200);
+    expect(calls.observe).not.toHaveBeenCalled();
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ productAnalysis: "checkpoint observations" }));
+    expect(checkpoint.productAnalysis).toBe("checkpoint observations");
+  });
+
+  it.each(["tidewe", "sales"])("preserves cached observations when %s product inputs are saved unchanged", async kind => {
+    if (kind === "sales") db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+    db.update(schema.projects).set({ productAnalysis: "cached observations" }).run();
+    const current = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
+    const response = await updateProject(req(`/api/project/${projectId}`, {
+      productName: current.productName, productImages: [...current.productImages!], expectedCreativeConfigRevision: 1,
+    }, "PATCH"), params());
+    expect(response.status).toBe(200);
+    expect((await response.json()).productAnalysis).toBe("cached observations");
+  });
+
+  const productChanges = [
+    { field: "productImages", value: ["https://example.invalid/new-jacket.png"] },
+    { field: "productName", value: "New outdoor jacket" },
+    { field: "productCategory", value: "heated_gear" },
+    { field: "productDescription", value: "A different product brief." },
+    { field: "productId", value: "new-product" },
+    { field: "brandId", value: "new-brand" },
+  ];
+  it.each(productChanges.flatMap(change => ["tidewe", "sales"].map(kind => ({ ...change, kind }))))(
+    "clears old observations after $kind $field changes and analyzes the current images on generation", async ({ field, value, kind }) => {
+      if (kind === "sales") {
+        db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+        calls.analyze.mockResolvedValue("new sales product observations");
+      }
+      db.update(schema.projects).set({ productAnalysis: "old product observations" }).run();
+      const response = await updateProject(req(`/api/project/${projectId}`, {
+        [field]: value, expectedCreativeConfigRevision: 1,
+      }, "PATCH"), params());
+      expect(response.status).toBe(200);
+      const updated = await response.json();
+      expect(updated.productAnalysis).toBeNull();
+      const generatedResponse = await generate(req("/api/llm/script", { ...generationBody(), expectedCreativeConfigRevision: updated.creativeConfigRevision }));
+      expect(generatedResponse.status).toBe(200);
+      const analyzer = kind === "tidewe" ? calls.observe : calls.analyze;
+      expect(analyzer).toHaveBeenCalledOnce();
+      if (field === "productImages") expect(analyzer.mock.calls[0][kind === "tidewe" ? 1 : 0]).toEqual(value);
+      expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({
+        productAnalysis: kind === "tidewe" ? "observed: visible green jacket" : "new sales product observations",
+      }));
+    },
+  );
+
+  it("retains explicitly replaced observations in the same product update", async () => {
+    db.update(schema.projects).set({ productAnalysis: "old observations" }).run();
+    const response = await updateProject(req(`/api/project/${projectId}`, {
+      productImages: ["https://example.invalid/replaced-jacket.png"], productAnalysis: "replacement observations", expectedCreativeConfigRevision: 1,
+    }, "PATCH"), params());
+    expect(response.status).toBe(200);
+    expect((await response.json()).productAnalysis).toBe("replacement observations");
+  });
+});
 
 describe("TIDEWE project context", () => {
   it.each(["nested", "flat"])("persists the selected presenter from a %s creation profile and synchronizes the legacy ID", async shape => {
@@ -316,19 +458,26 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(calls.analyze).not.toHaveBeenCalled();
   });
 
-  it.each([5, 7, 9, 10])("rejects a completed %s-shot checkpoint for the 40-second target without saving or buying generation again", async shotCount => {
+  it.each([5, 7, 9, 10])("saves a completed %s-shot checkpoint without buying generation again", async shotCount => {
     const source = seedScript();
-    const before = db.select().from(schema.scripts).all();
     const paidScripts = [generated(copyText, undefined, shotCount)];
     let checkpoint: Record<string, unknown> = { generatedScripts: paidScripts, submissionState: "acknowledged", analysisComplete: true, productAnalysis: "observed green jacket" };
     const execute = () => withGenerationContext({ itemId: `recovered-${shotCount}-shot-script`, checkpoint, save: value => { checkpoint = structuredClone(value); } },
       () => generate(req("/api/llm/script", { ...generationBody(`checkpoint-${shotCount}`), sourceScriptId: source.id, expectedScriptHash: scriptRevision(source) })));
+    let savedIds: string[] | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await execute();
-      expect(response.status).toBe(502);
-      expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain exactly 8 shots for the 40s target; received ${shotCount}`) });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.scripts[0].shots).toHaveLength(shotCount);
+      const ids = result.scripts.map((script: { id: string }) => script.id);
+      if (savedIds) expect(ids).toEqual(savedIds);
+      savedIds = ids;
       expect(checkpoint.generatedScripts).toEqual(paidScripts);
-      expect(db.select().from(schema.scripts).all()).toEqual(before);
+      const rows = db.select().from(schema.scripts).all();
+      expect(rows).toHaveLength(2);
+      expect(rows.find(row => row.id === source.id)?.selected).toBe(false);
+      expect(rows.find(row => row.selected)?.shots).toHaveLength(shotCount);
     }
     expect(calls.generate).not.toHaveBeenCalled();
     expect(calls.observe).not.toHaveBeenCalled();
@@ -339,15 +488,16 @@ describe("TIDEWE generation, history and concurrency", () => {
     ...durationShotCounts.flatMap(({ targetDuration, shotCount: expectedShotCount }) => [7, 8, 9]
       .filter(shotCount => shotCount !== expectedShotCount).map(shotCount => ({ targetDuration, expectedShotCount, shotCount }))),
     ...[5, 10].map(shotCount => ({ targetDuration: 40, expectedShotCount: 8, shotCount })),
-  ])("rejects newly generated $shotCount-shot output for the $targetDuration-second target and preserves the selected historical script", async ({ targetDuration, expectedShotCount, shotCount }) => {
+  ])("directly applies generated $shotCount-shot output for the $targetDuration-second target", async ({ targetDuration, shotCount }) => {
     db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile({ targetDuration }) }).where(eq(schema.projects.id, projectId)).run();
     seedScript();
-    const before = db.select().from(schema.scripts).all();
     calls.generate.mockResolvedValueOnce([generated(copyText, undefined, shotCount)]);
     const response = await generate(req("/api/llm/script", generationBody()));
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining(`must contain exactly ${expectedShotCount} shots for the ${targetDuration}s target; received ${shotCount}`) });
-    expect(db.select().from(schema.scripts).all()).toEqual(before);
+    expect(response.status).toBe(200);
+    expect((await response.json()).scripts[0]).toMatchObject({ selected: true, copyDocument: { text: copyText } });
+    const rows = db.select().from(schema.scripts).all();
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.selected)?.shots).toHaveLength(shotCount);
     expect(calls.generate).toHaveBeenCalledOnce();
   });
 
@@ -363,17 +513,33 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ count: 1 }));
   });
 
-  it("checks the duration-based shot count of every previously paid copy before recovering any", async () => {
-    const before = db.select().from(schema.scripts).all();
+  it("recovers all previously paid copies with their generated shot counts", async () => {
     const paidScripts = [generated(), generated(copyText, undefined, 7)];
     let checkpoint: Record<string, unknown> = { generatedScripts: paidScripts, submissionState: "acknowledged", analysisComplete: true, productAnalysis: "observed green jacket" };
     const response = await withGenerationContext({ itemId: "paid-invalid-second-copy", checkpoint, save: value => { checkpoint = structuredClone(value); } },
       () => generate(req("/api/llm/script", generationBody("paid-invalid-second-copy"))));
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "TIDEWE_VALIDATION_FAILED", error: expect.stringContaining("TIDEWE copy 2 must contain exactly 8 shots for the 40s target; received 7") });
+    expect(response.status).toBe(200);
+    expect((await response.json()).scripts.map((script: { shots: schema.Shot[] }) => script.shots.length)).toEqual([8, 7]);
     expect(checkpoint.generatedScripts).toEqual(paidScripts);
-    expect(db.select().from(schema.scripts).all()).toEqual(before);
+    expect(db.select().from(schema.scripts).all()).toHaveLength(2);
     expect(calls.generate).not.toHaveBeenCalled();
+  });
+
+  it("applies generated creative output without quality review and keeps it selectable and editable", async () => {
+    const source = seedScript();
+    const output = generated("Buy now! These 20 features are worth a look.", undefined, 3);
+    output.shots[0] = { ...output.shots[0], duration: 1, description: "Outdoor presenter holds the jacket.", camera: "foreground blur" };
+    calls.generate.mockResolvedValueOnce([output]);
+    const response = await generate(req("/api/llm/script", generationBody()));
+    expect(response.status).toBe(200);
+    const saved = (await response.json()).scripts[0];
+    expect(saved).toMatchObject({ selected: true, shots: output.shots, copyDocument: output.copyDocument });
+    expect((await edit(req(`/api/project/${projectId}/scripts`, { selectedScriptId: source.id }, "PATCH"), params())).status).toBe(200);
+    expect((await edit(req(`/api/project/${projectId}/scripts`, { selectedScriptId: saved.id }, "PATCH"), params())).status).toBe(200);
+    expect((await edit(req(`/api/project/${projectId}/scripts`, { scriptId: saved.id, shotTexts: [{ shotId: 1, camera: "手持跟随" }] }, "PATCH"), params())).status).toBe(200);
+    expect(db.select().from(schema.scripts).all().find(row => row.id === saved.id)?.copyDocument).toEqual(output.copyDocument);
+    expect(calls.generate).toHaveBeenCalledOnce();
+    expect(calls.complete).not.toHaveBeenCalled();
   });
 
   it.each(["planner rejection", "empty candidates", "missing canonical copy", "invalid shot"])("records %s as a completed local failure without recoverable scripts", async failure => {

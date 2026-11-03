@@ -197,6 +197,12 @@ export async function PATCH(
         updates[field] = body[field];
       }
     }
+    // Reuse image observations across regenerations until the product inputs actually change.
+    if (contextProject && !hasOwn(body, "productAnalysis") && productContextFields.some(
+      (field) => hasOwn(body, field) && !sameJson(contextProject[field], updates[field]),
+    )) {
+      updates.productAnalysis = null;
+    }
     if (hasFactsUpdate) {
       let facts: ReturnType<typeof normalizeProductFacts> | null;
       try { facts = body.productFacts === null ? null : normalizeProductFacts(body.productFacts); }

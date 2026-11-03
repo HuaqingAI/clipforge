@@ -8,12 +8,15 @@ import type { ProductFacts } from "@/lib/tidewe/types";
 import {
   buildTideweCopyPrompt,
   buildTideweImportedCopyPrompt,
+  buildTideweScriptPrompt,
+  buildTideweScriptSystemPrompt,
   selectTideweExamples,
   tideweFactsForInput,
   TIDEWE_APPROVED_KLING_PATTERNS,
   TIDEWE_COPY_SYSTEM_PROMPT,
   TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT,
   TIDEWE_PLAN_SYSTEM_PROMPT,
+  TIDEWE_REFERENCE_APPEARANCE_GUIDANCE,
 } from "@/lib/tidewe/prompts";
 
 const facts = productFactsFromDescription("An adjustable shoulder strap", "other");
@@ -24,8 +27,130 @@ const input: ScriptGenerationInput = {
   productFacts: facts,
   creativeProfile: createTideweOutdoorProfile(),
 };
+const referenceCases = [
+  { category: "hunting_blind", name: "TIDEWE hunting blind", observations: "帐篷的矩形门口、侧窗边缘与交叉支架在参考图中可见。" },
+  { category: "waders", name: "TIDEWE waders", observations: "涉水服胸前接缝、肩带扣和脚部连接处在参考图中可见。" },
+  { category: "heated_gear", name: "TIDEWE heated jacket", observations: "外套胸前有圆形按钮，按钮图案与所在位置在参考图中可见。" },
+  { category: "apparel", name: "TIDEWE outdoor jacket", observations: "外套前襟拉链、袖口和侧口袋在参考图中可见。" },
+  { category: "boots", name: "TIDEWE hunting boots", observations: "靴子筒口扣带、靴筒轮廓和鞋底纹路在参考图中可见。" },
+  { category: "accessories", name: "TIDEWE binoculars", observations: "望远镜镜筒、中央调节轮、背带和连接点在参考图中可见。" },
+  { category: "other", name: "Current outdoor equipment", observations: "商品表面有圆形连接点，其外形和固定位置在参考图中可见。" },
+] as const;
 
 describe("TIDEWE copy and planning prompt boundaries", () => {
+  it.each([
+    { stage: "AI copy", system: TIDEWE_COPY_SYSTEM_PROMPT },
+    { stage: "staff copy", system: TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT },
+    { stage: "storyboard", system: TIDEWE_PLAN_SYSTEM_PROMPT },
+  ])("allows reference-supported parts in every outdoor category in $stage", ({ system }) => {
+    expect(system).toContain(TIDEWE_REFERENCE_APPEARANCE_GUIDANCE);
+    expect(system).toContain("every outdoor product category, including items with an unset or unfamiliar category");
+    expect(system).toContain("shape, material boundaries, texture, layout, location, attachment and contact relationships do not need a separate confirmed performance fact ID");
+    expect(system).toContain("ordinary contact already supported by the references");
+    expect(system).toContain("do not hide a visible component or replace its close-up with presenter commentary merely because specifications are unconfirmed");
+    expect(system).toContain("Let each reference image determine what to describe");
+    expect(system).toContain("Give the actual focal subject of every detail reference priority, even when an overall image or earlier summary did not mention it");
+    expect(system).toContain("Name the visible part freely from the image");
+    expect(system).toContain("There is no fixed component checklist or whitelist: an unfamiliar or unlisted detail is equally valid evidence");
+    expect(system).toContain("Category examples are optional context, never a required inventory or a limit on which reference-visible parts may be shown");
+    expect(system).toContain("Do not replace the depicted local detail with a more familiar example, invent an absent component or require a hand or control in the frame");
+    expect(system).toContain("For an isolated detail, preserve the relationships actually visible in that image without guessing where it attaches outside the frame");
+    expect(TIDEWE_REFERENCE_APPEARANCE_GUIDANCE).not.toMatch(/blind door\/window|wader straps\/buckles|control panels\/buttons\/symbols/);
+    expect(system).toContain("Confirmed facts are still required for functionality, settings, operating sequences, measured outcomes and purchase conditions");
+    expect(system).toContain("a visible part, icon, contact or surface detail alone does not establish those claims");
+    expect(system).toContain("without claiming it is included with purchase");
+    expect(system).toContain("Keep uncertainty notes and policy commentary such as “未经确认”, “待核实” or “不特写” out of the storyboard prose");
+    expect(system).toContain("When a detail is genuinely not visible, choose another supported view and describe that view positively");
+  });
+
+  it.each([false, true])("keeps the referenced chair detail usable with no performance facts and imported copy=%s", imported => {
+    const observations = "椅子侧袋上方固定着黑色控制面板，面板有圆形按钮和白色标记。";
+    const generationInput = {
+      ...input,
+      productName: "TIDEWE Heated Chair",
+      productFacts: productFactsFromDescription("", "heated_gear"),
+      productAnalysis: observations,
+      ...(imported && { copyText: "Look at the panel beside the pocket." }),
+    };
+    const payload = JSON.parse(buildTideweScriptPrompt(generationInput));
+    expect(payload.product).toMatchObject({ visualObservations: observations, facts: { items: [] } });
+    expect(payload.categoryGuidance).toMatchObject({ category: "heated_gear", subtype: "chair" });
+    expect(payload.categoryGuidance.visualExamples.detail).toContain("优先特写当前局部参考图实际展示的任一部位");
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toContain("不按固定部件清单筛选");
+    const system = buildTideweScriptSystemPrompt(generationInput);
+    expect(system).toContain(TIDEWE_REFERENCE_APPEARANCE_GUIDANCE);
+    expect(system).toContain("Return one JSON object with both copies and scripts");
+    expect(system).toContain("no follow-up review or repair step is requested");
+    expect(payload.outputFormat).toMatchObject({ copies: expect.any(Array), scripts: expect.any(Array) });
+  });
+
+  it.each(referenceCases.flatMap(example => [false, true].map(imported => ({ ...example, imported }))))("preserves $category appearance evidence without performance facts for imported copy=$imported", ({ category, name, observations, imported }) => {
+    const original = "Look at the visible part and where it meets the product.";
+    const generationInput = {
+      ...input,
+      productName: name,
+      productFacts: productFactsFromDescription("", category),
+      productAnalysis: observations,
+      ...(imported && { copyText: original }),
+    };
+    const payload = JSON.parse(buildTideweScriptPrompt(generationInput));
+    expect(payload.product).toMatchObject({ name, visualObservations: observations, facts: { items: [] } });
+    expect(payload.categoryGuidance.category).toBe(category === "other" ? "unspecified" : category);
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toEqual(buildTideweCategoryGuidance(category).referenceAppearancePolicy);
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toMatch(/外观|形状/);
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toMatch(/已确认.*性能|性能.*已确认/);
+    expect(buildTideweScriptSystemPrompt(generationInput)).toContain(TIDEWE_REFERENCE_APPEARANCE_GUIDANCE);
+    expect(buildTideweScriptSystemPrompt(generationInput)).toContain("no follow-up review or repair step is requested");
+    expect(payload.outputFormat.copies).toHaveLength(1);
+    expect(payload.outputFormat.scripts).toHaveLength(1);
+    if (imported) {
+      expect(payload.frozenImportedCopy).toBe(original);
+      expect(payload).not.toHaveProperty("styleExamples");
+    }
+  });
+
+  it.each(["waders", "other", "unfamiliar_category"].flatMap(category => [false, true].map(imported => ({ category, imported }))))("preserves an uncommon reference detail for $category with imported copy=$imported", ({ category, imported }) => {
+    const observations = "参考图2特写当前商品侧缘的半月形连接片与两层织物交界；该图未展示整体，也没有手部或操作。";
+    const generationInput = {
+      ...input,
+      productName: "Current outdoor item",
+      productFacts: productFactsFromDescription("", category),
+      productAnalysis: observations,
+      ...(imported && { copyText: "Look at the crescent-shaped piece along this edge." }),
+    };
+    const payload = JSON.parse(buildTideweScriptPrompt(generationInput));
+    expect(payload.product.visualObservations).toBe(observations);
+    expect(payload.product.facts.items).toEqual([]);
+    expect(payload.categoryGuidance.category).toBe(category === "waders" ? "waders" : "unspecified");
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toContain("不是部件清单或允许拍摄的范围");
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toContain("局部参考图重点展示的部位优先");
+    expect(payload.categoryGuidance.referenceAppearancePolicy).toContain("不按固定部件清单筛选");
+    expect(payload.outputFormat.copies).toHaveLength(1);
+    expect(payload.outputFormat.scripts).toHaveLength(1);
+  });
+
+  it.each([false, true])("requests the complete copy and storyboard together with imported copy=%s", imported => {
+    const original = "Check the bag before your next walk.";
+    const generationInput = { ...input, ...(imported && { copyText: original }) };
+    const payload = JSON.parse(buildTideweScriptPrompt(generationInput));
+    expect(payload.outputFormat.copies).toHaveLength(1);
+    expect(payload.outputFormat.scripts).toHaveLength(1);
+    expect(payload.outputFormat.scripts[0]).toMatchObject({ copyIndex: 0, shots: expect.any(Array) });
+    expect(payload.outputFormat.copies[0]).not.toHaveProperty("visualBeats");
+    expect(payload).toMatchObject({ targetDuration: 40, shotCount: 8 });
+    const system = buildTideweScriptSystemPrompt(generationInput);
+    expect(system).toContain("TIDEWE");
+    expect(system).not.toContain("Before returning, check");
+    expect(system).not.toContain("Make filmability reviewable before freezing");
+    if (imported) {
+      expect(payload.frozenImportedCopy).toBe(original);
+      expect(payload.outputFormat.copies[0]).not.toHaveProperty("text");
+      expect(payload).not.toHaveProperty("styleExamples");
+    } else {
+      expect(payload.outputFormat.copies[0]).toHaveProperty("text");
+      expect(payload).toHaveProperty("styleExamples");
+    }
+  });
   it("treats an optional scene as direction for the copy while retaining product evidence boundaries", () => {
     const sceneDescription = "清晨林缘，猎人穿当前外套观察湖面，然后展示外套袖口。";
     const payload = JSON.parse(buildTideweCopyPrompt({ ...input, sceneDescription }));
@@ -109,7 +234,7 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
       visualIdea: expect.stringMatching(/[\u3400-\u9fff]/u),
       factRefs: [],
     });
-    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("cover the full text exactly once");
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).not.toContain("Make filmability reviewable before freezing");
   });
 
   it("writes speakable native copy that can continue over narrated details without turning the text into shot directions", () => {
@@ -317,7 +442,7 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     for (const system of [TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT]) {
       expect(system).toContain("categoryGuidance");
       expect(system).not.toMatch(/HJ006|JTC001|THC00[34]|WD012|BL02[25]/);
-      expect(system).not.toMatch(/tall boot shaft|outsole|For boots|worn boot/);
+      expect(system.replace(TIDEWE_REFERENCE_APPEARANCE_GUIDANCE, "")).not.toMatch(/tall boot shaft|outsole|For boots|worn boot/);
     }
   });
 });

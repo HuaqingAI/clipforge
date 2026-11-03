@@ -27,8 +27,8 @@ import { scriptRevision } from "@/lib/asset-context";
 import { generationContextSnapshot, generationContextCheckpoint, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
-import { assertTideweGeneratedShotCount, assertTideweImportedCopy, assertTideweScript, TideweValidationError } from "@/lib/tidewe/validation";
-import { analyzeTideweProductImages } from "@/lib/tidewe/image-analysis";
+import { assertTideweImportedCopy, assertTideweScriptIntegrity, TideweValidationError } from "@/lib/tidewe/validation";
+import { analyzeTideweProductImages, isStaleTideweVisualObservations } from "@/lib/tidewe/image-analysis";
 
 /** Allowed enum values for the styleType column in the scripts table */
 const VALID_SCRIPT_STYLE = new Set([
@@ -349,13 +349,20 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
 
   try {
     // Product image analysis: convert local paths to base64 before passing to the vision model
-    const savedAnalysis = generationContextCheckpoint()?.productAnalysis;
-    const analysisComplete = generationContextCheckpoint()?.analysisComplete === true;
-    let analysis = typeof savedAnalysis === "string" ? savedAnalysis : body.productAnalysis;
+    const analysisCheckpoint = generationContextCheckpoint();
+    const savedAnalysis = analysisCheckpoint?.productAnalysis;
+    const analysisComplete = analysisCheckpoint?.analysisComplete === true;
+    const recoveringResult = Array.isArray(analysisCheckpoint?.generatedScripts) || Boolean(analysisCheckpoint?.scriptValidationFailure);
+    const projectAnalysis = project?.productAnalysis;
+    // Older cached summaries omitted detail references or focused on one category. Refresh only a fresh
+    // generation's project cache; explicit input and durable attempts keep their own evidence.
+    const legacyProjectAnalysis = tideweProfile && typeof savedAnalysis !== "string" && body.productAnalysis === undefined
+      && !analysisComplete && !recoveringResult && isStaleTideweVisualObservations(projectAnalysis);
+    let analysis = typeof savedAnalysis === "string" ? savedAnalysis : body.productAnalysis ?? (legacyProjectAnalysis ? undefined : projectAnalysis) ?? undefined;
     const imageReferences = productImages ?? [];
-    if (tideweProfile && imageReferences.length && !analysis && !analysisComplete) {
+    if (tideweProfile && imageReferences.length && !analysis && !analysisComplete && !recoveringResult) {
       try {
-        const imageUrls = await Promise.all(imageReferences.slice(0, 4).map(imagePathToBase64));
+        const imageUrls = await Promise.all(imageReferences.map(imagePathToBase64));
         beforeGenerationSubmission();
         analysis = await analyzeTideweProductImages(llmConfig, imageUrls);
       } catch (error) {
@@ -429,10 +436,9 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       // Restore previously paid checkpoints without discarding their older three-copy result.
       const maxCopyCount = savedGenerated ? 3 : 1;
       if (!scripts.length || scripts.length > maxCopyCount) throw new TideweValidationError("TIDEWE returned an invalid script count; new generation requires exactly one script.");
-      for (const [copyIndex, script] of scripts.entries()) {
+      for (const script of scripts) {
         if (!script.copyDocument) throw new TideweValidationError("TIDEWE generation returned no canonical copy document.");
-        assertTideweScript(script, tideweProfile.presenter ?? null);
-        assertTideweGeneratedShotCount(script.shots.length, tideweProfile.targetDuration, copyIndex);
+        assertTideweScriptIntegrity(script, tideweProfile.presenter ?? null);
       }
     }
     generationCheckpoint({ generatedScripts: scripts, submissionState: "acknowledged", stage: "saving" });

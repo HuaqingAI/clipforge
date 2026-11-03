@@ -2,14 +2,12 @@ import type { GeneratedScript, ScriptInput } from "@/lib/script-engine/generator
 import type { Shot } from "@/lib/db/schema";
 import { assertSupportedTideweProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { stripThinkBlocks } from "@/lib/llm-clean";
-import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, getTideweShotCount, type TideweCopyDocument } from "./types";
-import { assertTideweCopyClaims, assertTideweGeneratedShotCount, assertTideweImportedCopy, assertTideweImportedCopyClaims, assertTideweScript, canonicalizeTideweCopy, englishWordCount, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
-import { buildTideweCopyPrompt, buildTideweImportedCopyPrompt, selectTideweExamples, tideweFactsForInput, tideweProductSafeguards, tideweProfileForInput, tideweSceneDirectionForInput, TIDEWE_APPROVED_KLING_PATTERNS, TIDEWE_COPY_SYSTEM_PROMPT, TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT, TIDEWE_PLAN_SYSTEM_PROMPT } from "./prompts";
-import { buildTideweCategoryGuidance } from "./category-guidance";
-import { tidewePresenterAnchor, tidewePresenterForPrompt, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
-import { assertTidewePlanQuality, parseTideweCopyBeats, parseTideweVisualPlan } from "./planning-quality";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type TideweCopyDocument, type TideweVisualPlan } from "./types";
+import { assertTideweImportedCopy, assertTideweScriptIntegrity, englishWordCount, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
+import { buildTideweScriptPrompt, buildTideweScriptSystemPrompt, selectTideweExamples, tideweFactsForInput, tideweProfileForInput } from "./prompts";
+import { tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
 
-/** Completion owns its single JSON repair; the two stages share no mutable copy. */
+/** One completion returns the full copy and its storyboard; no review or repair call follows. */
 export type TideweCompletion = <T>(system: string, prompt: string, parse: (text: string) => T) => Promise<T>;
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const requireText = (value: unknown, name: string): string => {
@@ -27,28 +25,20 @@ function json(text: string): Record<string, unknown> {
 export async function generateTideweScripts(input: ScriptInput, complete: TideweCompletion): Promise<GeneratedScript[]> {
   const profile = tideweProfileForInput(input) ?? createTideweOutdoorProfile(input);
   assertSupportedTideweProfile(profile);
-  const shotCount = getTideweShotCount(profile.targetDuration);
   if (input.copyText !== undefined) assertTideweImportedCopy(input.copyText);
   const facts = tideweFactsForInput(input);
   const imported = input.copyText?.trim();
   const count = 1;
   const examples = selectTideweExamples(facts, profile.narrativeAngle);
-  const copies = await complete(imported !== undefined ? TIDEWE_IMPORTED_COPY_SYSTEM_PROMPT : TIDEWE_COPY_SYSTEM_PROMPT,
-    imported !== undefined ? buildTideweImportedCopyPrompt({ ...input, copyText: imported }) : buildTideweCopyPrompt(input), text => {
+  return complete(buildTideweScriptSystemPrompt(input), buildTideweScriptPrompt(input), text => {
     const parsed = json(text);
     if (!Array.isArray(parsed.copies) || parsed.copies.length !== count) throw new TideweValidationError(`Expected ${count} full-copy candidates`);
-    return parsed.copies.map((raw: unknown) => {
+    const copies = parsed.copies.map((raw: unknown) => {
       if (!record(raw)) throw new TideweValidationError("Invalid full-copy candidate");
       // An annotation model never owns imported text, even if it unexpectedly returns a text field.
-      const canonical = imported ?? canonicalizeTideweCopy(requireText(raw.text, "English copy"));
+      const canonical = imported ?? requireText(raw.text, "English copy");
       const claimedFactIds = strings(raw.claimedFactIds);
-      if (imported !== undefined) assertTideweImportedCopyClaims(canonical, facts, claimedFactIds);
-      else assertTideweCopyClaims(canonical, facts, claimedFactIds);
       const wordCount = englishWordCount(canonical);
-      const visualBeats = imported === undefined ? parseTideweCopyBeats(raw.visualBeats, canonical, facts) : undefined;
-      if (imported === undefined && wordCount / 2.6 + shotCount * 0.3 > profile.targetDuration) {
-        throw new TideweValidationError("AI copy exceeds the conversational speech budget. Shorten the copy before freezing it; preserve the main value and factual qualifications.");
-      }
       const copyDocument: TideweCopyDocument = {
         version: 1, language: "en-US", source: imported !== undefined ? "user_provided" : "ai_generated", text: canonical, translation: requireText(raw.translation, "Chinese translation"),
         angle: requireText(raw.angle, "narrative angle"), hookType: requireText(raw.hookType, "hook type"),
@@ -57,38 +47,20 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
         exampleIds: imported !== undefined ? [] : examples.map(e => `${e.product}-${e.source.sheet}-${e.source.row}`), wordCount, estimatedDuration: Math.round(wordCount / 2.3 * 10) / 10,
         productName: input.productName,
         visualObservations: input.productAnalysis ?? "",
-        ...(visualBeats && { visualBeats }),
       };
       return { title: requireText(raw.title, "title"), copyDocument };
     });
-  });
-  return complete(TIDEWE_PLAN_SYSTEM_PROMPT, JSON.stringify({
-    task: "Allocate the frozen copy to semantic shots. Return exactly one script with copyIndex 0.",
-    ...tideweSceneDirectionForInput(input),
-    shotCount,
-    targetDuration: profile.targetDuration, videoMode: profile.videoMode, speechMode: profile.speechMode, facts,
-    product: { name: input.productName, visualObservations: input.productAnalysis ?? "" },
-    categoryGuidance: buildTideweCategoryGuidance(facts.category, { productName: input.productName, visualObservations: input.productAnalysis }),
-    currentProductSafeguards: tideweProductSafeguards(facts),
-    selectedPresenter: tidewePresenterForPrompt(profile.presenter),
-    approvedKlingPatterns: TIDEWE_APPROVED_KLING_PATTERNS,
-    copies: copies.map((c, copyIndex) => ({ copyIndex, source: c.copyDocument.source, text: c.copyDocument.text, translation: c.copyDocument.translation, ...(c.copyDocument.visualBeats && { visualBeats: c.copyDocument.visualBeats }) })),
-    outputFormat: { scripts: [{ copyIndex: 0, shots: [{ scriptSegment: "verbatim substring", translation: "该段中文译文", narrativeRole: "hook", duration: 5, description: profile.presenter ? "{{PRESENTER}} 在林边面对拍摄同伴，手已扶住完整入画的当前装备" : "中文场景及动作，明确当前商品入画", camera: "中文运镜", shotGoal: "中文画面目标", visualIntent: "中文画面意图", prompt: "中文画面提示", visualPlan: { framing: "medium", visualRole: "presenter", productFocus: "参考图支持的完整商品外形与手部接触处", actionStart: "人物已站稳并扶住装备边缘", action: "轻点可见部位一次并回应拍摄同伴", actionEnd: "手自然停稳并完成讲解" }, personVisible: true, ...(profile.speechMode === "on_camera" && { speechDelivery: "on_camera" }), productVisible: true, factRefs: [], sceneId: "woods-1", visualSource: "ai_generate", transition: "direct_concat" }] }] },
-  }), text => {
-    const parsed = json(text);
     if (!Array.isArray(parsed.scripts) || parsed.scripts.length !== copies.length) throw new TideweValidationError("Planner must return every frozen copy");
     return parsed.scripts.map((raw: unknown, index: number) => {
-      if (!record(raw) || raw.copyIndex !== index || !Array.isArray(raw.shots)) throw new TideweValidationError("Invalid semantic plan or candidate order");
-      assertTideweGeneratedShotCount(raw.shots.length, profile.targetDuration, index);
+      if (!record(raw) || raw.copyIndex !== index || !Array.isArray(raw.shots) || !raw.shots.length) throw new TideweValidationError("Invalid semantic plan or candidate order");
       const planned = raw.shots.map((s: unknown) => { if (!record(s)) throw new TideweValidationError("Invalid shot"); return s; });
       const copy = copies[index];
       const spans = mapTideweCopySpans(copy.copyDocument.text, planned.map(s => ({ scriptSegment: typeof s.scriptSegment === "string" ? s.scriptSegment : requireText(s.scriptSegment, "scriptSegment") })));
       const roles = new Set(["hook", "pain_point", "product_reveal", "demo", "social_proof", "cta"]);
       const shots: Shot[] = planned.map((s, i) => {
-        if (!roles.has(String(s.narrativeRole)) || typeof s.productVisible !== "boolean" || typeof s.duration !== "number" || s.duration < 1 || s.duration > 15) throw new TideweValidationError("Invalid shot role, visibility or duration");
-        if (englishWordCount(String(s.scriptSegment)) / 3 > s.duration) throw new TideweValidationError("Shot is too short for its spoken copy; split semantically or increase its duration");
+        if (!roles.has(String(s.narrativeRole)) || typeof s.productVisible !== "boolean" || typeof s.duration !== "number" || !Number.isFinite(s.duration) || s.duration <= 0) throw new TideweValidationError("Invalid shot role, visibility or duration");
         if (s.speechDelivery !== undefined && s.speechDelivery !== "on_camera" && s.speechDelivery !== "off_camera") throw new TideweValidationError("Invalid shot speechDelivery; expected on_camera or off_camera");
-        const visualPlan = parseTideweVisualPlan(s.visualPlan);
+        const visualPlan = parseVisualPlan(s.visualPlan);
         // Component-only and person-free pictures keep the creator's narration,
         // but cannot show a speaking mouth. Resolve this before visibility checks
         // so a model's delivery label cannot force a face into the approved frame.
@@ -123,9 +95,24 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
         };
       });
       const script: GeneratedScript = { ...copy, styleType: "tidewe_outdoor", totalDuration: Math.round(shots.reduce((sum, s) => sum + s.duration, 0)), shots };
-      assertTideweScript(script, profile.presenter ?? null);
-      assertTidewePlanQuality(shots, { targetDuration: profile.targetDuration, source: copy.copyDocument.source, videoMode: profile.videoMode, copyDocument: copy.copyDocument });
+      assertTideweScriptIntegrity(script, profile.presenter ?? null);
       return script;
     });
   });
+}
+
+/** Read production metadata without judging wording, language, pacing or visual variety. */
+function parseVisualPlan(value: unknown): TideweVisualPlan {
+  if (!record(value) || !["wide", "medium", "close_up", "detail"].includes(String(value.framing))
+    || !["presenter", "demonstration", "detail", "context"].includes(String(value.visualRole))) {
+    throw new TideweValidationError("Invalid shot visualPlan framing or visualRole");
+  }
+  return {
+    framing: value.framing as TideweVisualPlan["framing"],
+    visualRole: value.visualRole as TideweVisualPlan["visualRole"],
+    actionStart: requireText(value.actionStart, "action start"),
+    action: requireText(value.action, "action"),
+    actionEnd: requireText(value.actionEnd, "action end"),
+    ...(typeof value.productFocus === "string" && { productFocus: value.productFocus.trim() }),
+  };
 }

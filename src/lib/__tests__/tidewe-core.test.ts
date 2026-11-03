@@ -37,7 +37,7 @@ async function generateSelectedPresenterScript() {
   const planned = ["Walking warms you up. Waiting feels different.", "Check the fit in the link."].map(segment => ({
     ...shot(segment), personVisible: true, description: "{{PRESENTER}}在林边面向镜头介绍装备，嘴部清晰可见。",
   }));
-  const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan(planned) }] }];
+  const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan(planned) }] }];
   const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
   const [script] = await generateTideweScripts({ ...input, creativeProfile: profile }, complete);
   return { profile, script };
@@ -129,19 +129,18 @@ describe("TIDEWE core contracts", () => {
     expect(prompt).toContain("styleExamples");
     expect(prompt).not.toContain("AIDA");
   });
-  it("makes two batch calls and freezes copy through semantic planning", async () => {
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([{ ...shot("Walking warms you up. Waiting feels different."), visualSource: "product_image" }, shot("Check the fit in the link.")]) }] }];
+  it("returns complete copy and semantic shots in one call", async () => {
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([{ ...shot("Walking warms you up. Waiting feels different."), visualSource: "product_image" }, shot("Check the fit in the link.")]) }] }];
     const calls = vi.fn();
     const complete: TideweCompletion = async (system, prompt, parse) => { calls(system, prompt); return parse(JSON.stringify(responses.shift())); };
     const [script] = await generateTideweScripts(input, complete);
-    expect(calls).toHaveBeenCalledTimes(2);
+    expect(calls).toHaveBeenCalledTimes(1);
     expect(script.shots).toHaveLength(8);
-    expect(JSON.parse(calls.mock.calls[1][1])).toMatchObject({ targetDuration: 40, shotCount: 8 });
-    expect(JSON.parse(calls.mock.calls[0][1]).speechMode).toContain("speaks directly to camera");
-    expect(JSON.parse(calls.mock.calls[1][1]).speechMode).toBe("on_camera");
-    expect(JSON.parse(calls.mock.calls[1][1]).copies[0].visualBeats).toEqual(visualBeats);
+    expect(JSON.parse(calls.mock.calls[0][1])).toMatchObject({ targetDuration: 40, shotCount: 8 });
+    expect(JSON.parse(calls.mock.calls[0][1]).speechMode).toBe("on_camera");
+    expect(JSON.parse(calls.mock.calls[0][1]).outputFormat).toHaveProperty("copies");
     expect(script.copyDocument?.text).toBe(copy);
-    expect(script.copyDocument?.visualBeats).toEqual(visualBeats);
+    expect(script.copyDocument).not.toHaveProperty("visualBeats");
     expect(script.shots[0].tidewe?.visualPlan).toEqual(shot("").visualPlan);
     expect(script.shots[0].tidewe?.copySpan).toEqual({ start: 0, end: 46 });
     expect(script.shots[0].visualSource).toBe("ai_generate");
@@ -158,7 +157,7 @@ describe("TIDEWE core contracts", () => {
       { ...shot(segments[2]), personVisible: false, speechDelivery: "off_camera", productVisible: false, description: "自然光下林边小径的环境空镜。", visualSource: "product_image", visualPlan: { framing: "wide", visualRole: "context", actionStart: "林间小径和地面层次已经完整入画。", action: "静态观察林缘的自然状态。", actionEnd: "保持同一片林缘的稳定构图。" } },
     ];
     const mixedCopy = { copies: [{ ...copyReply.copies[0], visualBeats: visualBeats.map((beat, index) => index === 1 ? { ...beat, visualRole: "detail", visualIdea: "观察指腹与衣袖表面的接触，不推断保暖性能。" } : beat) }] };
-    const responses = [mixedCopy, { scripts: [{ copyIndex: 0, shots: completePlan(planned) }] }];
+    const responses = [{ ...mixedCopy, scripts: [{ copyIndex: 0, shots: completePlan(planned) }] }];
     const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     const [script] = await generateTideweScripts({ ...input, creativeProfile: profile }, complete);
     expect(script.copyDocument?.text).toBe(copy);
@@ -177,7 +176,7 @@ describe("TIDEWE core contracts", () => {
     expect(() => assertTideweScript(script, profile.presenter)).toThrow(/presenter to be visible/);
   });
   it.each(["voiceover", "silent", null, 1])("rejects an unsupported per-shot native speech delivery: %s", async speechDelivery => {
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([{ ...shot(copy), speechDelivery }]) }] }];
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([{ ...shot(copy), speechDelivery }]) }] }];
     const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     await expect(generateTideweScripts(input, complete)).rejects.toThrow(/Invalid shot speechDelivery/);
   });
@@ -188,7 +187,7 @@ describe("TIDEWE core contracts", () => {
     Object.assign(script.shots[0].tidewe!, { speechDelivery: "invented" });
     expect(() => assertTideweScript(script)).toThrow(/speechDelivery must be/);
   });
-  it("keeps a saved seven-shot 40 second script readable while enforcing eight shots for new generation", async () => {
+  it("keeps a saved seven-shot 40 second script readable while retaining the optional strict shot-count check", async () => {
     const { profile, script } = await generateSelectedPresenterScript();
     expect(script.shots).toHaveLength(8);
     expect(script.shots.at(-1)?.voiceover).toBe("");
@@ -201,16 +200,16 @@ describe("TIDEWE core contracts", () => {
     const profile = createTideweOutdoorProfile({ speechMode: "voiceover", videoMode: "product_closeup" });
     const planned = { ...shot(copy), personVisible: false, visualSource: "product_image", description: "外套平放在林边干燥的木质平台上，没有人物。", visualPlan: { framing: "medium", visualRole: "context", productFocus: "平放外套的完整轮廓与现有衣袖", actionStart: "外套已经完整平放入画。", action: "静态观察外套的既有外观。", actionEnd: "保持外套原有状态与构图。" } };
     const staticCopy = { copies: [{ ...copyReply.copies[0], visualBeats: visualBeats.map(beat => ({ ...beat, visualRole: "context", visualIdea: "外套在自然环境里保持静态完整入画。" })) }] };
-    const responses = [staticCopy, { scripts: [{ copyIndex: 0, shots: completePlan([planned], true) }] }];
+    const responses = [{ ...staticCopy, scripts: [{ copyIndex: 0, shots: completePlan([planned], true) }] }];
     const calls = vi.fn();
     const complete: TideweCompletion = async (system, prompt, parse) => { calls(system, prompt); return parse(JSON.stringify(responses.shift())); };
     const [script] = await generateTideweScripts({ ...input, creativeProfile: profile }, complete);
     expect(script.shots[0]).toMatchObject({ voiceover: copy, visualSource: "product_image", tidewe: { personVisible: false } });
     expect(script.shots[0].tidewe).not.toHaveProperty("speechDelivery");
-    expect(JSON.parse(calls.mock.calls[1][1]).outputFormat.scripts[0].shots[0]).not.toHaveProperty("speechDelivery");
+    expect(JSON.parse(calls.mock.calls[0][1]).outputFormat.scripts[0].shots[0]).not.toHaveProperty("speechDelivery");
   });
   it("rejects a planner that adds words to frozen AI copy", async () => {
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([shot(copy + " Buy it.")]) }] }];
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([shot(copy + " Buy it.")]) }] }];
     const bad: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     await expect(generateTideweScripts(input, bad)).rejects.toThrow(/rewrote/);
   });
@@ -222,19 +221,17 @@ describe("TIDEWE core contracts", () => {
     // Annotation needs no English text; even an unexpected rewritten text field is ignored.
     const annotation = { ...copyReply.copies[0], text: "AI tried to replace the staff's script.", visualBeats: [{ text: "AI also replaced this line!", visualRole: "invented", visualIdea: "改写原文", factRefs: ["invented-evidence"] }] };
     const planned = [first, second].map(segment => ({ ...shot(segment), personVisible: true, description: "{{PRESENTER}}面向镜头自然讲述，嘴部清晰可见。" }));
-    const responses = [{ copies: [annotation] }, { scripts: [{ copyIndex: 0, shots: completePlan(planned) }] }];
+    const responses = [{ copies: [annotation], scripts: [{ copyIndex: 0, shots: completePlan(planned) }] }];
     const calls = vi.fn();
     const complete: TideweCompletion = async (system, prompt, parse) => { calls(system, prompt); return parse(JSON.stringify(responses.shift())); };
     const [script] = await generateTideweScripts({ ...input, creativeProfile: profile, copyText: original, count: 3 }, complete);
-    expect(calls).toHaveBeenCalledTimes(2);
+    expect(calls).toHaveBeenCalledTimes(1);
     const firstPrompt = JSON.parse(calls.mock.calls[0][1]);
     expect(firstPrompt.frozenImportedCopy).toBe(original);
     expect(firstPrompt.outputFormat.copies[0]).not.toHaveProperty("text");
     expect(firstPrompt.outputFormat.copies[0]).not.toHaveProperty("visualBeats");
     expect(firstPrompt).not.toHaveProperty("styleExamples");
     expect(calls.mock.calls[0][0]).toContain("not a draft to rewrite");
-    expect(JSON.parse(calls.mock.calls[1][1]).copies[0]).toMatchObject({ source: "user_provided", text: original });
-    expect(JSON.parse(calls.mock.calls[1][1]).copies[0]).not.toHaveProperty("visualBeats");
     expect(script.copyDocument).toMatchObject({ source: "user_provided", text: original, exampleIds: [], claimedFactIds: [] });
     expect(script.copyDocument).not.toHaveProperty("visualBeats");
     expect(script.copyDocument?.factsSnapshot).toEqual({ ...facts, category: "heated_gear" });
@@ -247,17 +244,19 @@ describe("TIDEWE core contracts", () => {
     delete script.copyDocument!.source;
     expect(() => assertTideweScript(script, profile.presenter)).toThrow(/urgency|testimonials|numeric/);
   });
-  it("annotates imported text without requiring an English reply and rejects unsupported fact citations before planning", async () => {
+  it("annotates imported text without an English reply and leaves fact-citation review to explicit validation", async () => {
     const annotation = Object.fromEntries(Object.entries(copyReply.copies[0]).filter(([key]) => key !== "text"));
-    const responses = [{ copies: [annotation] }, { scripts: [{ copyIndex: 0, shots: completePlan([shot(copy)]) }] }];
+    const responses = [{ copies: [annotation], scripts: [{ copyIndex: 0, shots: completePlan([shot(copy)]) }] }];
     const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     expect((await generateTideweScripts({ ...input, copyText: copy }, complete))[0].copyDocument).toMatchObject({ source: "user_provided", text: copy });
     const invalidCalls = vi.fn();
     const bad: TideweCompletion = async (_system, _prompt, parse) => {
       invalidCalls();
-      return parse(JSON.stringify({ copies: [{ ...annotation, claimedFactIds: ["invented-evidence"] }] }));
+      return parse(JSON.stringify({ copies: [{ ...annotation, claimedFactIds: ["invented-evidence"] }], scripts: [{ copyIndex: 0, shots: completePlan([shot(copy)]) }] }));
     };
-    await expect(generateTideweScripts({ ...input, copyText: copy }, bad)).rejects.toThrow(/unknown, inferred or conflicting/);
+    const [script] = await generateTideweScripts({ ...input, copyText: copy }, bad);
+    expect(script.copyDocument?.claimedFactIds).toEqual(["invented-evidence"]);
+    expect(() => assertTideweScript(script)).toThrow(/unknown, inferred or conflicting/);
     expect(invalidCalls).toHaveBeenCalledTimes(1);
   });
   it.each(["", "纯中文口播文案", "English copy with 中文注释", "1234", "a".repeat(12001)])("rejects invalid imported copy before annotation: %s", async invalid => {
@@ -270,7 +269,7 @@ describe("TIDEWE core contracts", () => {
     const library = { id: "chosen", name: "Selected creator", appearance: imageOnly ? "" : "An adult with a green hat", referenceImages: ["/api/files/selected.png"] };
     const profile = createTideweOutdoorProfile({ presenter: library });
     const planned = { ...shot(copy), personVisible: true, description: "{{PRESENTER}}在林边面向镜头自然介绍装备，嘴部清晰可见。", camera: "稳定中景拍摄{{PRESENTER}}", prompt: "{{PRESENTER}}在林边自然演示", shotGoal: "呈现{{PRESENTER}}讲解装备", visualIntent: "{{PRESENTER}}真人自然演示" };
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([planned]) }] }];
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([planned]) }] }];
     const calls = vi.fn();
     const complete: TideweCompletion = async (system, prompt, parse) => { calls(system, prompt); return parse(JSON.stringify(responses.shift())); };
     const [script] = await generateTideweScripts({ ...input, creativeProfile: profile }, complete);
@@ -309,7 +308,7 @@ describe("TIDEWE core contracts", () => {
       ...shot(copy), personVisible: true, description: "{{PRESENTER}}站在林缘面向拍摄朋友自然讲述，嘴部清楚可见。",
       visualPlan: { framing: "medium", visualRole: "demonstration", productFocus: "{{PRESENTER}}衣袖与手指的接触位置。", actionStart: "{{PRESENTER}}双脚已经站稳并扶住衣服边缘。", action: "{{PRESENTER}}轻压衣袖一次。", actionEnd: "{{PRESENTER}}松开手指后保持站稳。" },
     };
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([planned]) }] }];
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([planned]) }] }];
     const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     const [script] = await generateTideweScripts({ ...input, creativeProfile: profile }, complete);
     expect(script.copyDocument?.text).toBe(copy);
@@ -341,7 +340,7 @@ describe("TIDEWE core contracts", () => {
     { patch: { personVisible: true, description: "一名随机人物在树林中口播。" }, message: /\{\{PRESENTER\}\}/ },
   ])("rejects a selected presenter plan with missing visibility or identity binding: $patch", async ({ patch, message }) => {
     const profile = createTideweOutdoorProfile({ presenter: { id: "chosen", name: "Selected creator", appearance: "An adult in a cap", referenceImages: [] } });
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([{ ...shot(copy), description: "{{PRESENTER}}在树林中口播。", ...patch }]) }] }];
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([{ ...shot(copy), description: "{{PRESENTER}}在树林中口播。", ...patch }]) }] }];
     const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     await expect(generateTideweScripts({ ...input, creativeProfile: profile }, complete)).rejects.toThrow(message);
   });
@@ -349,7 +348,7 @@ describe("TIDEWE core contracts", () => {
     const profile = createTideweOutdoorProfile({ presenter: { id: "chosen", name: "Selected creator", appearance: "An adult in a cap", referenceImages: [] } });
     const broll = { ...shot(""), personVisible: false, productVisible: false, description: "清晨树林的环境空镜。", prompt: "自然光下的树林", shotGoal: "建立树林环境", visualIntent: "环境空镜", visualPlan: { framing: "wide", visualRole: "context", actionStart: "树林与地面层次完整入画。", action: "静态观察林缘环境。", actionEnd: "保持树林的稳定全景。" } };
     const spoken = { ...shot(copy), personVisible: true, description: "{{PRESENTER}}面向镜头介绍装备，嘴部清楚可见。" };
-    const responses = [copyReply, { scripts: [{ copyIndex: 0, shots: completePlan([broll, spoken]) }] }];
+    const responses = [{ ...copyReply, scripts: [{ copyIndex: 0, shots: completePlan([broll, spoken]) }] }];
     const complete: TideweCompletion = async (_system, _prompt, parse) => parse(JSON.stringify(responses.shift()));
     const [script] = await generateTideweScripts({ ...input, creativeProfile: profile }, complete);
     expect(script.shots[0]).toMatchObject({ description: broll.description, voiceover: "", tidewe: { personVisible: false, productVisible: false, copySpan: { start: 0, end: 0 } } });

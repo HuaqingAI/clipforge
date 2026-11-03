@@ -15,7 +15,7 @@ import {
   type PremiumProductCgProfile,
 } from "@/lib/creative-profiles";
 import { getPremiumCgRecipeFromSnapshot } from "@/lib/premium-cg-recipes";
-import { buildTideweCopyPrompt, tideweProfileForInput } from "@/lib/tidewe/prompts";
+import { buildTideweScriptPrompt, tideweProfileForInput } from "@/lib/tidewe/prompts";
 import type { ProductFacts } from "@/lib/tidewe/types";
 
 // ==================== System Role Prompt ====================
@@ -121,7 +121,7 @@ export const styleFormGroups: { form: string; formEn: string; styles: ScriptStyl
 
 /** Structured prompt directives keyed by style */
 export const stylePrompts: Record<Exclude<ScriptStyleType, "custom">, string> = {
-  tidewe_outdoor: "TIDEWE uses the independent full-copy and semantic-storyboard compiler. Use buildTideweCopyPrompt, never the sales template.",
+  tidewe_outdoor: "TIDEWE generates full copy and semantic storyboard together. Use buildTideweScriptPrompt, never the sales template.",
   pain_point: `
 【脚本风格：痛点种草型】
 结构要求：痛点引入 → 产品救星 → 效果证明 → 限时抢购
@@ -930,7 +930,7 @@ Return:
  * Combines all templates, strategies, and constraints into a single generation instruction
  */
 export function buildUserPrompt(input: ScriptGenerationInput): string {
-  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input);
+  if (tideweProfileForInput(input)) return buildTideweScriptPrompt(input);
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgUserPrompt(input, premiumProfile);
 
@@ -1081,7 +1081,7 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
  * Builds a batch generation prompt (generates multiple scripts with different styles in one call)
  */
 export function buildBatchPrompt(input: ScriptGenerationInput, count: number = 3): string {
-  if (tideweProfileForInput(input)) return buildTideweCopyPrompt(input);
+  if (tideweProfileForInput(input)) return buildTideweScriptPrompt(input);
   const premiumProfile = premiumProductCgProfileForInput(input);
   if (premiumProfile) return buildPremiumProductCgBatchPrompt(input, premiumProfile, count);
 

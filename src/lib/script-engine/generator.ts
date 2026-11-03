@@ -256,8 +256,8 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
 }
 
 /**
- * Removes executable overlay/character fields from a premium CG shot and reports remaining unsafe
- * visual or narration instructions. The caller decides whether an issue should trigger an LLM repair.
+ * Removes executable overlay/character fields from a premium CG shot and reports visual or narration
+ * advice for explicit review. Generation accepts the normalized shot without another model pass.
  */
 export function sanitizePremiumProductCgShot(
   shot: Shot,
@@ -289,15 +289,6 @@ function premiumProfileForValidation(
   const profile = sanitizeCreativeProfile(creativeProfile);
   if (profile?.creationType === "premium_product_cg") return profile;
   return fallbackStyleType === PREMIUM_PRODUCT_CG_STYLE ? createPremiumProductCgProfile() : undefined;
-}
-
-function throwOnPremiumCgPolicyIssues(issues: CreativePolicyLintIssue[]): void {
-  // textOverlay is removed structurally before it can reach composition. Visual and narration
-  // directives need an LLM repair because deleting arbitrary prose could change product meaning.
-  const blocking = issues.filter((issue) => issue.code !== "text_overlay");
-  if (blocking.length === 0) return;
-  const fields = [...new Set(blocking.map((issue) => `shot ${issue.shotId ?? "?"} ${issue.field}`))].join(", ");
-  throw new Error(`Premium product CG policy violation in ${fields}: generated text, promotional graphics, and promotional narration are not allowed.`);
 }
 
 /**
@@ -337,9 +328,7 @@ function validateScript(
     ? (raw.shots as Partial<Shot>[]).map((s, i) => {
       const validated = validateShot(s, i);
       if (!premiumProfile) return validated;
-      const sanitized = sanitizePremiumProductCgShot(validated, premiumProfile);
-      throwOnPremiumCgPolicyIssues(sanitized.issues);
-      return sanitized.shot;
+      return sanitizePremiumProductCgShot(validated, premiumProfile).shot;
     })
     : [];
 
@@ -361,6 +350,19 @@ function validateScript(
 }
 
 // ==================== Core functionality ====================
+
+/** Parse the first response directly; only transport failures use the shared client's retries. */
+export async function completeOnce<T>(
+  client: OpenAI,
+  params: Omit<OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming, "stream">,
+  cfg: { baseUrl?: string; apiKey?: string; model?: string },
+  parse: (content: string) => T,
+): Promise<T> {
+  const response = await withLLMErrors(() => client.chat.completions.create(params), cfg);
+  const content = response.choices[0]?.message?.content;
+  if (!content) throw new Error("LLM 未返回有效内容");
+  return parse(content);
+}
 
 /**
  * Non-streaming chat call with ONE parse-driven retry ("repair first, then re-ask" — the last
@@ -414,7 +416,7 @@ export async function completeWithJsonRetry<T>(
 export async function generateScript(input: ScriptInput): Promise<GeneratedScript[]> {
   const client = createClient(input.llmConfig);
   if (tideweProfileForInput(input)) {
-    const complete: TideweCompletion = (system, prompt, parse) => completeWithJsonRetry(client, {
+    const complete: TideweCompletion = (system, prompt, parse) => completeOnce(client, {
       model: input.llmConfig.model, messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
       temperature: 0.65, max_tokens: 16000, ...reasoningParams(input.llmConfig.baseUrl), ...jsonModeParams(input.llmConfig.baseUrl),
     }, input.llmConfig, parse);
@@ -424,10 +426,8 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
   const premiumProfile = premiumProductCgProfileForInput(input);
   const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
-  // Transient free-endpoint failures retry inside the client; unparseable replies retry once with
-  // the parse error echoed back. json_object mode is safe here: the batch prompt's top level is
-  // an object ({"scripts": [...]}).
-  return completeWithJsonRetry(
+  // Accept the first generated script. json_object mode matches the batch prompt's object output.
+  return completeOnce(
     client,
     {
       model: input.llmConfig.model,
@@ -462,7 +462,7 @@ export async function generateTopicScript(input: TopicScriptGenInput): Promise<G
   const userPrompt = buildTopicBatchPrompt(input, batchCountFor(input.llmConfig.baseUrl, input.count ?? 3));
 
   // Topic-based videos have no e-commerce style concept; fall back uniformly to "custom"
-  return completeWithJsonRetry(
+  return completeOnce(
     client,
     {
       model: input.llmConfig.model,
@@ -492,7 +492,7 @@ export async function generateSingleScript(input: ScriptInput): Promise<Generate
   const premiumProfile = premiumProductCgProfileForInput(input);
   const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
 
-  return completeWithJsonRetry(
+  return completeOnce(
     client,
     {
       model: input.llmConfig.model,
@@ -798,24 +798,6 @@ export function parseScriptResponse(
     throw new Error("LLM 未生成有效分镜（脚本为空），请重试或调整输入");
   }
 
-  // Same reasoning one step further: a script whose shots carry no voiceover at all renders as a
-  // silent video with no captions, yet every stage downstream would report success. Weak local models
-  // fail exactly this way — correct JSON shape, empty content (verified with qwen2.5:0.5b on Ollama,
-  // issue #19 follow-up). Fail loudly and name the fix instead of handing back an unusable script.
-  // CG narration is optional, including restrained mode: its prompt explicitly permits empty
-  // voiceover. Keep those visual-film options, while still rejecting echoed placeholder copy.
-  // Commerce/topic scripts continue to require at least one real voiceover line.
-  if (premiumProfile?.narrationMode === "none") return scripts;
-
-  const usableScripts = scripts.filter((s) =>
-    s.shots.some((shot) => isRealVoiceover(shot.voiceover))
-    || (premiumProfile && s.shots.every((shot) => shot.voiceover.trim().length === 0)),
-  );
-  if (usableScripts.length === 0) {
-    throw new LLMRequestError(
-      "这个模型没写出真正的口播文案（分镜里的 voiceover 要么是空的，要么把格式说明原样抄了回来，成片会没有声音也没有字幕）：多为模型能力不足，请换一个更强的模型——本地 Ollama 建议用 7B 及以上的 instruct 模型（实测 qwen2.5:7b-instruct 可用），0.5B/1.5B 这类小模型写不出结构化脚本",
-      "The model produced no real voiceover lines (they are empty, or it echoed the format description back): the video would be silent and caption-less. This usually means the model is too weak — switch to a stronger one. For local Ollama use a 7B-or-larger instruct model (qwen2.5:7b-instruct is verified working); 0.5B/1.5B models cannot produce a structured script",
-    );
-  }
-  return usableScripts;
+  // Content is applied as generated; the creator can edit it or request another script.
+  return scripts;
 }

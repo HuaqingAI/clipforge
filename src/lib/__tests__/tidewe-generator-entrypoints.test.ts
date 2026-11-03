@@ -90,225 +90,149 @@ function observedBootFixture() {
   })));
   return { bootInput, visualObservations, segments, frozenText, beats, frozenCopy, personOnly, repaired };
 }
+function reply(copyResponse: { copies: unknown[] } = copy, planResponse: { scripts: unknown[] } = plan) {
+  return { ...copyResponse, ...planResponse };
+}
+function payload() {
+  return JSON.parse(model.create.mock.calls[0][0].messages[1].content);
+}
 beforeEach(() => {
-  model.replies = [copy, plan];
+  model.replies = [reply()];
   model.create.mockReset().mockImplementation(async () => ({ choices: [{ message: { content: JSON.stringify(model.replies.shift()) } }] }));
 });
 describe("shared TIDEWE generator dispatch", () => {
-  it.each([false, true])("sends duration-aware physical pacing to the planner with staff copy=%s without rewriting narration", async imported => {
+  it.each([false, true])("generates copy and physical pacing in one response with staff copy=%s", async imported => {
     const [script] = await generateScript({ ...input, ...(imported ? { copyText: text } : {}) });
-    expect(model.create).toHaveBeenCalledTimes(2);
-    const planningMessages = model.create.mock.calls[1][0].messages;
-    expect(planningMessages[0].content).toContain("Plan physical pacing independently from narration length");
-    expect(planningMessages[0].content).toContain("more continuing steps, not a fixed single step stretched across the clip");
-    expect(planningMessages[0].content).toContain("complete the operation once at its ordinary physical speed");
-    expect(planningMessages[0].content).toContain("Preserve an explicitly requested slow or cautious physical action");
-    expect(JSON.parse(planningMessages[1].content).copies[0].text).toBe(text);
+    expect(model.create).toHaveBeenCalledTimes(1);
+    const system = model.create.mock.calls[0][0].messages[0].content;
+    expect(system).toContain("Plan physical pacing independently from narration length");
+    expect(system).toContain("more continuing steps, not a fixed single step stretched across the clip");
+    expect(system).toContain("complete the operation once at its ordinary physical speed");
+    expect(system).toContain("Preserve an explicitly requested slow or cautious physical action");
+    expect(payload().outputFormat).toHaveProperty("copies");
+    expect(payload().outputFormat).toHaveProperty("scripts");
+    if (imported) expect(payload().frozenImportedCopy).toBe(text);
     expect(script.copyDocument?.text).toBe(text);
     expect(script.shots.map(shot => shot.voiceover).join(" ")).toBe(text);
   });
 
-  it("carries one scene direction through writing and planning a single AI copy", async () => {
+  it("carries a scene direction through the combined AI generation request", async () => {
     const fixture = countedPlanFixture([7]);
     const sceneDescription = "傍晚湖边，猎人穿着当前外套向拍摄朋友展示衣服，氛围轻松自然。";
-    model.replies = [fixture.copy, fixture.plan];
+    model.replies = [reply(fixture.copy, fixture.plan)];
     const scripts = await generateScript({ ...input, count: 3, sceneDescription: `  ${sceneDescription}\n` });
     expect(scripts).toHaveLength(1);
-    expect(scripts.map(script => script.copyDocument?.text)).toEqual(fixture.copy.copies.map(candidate => candidate.text));
-    expect(scripts.every(script => script.copyDocument?.source === "ai_generated")).toBe(true);
-    expect(model.create).toHaveBeenCalledTimes(2);
-    const [writing, planning] = model.create.mock.calls.map(([params]) => JSON.parse(params.messages[1].content));
-    for (const payload of [writing, planning]) {
-      expect(payload.sceneDescription).toBe(sceneDescription);
-      expect(payload.sceneDirectionGuidance).toContain("not complete spoken copy");
-    }
-    expect(planning.copies).toHaveLength(1);
-    expect(planning.copies.map((candidate: { copyIndex: number; text: string }) => ({ copyIndex: candidate.copyIndex, text: candidate.text })))
-      .toEqual(fixture.copy.copies.map((candidate, copyIndex) => ({ copyIndex, text: candidate.text })));
+    expect(scripts[0].copyDocument).toMatchObject({ text: fixture.copy.copies[0].text, source: "ai_generated" });
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(payload().sceneDescription).toBe(sceneDescription);
+    expect(payload().sceneDirectionGuidance).toContain("not complete spoken copy");
   });
 
-  it.each(["", " \r\n\t "])("leaves both AI stages unchanged for a blank scene direction %j", async sceneDescription => {
+  it.each(["", " \r\n\t "])("leaves the AI prompt unchanged for a blank scene direction %j", async sceneDescription => {
     await generateScript(input);
-    const originalPrompts = model.create.mock.calls.map(([params]) => params.messages);
+    const originalPrompt = model.create.mock.calls[0][0].messages;
     model.create.mockClear();
-    model.replies = [copy, plan];
+    model.replies = [reply()];
     await generateScript({ ...input, sceneDescription });
-    expect(model.create.mock.calls.map(([params]) => params.messages)).toEqual(originalPrompts);
+    expect(model.create.mock.calls[0][0].messages).toEqual(originalPrompt);
   });
 
-  it("keeps a stale AI scene brief out of both supplied-copy stages and preserves the complete text", async () => {
+  it("keeps a stale AI scene brief out of supplied-copy generation", async () => {
     const sceneDescription = "改成沙漠徒步的全新故事。";
     const [script] = await generateScript({ ...input, copyText: text, sceneDescription });
     expect(script.copyDocument).toMatchObject({ text, source: "user_provided" });
-    expect(model.create).toHaveBeenCalledTimes(2);
-    for (const [params] of model.create.mock.calls) {
-      const payload = JSON.parse(params.messages[1].content);
-      expect(payload).not.toHaveProperty("sceneDescription");
-      expect(payload).not.toHaveProperty("sceneDirectionGuidance");
-      expect(params.messages[1].content).not.toContain(sceneDescription);
-    }
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(payload()).not.toHaveProperty("sceneDescription");
+    expect(payload()).not.toHaveProperty("sceneDirectionGuidance");
+    expect(model.create.mock.calls[0][0].messages[1].content).not.toContain(sceneDescription);
   });
 
-  it("routes batch and single generation through two complete-copy stages", async () => {
-    const scripts = await generateScript(input);
-    expect(scripts[0].shots).toHaveLength(7);
-    expect(scripts[0].copyDocument?.text).toBe(text);
-    expect(scripts[0].copyDocument?.visualBeats).toEqual(visualBeats);
-    expect(scripts[0].shots[0].tidewe?.visualPlan).toEqual(plan.scripts[0].shots[0].visualPlan);
-    expect(model.create).toHaveBeenCalledTimes(2);
-    const params = model.create.mock.calls.map(([p]) => p);
-    expect(params.every(p => !p.stream && p.messages[0].content.includes("TIDEWE"))).toBe(true);
-    expect(JSON.parse(params[1].messages[1].content).copies[0].visualBeats).toEqual(visualBeats);
-    model.replies = [copy, plan];
+  it("uses one generation call for both batch and single-script entry points", async () => {
+    const [script] = await generateScript(input);
+    expect(script.shots).toHaveLength(7);
+    expect(script.copyDocument?.text).toBe(text);
+    expect(script.shots[0].tidewe?.visualPlan).toEqual(plan.scripts[0].shots[0].visualPlan);
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(model.create.mock.calls[0][0]).not.toHaveProperty("stream");
+    model.replies = [reply()];
     const regenerated = await generateSingleScript(input);
     expect(regenerated.styleType).toBe("tidewe_outdoor");
     expect(regenerated.shots).toHaveLength(7);
-    expect(model.create).toHaveBeenCalledTimes(4);
+    expect(model.create).toHaveBeenCalledTimes(2);
   });
-  it.each([undefined, 2, 3])("emits one validated copy through both stream adapters when requested count is %s", async count => {
+
+  it.each([undefined, 2, 3])("emits one complete response through both stream adapters when requested count is %s", async count => {
     const generationInput = { ...input, count };
     const onToken = vi.fn();
     const scripts = await new Promise<unknown>((resolve, reject) => { generateScriptStream(generationInput, { onToken, onComplete: resolve, onError: reject }); });
     expect(scripts).toHaveLength(1);
     expect(onToken).toHaveBeenCalledTimes(1);
     expect(JSON.parse(onToken.mock.calls[0][0]).scripts[0].copyDocument.text).toBe(text);
-    model.replies = [copy, plan];
+    expect(model.create).toHaveBeenCalledTimes(1);
+    model.replies = [reply()];
     const reader = createScriptStream(generationInput).getReader();
     const result = await reader.read();
-    const streamed = JSON.parse(new TextDecoder().decode(result.value));
-    expect(streamed.scripts).toHaveLength(1);
-    expect(streamed.scripts[0].copyDocument.text).toBe(text);
+    expect(JSON.parse(new TextDecoder().decode(result.value)).scripts[0].copyDocument.text).toBe(text);
     expect((await reader.read()).done).toBe(true);
-  });
-  it("repairs each invalid stage once, retaining frozen copy during planner repair", async () => {
-    model.replies = [{ copies: [] }, copy, { scripts: [] }, plan];
-    expect((await generateScript(input))[0].copyDocument?.text).toBe(text);
-    expect(model.create).toHaveBeenCalledTimes(4);
-    expect(model.create.mock.calls[3][0].messages[1].content).toContain(text);
-    expect(model.create.mock.calls[3][0].messages).toHaveLength(4);
-  });
-  it("fails after one planner repair instead of returning sales fallback or partial copy", async () => {
-    model.replies = [copy, { scripts: [] }, { scripts: [] }];
-    await expect(generateScript(input)).rejects.toThrow(/every frozen copy/);
-    expect(model.create).toHaveBeenCalledTimes(3);
+    expect(model.create).toHaveBeenCalledTimes(2);
   });
 
-  it.each(shotTargets)("generates and regenerates exactly $shotCount shots for $targetDuration seconds with AI or supplied copy", async ({ targetDuration, shotCount }) => {
+  it.each([
+    { name: "missing copy", response: reply({ copies: [] }) },
+    { name: "missing plan", response: reply(copy, { scripts: [] }) },
+    { name: "empty shots", response: reply(copy, { scripts: [{ copyIndex: 0, shots: [] }] }) },
+  ])("reports $name once without automatically asking the model to repair it", async ({ response }) => {
+    model.replies = [response, reply()];
+    await expect(generateScript(input)).rejects.toThrow();
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(model.replies).toHaveLength(1);
+  });
+
+  it.each(shotTargets)("requests $shotCount shots for $targetDuration seconds during generation and regeneration", async ({ targetDuration, shotCount }) => {
     for (const imported of [false, true]) {
       model.create.mockClear();
       const fixture = countedPlanFixture([shotCount]);
-      model.replies = [fixture.copy, fixture.plan];
+      model.replies = [reply(fixture.copy, fixture.plan)];
       const durationInput = { ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }), ...(imported && { copyText: fixture.copy.copies[0].text }) };
       const [script] = await generateScript(durationInput);
       expect(script.shots).toHaveLength(shotCount);
-      expect(script.copyDocument?.text).toBe(fixture.copy.copies[0].text);
-      expect(script.copyDocument?.source).toBe(imported ? "user_provided" : "ai_generated");
-      expect(model.create).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content)).toMatchObject({ targetDuration, shotCount });
-      model.replies = [fixture.copy, fixture.plan];
+      expect(script.copyDocument).toMatchObject({ text: fixture.copy.copies[0].text, source: imported ? "user_provided" : "ai_generated" });
+      expect(model.create).toHaveBeenCalledTimes(1);
+      expect(payload()).toMatchObject({ targetDuration, shotCount });
+      model.replies = [reply(fixture.copy, fixture.plan)];
       const regenerated = await generateSingleScript(durationInput);
       expect(regenerated.shots).toHaveLength(shotCount);
-      expect(regenerated.copyDocument?.text).toBe(fixture.copy.copies[0].text);
-      expect(model.create).toHaveBeenCalledTimes(4);
-      expect(JSON.parse(model.create.mock.calls[3][0].messages[1].content)).toMatchObject({ targetDuration, shotCount });
+      expect(model.create).toHaveBeenCalledTimes(2);
     }
   });
 
-  it("uses eight shots for the default 40 second profile when no explicit profile or duration is supplied", async () => {
+  it("requests eight shots for the default 40 second profile", async () => {
     const fixture = countedPlanFixture([8]);
-    model.replies = [fixture.copy, fixture.plan];
+    model.replies = [reply(fixture.copy, fixture.plan)];
     const [script] = await generateScript({ ...input, creativeProfile: undefined, targetDuration: undefined });
     expect(script.shots).toHaveLength(8);
-    expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content)).toMatchObject({ targetDuration: 40, shotCount: 8 });
-    expect(model.create).toHaveBeenCalledTimes(2);
-  });
-
-  it.each(shotTargets)("validates $shotCount shots for the $targetDuration second target through both streaming adapters", async ({ targetDuration, shotCount }) => {
-    const fixture = countedPlanFixture([shotCount]);
-    const durationInput = { ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) };
-    model.replies = [fixture.copy, fixture.plan];
-    const onToken = vi.fn();
-    const scripts = await new Promise<Awaited<ReturnType<typeof generateScript>>>((resolve, reject) => {
-      generateScriptStream(durationInput, { onToken, onComplete: resolve, onError: reject });
-    });
-    expect(scripts[0].shots).toHaveLength(shotCount);
-    expect(JSON.parse(onToken.mock.calls[0][0]).scripts[0].shots).toHaveLength(shotCount);
-    expect(onToken).toHaveBeenCalledTimes(1);
-    model.replies = [fixture.copy, fixture.plan];
-    const reader = createScriptStream(durationInput).getReader();
-    const result = await reader.read();
-    expect(JSON.parse(new TextDecoder().decode(result.value)).scripts[0].shots).toHaveLength(shotCount);
-    expect((await reader.read()).done).toBe(true);
-    expect(model.create).toHaveBeenCalledTimes(4);
+    expect(payload()).toMatchObject({ targetDuration: 40, shotCount: 8 });
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    { targetDuration: 30, expected: 7, received: 6 },
-    { targetDuration: 30, expected: 7, received: 8 },
-    { targetDuration: 30, expected: 7, received: 9 },
-    { targetDuration: 40, expected: 8, received: 7 },
-    { targetDuration: 40, expected: 8, received: 9 },
-    { targetDuration: 60, expected: 9, received: 7 },
-    { targetDuration: 60, expected: 9, received: 8 },
-    { targetDuration: 60, expected: 9, received: 10 },
-  ] as const)("rejects a persistent $received-shot plan for $targetDuration seconds after one repair", async ({ targetDuration, expected, received }) => {
-    for (const imported of [false, true]) {
-      model.create.mockClear();
-      const fixture = countedPlanFixture([received]);
-      model.replies = [fixture.copy, fixture.plan, fixture.plan];
-      await expect(generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }), ...(imported && { copyText: fixture.copy.copies[0].text }) }))
-        .rejects.toThrow(`TIDEWE copy 1 must contain exactly ${expected} shots for the ${targetDuration}s target; received ${received}.`);
-      expect(model.create).toHaveBeenCalledTimes(3);
-      expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
-    }
-  });
-
-  it.each(shotTargets.flatMap(target => [undefined, 1, 2, 3].map(count => ({ ...target, count }))))("returns one $shotCount-shot copy for $targetDuration seconds when requested count is $count", async ({ targetDuration, shotCount, count }) => {
-    const fixture = countedPlanFixture([shotCount]);
-    model.replies = [fixture.copy, fixture.plan];
-    const scripts = await generateScript({ ...input, count, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
-    expect(scripts).toHaveLength(1);
-    expect(scripts[0].shots).toHaveLength(shotCount);
-    expect(scripts.map(script => script.copyDocument?.text)).toEqual(fixture.copy.copies.map(candidate => candidate.text));
-    expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content).copies).toHaveLength(1);
-    expect(model.create).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([2, 3])("rejects a persistent %s-copy writing response before storyboard planning", async count => {
-    const fixture = countedPlanFixture(Array.from({ length: count }, () => 7));
-    model.replies = [fixture.copy, fixture.copy];
-    await expect(generateScript({ ...input, count })).rejects.toThrow(/Expected 1 full-copy candidates/);
-    expect(model.create).toHaveBeenCalledTimes(2);
-    expect(model.create.mock.calls[1][0].messages).toHaveLength(4);
-  });
-
-  it.each([
-    { targetDuration: 30, shotCount: 7, received: 8 },
-    { targetDuration: 40, shotCount: 8, received: 7 },
-    { targetDuration: 60, shotCount: 9, received: 8 },
-  ] as const)("repairs $received shots to $shotCount for $targetDuration seconds without regenerating frozen prose", async ({ targetDuration, shotCount, received }) => {
+    { targetDuration: 30, received: 6 }, { targetDuration: 30, received: 9 },
+    { targetDuration: 40, received: 7 }, { targetDuration: 60, received: 10 },
+  ] as const)("applies a $received-shot response for $targetDuration seconds without a quality repair", async ({ targetDuration, received }) => {
     const fixture = countedPlanFixture([received]);
-    const repairedPlan = { scripts: [{ copyIndex: 0, shots: allocateShots(fixture.copy.copies[0].text, plan.scripts[0].shots[0], shotCount) }] };
-    model.replies = [fixture.copy, fixture.plan, repairedPlan];
+    model.replies = [reply(fixture.copy, fixture.plan)];
     const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
-    expect(script.shots).toHaveLength(shotCount);
+    expect(script.shots).toHaveLength(received);
     expect(script.copyDocument?.text).toBe(fixture.copy.copies[0].text);
-    expect(script.shots.map(shot => shot.voiceover).join(" ")).toBe(fixture.copy.copies[0].text);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(model.create.mock.calls[2][0].messages[1].content).toBe(model.create.mock.calls[1][0].messages[1].content);
-    expect(model.create.mock.calls[2][0].messages[3].content).toContain(`exactly ${shotCount} shots for the ${targetDuration}s target; received ${received}`);
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 
-  it("does not emit an undersized candidate while the planner repair is rejected", async () => {
-    const fixture = countedPlanFixture([7]);
-    model.replies = [fixture.copy, fixture.plan, fixture.plan];
-    const onToken = vi.fn();
-    const onComplete = vi.fn();
-    await expect(new Promise((resolve, reject) => {
-      generateScriptStream({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration: 40 }) }, { onToken, onComplete: scripts => { onComplete(scripts); resolve(scripts); }, onError: reject });
-    })).rejects.toThrow(/exactly 8 shots for the 40s target; received 7/);
-    expect(onToken).not.toHaveBeenCalled();
-    expect(onComplete).not.toHaveBeenCalled();
+  it.each([2, 3])("rejects a %s-copy response without a repair", async count => {
+    const fixture = countedPlanFixture(Array.from({ length: count }, () => 7));
+    model.replies = [reply(fixture.copy, fixture.plan), reply()];
+    await expect(generateScript({ ...input, count })).rejects.toThrow(/Expected 1 full-copy candidates/);
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(model.replies).toHaveLength(1);
   });
 
   it.each([
@@ -319,106 +243,43 @@ describe("shared TIDEWE generator dispatch", () => {
     { category: "waterproof_boots", name: "TIDEWE hunting boots", expected: "boots" },
     { category: "hunting_chair", name: "TIDEWE hunting chair", expected: "accessories" },
     { category: "other", name: "Current unspecified item", expected: "unspecified" },
-    { category: "配件", name: "TIDEWE hunting chair", expected: "accessories" },
-    { category: "clothing", name: "TIDEWE unheated jacket", expected: "apparel" },
-    { category: "other", hint: "配件", hintOnly: true, name: "TIDEWE hunting chair", expected: "accessories" },
-    { category: "other", hint: "boots", name: "Current unspecified item", expected: "unspecified" },
-    { category: "unknown_category", hint: "boots", name: "Current unspecified item", expected: "unspecified" },
-  ] as const)("injects $expected guidance in both actual generation stages without extra calls or rewriting imported copy", async fixture => {
-    const { category, name, expected } = fixture;
-    const hint = "hint" in fixture ? fixture.hint : undefined;
-    const hintOnly = "hintOnly" in fixture && fixture.hintOnly;
-    const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: category as ProductFacts["category"], items: [] };
-    const observations = "当前参考可见商品外形、表面与既有接触位置。";
-    const categoryInput = { ...input, productName: name, productFacts: hintOnly ? undefined : facts, productCategoryHint: hint, productAnalysis: observations };
-    const originalFacts = structuredClone(facts);
+  ] as const)("passes $expected guidance in the single generation request", async ({ category, name, expected }) => {
+    const facts: ProductFacts = { version: 1, brand: "TIDEWE", category, items: [] };
+    const observations = "参考图2特写当前商品侧缘的半月形连接片与两层织物交界，保留这个局部主体。";
+    const categoryInput = { ...input, productName: name, productFacts: facts, productAnalysis: observations };
     for (const imported of [false, true]) {
       model.create.mockClear();
-      const frozenText = imported ? "“Look at this part.”\r\n\r\nCheck.  Check the current product." : "Look at this part. Check the current product before your next trip.";
-      const beats = [{ text: frozenText, visualRole: "demonstration", visualIdea: "人物已扶住当前参考商品，轻触可见边缘后停稳。", factRefs: [] }];
-      const categoryCopy = { copies: [{ ...copy.copies[0], text: imported ? "An attempted rewrite." : frozenText, visualBeats: beats }] };
-      const categoryPlan = { scripts: [{ copyIndex: 0, shots: [{ ...structuredClone(plan.scripts[0].shots[0]), scriptSegment: frozenText,
-        description: "人物在真实户外环境中已扶住当前参考商品，轻触可见边缘后保持稳定。", shotGoal: "观察当前参考商品与接触位置。",
-        visualIntent: "呈现当前商品普通接触状态。", prompt: "真实户外自然光，当前参考商品与接触的手完整入画。",
-        visualPlan: { framing: "medium", visualRole: "demonstration", productFocus: "当前参考商品的完整轮廓与手部接触处", actionStart: "人物已站稳并扶住当前商品。", action: "轻触当前商品的可见边缘一次。", actionEnd: "手与商品保持稳定支撑。" } }] }] };
-      categoryPlan.scripts[0].shots = allocateShots(frozenText, categoryPlan.scripts[0].shots[0]);
-      model.replies = [categoryCopy, categoryPlan];
-      const [script] = await generateScript({ ...categoryInput, ...(imported && { copyText: frozenText }) });
-      expect(model.create).toHaveBeenCalledTimes(2);
-      const copyPayload = JSON.parse(model.create.mock.calls[0][0].messages[1].content);
-      const planPayload = JSON.parse(model.create.mock.calls[1][0].messages[1].content);
-      const guidance = buildTideweCategoryGuidance(hintOnly ? hint : category, { productName: name, visualObservations: observations });
-      expect(copyPayload.categoryGuidance).toEqual(guidance);
-      expect(planPayload.categoryGuidance).toEqual(guidance);
-      expect(planPayload.categoryGuidance.category).toBe(expected);
-      expect(planPayload.product).toEqual({ name, visualObservations: observations });
-      expect(planPayload.copies[0].text).toBe(frozenText);
-      expect(script.copyDocument).toMatchObject({ text: frozenText, source: imported ? "user_provided" : "ai_generated", factsSnapshot: { category: expected === "unspecified" ? "other" : expected } });
-      expect(script.shots).toHaveLength(7);
-      expect(script.shots.map(shot => shot.voiceover).join(" ").replace(/\s+/g, " ")).toBe(frozenText.replace(/\s+/g, " "));
-      expect(facts).toEqual(originalFacts);
+      model.replies = [reply()];
+      const [script] = await generateScript({ ...categoryInput, ...(imported && { copyText: text }) });
+      expect(model.create).toHaveBeenCalledTimes(1);
+      expect(payload().categoryGuidance).toEqual(buildTideweCategoryGuidance(category, { productName: name, visualObservations: observations }));
+      expect(payload().categoryGuidance.category).toBe(expected);
+      expect(payload().categoryGuidance.referenceAppearancePolicy).toMatch(/外观|形状/);
+      expect(payload().product).toMatchObject({ name, visualObservations: observations, facts: { items: [] } });
+      expect(script.copyDocument).toMatchObject({ text, source: imported ? "user_provided" : "ai_generated", factsSnapshot: { category: expected === "unspecified" ? "other" : expected } });
       if (imported) {
-        expect(copyPayload.frozenImportedCopy).toBe(frozenText);
-        expect(copyPayload.categoryGuidanceUse).toContain("Visual planning only");
-        expect(planPayload.copies[0]).not.toHaveProperty("visualBeats");
+        expect(payload().frozenImportedCopy).toBe(text);
         expect(script.copyDocument?.exampleIds).toEqual([]);
-      } else {
-        expect(planPayload.copies[0].visualBeats).toEqual(beats);
-        if (["boots", "apparel", "unspecified"].includes(expected)) expect(script.copyDocument?.exampleIds).toEqual([]);
-        if (expected === "accessories") expect(script.copyDocument?.exampleIds.every(id => /^THC00[34]-/.test(id))).toBe(true);
       }
     }
   });
 
-  it("passes observed boot appearance to planning and repairs a product-free plan without rewriting frozen copy", async () => {
+  it("passes observed boot appearance and directly applies product-free framing", async () => {
     const fixture = observedBootFixture();
-    model.replies = [fixture.frozenCopy, fixture.personOnly, fixture.repaired];
+    model.replies = [reply(fixture.frozenCopy, fixture.personOnly)];
     const [script] = await generateScript(fixture.bootInput);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    const copyPrompt = JSON.parse(model.create.mock.calls[0][0].messages[1].content);
-    const planPrompt = JSON.parse(model.create.mock.calls[1][0].messages[1].content);
-    expect(copyPrompt.product).toMatchObject({ name: fixture.bootInput.productName, visualObservations: fixture.visualObservations, facts: { items: [] } });
-    expect(planPrompt.product).toEqual({ name: fixture.bootInput.productName, visualObservations: fixture.visualObservations });
-    expect(planPrompt.facts.items).toEqual([]);
-    expect(planPrompt.copies[0]).toMatchObject({ text: fixture.frozenText, visualBeats: fixture.beats });
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content)).toEqual(planPrompt);
-    expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
-    expect(model.create.mock.calls[2][0].messages[3].content).toMatch(/product|storyboard|item/i);
-    expect(script.copyDocument).toMatchObject({ text: fixture.frozenText, visualBeats: fixture.beats, productName: fixture.bootInput.productName, visualObservations: fixture.visualObservations, factsSnapshot: { items: [] } });
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(payload().product).toMatchObject({ name: fixture.bootInput.productName, visualObservations: fixture.visualObservations });
+    expect(script.copyDocument).toMatchObject({ text: fixture.frozenText, productName: fixture.bootInput.productName, visualObservations: fixture.visualObservations, factsSnapshot: { items: [] } });
     expect(script.shots.map(shot => shot.voiceover)).toEqual(fixture.segments);
-    expect(script.shots.map(shot => shot.tidewe?.productVisible)).toEqual([true, true, false, true, true, true, true]);
-    expect(script.shots[0].tidewe).toMatchObject({ personVisible: true, visualPlan: { visualRole: "demonstration", productFocus: "穿在脚上的迷彩高筒靴与地面接触关系" } });
-    expect(script.shots[1].tidewe).toMatchObject({ speechDelivery: "off_camera", visualPlan: { framing: "close_up", visualRole: "detail", productFocus: "完整高筒轮廓、迷彩边界与黑色鞋底沟槽" } });
-    for (const shot of script.shots) {
-      expect(fixture.frozenText.slice(shot.tidewe!.copySpan.start, shot.tidewe!.copySpan.end)).toBe(shot.voiceover);
-    }
-  });
-
-  it("rejects a second product-free plan without emitting a partial or completed script to save", async () => {
-    const fixture = observedBootFixture();
-    model.replies = [fixture.frozenCopy, fixture.personOnly, fixture.personOnly];
-    const onToken = vi.fn();
-    const onComplete = vi.fn();
-    const result = new Promise<unknown>((resolve, reject) => {
-      generateScriptStream(fixture.bootInput, { onToken, onComplete: scripts => { onComplete(scripts); resolve(scripts); }, onError: reject });
-    });
-    await expect(result).rejects.toThrow(/product|storyboard|item/i);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(model.create.mock.calls.map(([params]) => params.messages.length)).toEqual([2, 2, 4]);
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0]).toMatchObject({ text: fixture.frozenText, visualBeats: fixture.beats });
-    expect(onToken).not.toHaveBeenCalled();
-    expect(onComplete).not.toHaveBeenCalled();
-    expect(model.replies).toEqual([]);
+    expect(script.shots.every(shot => shot.tidewe?.productVisible === false)).toBe(true);
   });
 
   it.each([
     { framing: "detail", personVisible: true, delivery: "on_camera" },
-    { framing: "detail", personVisible: false, delivery: "on_camera" },
-    { framing: "detail", personVisible: true, delivery: undefined },
     { framing: "detail", personVisible: false, delivery: undefined },
     { framing: "close_up", personVisible: false, delivery: "on_camera" },
-    { framing: "close_up", personVisible: false, delivery: undefined },
-  ])("uses off-camera narration without a repair for $framing, personVisible=$personVisible, delivery=$delivery", async ({ framing, personVisible, delivery }) => {
+  ])("binds off-camera narration to $framing framing without another model call", async ({ framing, personVisible, delivery }) => {
     const fixture = observedBootFixture();
     const planned = structuredClone(fixture.repaired);
     const plannedDetail = planned.scripts[0].shots[1];
@@ -426,249 +287,91 @@ describe("shared TIDEWE generator dispatch", () => {
     plannedDetail.personVisible = personVisible;
     if (delivery === undefined) Reflect.deleteProperty(plannedDetail, "speechDelivery");
     else plannedDetail.speechDelivery = delivery;
-    if (personVisible) {
-      plannedDetail.description = "画面只包含人物的双手与当前高筒靴，手已扶住靴筒外侧，完整靴筒轮廓清楚可见。";
-      plannedDetail.prompt = "林边中性散射光，只取双手、完整靴筒与黑色鞋底边缘，面部在画幅外。";
-      plannedDetail.visualPlan.actionStart = "双手已扶稳当前高筒靴，完整靴筒清楚入画。";
-    }
-    const expectedPlan = structuredClone(plannedDetail.visualPlan);
-    model.replies = [fixture.frozenCopy, planned];
-
+    model.replies = [reply(fixture.frozenCopy, planned)];
     const [script] = await generateScript(fixture.bootInput);
-    expect(model.create).toHaveBeenCalledTimes(2);
-    expect(model.create.mock.calls.map(([params]) => params.messages.length)).toEqual([2, 2]);
-    expect(model.replies).toEqual([]);
-    expect(script.copyDocument).toMatchObject({ text: fixture.frozenText, visualBeats: fixture.beats });
+    expect(model.create).toHaveBeenCalledTimes(1);
     expect(script.shots.map(shot => shot.voiceover)).toEqual(fixture.segments);
-    for (const shot of script.shots) {
-      expect(fixture.frozenText.slice(shot.tidewe!.copySpan.start, shot.tidewe!.copySpan.end)).toBe(shot.voiceover);
-    }
     const detail = script.shots[1];
-    expect(detail).toMatchObject({ description: plannedDetail.description, camera: plannedDetail.camera, prompt: plannedDetail.prompt, visualSource: "ai_generate", tidewe: { personVisible, productVisible: true, speechDelivery: "off_camera", visualPlan: expectedPlan } });
-    expect(detail.tidewe?.visualPlan).toEqual(expectedPlan);
-    expect(script.shots[2].tidewe?.speechDelivery).toBe("on_camera");
-
-    const firstFrame = compileTideweVisualPrompt(detail, "image", "on_camera");
+    expect(detail).toMatchObject({ visualSource: "ai_generate", tidewe: { personVisible, productVisible: true, speechDelivery: "off_camera", visualPlan: plannedDetail.visualPlan } });
     const nativeVideo = compileTideweVisualPrompt(detail, "video", "on_camera", undefined, "native", { direction: preparedVideoDirection });
-    const postVideo = compileTideweVisualPrompt(detail, "video", "on_camera", undefined, "post", { direction: preparedVideoDirection });
-    expect(firstFrame.prompt).toContain("完整高筒轮廓、迷彩边界与黑色鞋底沟槽");
-    expect(firstFrame.prompt).toContain("不要求出现脸部或嘴部");
-    expect(firstFrame.negativePrompt).toContain("说话口型");
-    for (const compiled of [nativeVideo, postVideo]) {
-      expect(compiled.prompt).toContain(preparedVideoDirection.action);
-      expect(compiled.prompt).not.toMatch(/\p{Script=Han}/u);
-      expect(compiled.prompt).not.toContain("本镜为写实成年户外使用者真人口播");
-      expect(compiled.prompt).not.toContain("must visibly articulate");
-      expect(compiled.prompt).not.toContain("lips, jaw and mouth must move");
-      expect(compiled.negativePrompt).toContain("visible speaking, lip synchronization");
-    }
     expect(nativeVideo.prompt).toContain("off-camera narration");
     expect(nativeVideo.prompt).toContain(JSON.stringify(fixture.segments[1]));
-    expect(postVideo.prompt).toContain("no audio track, visible speaking or lip synchronization");
+    expect(nativeVideo.negativePrompt).toContain("visible speaking, lip synchronization");
   });
 
-  it("keeps global post-production voiceover and product-image details free of native speech delivery", async () => {
+  it("keeps post-production voiceover and product-image details free of native speech delivery", async () => {
     const fixture = observedBootFixture();
     const planned = structuredClone(fixture.repaired);
     planned.scripts[0].shots.forEach(shot => { Reflect.deleteProperty(shot, "speechDelivery"); });
-    const plannedDetail = planned.scripts[0].shots[1];
-    plannedDetail.visualPlan.framing = "detail";
-    Object.assign(plannedDetail, { visualSource: "product_image" });
-    model.replies = [fixture.frozenCopy, planned];
-
+    Object.assign(planned.scripts[0].shots[1], { visualSource: "product_image" });
+    model.replies = [reply(fixture.frozenCopy, planned)];
     const [script] = await generateScript({ ...fixture.bootInput, creativeProfile: createTideweOutdoorProfile({ targetDuration: 30, speechMode: "voiceover" }) });
-    expect(model.create).toHaveBeenCalledTimes(2);
-    expect(script.copyDocument?.text).toBe(fixture.frozenText);
-    expect(script.shots.map(shot => shot.voiceover)).toEqual(fixture.segments);
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(script.shots[1].visualSource).toBe("product_image");
     script.shots.forEach(shot => { expect(shot.tidewe).not.toHaveProperty("speechDelivery"); });
-    const detail = script.shots[1];
-    expect(detail).toMatchObject({ visualSource: "product_image", tidewe: { personVisible: false, productVisible: true, visualPlan: plannedDetail.visualPlan } });
-    const compiled = compileTideweVisualPrompt(detail, "video", "voiceover", undefined, "post", { direction: preparedVideoDirection });
-    expect(compiled.prompt).toContain("silent footage for narration added in post");
-    expect(compiled.prompt).not.toContain("Generate native audio and video");
-    expect(compiled.negativePrompt).toContain("visible speaking, lip synchronization");
-    expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content).outputFormat.scripts[0].shots[0]).not.toHaveProperty("speechDelivery");
+    expect(payload().outputFormat.scripts[0].shots[0]).not.toHaveProperty("speechDelivery");
   });
 
-  it.each([
-    { delivery: undefined, expected: "on_camera" },
-    { delivery: "off_camera", expected: "off_camera" },
-  ])("preserves visible close-up speech choice: delivery=$delivery", async ({ delivery, expected }) => {
-    const planned = structuredClone(plan);
-    const visibleCloseUp = planned.scripts[0].shots[0];
-    visibleCloseUp.visualPlan.framing = "close_up";
-    Object.assign(visibleCloseUp, { personVisible: true });
-    if (delivery !== undefined) Object.assign(visibleCloseUp, { speechDelivery: delivery });
-    model.replies = [copy, planned];
-
+  it("retains generated visual wording without applying a content-quality gate", async () => {
+    const generated = structuredClone(plan);
+    generated.scripts[0].shots[0].prompt = "用热成像展示衣服温度。";
+    model.replies = [reply(copy, generated)];
     const [script] = await generateScript(input);
-    expect(model.create).toHaveBeenCalledTimes(2);
-    expect(script.copyDocument?.text).toBe(text);
-    expect(script.shots[0].tidewe).toMatchObject({ personVisible: true, speechDelivery: expected, visualPlan: { framing: "close_up" } });
-    const compiled = compileTideweVisualPrompt(script.shots[0], "video", "on_camera", undefined, "native", { direction: preparedVideoDirection });
-    if (expected === "on_camera") {
-      expect(compiled.prompt).toContain("the visible presenter says the exact US English line");
-      expect(compiled.negativePrompt).not.toContain("visible speaking, lip synchronization");
-    } else {
-      expect(compiled.prompt).toContain("off-camera narration");
-      expect(compiled.negativePrompt).toContain("visible speaking, lip synchronization");
-    }
+    expect(script.shots[0].prompt).toBe(generated.scripts[0].shots[0].prompt);
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    { framing: "detail", personVisible: true },
-    { framing: "close_up", personVisible: false },
-  ])("rejects an invalid speech choice before normalizing $framing, personVisible=$personVisible", async ({ framing, personVisible }) => {
-    const fixture = observedBootFixture();
-    const invalidPlan = structuredClone(fixture.repaired);
-    const detail = invalidPlan.scripts[0].shots[1];
-    detail.visualPlan.framing = framing;
-    detail.personVisible = personVisible;
-    detail.speechDelivery = "silent";
-    model.replies = [fixture.frozenCopy, invalidPlan, invalidPlan];
-
-    await expect(generateScript(fixture.bootInput)).rejects.toThrow(/Invalid shot speechDelivery/);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(model.create.mock.calls.map(([params]) => params.messages.length)).toEqual([2, 2, 4]);
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0]).toMatchObject({ text: fixture.frozenText, visualBeats: fixture.beats });
-  });
-
-  it("accepts explicit visual prohibitions without spending a planner repair", async () => {
-    const safePlan = structuredClone(plan);
-    safePlan.scripts[0].shots[0].prompt = "林边真实自然光。不生成热成像、发光热区或透视剖面，也不展示独立电池。";
-    model.replies = [copy, safePlan];
-    const [script] = await generateScript(input);
-    expect(script.copyDocument?.text).toBe(text);
-    expect(script.shots[0].prompt).toContain("不生成热成像");
-    expect(model.create).toHaveBeenCalledTimes(2);
-  });
-
-  it("repairs a positive prohibited visual while retaining the frozen copy", async () => {
-    const unsafePlan = structuredClone(plan);
-    unsafePlan.scripts[0].shots[0].prompt = "用热成像展示衣服温度。";
-    model.replies = [copy, unsafePlan, plan];
-    const [script] = await generateScript(input);
-    expect(script.copyDocument?.text).toBe(text);
-    expect(script.shots[0].prompt).toBe(plan.scripts[0].shots[0].prompt);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(model.create.mock.calls[2][0].messages[1].content).toContain(text);
-  });
-
-  it("still rejects a repeated positive prohibited visual after the single repair", async () => {
-    const unsafePlan = structuredClone(plan);
-    unsafePlan.scripts[0].shots[0].shotGoal = "使用发光热区展示加热功能。";
-    model.replies = [copy, unsafePlan, unsafePlan];
-    await expect(generateScript(input)).rejects.toThrow(/镜头\s*1.*发光热区/);
-    expect(model.create).toHaveBeenCalledTimes(3);
-  });
-
-  it("preserves imported punctuation and ignores unexpected AI visual beats without a repair", async () => {
+  it("preserves imported punctuation and rejects a model rewrite of frozen narration without a repair", async () => {
     const original = "“Don't rush,” I say.\r\n\r\nWait.  Wait.\r\nCheck the fit.";
     const annotation = { ...copy.copies[0], text: "An attempted rewrite.", visualBeats: [{ text: "Replace the original!", visualRole: "invented", visualIdea: "随意改写原文。", factRefs: ["unsupported"] }] };
     const importedPlan = structuredClone(plan);
     importedPlan.scripts[0].shots = allocateShots(original, importedPlan.scripts[0].shots[0]);
-    model.replies = [{ copies: [annotation] }, importedPlan];
+    model.replies = [reply({ copies: [annotation] }, importedPlan)];
     const [script] = await generateScript({ ...input, copyText: original });
     expect(script.copyDocument).toMatchObject({ source: "user_provided", text: original });
     expect(script.copyDocument).not.toHaveProperty("visualBeats");
-    expect(script.shots).toHaveLength(7);
-    expect(script.shots.map(shot => shot.voiceover).join(" ").replace(/\s+/g, " ")).toBe(original.replace(/\s+/g, " "));
     expect(script.shots[0].tidewe?.copySpan.start).toBe(0);
     expect(script.shots.at(-1)?.tidewe?.copySpan.end).toBe(original.length);
-    for (const shot of script.shots) {
-      expect(original.slice(shot.tidewe!.copySpan.start, shot.tidewe!.copySpan.end)).toBe(shot.voiceover);
-    }
-    expect(JSON.parse(model.create.mock.calls[1][0].messages[1].content).copies[0]).not.toHaveProperty("visualBeats");
-    expect(model.create).toHaveBeenCalledTimes(2);
+    for (const shot of script.shots) expect(original.slice(shot.tidewe!.copySpan.start, shot.tidewe!.copySpan.end)).toBe(shot.voiceover);
+    expect(model.create).toHaveBeenCalledTimes(1);
+
+    model.create.mockClear();
+    importedPlan.scripts[0].shots[0].scriptSegment = "A rewritten opening.";
+    model.replies = [reply({ copies: [annotation] }, importedPlan), reply()];
+    await expect(generateScript({ ...input, copyText: original })).rejects.toThrow(/rewrote|reordered/);
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 
-  it("repairs a spoken duration that leaves too little settling time without changing the copy", async () => {
-    const rushedPlan = structuredClone(plan);
-    rushedPlan.scripts[0].shots[0].duration = 1.5;
-    model.replies = [copy, rushedPlan, plan];
+  it("applies a 14-word shot at five seconds without the previous 5.7-second rejection", async () => {
+    const rushed = structuredClone(plan);
+    rushed.scripts[0].shots = [{ ...rushed.scripts[0].shots[0], scriptSegment: text, duration: 5 }];
+    model.replies = [reply(copy, rushed)];
     const [script] = await generateScript(input);
-    expect(script.shots[0].duration).toBe(3);
-    expect(script.copyDocument?.text).toBe(text);
-    expect(script.copyDocument?.visualBeats).toEqual(visualBeats);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0]).toMatchObject({ text, visualBeats });
-    expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
+    expect(script.shots[0]).toMatchObject({ voiceover: text, duration: 5 });
+    expect(script.copyDocument?.wordCount).toBe(14);
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    { targetDuration: 30, shotCount: 7, wordCount: 72 },
-    { targetDuration: 40, shotCount: 8, wordCount: 97 },
-    { targetDuration: 60, shotCount: 9, wordCount: 148 },
-  ] as const)("reserves pauses for exactly $shotCount shots within the $targetDuration second copy budget", async ({ targetDuration, shotCount, wordCount }) => {
-    const words = "Before you choose your jacket look at how it sits on your shoulders Check the visible sleeve shape while your hands rest naturally by your sides Then compare the outer fabric and the seam with the product pictures I would use this view to decide what to inspect more closely Keep the actual fit and your own trip in mind before you choose the gear you want to bring along next time Look at the visible collar edge before turning to the sleeve and the hem Your hands can stay beside the jacket as you compare the outline with the pictures Move back to see the whole jacket in the same light Then look at the shape from the side while keeping the current product clearly in view These ordinary views can help you decide which visible detail to inspect before the next walk outdoors with the gear you have chosen for the trip".split(" ");
-    const withinBudget = `${words.slice(0, wordCount).join(" ")}.`;
-    const budgetCopy = (frozenText: string) => ({ copies: [{ ...copy.copies[0], text: frozenText,
-      visualBeats: [{ text: frozenText, visualRole: "demonstration", visualIdea: "观察当前外套的可见轮廓与实际穿着状态。", factRefs: [] }],
-    }] });
-    const repairedCopy = budgetCopy(withinBudget);
-    const budgetPlan = { scripts: [{ copyIndex: 0, shots: allocateShots(withinBudget, plan.scripts[0].shots[0], shotCount).map(shot => ({ ...shot, duration: (Math.ceil(wordCount / shotCount) / 2.6) + 0.3 })) }] };
-    // One extra word fits the narration-only budget, but exceeds the budget with one pause per required shot.
-    model.replies = [budgetCopy(`${withinBudget} Carefully.`), repairedCopy, budgetPlan];
-    const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration }) });
-    expect(script.copyDocument).toMatchObject({ text: withinBudget, wordCount, visualBeats: repairedCopy.copies[0].visualBeats });
-    expect(script.shots).toHaveLength(shotCount);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(model.create.mock.calls[1][0].messages).toHaveLength(4);
-    expect(model.create.mock.calls[1][0].messages[3].content).toContain("conversational speech budget");
-    expect(model.create.mock.calls[2][0].messages).toHaveLength(2);
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0].text).toBe(withinBudget);
-  });
-
-  it("repairs seven repeated presenter medium shots into varied views using the same frozen copy", async () => {
-    const segments = ["First, check how it sits.", "Look at the outer fabric.", "See the trail around you.", "Move one sleeve a little.", "Then look back at me.", "Notice the seam up close.", "Check the fit before heading out."];
-    const frozenText = segments.join(" ");
-    const roles = ["presenter", "detail", "context", "demonstration", "presenter", "detail", "context"];
-    const framings = ["medium", "detail", "wide", "close_up", "medium", "detail", "wide"];
-    const beats = segments.map((segment, index) => ({ text: segment, visualRole: roles[index], visualIdea: `观察林边装备的第${index + 1}处可见状态。`, factRefs: [] }));
-    const frozenCopy = { copies: [{ ...copy.copies[0], text: frozenText, visualBeats: beats }] };
-    const repeated = { scripts: [{ copyIndex: 0, shots: segments.map((segment) => ({ ...structuredClone(plan.scripts[0].shots[0]), scriptSegment: segment, duration: 4, visualPlan: { ...plan.scripts[0].shots[0].visualPlan, visualRole: "presenter" } })) }] };
-    const varied = structuredClone(repeated);
-    varied.scripts[0].shots.forEach((shot, index) => {
-      shot.visualPlan = { framing: framings[index], visualRole: roles[index], productFocus: `当前外套第${index + 1}处可见穿着状态与面料轮廓`, actionStart: `装备第${index + 1}处已经稳定入画。`, action: `静态观察第${index + 1}处已有穿着状态。`, actionEnd: "保持当前稳定构图。" };
-      shot.shotGoal = `展现第${index + 1}处可见状态。`;
-      Object.assign(shot, { speechDelivery: roles[index] === "presenter" ? "on_camera" : "off_camera", personVisible: roles[index] !== "context" });
-    });
-    model.replies = [frozenCopy, repeated, varied];
+  it("preserves AI paragraph breaks and internal spaces while mapping the returned narration", async () => {
+    const original = "Walking  warms you up.\r\n\r\nWaiting feels different.";
+    const generatedCopy = { copies: [{ ...copy.copies[0], text: original }] };
+    const generatedPlan = { scripts: [{ copyIndex: 0, shots: [{ ...plan.scripts[0].shots[0], scriptSegment: original }] }] };
+    model.replies = [reply(generatedCopy, generatedPlan)];
     const [script] = await generateScript(input);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(script.copyDocument?.text).toBe(frozenText);
-    expect(script.copyDocument?.visualBeats).toEqual(beats);
-    expect(script.shots.map(shot => shot.voiceover)).toEqual(segments);
-    expect(new Set(script.shots.map(shot => shot.tidewe?.visualPlan?.framing)).size).toBeGreaterThanOrEqual(3);
-    expect(new Set(script.shots.map(shot => shot.tidewe?.visualPlan?.visualRole)).size).toBeGreaterThanOrEqual(2);
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0]).toMatchObject({ text: frozenText, visualBeats: beats });
-    expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
+    expect(script.copyDocument?.text).toBe(original);
+    expect(script.shots[0].voiceover).toBe(original);
+    expect(script.shots[0].tidewe?.copySpan).toEqual({ start: 0, end: original.length });
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    { name: "missing visualPlan", mutate: (shot: PlannedShot) => { Reflect.deleteProperty(shot, "visualPlan"); } },
-    { name: "unsupported framing", mutate: (shot: PlannedShot) => { shot.visualPlan.framing = "portrait"; } },
-    { name: "English action start", mutate: (shot: PlannedShot) => { shot.visualPlan.actionStart = "Hand beside the jacket"; } },
-    { name: "missing product focus", mutate: (shot: PlannedShot) => { Reflect.deleteProperty(shot.visualPlan, "productFocus"); } },
-  ])("rejects $name after the existing single planner repair", async ({ mutate }) => {
-    const invalidPlan = structuredClone(plan);
-    mutate(invalidPlan.scripts[0].shots[0]);
-    model.replies = [copy, invalidPlan, invalidPlan];
-    await expect(generateScript(input)).rejects.toThrow(/visual|framing|Chinese|action/i);
-    expect(model.create).toHaveBeenCalledTimes(3);
-    const originalPlanningCopy = JSON.parse(model.create.mock.calls[1][0].messages[1].content).copies[0];
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0]).toEqual(originalPlanningCopy);
-    expect(model.create.mock.calls[2][0].messages).toHaveLength(4);
-  });
-
-  it("repairs an incomplete AI beat allocation before planning the complete frozen copy", async () => {
-    const omittedBeat = structuredClone(copy);
-    omittedBeat.copies[0].visualBeats.pop();
-    model.replies = [omittedBeat, copy, plan];
+  it("applies repeated presenter views and a long copy without requesting a rewrite", async () => {
+    const longText = `${text} ${text} ${text} ${text} ${text} ${text}`;
+    const generatedCopy = { copies: [{ ...copy.copies[0], text: longText }] };
+    const generatedPlan = { scripts: [{ copyIndex: 0, shots: allocateShots(longText, plan.scripts[0].shots[0]).map(shot => ({ ...shot, duration: 2, visualPlan: { ...shot.visualPlan, framing: "medium", visualRole: "presenter" } })) }] };
+    model.replies = [reply(generatedCopy, generatedPlan)];
     const [script] = await generateScript(input);
-    expect(script.copyDocument).toMatchObject({ text, visualBeats });
-    expect(model.create).toHaveBeenCalledTimes(3);
-    expect(model.create.mock.calls[1][0].messages).toHaveLength(4);
-    expect(JSON.parse(model.create.mock.calls[2][0].messages[1].content).copies[0]).toMatchObject({ text, visualBeats });
+    expect(script.copyDocument?.text).toBe(longText);
+    expect(new Set(script.shots.map(shot => shot.tidewe?.visualPlan?.framing))).toEqual(new Set(["medium"]));
+    expect(model.create).toHaveBeenCalledTimes(1);
   });
 });

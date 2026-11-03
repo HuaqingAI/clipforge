@@ -116,18 +116,31 @@ export function assertTideweCopyClaims(text: string, facts: ProductFacts, claime
   if (sku.startsWith("BL025") && /270|three[- ]side|upward door/i.test(text)) fail("BL025 must not inherit BL022 structure");
 }
 
-export function assertTideweScript(script: { shots?: Shot[] | null; copyDocument?: TideweCopyDocument | null }, expectedPresenter?: TidewePresenterSnapshot | null): void {
+type TideweScriptDocument = { shots?: Shot[] | null; copyDocument?: TideweCopyDocument | null };
+
+/** Storage and selection protect frozen copy/identity without judging the generated creative work. */
+export function assertTideweScriptIntegrity(script: TideweScriptDocument, expectedPresenter?: TidewePresenterSnapshot | null): void {
+  validateTideweScript(script, expectedPresenter, false);
+}
+
+/** Explicit review and media execution may still enforce their own content requirements. */
+export function assertTideweScript(script: TideweScriptDocument, expectedPresenter?: TidewePresenterSnapshot | null): void {
+  validateTideweScript(script, expectedPresenter, true);
+}
+
+function validateTideweScript(script: TideweScriptDocument, expectedPresenter: TidewePresenterSnapshot | null | undefined, checkContent: boolean): void {
   const copy = script.copyDocument;
   if (!copy || copy.version !== 1 || copy.language !== "en-US") fail("TIDEWE script requires a frozen English copy document");
   if (copy.corpusVersion !== TIDEWE_CORPUS_VERSION || copy.compilerVersion !== TIDEWE_COMPILER_VERSION) fail("Unsupported TIDEWE corpus/compiler version");
   if (copy.factsHash !== productFactsHash(copy.factsSnapshot)) fail("TIDEWE fact snapshot hash does not match");
-  if (!copy.translation?.trim()) fail("TIDEWE copy requires a Chinese review translation");
-  if (!/[\u3400-\u9fff]/u.test(copy.translation)) fail("Review translation must be Chinese");
+  if (typeof copy.text !== "string" || !copy.text.trim()) fail("TIDEWE script requires complete copy text");
+  if (checkContent && !copy.translation?.trim()) fail("TIDEWE copy requires a Chinese review translation");
+  if (checkContent && !/[\u3400-\u9fff]/u.test(copy.translation)) fail("Review translation must be Chinese");
   if (copy.source !== undefined && copy.source !== "ai_generated" && copy.source !== "user_provided") fail("Unsupported TIDEWE copy source");
-  if (copy.source === "user_provided") {
+  if (checkContent && copy.source === "user_provided") {
     // Staff-written claims remain their prose; they never become confirmed product evidence.
     assertTideweImportedCopyClaims(copy.text, copy.factsSnapshot, copy.claimedFactIds);
-  } else {
+  } else if (checkContent) {
     assertTideweCopyClaims(copy.text, copy.factsSnapshot, copy.claimedFactIds);
   }
   const facts = new Set(claimableFacts(copy.factsSnapshot).map(f => f.id));
@@ -148,24 +161,24 @@ export function assertTideweScript(script: { shots?: Shot[] | null; copyDocument
     if (!fields.sceneId?.trim() || !fields.shotGoal?.trim() || typeof fields.productVisible !== "boolean") fail("Shot requires scene, goal and product visibility");
     if (fields.personVisible !== undefined && typeof fields.personVisible !== "boolean") fail("Shot person visibility must be a boolean");
     if (fields.speechDelivery !== undefined && fields.speechDelivery !== "on_camera" && fields.speechDelivery !== "off_camera") fail("Shot speechDelivery must be on_camera or off_camera");
-    if (fields.speechDelivery === "on_camera" && shot.voiceover.trim() && fields.personVisible === false) fail("On-camera speech requires the presenter to be visible");
+    if (checkContent && fields.speechDelivery === "on_camera" && shot.voiceover.trim() && fields.personVisible === false) fail("On-camera speech requires the presenter to be visible");
     const visualPlan = fields.visualPlan;
     if (visualPlan !== undefined && (!visualPlan || typeof visualPlan !== "object" || Array.isArray(visualPlan)
       || !["wide", "medium", "close_up", "detail"].includes(visualPlan.framing)
       || !["presenter", "demonstration", "detail", "context"].includes(visualPlan.visualRole)
-      || ![visualPlan.actionStart, visualPlan.action, visualPlan.actionEnd].every(value => typeof value === "string" && Boolean(value.trim()) && value.length <= 240 && /[\u3400-\u9fff]/u.test(value)))) {
+      || ![visualPlan.actionStart, visualPlan.action, visualPlan.actionEnd].every(value => typeof value === "string" && (!checkContent || Boolean(value.trim()) && value.length <= 240 && /[\u3400-\u9fff]/u.test(value))))) {
       fail(`镜头 ${shot.shotId} 的景别、画面任务和动作起止不完整，请重新规划该镜头。`);
     }
-    if (visualPlan?.productFocus !== undefined && (typeof visualPlan.productFocus !== "string" || !visualPlan.productFocus.trim() || visualPlan.productFocus.length > 240 || !/[\u3400-\u9fff]/u.test(visualPlan.productFocus))) {
+    if (visualPlan?.productFocus !== undefined && (typeof visualPlan.productFocus !== "string" || checkContent && (!visualPlan.productFocus.trim() || visualPlan.productFocus.length > 240 || !/[\u3400-\u9fff]/u.test(visualPlan.productFocus)))) {
       fail(`镜头 ${shot.shotId} 的商品观察对象必须是简短中文，请描述实际入画的商品或部位。`);
     }
     if (JSON.stringify(stable(fields.presenter ?? null)) !== presenterSnapshot) fail("TIDEWE shots must keep the same frozen presenter");
     if (fields.presenter && (!isValidTidewePresenterInput(fields.presenter) || typeof fields.personVisible !== "boolean")) fail("Selected presenter requires a valid frozen identity and explicit person visibility");
     if (fields.presenter && fields.personVisible && !shot.description.includes(tidewePresenterAnchor(fields.presenter))) fail("Person-visible description must retain the saved presenter identity");
-    if (!fields.productVisible && shot.visualSource === "product_image") fail("An environment shot cannot use a raw product photo");
-    if (shot.voiceover && !fields.translation?.trim()) fail("Voiced shot requires a Chinese translation");
-    if (fields.factRefs.some(id => !facts.has(id))) fail("Shot references unknown or conflicting product facts");
-    if (![shot.description, shot.camera, shot.prompt, shot.visualIntent, fields.shotGoal].every(value => typeof value === "string" && /[\u3400-\u9fff]/u.test(value))) fail("TIDEWE visual fields must be Chinese");
+    if (checkContent && !fields.productVisible && shot.visualSource === "product_image") fail("An environment shot cannot use a raw product photo");
+    if (checkContent && shot.voiceover && !fields.translation?.trim()) fail("Voiced shot requires a Chinese translation");
+    if (!Array.isArray(fields.factRefs) || fields.factRefs.some(id => typeof id !== "string" || checkContent && !facts.has(id))) fail("Shot references unknown or conflicting product facts");
+    if (checkContent && ![shot.description, shot.camera, shot.prompt, shot.visualIntent, fields.shotGoal].every(value => typeof value === "string" && /[\u3400-\u9fff]/u.test(value))) fail("TIDEWE visual fields must be Chinese");
     const visualFields = [
       ["画面描述", shot.description], ["画面提示", shot.prompt], ["视觉意图", shot.visualIntent],
       ["运镜", shot.camera], ["画面目标", fields.shotGoal],
@@ -174,7 +187,7 @@ export function assertTideweScript(script: { shots?: Shot[] | null; copyDocument
     ] as const;
     for (const [label, visual] of visualFields) {
       if (visual?.includes(TIDEWE_PRESENTER_PLACEHOLDER)) fail("Unresolved TIDEWE presenter placeholder");
-      const prohibited = positiveProhibitedVisual(visual ?? "");
+      const prohibited = checkContent ? positiveProhibitedVisual(visual ?? "") : undefined;
       if (prohibited) fail(`镜头 ${shot.shotId} 的${label}要求了不支持的视觉「${prohibited}」，请改为真实户外使用画面。禁止说明不会触发此校验。`);
     }
     shotIds.add(shot.shotId);

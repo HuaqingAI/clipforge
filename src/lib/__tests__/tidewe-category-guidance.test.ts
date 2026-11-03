@@ -4,7 +4,7 @@ import { buildTideweCategoryGuidance } from "@/lib/tidewe/category-guidance";
 const categories = [
   { category: "hunting_blind", label: "狩猎帐篷", detail: /接缝|开口|连接/ },
   { category: "waders", label: "涉水服", detail: /接缝|胸前|脚部连接/ },
-  { category: "heated_gear", label: "加热装备", detail: /当前装备|可见控制/ },
+    { category: "heated_gear", label: "加热装备", detail: /当前装备|局部参考图/ },
   { category: "apparel", label: "服装", detail: /面料|接缝|扣件/ },
   { category: "boots", label: "靴子", detail: /靴筒|筒口|外底/ },
   { category: "accessories", label: "配件", detail: /当前配件|接触面/ },
@@ -29,6 +29,39 @@ describe("TIDEWE category-specific production guidance", () => {
   it("gives the six classes distinct detail observations", () => {
     const details = categories.map(({ category }) => buildTideweCategoryGuidance(category).visualExamples.detail);
     expect(new Set(details).size).toBe(categories.length);
+  });
+
+  it.each([
+    { category: "hunting_blind", details: [/门/, /窗/, /开口/, /支架|框架/] },
+    { category: "waders", details: [/背带/, /扣/, /接缝/, /脚部连接|靴脚连接/] },
+    { category: "heated_gear", details: [/局部参考图实际展示的部位/, /面料/, /连接/] },
+    { category: "apparel", details: [/拉链/, /口袋/, /袖口/, /调节|扣件/] },
+    { category: "boots", details: [/靴筒/, /扣带|扣件/, /外底|鞋底/, /接触|接地/] },
+    { category: "accessories", details: [/镜筒|镜片|光学/, /调节/, /背带|绑带/, /连接/] },
+  ])("offers reference-dependent detail targets for $category", ({ category, details }) => {
+    const guidance = buildTideweCategoryGuidance(category);
+    for (const detail of details) expect(guidance.visualExamples.detail).toMatch(detail);
+    expect(guidance.visualExamples.detail).toMatch(/参考|可见/);
+    expect(guidance.scope).toMatch(/不是当前商品事实或固定镜头模板/);
+  });
+
+  it.each([
+    ...categories.map(({ category }) => category),
+    "heated_apparel", "hunting_apparel", "waterproof_boots", "hunting_chair",
+    "other", "unknown-category", undefined,
+  ])("keeps a common appearance policy for %s without requiring performance confirmation", category => {
+    const guidance = buildTideweCategoryGuidance(category);
+    expect(guidance.referenceAppearancePolicy).toBe(buildTideweCategoryGuidance("other").referenceAppearancePolicy);
+    expect(guidance.referenceAppearancePolicy).toMatch(/外观|形状/);
+    expect(guidance.referenceAppearancePolicy).toMatch(/已确认.*性能|性能.*已确认/);
+    expect(guidance.referenceAppearancePolicy).toMatch(/特写/);
+    expect(guidance.referenceAppearancePolicy).toContain("不是部件清单或允许拍摄的范围");
+    expect(guidance.referenceAppearancePolicy).toContain("不证明商品具备示例中的部件");
+    expect(guidance.referenceAppearancePolicy).toContain("局部参考图重点展示的部位优先");
+    expect(guidance.referenceAppearancePolicy).toContain("不按固定部件清单筛选");
+    expect(guidance.referenceAppearancePolicy).toMatch(/未经确认|待核实|不特写/);
+    expect(guidance.referenceAppearancePolicy).toMatch(/功能|操作|性能/);
+    expect(guidance.evidenceLimits.trim()).not.toBe("");
   });
 
   it.each([
@@ -67,7 +100,9 @@ describe("TIDEWE category-specific production guidance", () => {
     expect(guidance.label).not.toBe("配件");
     expect(guidance).not.toHaveProperty("subtype");
     expect(visualExamples(category)).not.toMatch(/靴筒|筒口|外底|椅脚|座面|袖口|帐篷/);
-    expect(guidance.evidenceLimits).toMatch(/不推断商品类型、结构或功能/);
+    expect(guidance.evidenceLimits).toContain("不推断商品类型");
+    expect(guidance.evidenceLimits).toContain("当前参考可见的结构与位置可直接展示");
+    expect(guidance.evidenceLimits).toContain("隐藏结构、功能和性能不由外观推断");
   });
 
   it("uses chair examples only when an accessory is identified as a chair", () => {
@@ -94,6 +129,37 @@ describe("TIDEWE category-specific production guidance", () => {
     expect(guidance.visualExamples.detail).toMatch(/座面|椅脚/);
     expect(guidance.evidenceLimits).toMatch(/不默认加热区、温度、档位、续航或附送电池/);
     expect(guidance.evidenceLimits).toMatch(/不由坐下或按压证明承重、舒适、静音或加热性能/);
+  });
+
+  it.each([
+    { category: "accessories", productName: "TIDEWE Hunting Chair" },
+    { category: "heated_gear", productName: "TIDEWE Heated Chair" },
+    { category: "hunting_chair", productName: undefined },
+  ])("prioritizes any actual local reference detail for $category chairs", ({ category, productName }) => {
+    const guidance = buildTideweCategoryGuidance(category, {
+      productName,
+      visualObservations: "椅面右侧的侧袋上方可见控制面板，按钮和固定位置清楚。",
+    });
+    expect(guidance.visualExamples.detail).toContain("参考中已有");
+    expect(guidance.visualExamples.detail).toContain("侧袋");
+    expect(guidance.visualExamples.detail).toContain("优先特写当前局部参考图实际展示的任一部位");
+    expect(guidance.visualExamples.detail).toContain("保留其位置、连接和接触关系");
+    expect(guidance.productFocusExample).toContain("局部图实际展示的部位");
+    expect(guidance.productFocusExample).toContain("真实布局与位置");
+    expect(guidance.evidenceLimits).toContain("不默认可折叠、旋转或调节");
+    expect(guidance.evidenceLimits).toContain("不由坐下或按压证明承重、舒适、静音或加热性能");
+    expect(JSON.stringify(guidance.visualExamples)).not.toMatch(/未经确认|待核实|不特写/);
+  });
+
+  it("does not impose a control checklist on chair detail references", () => {
+    const guidance = buildTideweCategoryGuidance("accessories", { productName: "TIDEWE Hunting Chair" });
+    expect(guidance.visualExamples.detail).toContain("当前局部参考图实际展示的任一部位");
+    expect(guidance.referenceAppearancePolicy).toContain("不按固定部件清单筛选");
+    expect(guidance.productFocusExample).toContain("局部图实际展示的部位");
+    expect(guidance.visualExamples.detail).not.toMatch(/控制面板|按钮/);
+    expect(guidance.productFocusExample).not.toMatch(/控制面板|按钮/);
+    expect(guidance.visualExamples.context).not.toMatch(/控制面板|按钮|侧袋/);
+    expect(guidance.visualExamples.ordinaryUse).not.toMatch(/控制面板|按钮|侧袋/);
   });
 
   it("retains the known chair subtype from a legacy category without a product name", () => {
