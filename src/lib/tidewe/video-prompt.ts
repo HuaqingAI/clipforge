@@ -2,7 +2,7 @@ import type { TideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { TidewePresenterSnapshot } from "./types";
 import { directEnglishVideoDirection, normalizeTideweVideoDirection, type TideweVideoDirection, type TideweVideoShot } from "./video-direction";
 
-export const TIDEWE_VIDEO_PROMPT_VERSION = "tidewe-video-en-v2";
+export const TIDEWE_VIDEO_PROMPT_VERSION = "tidewe-video-en-v3";
 
 /** Video owns a short English style block; stills keep their separate capture policy. */
 export const TIDEWE_VIDEO_STYLE = "Image character: casual iPhone 8 native-camera footage using only existing natural ambient light. Preserve the first frame's environmental colors, real shadows, everyday exposure and material detail. No auxiliary or fill light, flash, reflectors, rim light, HDR, beauty retouching, sharpening, cinematic grading, artificial noise, global blur or artificial depth of field.";
@@ -27,8 +27,9 @@ export function compileTideweVideoPrompt(
   audioMode: "native" | "post" = "native",
   translatedDirection?: TideweVideoDirection,
 ): { prompt: string; negativePrompt: string } {
-  const direction = translatedDirection ? normalizeTideweVideoDirection(translatedDirection, shot.duration) : directEnglishVideoDirection(shot);
-  if (!direction) {
+  const interactionVisible = shot.tidewe?.personVisible !== false && shot.tidewe?.productVisible !== false && Boolean(shot.tidewe?.visualPlan?.interaction);
+  const direction = translatedDirection ? normalizeTideweVideoDirection(interactionVisible ? translatedDirection : { ...translatedDirection, interaction: undefined }, shot.duration) : directEnglishVideoDirection(shot);
+  if (!direction || (interactionVisible && shot.tidewe?.visualPlan?.interaction && !direction.interaction)) {
     throw new Error("TIDEWE video direction must be prepared in English before preview or generation.");
   }
   const line = shot.voiceover?.trim() ?? "";
@@ -64,11 +65,13 @@ export function compileTideweVideoPrompt(
       "Continue the approved first frame in one unbroken real-time shot.",
       direction.start?.trim() ? `Start: ${direction.start.trim()}` : "",
       `Action: ${direction.action.trim()}`,
+      direction.interaction ? `Interaction purpose: ${direction.interaction.purpose}\nContact and force: ${direction.interaction.contact}\nVisible response: ${direction.interaction.response}\nPlanned continuation: ${direction.interaction.continuation}` : "",
       direction.end?.trim() ? `End: ${direction.end.trim()}` : "",
       `Camera: ${direction.camera?.trim() || "hold the approved framing with subtle natural handheld drift."}`,
       productVisible && direction.focus?.trim() ? `Keep visible: ${direction.focus.trim()}` : "",
       `Timing: ${actionWindow}${timing}`,
       "Use natural real-time movement at the directed cadence; otherwise use an ordinary everyday pace. Physical actions follow their own rhythm independently of narration length. Do not stretch a gesture or footstep to fill the clip. Keep camera movement restrained and purposeful.",
+      `Physical response: ${shot.tidewe?.personVisible !== false ? "align approved grips and weight transfer with their actual supports; " : "retain existing support contacts; "}flexible materials respond only to directed force. Rigid parts keep their shape. Follow the approved action and ending; add no task or idle gesture.`,
       `Continuity: preserve ${personVisible ? "the presenter's identity and clothing, " : ""}${productVisible ? "product shape, colors, markings and connected parts, " : ""}the setting, weather and physical contacts. Do not invent components or performance effects.`,
       !personVisible ? "No people, faces or hands." : "",
       !productVisible ? "Keep this shot free of products and brand marks." : "",

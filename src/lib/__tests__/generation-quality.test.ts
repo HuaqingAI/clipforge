@@ -21,6 +21,34 @@ const shot: Shot = {
 };
 
 describe("generation quality contracts", () => {
+  it("reviews Tidewe interaction as a sequence while limiting first-frame review to feasible staging", () => {
+    const interaction = { purpose: "为当前任务整理装备", contact: "一手固定接触点，另一手沿可见方向施力", response: "已有可动部件沿连接移动，邻近面料收拢", continuation: "松手后继续原任务" };
+    const planned: Shot = { ...shot, tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "展示真实使用", productVisible: true, personVisible: true, factRefs: [], sceneId: "outdoors",
+      visualPlan: { framing: "detail", visualRole: "demonstration", actionStart: "手已在可操作位置，产品有稳固支撑", action: "沿参考支持方向操作", actionEnd: "松手后延续任务", interaction } } };
+    const video = buildShotQualityContract({ shot: planned, mediaType: "video", tidewePhotography: true });
+    expect(video.tideweActionPlan).toEqual({ stage: "sequence", start: planned.tidewe!.visualPlan!.actionStart, action: planned.tidewe!.visualPlan!.action, end: planned.tidewe!.visualPlan!.actionEnd, interaction });
+    expect(video.dimensions.find(row => row.id === "action-binding")?.required).toBe(true);
+    const videoReview = buildQualityEvaluationPrompt(video, "zh", "Frames at 0, 1 and 2 seconds");
+    expect(videoReview).toContain(interaction.response);
+    expect(videoReview).toContain("contact sliding");
+    expect(videoReview).toContain("lower confidence and request manual review");
+    const image = buildShotQualityContract({ shot: planned, mediaType: "image", tidewePhotography: true });
+    expect(image.tideweActionPlan).toEqual({ stage: "first-frame", start: planned.tidewe!.visualPlan!.actionStart, interaction: { purpose: interaction.purpose, contact: interaction.contact } });
+    const imageReview = buildQualityEvaluationPrompt(image, "zh");
+    expect(imageReview).not.toContain(interaction.response);
+    expect(imageReview).not.toContain(interaction.continuation);
+    expect(imageReview).toContain("do not demand an end-state from a first frame");
+    expect(buildShotQualityContract({ shot: planned, mediaType: "video" })).not.toHaveProperty("tideweActionPlan");
+    for (const visibility of [{ personVisible: false }, { productVisible: false }]) {
+      const hidden = buildShotQualityContract({ shot: { ...planned, tidewe: { ...planned.tidewe!, ...visibility } }, mediaType: "image", tidewePhotography: true });
+      expect(hidden.tideweActionPlan).not.toHaveProperty("interaction");
+    }
+    const continuity = buildShotQualityContract({ shot: planned, mediaType: "image", tidewePhotography: true, hasPreviousReference: true });
+    const continuityCriteria = continuity.dimensions.find(row => row.id === "continuity")!.criteria.join(" ");
+    expect(continuityCriteria).toContain("Independent first frames may start a new activity");
+    expect(continuityCriteria).not.toContain("Opening state should continue naturally");
+  });
+
   it("weights video, product, action, and continuity requirements from the real shot", () => {
     const contract = buildShotQualityContract({
       shot,

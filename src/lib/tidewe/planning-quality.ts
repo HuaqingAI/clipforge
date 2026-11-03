@@ -1,6 +1,6 @@
 import type { Shot } from "@/lib/db/schema";
 import { claimableFacts, normalizeProductFacts } from "./facts";
-import type { ProductFacts, TideweCopyBeat, TideweCopyDocument, TideweVisualPlan, TideweVisualRole } from "./types";
+import { TIDEWE_INTERACTION_FIELDS, type ProductFacts, type TideweCopyBeat, type TideweCopyDocument, type TideweInteractionPlan, type TideweVisualPlan, type TideweVisualRole } from "./types";
 import { englishWordCount, mapTideweCopySpans, TideweValidationError } from "./validation";
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -53,6 +53,12 @@ export function parseTideweVisualPlan(value: unknown): TideweVisualPlan {
   if (typeof value.framing !== "string" || !FRAMINGS.has(value.framing as TideweVisualPlan["framing"])) {
     fail("Shot visualPlan framing must be wide, medium, close_up or detail.");
   }
+  let interaction: TideweInteractionPlan | undefined;
+  if (value.interaction !== undefined) {
+    if (!record(value.interaction)) fail("Shot visualPlan interaction requires purpose, contact, response and continuation.");
+    const raw = value.interaction;
+    interaction = Object.fromEntries(TIDEWE_INTERACTION_FIELDS.map(field => [field, chineseText(raw[field], `Shot interaction ${field}`)])) as unknown as TideweInteractionPlan;
+  }
   return {
     framing: value.framing as TideweVisualPlan["framing"],
     visualRole: visualRole(value.visualRole, "Shot visualPlan visualRole"),
@@ -60,6 +66,7 @@ export function parseTideweVisualPlan(value: unknown): TideweVisualPlan {
     action: chineseText(value.action, "Shot visualPlan action"),
     actionEnd: chineseText(value.actionEnd, "Shot visualPlan actionEnd"),
     ...(value.productFocus !== undefined && { productFocus: chineseText(value.productFocus, "Shot visualPlan productFocus") }),
+    ...(interaction && { interaction }),
   };
 }
 

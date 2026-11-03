@@ -59,6 +59,58 @@ describe("keyframe repair priorities", () => {
   });
 });
 
+describe("TIDEWE interaction context during refinement", () => {
+  const interacting: Shot = { ...shot, description: "主播准备拉动肩带自由端。", tidewe: {
+    copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "整理肩带后继续出发", productVisible: true, personVisible: true, sceneId: "bank", factRefs: [], visualPlan: {
+      framing: "detail", visualRole: "demonstration", actionStart: "一手扶扣，另一手靠近织带自由端", action: "握住自由端并拉动", actionEnd: "肩带贴合后松手", productFocus: "织带与调节扣",
+      interaction: { purpose: "准备出发前收紧肩带", contact: "扶扣手稳定扣件，另一手准备握住自由端", response: "织带经过扣件后减少松量", continuation: "手自然离开肩带并提装备包" },
+    },
+  } };
+
+  it("passes the planned relationship into local repairs without advancing the approved instant", () => {
+    const before = structuredClone(interacting);
+    const result = prompt({ shot: interacting, profile: createTideweOutdoorProfile(), issues: ["hands"], instructions: "Repair the defective thumb at the existing adjuster grip." });
+    for (const value of Object.values(interacting.tidewe!.visualPlan!.interaction!)) expect(result).toContain(value);
+    expect(result).toContain(interacting.tidewe!.visualPlan!.actionStart);
+    expect(result).toContain("planning data, not a new edit request");
+    expect(result).toContain("response and continuation describe later feasibility, not states to draw now");
+    expect(result).toContain("only when the selected repair scope or explicit defect report actually identifies");
+    expect(result).toContain("anatomical correctness takes precedence");
+    expect(interacting).toEqual(before);
+  });
+
+  it.each(["integration", "details", "product"] as const)("does not restage healthy action during %s refinement", issue => {
+    const result = prompt({ shot: interacting, profile: createTideweOutdoorProfile(), issues: [issue] });
+    expect(result).toContain("The source photograph defines the current instant");
+    expect(result).toContain("Do not advance the action, change framing or restage the approved scene");
+    expect(result).toContain("Optical integration, focus, clarity and regional/cropped repairs must retain the existing action and healthy geometry");
+    expect(result).toContain("without adding a grip, moving a hand or changing the product state");
+    expect(result).not.toContain("LOCAL ANATOMY REPAIR PRIORITY");
+  });
+
+  it("keeps masked focus repair scoped and crop repair free of whole-scene interaction staging", () => {
+    const focusRegion = { x: 0, y: 0.8, width: 1, height: 0.2 };
+    const base = { shot: interacting, profile: createTideweOutdoorProfile(), issues: ["integration"] as PromptInput["issues"], focusRegion };
+    const regional = prompt(base);
+    expect(regional).toContain("REGIONAL FOCUS REPAIR");
+    expect(regional).toContain("not a new edit request");
+    expect(regional).toContain("without adding a grip, moving a hand or changing the product state");
+    const cropped = prompt({ ...base, focusPatch: { width: 1000, height: 1600, selection: { x: 0, y: 1280, width: 1000, height: 320 }, context: { x: 0, y: 1250, width: 1000, height: 350 } } });
+    expect(cropped).toContain("CROPPED FOREGROUND FOCUS REPAIR");
+    expect(cropped).not.toContain("APPROVED INTERACTION CONTEXT");
+    expect(cropped).not.toContain(interacting.tidewe!.visualPlan!.interaction!.continuation);
+  });
+
+  it("does not import stale interaction metadata into hidden-person, hidden-product or generic repairs", () => {
+    for (const presence of [{ personVisible: false }, { productVisible: false }]) {
+      const result = prompt({ shot: { ...interacting, tidewe: { ...interacting.tidewe!, ...presence } }, profile: createTideweOutdoorProfile() });
+      expect(result).not.toContain("APPROVED INTERACTION CONTEXT");
+      expect(result).not.toContain(interacting.tidewe!.visualPlan!.interaction!.purpose);
+    }
+    expect(prompt({ shot: interacting })).not.toContain("APPROVED INTERACTION CONTEXT");
+  });
+});
+
 describe("spatial integration and natural depth", () => {
   it("repairs excessive blur at any depth without notes or changes to healthy anatomy, identity or scene content", () => {
     const input = { ...shot, description: "猎人穿着狩猎靴站在落叶地面，远处树林自然柔化。", camera: "全身" };

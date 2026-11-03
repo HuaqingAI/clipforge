@@ -41,6 +41,14 @@ export interface ProductFacts {
   blockedClaims?: { key: string; reason: string; sourceRefs: string[] }[];
 }
 export type TideweVisualRole = "presenter" | "demonstration" | "detail" | "context";
+export const TIDEWE_INTERACTION_FIELDS = ["purpose", "contact", "response", "continuation"] as const;
+/** Visible cause and effect for supported use; absent for observation and historical plans. */
+export interface TideweInteractionPlan {
+  purpose: string;
+  contact: string;
+  response: string;
+  continuation: string;
+}
 /** A meaning block in AI-written copy, before it is allocated to actual shots. */
 export interface TideweCopyBeat {
   text: string;
@@ -57,6 +65,8 @@ export interface TideweVisualPlan {
   actionStart: string;
   action: string;
   actionEnd: string;
+  /** Chinese staging intent carried through first-frame and English video direction. */
+  interaction?: TideweInteractionPlan;
 }
 export interface TideweCopyDocument {
   version: 1;

@@ -24,6 +24,14 @@ const chinese = (): TideweVideoShot => ({
     visualPlan: { framing: "close_up", visualRole: "demonstration", productFocus: "现有拉链", actionStart: "手指已经捏住拉链头。", action: "向上拉动十厘米。", actionEnd: "手停在原有拉链上。" } },
 });
 const translated = { start: "Fingers already hold the existing zipper pull at dusk in the woods, with both boots grounded.", action: "Pull the existing zipper upward ten centimeters once, without revealing hidden components.", end: "Settle with the hand on the zipper.", camera: "Keep the same close camera side; drift left no more than 15 cm, then stop.", focus: "The existing zipper and its connection.", motionType: "bounded", actionWindow: [0, 2], timing: "Complete the pull at ordinary hand speed, then retain the approved end-state with natural small movement." };
+const interaction = {
+  purpose: "把衣襟拉合到合适位置。", contact: "拇指与食指夹住现有拉链头，另一手稳定旁边布料。",
+  response: "拉链头上移，现有齿链随之闭合，邻近布料受拉形成自然褶皱。", continuation: "拉到指定位置后保持原有手部终态，不再重复拉动。",
+};
+const englishInteraction = {
+  purpose: "Close the garment to the approved position.", contact: "Thumb and finger grip the existing pull while the other hand supports the nearby fabric.",
+  response: "The pull advances, the existing teeth close and nearby fabric folds under the directed tension.", continuation: "Keep the approved hand position after the pull, without repeating it.",
+};
 let directory: string;
 
 beforeEach(async () => {
@@ -67,6 +75,8 @@ describe("English video direction source", () => {
       { ...shot, camera: "保持原位。" },
       { ...shot, tidewe: { ...shot.tidewe!, shotGoal: "保留手套。" } },
       { ...shot, tidewe: { ...shot.tidewe!, visualPlan: { ...shot.tidewe!.visualPlan!, actionEnd: "手离开。" } } },
+      { ...shot, tidewe: { ...shot.tidewe!, personVisible: false } },
+      { ...shot, tidewe: { ...shot.tidewe!, productVisible: false } },
       { ...shot, duration: 20 },
     ];
     variants.forEach((variant) => expect(tideweVideoDirectionSourceHash(variant)).not.toBe(hash));
@@ -83,9 +93,83 @@ describe("English video direction source", () => {
       expect(normalizeTideweVideoDirection({ ...translated, actionWindow }, 9)).toBeNull();
     }
   });
+  it("preserves complete manual English interaction and rejects partial, foreign or excessive fields", () => {
+    const source: TideweVideoShot = { description: "Pull the existing zipper once.", tidewe: { ...chinese().tidewe!, shotGoal: "",
+      visualPlan: { framing: "detail", visualRole: "demonstration", actionStart: "Fingers hold the pull.", action: "Pull the existing zipper once.", actionEnd: "Keep the approved hand position.", interaction: englishInteraction } } };
+    expect(directEnglishVideoDirection(source)?.interaction).toEqual(englishInteraction);
+    expect(directEnglishVideoDirection({ ...source, tidewe: { ...source.tidewe!, visualPlan: { ...source.tidewe!.visualPlan!, interaction } } })).toBeNull();
+    for (const invalid of [null, [], {}, { ...englishInteraction, response: "" }, { ...englishInteraction, contact: 12 }, { ...englishInteraction, continuation: "保持静止。" }, { ...englishInteraction, purpose: "x".repeat(241) }, { ...englishInteraction, response: "Add cinematic grading." }]) {
+      expect(normalizeTideweVideoDirection({ ...translated, interaction: invalid })).toBeNull();
+    }
+  });
+  it("includes every interaction field in the cache source without sharing mutable source data", () => {
+    const shot = chinese();
+    shot.tidewe!.visualPlan!.interaction = { ...interaction };
+    const hash = tideweVideoDirectionSourceHash(shot);
+    for (const key of ["purpose", "contact", "response", "continuation"] as const) {
+      const edited = structuredClone(shot);
+      edited.tidewe!.visualPlan!.interaction![key] += "保留额外要求。";
+      expect(tideweVideoDirectionSourceHash(edited)).not.toBe(hash);
+    }
+    const source = getTideweVideoDirectionSource(shot);
+    expect(source.visualPlan?.interaction).toEqual(interaction);
+    source.visualPlan!.interaction!.response = "A changed copy";
+    expect(shot.tidewe!.visualPlan!.interaction!.response).toBe(interaction.response);
+  });
 });
 
 describe("persistent English direction preparation", () => {
+  it("discards an invented interaction when the approved source has none", async () => {
+    state.create.mockImplementationOnce(async request => {
+      const { shots } = JSON.parse(request.messages[1].content);
+      return { choices: [{ message: { content: JSON.stringify({ directions: [{ id: shots[0].id, direction: { ...translated, interaction: englishInteraction } }] }) } }] };
+    });
+    const shot = chinese();
+    await prepareTideweVideoDirections([shot], config);
+    expect(resolveTideweVideoDirection(shot)).toEqual(translated);
+    expect(state.create).toHaveBeenCalledOnce();
+  });
+
+  it.each(["personVisible", "productVisible"] as const)("omits stale interaction from hidden %s sources and discards unexpected translated interaction", async (hidden) => {
+    const shot = chinese();
+    shot.tidewe![hidden] = false;
+    shot.tidewe!.visualPlan!.interaction = { ...interaction };
+    const withoutInteraction = structuredClone(shot);
+    delete withoutInteraction.tidewe!.visualPlan!.interaction;
+    expect(getTideweVideoDirectionSource(shot).visualPlan).not.toHaveProperty("interaction");
+    expect(tideweVideoDirectionSourceHash(shot)).toBe(tideweVideoDirectionSourceHash(withoutInteraction));
+    state.create.mockImplementationOnce(async (request) => {
+      const { shots } = JSON.parse(request.messages[1].content);
+      expect(shots[0].source[hidden]).toBe(false);
+      expect(shots[0].source.visualPlan).not.toHaveProperty("interaction");
+      return { choices: [{ message: { content: JSON.stringify({ directions: [{ id: shots[0].id, direction: { ...translated, interaction: { contact: "意外残留的人物交互。" } } }] }) } }] };
+    });
+    await prepareTideweVideoDirections([shot], config);
+    expect(resolveTideweVideoDirection(shot)).toEqual(translated);
+    expect(state.create).toHaveBeenCalledOnce();
+  });
+  it("translates the planned physical interaction in the same batch and rejects its silent loss or a truncated cache", async () => {
+    const shot = chinese();
+    shot.tidewe!.visualPlan!.interaction = { ...interaction };
+    await expect(prepareTideweVideoDirections([shot], config)).rejects.toMatchObject({ code: "TIDEWE_VIDEO_INTERACTION_INVALID" });
+    expect(state.create).toHaveBeenCalledOnce();
+    expect(() => resolveTideweVideoDirection(shot)).toThrow("尚未准备");
+    state.create.mockImplementationOnce(async (request) => {
+      const { shots } = JSON.parse(request.messages[1].content);
+      expect(shots[0].source.visualPlan.interaction).toEqual(interaction);
+      expect(request.messages[0].content).toContain("No arbitrary glances, nods, idle gestures or extra tasks");
+      expect(request.messages[0].content).toContain("follow the already-planned continuation");
+      return { choices: [{ message: { content: JSON.stringify({ directions: [{ id: shots[0].id, direction: { ...translated, interaction: englishInteraction } }] }) } }] };
+    });
+    await prepareTideweVideoDirections([shot], config);
+    expect(state.create).toHaveBeenCalledTimes(2);
+    expect(resolveTideweVideoDirection(shot).interaction).toEqual(englishInteraction);
+    await prepareTideweVideoDirections([shot]);
+    expect(state.create).toHaveBeenCalledTimes(2);
+    const file = join(directory, "cache", "tidewe-video-direction", `${tideweVideoDirectionSourceHash(shot)}.json`);
+    await writeFile(file, JSON.stringify({ version: TIDEWE_VIDEO_DIRECTION_VERSION, sourceHash: tideweVideoDirectionSourceHash(shot), direction: translated }));
+    expect(() => resolveTideweVideoDirection(shot)).toThrow("尚未准备");
+  });
   it("batches missing sources, preserves full manual context and caches no secrets or scripts", async () => {
     const first = chinese(), second = { ...chinese(), camera: "机位向后退20厘米。" };
     const original = structuredClone(first);

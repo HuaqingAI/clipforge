@@ -2,7 +2,7 @@ import type { GeneratedScript, ScriptInput } from "@/lib/script-engine/generator
 import type { Shot } from "@/lib/db/schema";
 import { assertSupportedTideweProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { stripThinkBlocks } from "@/lib/llm-clean";
-import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type TideweCopyDocument, type TideweVisualPlan } from "./types";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_INTERACTION_FIELDS, type TideweCopyDocument, type TideweInteractionPlan, type TideweVisualPlan } from "./types";
 import { assertTideweImportedCopy, assertTideweScriptIntegrity, englishWordCount, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
 import { buildTideweScriptPrompt, buildTideweScriptSystemPrompt, selectTideweExamples, tideweFactsForInput, tideweProfileForInput } from "./prompts";
 import { tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
@@ -84,6 +84,11 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
           visualPlan.action = visualPlan.action.replaceAll(TIDEWE_PRESENTER_PLACEHOLDER, "所选主播");
           visualPlan.actionEnd = visualPlan.actionEnd.replaceAll(TIDEWE_PRESENTER_PLACEHOLDER, "所选主播");
           if (visualPlan.productFocus) visualPlan.productFocus = visualPlan.productFocus.replaceAll(TIDEWE_PRESENTER_PLACEHOLDER, "所选主播");
+          if (visualPlan.interaction) {
+            for (const field of TIDEWE_INTERACTION_FIELDS) {
+              visualPlan.interaction[field] = visualPlan.interaction[field].replaceAll(TIDEWE_PRESENTER_PLACEHOLDER, "所选主播");
+            }
+          }
         }
         return { shotId: i + 1, type: s.narrativeRole as Shot["type"], duration: s.duration,
           description: visualText(s.description, "Chinese scene description"), camera: visualText(s.camera, "Chinese camera direction"),
@@ -107,6 +112,12 @@ function parseVisualPlan(value: unknown): TideweVisualPlan {
     || !["presenter", "demonstration", "detail", "context"].includes(String(value.visualRole))) {
     throw new TideweValidationError("Invalid shot visualPlan framing or visualRole");
   }
+  let interaction: TideweInteractionPlan | undefined;
+  if (value.interaction !== undefined) {
+    if (!record(value.interaction)) throw new TideweValidationError("Invalid shot visualPlan interaction");
+    const raw = value.interaction;
+    interaction = Object.fromEntries(TIDEWE_INTERACTION_FIELDS.map(field => [field, requireText(raw[field], `interaction ${field}`)])) as unknown as TideweInteractionPlan;
+  }
   return {
     framing: value.framing as TideweVisualPlan["framing"],
     visualRole: value.visualRole as TideweVisualPlan["visualRole"],
@@ -114,5 +125,6 @@ function parseVisualPlan(value: unknown): TideweVisualPlan {
     action: requireText(value.action, "action"),
     actionEnd: requireText(value.actionEnd, "action end"),
     ...(typeof value.productFocus === "string" && { productFocus: value.productFocus.trim() }),
+    ...(interaction && { interaction }),
   };
 }

@@ -32,6 +32,27 @@ describe("TIDEWE category-specific production guidance", () => {
   });
 
   it.each([
+    ...categories.map(({ category }) => ({ category, productName: undefined })),
+    { category: "heated_gear", productName: "TIDEWE Heated Chair" },
+    { category: "hunting_chair", productName: undefined },
+    { category: "other", productName: undefined },
+    { category: "unfamiliar-category", productName: undefined },
+    { category: undefined, productName: undefined },
+  ])("uses task-led interaction guidance without a touch-and-stop default for $category / $productName", ({ category, productName }) => {
+    const guidance = buildTideweCategoryGuidance(category, { productName });
+    expect(guidance.interactionGuidance).toBe(buildTideweCategoryGuidance("other").interactionGuidance);
+    for (const key of ["purpose", "contact", "response", "continuation"]) {
+      expect(guidance.interactionGuidance).toContain(key);
+    }
+    expect(guidance.interactionGuidance).toContain("静态观察、纯口播和环境镜不强加交互");
+    expect(guidance.interactionGuidance).toContain("刚性部分可保持形状与真实连接，不强迫变形");
+    expect(guidance.interactionGuidance).toContain("保留明确指定的单步、停止和谨慎动作");
+    expect(guidance.interactionGuidance).toContain("不从外观推断隐藏机构或性能");
+    expect(guidance.interactionGuidance).toContain("独立生成首帧的相邻镜头各自建立成立的起态");
+    expect(guidance.visualExamples.ordinaryUse).not.toMatch(/小幅|后停稳|一步并停稳/);
+  });
+
+  it.each([
     { category: "hunting_blind", details: [/门/, /窗/, /开口/, /支架|框架/] },
     { category: "waders", details: [/背带/, /扣/, /接缝/, /脚部连接|靴脚连接/] },
     { category: "heated_gear", details: [/局部参考图实际展示的部位/, /面料/, /连接/] },

@@ -275,6 +275,36 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("2.6 words per second with at least 0.3 seconds reserved");
   });
 
+  it.each(referenceCases.flatMap(example => [false, true].map(imported => ({ ...example, imported }))))("plans purposeful optional interactions for $category with imported copy=$imported", ({ category, name, imported }) => {
+    const original = "Observe the current product before your next trip.";
+    const generationInput = {
+      ...input, productName: name, productFacts: productFactsFromDescription("", category),
+      ...(imported && { copyText: original }),
+    };
+    const payload = JSON.parse(buildTideweScriptPrompt(generationInput));
+    const system = buildTideweScriptSystemPrompt(generationInput);
+    const shotGuide = payload.outputFormat.scripts[0].shots[0];
+    expect(Object.keys(shotGuide.visualPlan.interaction)).toEqual(["purpose", "contact", "response", "continuation"]);
+    for (const value of Object.values(shotGuide.visualPlan.interaction) as string[]) {
+      expect(value).toMatch(/[\u3400-\u9fff]/u);
+      expect(value.length).toBeLessThanOrEqual(240);
+    }
+    expect(system).toContain("For shots that actually operate, wear, carry or handle the current product");
+    expect(system).toContain("Static observations, pure presenter explanations and environmental shots may omit interaction");
+    expect(system).toContain("No new component, operating sequence, accessory, function, performance result");
+    expect(system).toContain("Adjacent shots with independently generated first frames must each have a physically credible starting state");
+    expect(system).toContain("no compulsory glance, blink, nod or smile in every shot");
+    expect(JSON.stringify(shotGuide)).not.toMatch(/轻点可见部位一次|手自然停稳|woods-1/);
+    expect(payload.categoryGuidance.interactionGuidance).toContain("适用于所有品类及未选品类");
+    if (imported) {
+      expect(payload.frozenImportedCopy).toBe(original);
+      expect(payload).not.toHaveProperty("copyBrief");
+    } else {
+      expect(payload.copyBrief.filmability).toContain("visualPlan.interaction, not the spoken copy");
+      expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("Observation and conversation remain valid without an added demonstration");
+    }
+  });
+
   it("plans continuous travel for the shot duration instead of spreading one step into a slow action", () => {
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("ongoing alternating steps and plausible ground covered");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Match movement amount to shot duration and available distance");
@@ -295,6 +325,10 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("A short action can finish while the exact spoken line continues");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("A speech pause does not require the body or camera to stop");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Do not invent repeated body or product action to fill time");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("do not habitually reserve half the shot for a held pose");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("without changing the required shotCount");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("only when that state serves the shot");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Once a shot is approved, preserve its explicit action and ending");
   });
 
   it("preserves explicit deliberate action without inferring slow motion from outdoor context", () => {

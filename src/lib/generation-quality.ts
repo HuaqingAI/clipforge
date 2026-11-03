@@ -1,5 +1,6 @@
 import type { Shot } from "@/lib/db/schema";
 import type { CreativeIntent, VisualBible } from "@/lib/production-system";
+import type { TideweInteractionPlan } from "@/lib/tidewe/types";
 import { extractJSON } from "@/lib/script-engine/generator";
 
 export const QUALITY_DIMENSION_IDS = [
@@ -42,6 +43,13 @@ export interface ShotQualityContract {
     forbiddenChanges: string[];
   };
   referenceRoles: Array<"generated-output" | "source-keyframe" | "product-reference" | "character-reference" | "previous-shot-tail">;
+  tideweActionPlan?: {
+    stage: "first-frame" | "sequence";
+    start: string;
+    action?: string;
+    end?: string;
+    interaction?: Partial<TideweInteractionPlan>;
+  };
   dimensions: ShotQualityDimension[];
 }
 
@@ -132,19 +140,33 @@ export function buildShotQualityContract(input: {
   const productCritical = ["product_reveal", "demo", "cta"].includes(shot.type) || bible.productAnchors.length > 0;
   const characterCritical = Boolean(shot.characterId || input.hasCharacterReference || bible.characterAnchors.length);
   const visibleText = clean(shot.textOverlay?.text);
+  const plan = input.tidewePhotography ? shot.tidewe?.visualPlan : undefined;
+  const interaction = shot.tidewe?.personVisible !== false && shot.tidewe?.productVisible !== false ? plan?.interaction : undefined;
+  const sequence = input.mediaType === "video";
   const actionCriteria = unique([intent.action, shot.description, shot.voiceover && `Visible action must support: ${shot.voiceover}`]);
+  if (plan) {
+    actionCriteria.push(sequence
+      ? "Evaluate the saved action sequence and interaction against visible frames: purpose, accurate contact and force direction, supported product/material response, and the planned continuation or cut state. Pointing or rubbing alone does not demonstrate an operation that requires a visible result."
+      : "Evaluate only actionStart and its feasible contact, support and movement space. The image must not depict the later operation, response or continuation as already completed; do not demand an end-state from a first frame.");
+    if (sequence) actionCriteria.push("Movement should serve the actual task, with plausible gaze, body support and weight transfer. Flag contact sliding, floating feet, changed attachments or unexplained rigid-object motion when visible. Material response must fit the referenced material; rigid parts need not deform. Respect explicitly stationary observation, single actions, stops and deliberate pacing; do not demand extra gestures.");
+  }
   const continuityCriteria = unique([
     ...bible.environmentAnchors,
     ...bible.lightingAnchors,
     ...(intent.continuity ?? []),
-    input.hasPreviousReference ? "Opening state should continue naturally from the accepted previous-shot tail" : undefined,
+    input.hasPreviousReference ? input.tidewePhotography
+      ? "Keep established identity, clothing, product and setting consistent with the previous reference. Independent first frames may start a new activity or view; require matched action phase only when an actual matched continuation is established."
+      : "Opening state should continue naturally from the accepted previous-shot tail" : undefined,
   ]);
   const rows: Array<Omit<ShotQualityDimension, "weight"> & { weight: number }> = [
     { id: "visual-fidelity", weight: 18, required: true, criteria: [
       ...unique(["Clear, coherent commercial imagery without anatomy, geometry, texture, flicker or compression artifacts"]),
       ...(input.tidewePhotography ? TIDEWE_PHOTOGRAPHY_QUALITY_CRITERIA : []),
     ] },
-    ...(input.mediaType === "video" ? [{ id: "temporal-coherence" as const, weight: 18, required: true, criteria: unique(["Stable subjects and background across time", `Smooth, intentional motion for camera direction: ${shot.camera}`]) }] : []),
+    ...(input.mediaType === "video" ? [{ id: "temporal-coherence" as const, weight: 18, required: true, criteria: [
+      ...unique(["Stable subjects and background across time", `Smooth, intentional motion for camera direction: ${shot.camera}`]),
+      ...(input.tidewePhotography ? ["Check contact and component connections through the sampled sequence, including release and the cut state. An ongoing action must not freeze prematurely; an approved observation or explicit stop is valid. A previous-shot reference establishes appearance only unless its pose, motion phase and direction actually match."] : []),
+    ] }] : []),
     { id: "shot-alignment", weight: 24, required: true, criteria: unique([shot.description, shot.prompt, intent.subject, intent.environment]) },
     { id: "subject-fidelity", weight: productCritical || characterCritical ? 20 : 10, required: productCritical || characterCritical, criteria: unique([
       ...bible.characterAnchors,
@@ -157,7 +179,7 @@ export function buildShotQualityContract(input: {
       input.hasCharacterReference ? input.tidewePhotography
         ? "Face, hair and build must match the identity-only character reference. Clothing must follow the approved shot/source, not the identity reference." : "Face, hair, build and outfit must match the character reference without identity drift" : undefined,
     ]) },
-    { id: "action-binding", weight: actionCriteria.length ? 14 : 8, required: Boolean(intent.action || shot.type === "demo"), criteria: actionCriteria },
+    { id: "action-binding", weight: actionCriteria.length ? 14 : 8, required: Boolean(intent.action || shot.type === "demo" || interaction), criteria: actionCriteria },
     { id: "continuity", weight: continuityCriteria.length ? 12 : 6, required: Boolean(input.hasPreviousReference), criteria: continuityCriteria },
     { id: "text-integrity", weight: visibleText || productCritical ? 10 : 4, required: Boolean(visibleText), criteria: unique([
       visibleText ? `On-screen text must read exactly: ${visibleText}` : undefined,
@@ -190,6 +212,15 @@ export function buildShotQualityContract(input: {
       ...(input.hasCharacterReference ? ["character-reference" as const] : []),
       ...(input.hasPreviousReference ? ["previous-shot-tail" as const] : []),
     ],
+    ...(plan && { tideweActionPlan: {
+      stage: sequence ? "sequence" as const : "first-frame" as const,
+      start: clean(plan.actionStart, 240),
+      ...(sequence && { action: clean(plan.action, 240), end: clean(plan.actionEnd, 240) }),
+      ...(interaction && { interaction: {
+        purpose: clean(interaction.purpose, 240), contact: clean(interaction.contact, 240),
+        ...(sequence && { response: clean(interaction.response, 240), continuation: clean(interaction.continuation, 240) }),
+      } }),
+    } }),
     dimensions: normalizedDimensions(rows),
   };
 }
@@ -310,6 +341,7 @@ export function buildQualityEvaluationPrompt(contract: ShotQualityContract, loca
   const language = locale === "en" ? "English" : "简体中文";
   return `You are a strict commercial-video quality reviewer. Image 1 is the generated ${contract.mediaType === "video" ? "video contact sheet" : "image"}. Any following images are references in this order: ${contract.referenceRoles.slice(1).join(", ") || "none"}.
 Judge only visible evidence. Do not identify real people. Compare appearance without naming anyone. Treat the requested shot contract as authoritative and return ONLY one JSON object with all prose in ${language}.
+${contract.mediaType === "video" ? "These are sampled stills, not continuous playback. Do not claim smooth acceleration, a successful press or an unseen mechanical operation from isolated poses. When contact or a fast operation falls between samples, lower confidence and request manual review rather than inventing evidence." : ""}
 ${sampleContext ? `Sampling context: ${sampleContext}` : ""}
 Shot contract JSON:
 ${JSON.stringify(contract)}

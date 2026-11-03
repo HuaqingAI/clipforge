@@ -101,6 +101,39 @@ beforeEach(() => {
   model.create.mockReset().mockImplementation(async () => ({ choices: [{ message: { content: JSON.stringify(model.replies.shift()) } }] }));
 });
 describe("shared TIDEWE generator dispatch", () => {
+  it.each([false, true])("preserves interaction staging and frozen presenter references with staff copy=%s", async imported => {
+    const presenter = { id: "saved-presenter", name: "Creator", appearance: "", referenceImages: ["https://example.test/creator.png"] };
+    const interaction = {
+      purpose: "  {{PRESENTER}}为继续当前任务整理已有装备。  ",
+      contact: "{{PRESENTER}}一手固定已有接触处，另一手沿可见方向施力。",
+      response: "对应可动部位沿已有连接移动，邻近面料形成自然褶皱。",
+      continuation: "{{PRESENTER}}松手后延续原任务，在有意义的状态切镜。",
+    };
+    const planned = { scripts: [{ copyIndex: 0, shots: plan.scripts[0].shots.map(shot => ({
+      ...structuredClone(shot), personVisible: true,
+      description: `{{PRESENTER}}在林边穿着当前装备，${shot.description}`,
+      visualPlan: { ...shot.visualPlan, interaction: structuredClone(interaction) },
+    })) }] };
+    model.replies = [reply(copy, planned)];
+    const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration: 30, presenter }), ...(imported ? { copyText: text } : {}) });
+    const expected = Object.fromEntries(Object.entries(interaction).map(([field, value]) => [field, value.trim().replaceAll("{{PRESENTER}}", "所选主播")]));
+    expect(script.shots.every(shot => JSON.stringify(shot.tidewe?.visualPlan?.interaction) === JSON.stringify(expected))).toBe(true);
+    expect(script.shots[0].tidewe?.presenter).toEqual(presenter);
+    expect(script.copyDocument?.text).toBe(text);
+    expect(script.shots.map(shot => shot.voiceover).join(" ")).toBe(text);
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(planned.scripts[0].shots[0].visualPlan.interaction.purpose).toBe(interaction.purpose);
+  });
+
+  it("rejects an incomplete supplied interaction instead of silently losing its contact contract", async () => {
+    const planned = { scripts: [{ copyIndex: 0, shots: plan.scripts[0].shots.map(shot => ({
+      ...structuredClone(shot), visualPlan: { ...shot.visualPlan, interaction: { purpose: "整理装备", contact: "接触已有部位", continuation: "继续任务" } },
+    })) }] };
+    model.replies = [reply(copy, planned)];
+    await expect(generateScript(input)).rejects.toThrow(/interaction response/);
+    expect(model.create).toHaveBeenCalledTimes(1);
+  });
+
   it.each([false, true])("generates copy and physical pacing in one response with staff copy=%s", async imported => {
     const [script] = await generateScript({ ...input, ...(imported ? { copyText: text } : {}) });
     expect(model.create).toHaveBeenCalledTimes(1);

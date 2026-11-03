@@ -59,6 +59,7 @@ export function compileTideweVisualPrompt(shot: VisualShot, kind: "image" | "vid
       visualPlan ? `已确认景别：${({ wide: "全景／使用空间", medium: "中景／人物与装备交流", close_up: "近景／较大操作区域", detail: "特写／局部部件与接触" })[visualPlan.framing]}；画面任务：${({ presenter: "人物交流", demonstration: "真实使用演示", detail: "可见细节观察", context: "使用情境与空间关系" })[visualPlan.visualRole]}。` : "",
       productVisible && visualPlan?.productFocus ? `本镜商品观察对象：${visualPlan.productFocus}。该商品或部位必须清楚入画，画幅与构图须实际容纳观察对象和所需接触位置；单独的人脸、空手手势或环境不能替代商品画面。只呈现参考支持的外观与普通使用，不把可见外观当作性能测试结论。` : "",
       visualPlan ? `首帧已有状态：${visualPlan.actionStart}。本格只画这一瞬，不把后续动作或结束状态拼入首帧；为后续「${visualPlan.action}」保留操作空间。` : "",
+      personVisible && productVisible && shot.tidewe?.personVisible !== false && visualPlan?.interaction ? `交互动机：${visualPlan.interaction.purpose}。接触与支撑条件：${visualPlan.interaction.contact}。首帧只建立已有起态与可用操作空间；仅画 actionStart 已允许的接触、承重与材料状态，尚未接触或施力的关系保持未发生，不提前画出交互后的响应或后续活动终态。` : "",
       personVisible && presenter ? `固定出镜人物：${tidewePresenterAnchor(presenter)}。只使用这位主播，不另行生成其他年龄、性别、发型、胡须或面容设定。${tidewePresenterReference({ presenter }) ? "主播参考图优先锁定身份、脸型、发型和体型；文字描述辅助解释，不将人物参考图中的背景、分格或边框带入场景。商品参考图只锁商品，不能替换主播身份。" : "严格沿用保存的主播外貌描述。"}` : "",
       !personVisible ? "本镜为无人出镜的产品或环境空镜，不加入主播、路人、人脸或手；所选主播参考仅供其他人物镜头使用。" : "",
       shot.tidewe?.sceneId ? `连续场景标识 ${shot.tidewe.sceneId}：同场景${personVisible ? "人物的面容、年龄感、发型、帽子、服装、" : ""}产品状态、天气与光线连续。` : `同一连续场景保持${personVisible ? "人物的面容、年龄感、发型、帽子、服装、" : ""}产品状态、天气与光线一致。`,

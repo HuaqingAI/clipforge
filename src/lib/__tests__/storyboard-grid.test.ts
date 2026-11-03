@@ -14,6 +14,34 @@ describe("buildStoryboardGridPrompt", () => {
     { id: "char_a", name: "小美", gender: "female", persona: "活泼", appearance: "22 岁高马尾白 T 恤" } as ScriptCharacter,
   ];
 
+  it("stages an actionable interaction start while reserving later response and continuation for video", () => {
+    const planned: Shot = { ...shots[0], voiceover: "", description: "主播在岸边准备收紧肩带。", camera: "肩胸近景",
+      tidewe: { copySpan: { start: 0, end: 0 }, translation: "", shotGoal: "出发前整理穿着", productVisible: true, personVisible: true, factRefs: [], sceneId: "bank", visualPlan: {
+        framing: "close_up", visualRole: "demonstration", productFocus: "肩带调节扣、织带与手部位置", actionStart: "一手扶住调节扣，另一手接近织带自由端", action: "拉动织带收紧肩带后继续提装备", actionEnd: "调整完成后提包离开",
+        interaction: { purpose: "出发前消除肩带松量", contact: "扶扣的手保持支撑，另一手有空间握住织带", response: "织带穿过调节扣并减少松量", continuation: "松手后自然提起装备包" },
+      } } };
+    const before = structuredClone(planned);
+    const prompt = buildStoryboardGridPrompt([planned], null, { creativeProfile: createTideweOutdoorProfile() });
+    const cell = prompt.split("第 1 格（")[1].split("第 2 格")[0];
+    for (const value of Object.values(planned.tidewe!.visualPlan!.interaction!)) expect(cell).toContain(value);
+    expect(cell).toContain(planned.tidewe!.visualPlan!.actionStart);
+    expect(cell).toContain("不提前画入首帧");
+    expect(cell).toContain("不画完成结果或多个阶段");
+    expect(cell).toContain("仅按 actionStart 呈现已发生的接触");
+    expect(cell).toContain("后续抓握、施力或重心转移仅预留可行空间，不提前发生");
+    expect(cell).not.toContain(planned.tidewe!.visualPlan!.actionEnd);
+    expect(prompt).not.toContain("为一次后续小动作留空间");
+    expect(prompt).not.toContain("为后续单次动作");
+    expect(planned).toEqual(before);
+
+    for (const presence of [{ personVisible: false }, { productVisible: false }]) {
+      const hidden = { ...planned, tidewe: { ...planned.tidewe!, ...presence } };
+      const hiddenCell = buildStoryboardGridPrompt([hidden], null, { creativeProfile: createTideweOutdoorProfile() }).split("第 1 格（")[1].split("第 2 格")[0];
+      expect(hiddenCell).not.toContain(planned.tidewe!.visualPlan!.interaction!.purpose);
+      expect(hiddenCell).not.toContain("交互接触与支撑条件");
+    }
+  });
+
   it("applies initial TIDEWE anatomy and optical quality once while keeping each approved cell's action and framing", () => {
     const profile = createTideweOutdoorProfile();
     const planned: Shot[] = [

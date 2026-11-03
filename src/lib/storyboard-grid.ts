@@ -52,6 +52,7 @@ function tideweGridCellBrief(shot: Shot, profile: TideweOutdoorProfile, presente
     return presenterAnchor && trimmed ? trimmed.replaceAll(presenterAnchor, "主播") : trimmed;
   };
   const plan = shot.tidewe?.visualPlan;
+  const interaction = personVisible && productVisible ? plan?.interaction : undefined;
   return [
     shot.tidewe?.sceneId ? `场景 ${shot.tidewe.sceneId}` : "",
     text(shot.description) ? `本镜画面：${text(shot.description)}` : "本镜画面：自然户外环境",
@@ -60,7 +61,9 @@ function tideweGridCellBrief(shot: Shot, profile: TideweOutdoorProfile, presente
     text(shot.camera) ? `运镜/构图：${text(shot.camera)}` : "",
     plan ? `已确认景别：${({ wide: "全景／使用空间", medium: "中景／人物与装备交流", close_up: "近景／较大操作区域", detail: "特写／局部部件与接触" })[plan.framing]}；画面任务：${({ presenter: "人物交流", demonstration: "真实使用演示", detail: "可见细节观察", context: "使用情境与空间关系" })[plan.visualRole]}` : "",
     productVisible ? `产品可见${plan?.productFocus ? `；本镜商品观察对象：${text(plan.productFocus)}` : ""}` : "产品不出镜：保持原有环境或行动，不植入商品及品牌标识",
-    plan ? `首帧已有状态：${text(plan.actionStart)}；为后续单次动作「${text(plan.action)}」保留空间` : "",
+    plan ? `首帧已有状态：${text(plan.actionStart)}；为后续动作「${text(plan.action)}」保留实际操作或持续移动空间` : "",
+    interaction ? `使用动机：${text(interaction.purpose)}；交互接触与支撑条件：${text(interaction.contact)}。仅按 actionStart 呈现已发生的接触、承重和材料状态；后续抓握、施力或重心转移仅预留可行空间，不提前发生` : "",
+    interaction ? `后续可行性上下文（不提前画入首帧）：产品响应「${text(interaction.response)}」；自然衔接「${text(interaction.continuation)}」。只据此保留现有部件的操作余量与动作路径，不画完成结果或多个阶段` : "",
     !personVisible ? "无人出镜，不加入人脸、路人或手" : spoken ? "真人口播：回应镜头，嘴部清晰可见，手与商品不遮嘴，保留本镜景别" : offCamera ? "画外讲解：安静操作，按本镜构图，不要求脸部或嘴部入画" : "人物按本镜构图自然互动，细节镜不强加人脸",
     productVisible ? "合焦目标：近前景—接触处—商品共同合焦，仅限本格已有表面" : "合焦目标：本格已有近前景与行动位置清楚可读",
   ].filter(Boolean).join("；");
@@ -124,7 +127,7 @@ export function buildStoryboardGridPrompt(
       TIDEWE_IMAGE_CAPTURE_POLICY,
       "上述统一画面风格适用于全部九格，包括全景、中景、近景、特写、人物镜、产品镜、环境空镜及占位格。每格直接生成该镜头动作开始前的首帧画面；按脚本换场景时仍保持同一 iPhone 8 原生相机成像风格。",
       TIDEWE_GRID_STRUCTURE_POLICY,
-      "同 sceneId 的人物、衣物、产品状态、环境、天气与光线连续；按脚本换场景。逐格保留景别、机位、视线、人与商品距离及接触位置。只画 actionStart 的一瞬，为一次后续小动作留空间，不拼入动作终点。",
+      "同 sceneId 的人物、衣物、产品状态、环境、天气与光线连续；按脚本换场景。逐格保留景别、机位、视线、人与商品距离及接触位置。只画 actionStart 的当前一瞬；按脚本保留准备接触、已有操作接触或连续运动的实际起态、视线、重心与工作空间，不拼入动作终点。后续产品响应和自然衔接仅用于检查动作可行性，不提前完成动作，不把持续行动改成单次小动作；静态观察与无人镜头保持原任务，不增加手或演示。",
       "本镜指定商品观察对象：该商品或部位必须清楚入画，构图容纳指定部件与接触位置；人物交流不能替代商品展示。只呈现参考支持的外观和普通使用，不由外观推断隐藏结构、性能或无依据效果测试；不展示独立电池。",
       hasPerson && presenterAnchor ? `固定出镜人物：${presenterAnchor}；有人或手的格沿用同一身份、衣袖与体型。` : "",
       refs?.characterSheet ? "第 1 张参考图为主播身份参考，只锁定脸型、发型与体型。人物在各格自身环境中重新成像，光线与焦点服从本格；不复制参考的背景、分格、虚化与影棚效果。" : "",

@@ -6,6 +6,7 @@ import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
 import { buildStoryboardGridPrompt } from "@/lib/storyboard-grid";
 import { buildStoryboardFilmPrompt } from "@/lib/storyboard-film";
+import { buildKeyframeRefinementPrompt } from "@/lib/keyframe-refinement-prompt";
 import { assertTideweMediaDuration, compileTideweVisualPrompt, TIDEWE_IMAGE_CAPTURE_POLICY, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
 import { TIDEWE_VIDEO_STYLE } from "@/lib/tidewe/video-prompt";
 import type { TideweVideoDirection } from "@/lib/tidewe/video-direction";
@@ -74,6 +75,48 @@ describe("TIDEWE downstream visual and narration policy", () => {
     for (const text of [translated.start, translated.action, translated.end, translated.camera]) expect(video.prompt).toContain(text);
     expect(video.prompt).not.toContain(visualPlan.actionEnd);
     expect(video.prompt).toContain(JSON.stringify(planned.voiceover));
+  });
+
+  it("uses interaction motivation and contact to stage a first frame without drawing the later response or continuation", () => {
+    const interaction = { purpose: "调好现有肩带的贴合度。", contact: "拇指和食指握住调节处，另一手稳定邻近织带。", response: "受拉织带穿过调节框，胸口布料形成新的张力褶皱。", continuation: "松手后拿起身旁装备包继续准备。" };
+    const planned: Shot = { ...shot, tidewe: { ...shot.tidewe!, productVisible: true, personVisible: true, speechDelivery: "off_camera",
+      visualPlan: { framing: "close_up", visualRole: "demonstration", actionStart: "手指靠近调节框，尚未拉紧。", action: "沿现有织带拉动一次。", actionEnd: "手离开调节框。", interaction } } };
+    const before = structuredClone(planned);
+    const still = compileTideweVisualPrompt(planned, "image", "on_camera").prompt;
+    expect(still).toContain(interaction.purpose);
+    expect(still).toContain(interaction.contact);
+    expect(still).toContain(planned.tidewe!.visualPlan!.actionStart);
+    expect(still).toContain("尚未接触或施力的关系保持未发生");
+    expect(still).not.toContain(interaction.response);
+    expect(still).not.toContain(interaction.continuation);
+    expect(still).not.toContain(planned.tidewe!.visualPlan!.actionEnd);
+    expect(planned).toEqual(before);
+  });
+
+  it.each([[false, true], [true, false], [false, false]])("ignores stale human-product interaction consistently across still, grid, refinement and video when person=%s product=%s", (personVisible, productVisible) => {
+    const interaction = { purpose: "交互残留的收紧肩带动机。", contact: "交互残留的双手捏紧肩带。", response: "交互残留的织带受拉响应。", continuation: "交互残留的提包装备任务。" };
+    const planned: Shot = { ...shot, description: "观察当前林缘场景。", visualIntent: "", camera: "固定全景", voiceover: "", tidewe: { ...shot.tidewe!, shotGoal: "", productVisible, personVisible, speechDelivery: "off_camera",
+      visualPlan: { framing: "wide", visualRole: "context", actionStart: "场景处于现有状态。", action: "保持现有状态作静态观察。", actionEnd: "现有状态不变。", interaction } } };
+    const profile = createTideweOutdoorProfile();
+    const outputs = [
+      compileTideweVisualPrompt(planned, "image", "on_camera").prompt,
+      buildStoryboardGridPrompt([planned], null, { creativeProfile: profile }),
+      buildKeyframeRefinementPrompt({ shot: planned, issues: ["integration"], profile, hasPresenterReference: false, productReferenceCount: 0 }),
+    ];
+    for (const output of outputs) for (const value of Object.values(interaction)) expect(output).not.toContain(value);
+    const approved: TideweVideoDirection = { action: "Observe the existing woodland scene without changing its state.", motionType: "observation", timing: "Keep the existing state throughout the clip." };
+    const unexpected = { purpose: "Unexpected shoulder adjustment motivation.", contact: "Unexpected fingers grip the shoulder strap.", response: "Unexpected strap tension response.", continuation: "Unexpected bag pickup task." };
+    for (const supplied of [{ ...approved, interaction: unexpected }, { ...approved, interaction: { contact: "不完整的残留交互。" } } as unknown as TideweVideoDirection]) {
+      const video = compileTideweVisualPrompt(planned, "video", "on_camera", undefined, "native", { direction: supplied }).prompt;
+      expect(video).toContain(approved.action);
+      expect(video).toContain(approved.timing);
+      expect(video).not.toMatch(/Interaction purpose:|Contact and force:|Visible response:|Planned continuation:/);
+      for (const value of Object.values(unexpected)) expect(video).not.toContain(value);
+      if (!personVisible) {
+        expect(video).toContain("No people, faces or hands.");
+        expect(video).not.toMatch(/grips|weight transfer/);
+      }
+    }
   });
 
   it("preserves the still photographic policy while video uses the compact English style", () => {

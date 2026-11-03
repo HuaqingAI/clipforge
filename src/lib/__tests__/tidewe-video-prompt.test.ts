@@ -41,6 +41,28 @@ describe("compact English TIDEWE image-to-video template", () => {
     expect(shot).toEqual(before);
   });
 
+  it("carries the complete physical interaction into provider output without replacing the approved action or ending", () => {
+    const interaction = {
+      purpose: "Close the garment to its approved position.",
+      contact: "Keep the existing pull gripped and support the adjacent fabric.",
+      response: "The teeth close behind the pull while the fabric responds to tension.",
+      continuation: "Retain the hand at the stated resting point without another operation.",
+    };
+    const bound = { ...shot, tidewe: { ...shot.tidewe!, visualPlan: { framing: "detail" as const, visualRole: "demonstration" as const, actionStart: "手已握住拉链。", action: "拉动一次。", actionEnd: "手停在规定位置。", interaction: { purpose: "合拢衣襟。", contact: "手指握住现有拉链。", response: "齿链闭合，布料响应拉力。", continuation: "保持规定的终态。" } } } };
+    expect(() => compileTideweVideoPrompt(bound, "voiceover", undefined, "native", direction)).toThrow(/English before preview or generation/);
+    const output = compileTideweVideoPrompt(bound, "voiceover", undefined, "native", { ...direction, interaction });
+    expect(validateVideoPrompt(output.prompt)).toEqual([]);
+    for (const text of Object.values(interaction)) expect(output.prompt).toContain(text);
+    expect(output.prompt).toContain(direction.action);
+    expect(output.prompt).toContain(direction.end);
+    expect(output.prompt).toContain("Rigid parts keep their shape");
+    expect(output.prompt).toContain("add no task or idle gesture");
+    expect(output.prompt).not.toMatch(/nod|glance|look down|natural breathing/i);
+    const unplanned = compileTideweVideoPrompt(shot, "voiceover", undefined, "native", { ...direction, interaction });
+    expect(unplanned.prompt).not.toContain("Interaction purpose:");
+    expect(unplanned.prompt).not.toContain(interaction.continuation);
+  });
+
   it("keeps different approved actions and camera moves distinct without turning a still observation into an extra action", () => {
     const observation = { action: "The existing chair remains still on the leaf-covered ground.", camera: "Locked-off low-angle close-up." };
     const movement = { action: "The presenter takes one step in the boots and settles.", camera: "A short restrained lateral follow." };

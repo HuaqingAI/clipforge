@@ -25,6 +25,19 @@ function script(overrides: Partial<Shot> = {}) {
 }
 
 describe("TIDEWE visual prohibition intent", () => {
+  it.each(["purpose", "contact", "response", "continuation"] as const)("validates interaction %s as visual instructions", field => {
+    const candidate = script();
+    const interaction = { purpose: "为当前任务整理装备", contact: "手接触参考中的现有部位", response: "衣料随手部受力形成自然褶皱", continuation: "自然松手后继续既有任务" };
+    candidate.shots[0].tidewe!.visualPlan = { framing: "medium", visualRole: "demonstration", actionStart: "手已接触装备", action: "整理已有部位", actionEnd: "松手后继续任务", interaction };
+    expect(() => assertTideweScript(candidate)).not.toThrow();
+    interaction[field] = "添加热成像效果";
+    expect(() => assertTideweScript(candidate)).toThrow(/交互.*热成像/);
+    interaction[field] = "{{PRESENTER}}整理当前装备";
+    expect(() => assertTideweScript(candidate)).toThrow(/presenter placeholder/);
+    interaction[field] = "长".repeat(241);
+    expect(() => assertTideweScript(candidate)).toThrow(/交互计划/);
+  });
+
   it.each([
     "低机位观察双靴，前景草叶轻微虚化，主体清晰。",
     "让前景落叶失焦，突出靴筒。",

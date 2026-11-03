@@ -42,6 +42,16 @@ describe("AI copy evidence beats", () => {
 });
 
 describe("structured first-frame and action plans", () => {
+  it("retains the complete optional interaction without mutating its source", () => {
+    const interaction = { purpose: "  为下一步任务整理装备  ", contact: "一手固定，另一手沿已知方向牵引", response: "连接处保持稳定，衣料随施力收拢", continuation: "松手后继续当前任务，在移动中切镜" };
+    const parsed = parseTideweVisualPlan({ ...visualPlan, interaction });
+    expect(parsed.interaction).toEqual({ ...interaction, purpose: interaction.purpose.trim() });
+    expect(interaction.purpose).toBe("  为下一步任务整理装备  ");
+  });
+  it.each([null, {}, { purpose: "整理装备", contact: "手扶部件", response: "位置改变" }, { purpose: "整理装备", contact: "手扶部件", response: "位置改变", continuation: "Continue moving" }])("rejects malformed optional interaction %j", interaction => {
+    expect(() => parseTideweVisualPlan({ ...visualPlan, interaction })).toThrow(TideweValidationError);
+  });
+
   it("retains an explicit start, modest action and stable ending without altering the input", () => {
     const value = { ...visualPlan, action: "  轻压座垫一次  ", ignored: "extra output" };
     expect(parseTideweVisualPlan(value)).toEqual(visualPlan);

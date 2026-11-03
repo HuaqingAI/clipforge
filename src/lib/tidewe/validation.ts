@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Shot } from "@/lib/db/schema";
 import { claimableFacts, normalizeProductFacts } from "./facts";
-import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, getTideweShotCount, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_INTERACTION_FIELDS, getTideweShotCount, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
 import { isValidTidewePresenterInput, tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
 
 export class TideweValidationError extends Error {
@@ -172,6 +172,11 @@ function validateTideweScript(script: TideweScriptDocument, expectedPresenter: T
     if (visualPlan?.productFocus !== undefined && (typeof visualPlan.productFocus !== "string" || checkContent && (!visualPlan.productFocus.trim() || visualPlan.productFocus.length > 240 || !/[\u3400-\u9fff]/u.test(visualPlan.productFocus)))) {
       fail(`镜头 ${shot.shotId} 的商品观察对象必须是简短中文，请描述实际入画的商品或部位。`);
     }
+    const interaction = visualPlan?.interaction;
+    if (interaction !== undefined && (!interaction || typeof interaction !== "object" || Array.isArray(interaction)
+      || !TIDEWE_INTERACTION_FIELDS.every(field => typeof interaction[field] === "string" && (!checkContent || Boolean(interaction[field].trim()) && interaction[field].length <= 240 && /[\u3400-\u9fff]/u.test(interaction[field]))))) {
+      fail(`镜头 ${shot.shotId} 的交互计划须完整描述目的、接触、响应和衔接，使用简短中文。`);
+    }
     if (JSON.stringify(stable(fields.presenter ?? null)) !== presenterSnapshot) fail("TIDEWE shots must keep the same frozen presenter");
     if (fields.presenter && (!isValidTidewePresenterInput(fields.presenter) || typeof fields.personVisible !== "boolean")) fail("Selected presenter requires a valid frozen identity and explicit person visibility");
     if (fields.presenter && fields.personVisible && !shot.description.includes(tidewePresenterAnchor(fields.presenter))) fail("Person-visible description must retain the saved presenter identity");
@@ -184,6 +189,7 @@ function validateTideweScript(script: TideweScriptDocument, expectedPresenter: T
       ["运镜", shot.camera], ["画面目标", fields.shotGoal],
       ...(visualPlan ? [["动作起点", visualPlan.actionStart], ["演示动作", visualPlan.action], ["动作结束", visualPlan.actionEnd]] : []),
       ...(visualPlan?.productFocus ? [["商品观察对象", visualPlan.productFocus]] : []),
+      ...(interaction ? TIDEWE_INTERACTION_FIELDS.map(field => [`交互${field}`, interaction[field]] as const) : []),
     ] as const;
     for (const [label, visual] of visualFields) {
       if (visual?.includes(TIDEWE_PRESENTER_PLACEHOLDER)) fail("Unresolved TIDEWE presenter placeholder");
