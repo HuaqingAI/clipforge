@@ -15,6 +15,7 @@ export interface GenerationRunItem {
   result?: Record<string, unknown> | null;
   error?: string | null;
   canReleaseBlock?: boolean;
+  canUnbind?: boolean;
 }
 export interface GenerationRun {
   id: string;
@@ -29,6 +30,7 @@ export interface GenerationRun {
   createdAt?: string | number;
   updatedAt?: string | number;
   error?: string | null;
+  canDelete?: boolean;
 }
 export interface GenerationRunInput {
   projectId: string;
@@ -54,8 +56,11 @@ export class GenerationRunSubmissionError extends Error {
 }
 export const GENERATION_RUNS_REFRESH_EVENT = "clipforge:generation-runs-refresh";
 export const generationRunActive = (run: Pick<GenerationRun, "status">) => ["queued", "running", "waiting", "importing"].includes(run.status);
-export const generationRunDeletable = (run: Pick<GenerationRun, "status" | "items">) => ["completed", "failed"].includes(run.status)
+export const generationRunCleanable = (run: Pick<GenerationRun, "status" | "items">) => ["completed", "failed"].includes(run.status)
   && run.items.length > 0 && run.items.every((item) => ["completed", "failed"].includes(item.status));
+export const generationRunDeletable = (run: Pick<GenerationRun, "status" | "items" | "canDelete">) => run.canDelete ?? (
+  ["completed", "failed", "needs_attention", "cancelled"].includes(run.status) && run.items.length > 0
+  && run.items.every((item) => ["completed", "failed", "needs_attention", "cancelled"].includes(item.status)));
 const EMPTY_RUNS: GenerationRun[] = [];
 // Successful deletions must also hide snapshots fetched before the server deleted them.
 const deletedByProject = new Map<string, Set<string>>();
@@ -220,8 +225,22 @@ export function useGenerationRuns(projectId: string) {
       return await Promise.race([request, deadline]);
     } finally { clearTimeout(timeout); changed(); await refresh(); }
   }, [projectId, refresh]);
+  const unbindRun = useCallback(async (id: string, itemId: string) => {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => {
+      controller.abort(); reject(new Error("解除绑定超时，请刷新任务列表核对结果。"));
+    }, 15_000); });
+    try {
+      const request = fetch(`/api/generation-runs/${encodeURIComponent(id)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+        body: JSON.stringify({ action: "unbind", itemId, acknowledgePossibleCharge: true, projectId }),
+      }).then((response) => responseBody(response));
+      return await Promise.race([request, deadline]);
+    } finally { clearTimeout(timeout); changed(); await refresh(); }
+  }, [projectId, refresh]);
   const deleteRun = useCallback((id: string) => deleteRecords(projectId, id), [projectId]);
   const clearFinished = useCallback(() => deleteRecords(projectId), [projectId]);
   const isRunDeleted = useCallback((id: string) => isDeletedRun(projectId, id), [projectId]);
-  return { runs, loading: loading || snapshot.projectId !== projectId, error: snapshot.projectId === projectId ? error : null, refresh, submitRun, cancelRun, retryImport, releaseBlock, deleteRun, clearFinished, isRunDeleted };
+  return { runs, loading: loading || snapshot.projectId !== projectId, error: snapshot.projectId === projectId ? error : null, refresh, submitRun, cancelRun, retryImport, releaseBlock, unbindRun, deleteRun, clearFinished, isRunDeleted };
 }

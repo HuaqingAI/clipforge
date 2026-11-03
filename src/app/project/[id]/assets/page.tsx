@@ -1313,7 +1313,7 @@ function AssetsPageContent() {
           </section>
         )}
         <ModelCatalogStatus statuses={catalog.statuses} pending={catalog.pending} onRetry={catalog.retry} />
-        <GenerationRunsPanel projectId={id} controller={generationController} onCompleted={reloadAssets} onReleased={reloadKlingJobs} />
+        <GenerationRunsPanel projectId={id} controller={generationController} onCompleted={reloadAssets} onReleased={async () => { await Promise.all([reloadKlingJobs(), reloadPendingTasks()]); }} />
         {(klingEnabled || klingJobs.length > 0) && klingJobsError && <p role="alert" className="mb-4 rounded-lg border border-amber-500/40 p-3 text-sm">Kling 任务暂时无法读取：{klingJobsError}。请先恢复任务列表，再提交新视频。<button className="ml-2 text-primary underline" onClick={() => void reloadKlingJobs()}>重新读取</button></p>}
         <KlingJobsList jobs={klingJobs.filter((job) => job.scriptId === scriptId)} description={isKlingDefault ? "Kling 镜头通过后台队列生成，支持单镜头或批量提交，可切换项目继续创作。" : undefined} onOpenJob={setKlingJobId} onRefresh={reloadKlingJobs} onDeleted={async (jobId) => {
           klingJobsRequest.current.serial++;

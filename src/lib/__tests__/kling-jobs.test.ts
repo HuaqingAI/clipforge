@@ -532,6 +532,21 @@ describe("Kling durable submission and recovery", () => {
     expect(getKlingJob(importing.id).importState).toBe("pending");
     expect(getDb().select().from(assets).all()).toEqual([]);
   });
+  it("keeps a released prepared task stopped across reconciliation and rejects renewed authorization", async () => {
+    const job = await createKlingJob(request());
+    patchKlingJob(job.id, { needsConfirmation: false, autoQueryPaused: true, nextQueryAt: null }, { blockingReleasedAt: Date.now(), authorizedUntil: 0 });
+    await tick();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: false, data: { authorizedUntil: 0 } });
+    expect(klingJobView(getKlingJob(job.id)).allowedActions).not.toContain("continue");
+    // A stale confirmation must also be rejected directly by the action endpoint.
+    patchKlingJob(job.id, { needsConfirmation: true });
+    expect(klingJobView(getKlingJob(job.id)).allowedActions).not.toContain("continue");
+    state.refresh.mockClear();
+    await expect(continueKlingJob(job.id, { explicitConfirmation: true })).rejects.toMatchObject({ code: "KLING_JOB_RELEASED" });
+    expect(state.refresh).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id).data.authorizedUntil).toBe(0);
+  });
   it("rejects a receipt with an incorrect region or invalid remote ID", async () => {
     const job = await createKlingJob(request()); patchKlingJob(job.id, { submissionState: "submitting" });
     const directory = path.join(state.directory, "integrations/kling/receipts"); await fs.mkdir(directory, { recursive: true });

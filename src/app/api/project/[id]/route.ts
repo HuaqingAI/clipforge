@@ -6,7 +6,7 @@ import { join } from "path";
 import { getDb } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { getUploadsDir, getOutputDir } from "@/lib/paths";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import {
   createPremiumProductCgProfile,
@@ -21,8 +21,7 @@ import {
   type ProjectCreativeProfileDrafts,
 } from "@/lib/creative-profiles";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
-import { generationItems } from "@/lib/generation-schema";
-import { inArray } from "drizzle-orm";
+import { generationItems, generationRuns } from "@/lib/generation-schema";
 
 // Project ids are UUIDs; validate before using one in a filesystem path (guards the rm below against traversal)
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
@@ -409,8 +408,12 @@ export async function DELETE(
     // but the project's on-disk files do not — remove them too so deletes don't leak orphaned
     // uploads/output directories. force:true ignores missing dirs; failures never block the delete.
     const blockingTasks = db.transaction((tx) => {
+      // Deleted task records retain checkpoints for request idempotency. Their
+      // legacy item statuses must not keep occupying a project indefinitely.
+      const visibleRuns = tx.select({ id: generationRuns.id }).from(generationRuns)
+        .where(and(eq(generationRuns.projectId, id), isNull(generationRuns.deletedAt)));
       const tasks = [
-        ...tx.select().from(generationItems).where(and(eq(generationItems.projectId, id), inArray(generationItems.status, ["queued", "running", "waiting", "importing", "needs_attention"]))).all().map((item) => ({
+        ...tx.select().from(generationItems).where(and(eq(generationItems.projectId, id), inArray(generationItems.runId, visibleRuns), inArray(generationItems.status, ["queued", "running", "waiting", "importing", "needs_attention"]))).all().map((item) => ({
           kind: "generation" as const, id: item.runId,
           href: `/project/${encodeURIComponent(id)}/${item.kind === "script" ? "script" : "assets"}?runId=${encodeURIComponent(item.runId)}`,
         })),

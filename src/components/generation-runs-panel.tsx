@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import Link from "next/link";
-import { generationRunActive, generationRunDeletable, rememberDeletedGenerationRuns, useGenerationRuns, type GenerationRun, type GenerationStatus } from "@/lib/hooks/use-generation-runs";
+import { generationRunActive, generationRunCleanable, generationRunDeletable, rememberDeletedGenerationRuns, useGenerationRuns, type GenerationRun, type GenerationStatus } from "@/lib/hooks/use-generation-runs";
 
 const statusLabels: Record<GenerationStatus, string> = { queued: "排队中", running: "生成中", waiting: "等待平台", importing: "保存中", completed: "已完成", failed: "失败", needs_attention: "需要处理", cancelled: "已取消" };
 const kindLabels = { video_batch: "批量转动态", video: "镜头视频", image: "镜头图片", storyboard_grid: "九宫格分镜", script: "脚本文案", keyframe_refine: "关键帧精修", keyframe_refine_batch: "批量关键帧精修" };
@@ -51,7 +51,7 @@ function ConnectedGenerationRunsPanel({ projectId, onCompleted, onReleased }: Om
 }
 
 function GenerationRunsSession({ projectId, controller, onCompleted, onReleased }: GenerationRunsPanelProps & { controller: GenerationRunsController }) {
-  const { runs, loading, error, refresh, cancelRun, retryImport, releaseBlock, deleteRun, clearFinished, isRunDeleted } = controller;
+  const { runs, loading, error, refresh, cancelRun, retryImport, releaseBlock, unbindRun, deleteRun, clearFinished, isRunDeleted } = controller;
   const requestedId = useSearchParams().get("runId");
   const contentId = useId();
   const [expanded, setExpanded] = useState(true);
@@ -59,7 +59,8 @@ function GenerationRunsSession({ projectId, controller, onCompleted, onReleased 
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
-  const [confirmRelease, setConfirmRelease] = useState<{ runId: string; itemId: string; shotId?: number | null } | null>(null);
+  const [confirmRelease, setConfirmRelease] = useState<{ runId: string; itemId: string; shotId?: number | null; action: "unbind" | "release_block" } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [observedAfter] = useState(() => Math.floor(Date.now() / 1000) * 1000);
   const actionLock = useRef(false);
@@ -102,29 +103,40 @@ function GenerationRunsSession({ projectId, controller, onCompleted, onReleased 
     if (!loading && !error) hasSnapshot.current = true;
   }, [runs, linked, loading, error, projectId, isRunDeleted, observedAfter]);
   const shown = (linked && !runs.some((run) => run.id === linked.id) ? [linked, ...runs] : runs).filter((run) => run.projectId === projectId && !isRunDeleted(run.id));
-  const cleanable = shown.filter(generationRunDeletable);
+  const cleanable = shown.filter(generationRunCleanable);
   const releaseEligible = !!confirmRelease && shown.some((run) => run.id === confirmRelease.runId
-    && run.items.some((item) => item.id === confirmRelease.itemId && item.canReleaseBlock === true));
+    && run.items.some((item) => item.id === confirmRelease.itemId && (confirmRelease.action === "unbind" ? item.canUnbind === true : item.canReleaseBlock === true)));
+  const deletingRun = shown.find((run) => run.id === confirmDelete);
+  const deleteEligible = !!deletingRun && generationRunDeletable(deletingRun);
   async function release() {
     if (actionLock.current || !confirmRelease || !releaseEligible) return;
     const target = confirmRelease;
     actionLock.current = true; setBusy(`release:${target.itemId}`); setActionError(null); setNotice(null);
     try {
-      const updated = await releaseBlock(target.runId, target.itemId);
+      const updated = await (target.action === "unbind" ? unbindRun : releaseBlock)(target.runId, target.itemId);
       if (!alive.current) return;
       setLinked((current) => current?.id === updated.id ? updated : current);
       setConfirmRelease(null);
-      setNotice(`${target.shotId != null ? `镜头 ${target.shotId}` : "此任务"}已解除阻塞，可以重新转动态。原任务和素材已保留。`);
+      setNotice(`${target.shotId != null ? `镜头 ${target.shotId}` : "此任务"}${target.action === "unbind" ? "已解除绑定，可以重新提交生成。" : "已解除阻塞，可以重新转动态。"}原任务和素材已保留。`);
       try { await onReleased?.(); }
-      catch { if (alive.current) setActionError("阻塞已解除，刷新 Kling 任务失败，请重新读取任务。"); }
-    } catch (failure) { if (alive.current) setActionError(failure instanceof Error ? failure.message : "解除阻塞失败"); }
+      catch { if (alive.current) setActionError("绑定已解除，刷新任务失败，请重新读取任务。"); }
+    } catch (failure) { if (alive.current) setActionError(failure instanceof Error ? failure.message : "解除绑定失败"); }
     finally { actionLock.current = false; if (alive.current) setBusy(null); }
   }
   async function actOn(run: GenerationRun, action: "cancel" | "retry_import" | "delete") {
     if (actionLock.current || (action === "delete" && !generationRunDeletable(run))) return;
     actionLock.current = true; setBusy(`${action}:${run.id}`); setActionError(null); setNotice(null);
     try {
-      if (action === "delete") { await deleteRun(run.id); if (alive.current) { setLinked((current) => current?.id === run.id ? null : current); setNotice("任务记录已删除，生成素材已保留。"); } }
+      if (action === "delete") {
+        await deleteRun(run.id);
+        if (alive.current) {
+          setLinked((current) => current?.id === run.id ? null : current); setConfirmDelete(null); setNotice("任务记录已删除，生成素材已保留。");
+          if (run.items.some((item) => item.status === "needs_attention")) {
+            try { await onReleased?.(); }
+            catch { if (alive.current) setActionError("任务已删除，刷新素材状态失败，请重新读取任务。"); }
+          }
+        }
+      }
       else await (action === "cancel" ? cancelRun(run.id) : retryImport(run.id));
     }
     catch (failure) { if (alive.current) setActionError(failure instanceof Error ? failure.message : "操作失败"); }
@@ -156,21 +168,33 @@ function GenerationRunsSession({ projectId, controller, onCompleted, onReleased 
         const jobId = item.result?.childJobId || item.result?.jobId;
         const asset = item.result?.asset as { filePath?: unknown } | undefined;
         const candidate = item.kind === "keyframe_refine" && item.status === "completed" ? refinementCandidatePath(asset?.filePath) : null;
-        return <div key={item.id} className="rounded bg-muted/30 p-2 text-xs"><p>{item.shotId != null ? `镜头 ${item.shotId}` : kindLabels[item.kind]} · {item.stage === "released" ? "已解除阻塞" : statusLabels[item.status]}{item.stage && stageLabels[item.stage] ? ` · ${stageLabels[item.stage]}` : ""}</p>{item.scriptId && <p className="text-muted-foreground">脚本版本：{item.scriptId}</p>}{item.error && <p role="alert" className="text-amber-600">{item.error}</p>}{typeof jobId === "string" && <Link className="text-primary underline" href={`/project/${encodeURIComponent(projectId)}/assets?klingJob=${encodeURIComponent(jobId)}`}>查看原镜头任务</Link>}{candidate && <a className="block text-primary underline" href={candidate} target="_blank" rel="noopener noreferrer">查看精修候选</a>}{item.canReleaseBlock === true && <Button size="sm" variant="outline" className="mt-2 block" disabled={!!busy} onClick={() => { if (actionLock.current) return; setActionError(null); setConfirmRelease({ runId: run.id, itemId: item.id, shotId: item.shotId }); }}>解除阻塞</Button>}</div>;
+        return <div key={item.id} className="rounded bg-muted/30 p-2 text-xs"><p>{item.shotId != null ? `镜头 ${item.shotId}` : kindLabels[item.kind]} · {item.stage === "released" ? "已解除绑定" : statusLabels[item.status]}{item.stage && stageLabels[item.stage] ? ` · ${stageLabels[item.stage]}` : ""}</p>{item.scriptId && <p className="text-muted-foreground">脚本版本：{item.scriptId}</p>}{item.error && <p role="alert" className="text-amber-600">{item.error}</p>}{typeof jobId === "string" && <Link className="text-primary underline" href={`/project/${encodeURIComponent(projectId)}/assets?klingJob=${encodeURIComponent(jobId)}`}>查看原镜头任务</Link>}{candidate && <a className="block text-primary underline" href={candidate} target="_blank" rel="noopener noreferrer">查看精修候选</a>}{(item.canUnbind === true || item.canReleaseBlock === true) && <Button size="sm" variant="outline" className="mt-2 block" disabled={!!busy} onClick={() => { if (actionLock.current) return; setActionError(null); setConfirmRelease({ runId: run.id, itemId: item.id, shotId: item.shotId, action: item.canUnbind === true ? "unbind" : "release_block" }); }}>{item.canUnbind === true ? "解除绑定" : "解除阻塞"}</Button>}</div>;
       })}
         <div className="flex gap-2">{generationRunActive(run) && <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void actOn(run, "cancel")}>停止未提交镜头</Button>}{["needs_attention", "failed"].includes(run.status) && <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void actOn(run, "retry_import")}>恢复保存</Button>}</div>
       </div>
     </details>
-    {generationRunDeletable(run) && <Button size="sm" variant="outline" className="shrink-0" aria-label={`删除任务记录 ${run.id}`} disabled={!!busy} onClick={() => void actOn(run, "delete")}>{busy === `delete:${run.id}` ? "正在删除…" : "删除记录"}</Button>}
+    {generationRunDeletable(run) && <Button size="sm" variant="outline" className="shrink-0" aria-label={`删除任务记录 ${run.id}`} disabled={!!busy} onClick={() => {
+      if (actionLock.current) return;
+      if (run.items.some((item) => item.status === "needs_attention")) { setActionError(null); setConfirmDelete(run.id); }
+      else void actOn(run, "delete");
+    }}>{busy === `delete:${run.id}` ? "正在删除…" : run.items.some((item) => item.status === "needs_attention") ? "删除任务" : "删除记录"}</Button>}
     </div>;
     })}
     </div>
     <Dialog open={confirmRelease !== null} onOpenChange={(open) => { if (!actionLock.current && !open) setConfirmRelease(null); }}>
       <DialogContent showCloseButton={!busy}>
-        <DialogHeader><DialogTitle>解除{confirmRelease?.shotId != null ? `镜头 ${confirmRelease.shotId}` : "此任务"}的阻塞？</DialogTitle><DialogDescription>解除后可重新转动态。原云端任务可能仍在运行或已扣费，此操作不会取消原云端任务；原任务记录和已生成素材会保留。重新生成可能再次消耗积分。</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>解除{confirmRelease?.shotId != null ? `镜头 ${confirmRelease.shotId}` : "此任务"}的{confirmRelease?.action === "unbind" ? "绑定" : "阻塞"}？</DialogTitle><DialogDescription>解除后可重新{confirmRelease?.action === "unbind" ? "提交生成" : "转动态"}。原云端任务可能仍在运行或已扣费，此操作不会取消原云端任务；原任务记录和已生成素材会保留。重新生成可能再次消耗积分。</DialogDescription></DialogHeader>
         {actionError && <p role="alert" className="text-xs text-amber-600">{actionError}</p>}
         {!releaseEligible && <p role="status" className="text-xs text-muted-foreground">任务状态已变化，请刷新后重新核对。</p>}
-        <DialogFooter><Button variant="outline" disabled={!!busy} onClick={() => setConfirmRelease(null)}>暂不解除</Button><Button disabled={!!busy || !releaseEligible} onClick={() => void release()}>{busy?.startsWith("release:") ? "正在解除…" : "确认解除阻塞"}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" disabled={!!busy} onClick={() => setConfirmRelease(null)}>暂不解除</Button><Button disabled={!!busy || !releaseEligible} onClick={() => void release()}>{busy?.startsWith("release:") ? "正在解除…" : confirmRelease?.action === "unbind" ? "确认解除绑定" : "确认解除阻塞"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={confirmDelete !== null} onOpenChange={(open) => { if (!actionLock.current && !open) setConfirmDelete(null); }}>
+      <DialogContent showCloseButton={!busy}>
+        <DialogHeader><DialogTitle>删除这个需要处理的任务？</DialogTitle><DialogDescription>删除时会解除此任务对当前脚本和镜头的绑定，并移除任务记录，已生成素材会保留。此操作不会取消原云端任务或退还积分，重新生成可能再次消耗积分。</DialogDescription></DialogHeader>
+        {actionError && <p role="alert" className="text-xs text-amber-600">{actionError}</p>}
+        {!deleteEligible && <p role="status" className="text-xs text-muted-foreground">任务状态已变化，请刷新后重新核对。</p>}
+        <DialogFooter><Button variant="outline" disabled={!!busy} onClick={() => setConfirmDelete(null)}>暂不删除</Button><Button variant="destructive" disabled={!!busy || !deleteEligible} onClick={() => { if (deletingRun) void actOn(deletingRun, "delete"); }}>{busy?.startsWith("delete:") ? "正在删除…" : "确认删除任务"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={confirmCleanup} onOpenChange={(open) => { if (!actionLock.current) setConfirmCleanup(open); }}>

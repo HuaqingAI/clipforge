@@ -1,10 +1,10 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
-import type { GridCell } from "@/lib/storyboard-grid";
+import { computeGridCells, type GridCell } from "@/lib/storyboard-grid";
 
 const execFileAsync = promisify(execFile);
-const LAYOUT_ERROR = "无法可靠识别九宫格的分隔线，未替换分镜关键帧。请重新生成具有清晰、连续白色分隔线的 3×3 分镜图。";
+const LAYOUT_ERROR = "九宫格图片尺寸或像素数据无效，无法裁切分镜关键帧。";
 
 export class StoryboardGridLayoutError extends Error {
   constructor() {
@@ -16,9 +16,9 @@ export class StoryboardGridLayoutError extends Error {
 interface Gutter { start: number; end: number }
 
 /**
- * Locate continuous light, neutral gutters, rather than assuming the model put
- * them at exact thirds. Search only around the two expected splits: furniture,
- * window frames and other bright objects elsewhere are not layout evidence.
+ * Follow clear light gutters when present, including slightly shifted panels.
+ * Missing or ambiguous seams use the standard equal 3×3 crop geometry so valid
+ * generated images can always replace the storyboard keyframes.
  */
 export function detectStoryboardGridCells(rgb: Uint8Array, width: number, height: number): GridCell[] {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 18 || height < 18
@@ -97,27 +97,32 @@ export function detectStoryboardGridCells(rgb: Uint8Array, width: number, height
     });
   }
 
-  const horizontal = gutters("y", 0, width);
-  const rowBounds = [0, ...horizontal.map((gutter) => gutter.end)];
-  const rowEnds = [...horizontal.map((gutter) => gutter.start), height];
-  const cells: GridCell[] = [];
-  for (let row = 0; row < 3; row++) {
-    const top = rowBounds[row], bottom = rowEnds[row];
-    const vertical = gutters("x", top, bottom);
-    const colBounds = [0, ...vertical.map((gutter) => gutter.end)];
-    const colEnds = [...vertical.map((gutter) => gutter.start), width];
-    for (let col = 0; col < 3; col++) {
-      const left = colBounds[col], right = colEnds[col];
-      // Inset the ACTUAL cell and round inward. This also removes antialiasing
-      // along a gutter without importing even one pixel from a neighboring shot.
-      const dx = Math.max(1, Math.ceil((right - left) * 0.02));
-      const dy = Math.max(1, Math.ceil((bottom - top) * 0.02));
-      const w = right - left - dx * 2, h = bottom - top - dy * 2;
-      if (w < 2 || h < 2) throw new StoryboardGridLayoutError();
-      cells.push({ x: left + dx, y: top + dy, w, h });
+  try {
+    const horizontal = gutters("y", 0, width);
+    const rowBounds = [0, ...horizontal.map((gutter) => gutter.end)];
+    const rowEnds = [...horizontal.map((gutter) => gutter.start), height];
+    const cells: GridCell[] = [];
+    for (let row = 0; row < 3; row++) {
+      const top = rowBounds[row], bottom = rowEnds[row];
+      const vertical = gutters("x", top, bottom);
+      const colBounds = [0, ...vertical.map((gutter) => gutter.end)];
+      const colEnds = [...vertical.map((gutter) => gutter.start), width];
+      for (let col = 0; col < 3; col++) {
+        const left = colBounds[col], right = colEnds[col];
+        // Inset the ACTUAL cell and round inward. This also removes antialiasing
+        // along a gutter without importing even one pixel from a neighboring shot.
+        const dx = Math.max(1, Math.ceil((right - left) * 0.02));
+        const dy = Math.max(1, Math.ceil((bottom - top) * 0.02));
+        const w = right - left - dx * 2, h = bottom - top - dy * 2;
+        if (w < 2 || h < 2) throw new StoryboardGridLayoutError();
+        cells.push({ x: left + dx, y: top + dy, w, h });
+      }
     }
+    return cells;
+  } catch (error) {
+    if (!(error instanceof StoryboardGridLayoutError)) throw error;
+    return computeGridCells(width, height);
   }
-  return cells;
 }
 
 /** Decode once; keep hairline seams at native resolution (no lossy rescaling). */

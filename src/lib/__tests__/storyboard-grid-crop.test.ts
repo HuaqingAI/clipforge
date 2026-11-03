@@ -79,6 +79,10 @@ function expectContainedCells(cells: GridCell[], content: GridCell[]) {
   });
 }
 
+function expectEqualGridCells(cells: GridCell[]) {
+  expect(cells).toEqual([4, 184, 364].flatMap((y) => [2, 102, 202].map((x) => ({ x, y, w: 96, h: 173 }))));
+}
+
 describe("detectStoryboardGridCells", () => {
   it.each([1, 2, 3])("keeps every crop inside its own shifted panel with %i px seams", (gutter) => {
     const { rgb, content } = makeGrid({ gutter });
@@ -143,18 +147,18 @@ describe("detectStoryboardGridCells", () => {
     { missingVertical: 1 },
     { missingHorizontal: 0 },
     { missingHorizontal: 1 },
-  ])("rejects a grid with an absent separating line: %j", (options) => {
+  ])("uses equal 3×3 crops when a separating line is absent: %j", (options) => {
     const { rgb } = makeGrid(options);
-    expect(() => detectStoryboardGridCells(rgb, WIDTH, HEIGHT)).toThrow();
+    expectEqualGridCells(detectStoryboardGridCells(rgb, WIDTH, HEIGHT));
   });
 
-  it("rejects competing continuous seams instead of guessing a crop", () => {
+  it("uses equal 3×3 crops when continuous seams compete", () => {
     const { rgb } = makeGrid();
     paint(rgb, 94, 0, 2, HEIGHT, [255, 255, 255]);
-    expect(() => detectStoryboardGridCells(rgb, WIDTH, HEIGHT)).toThrow();
+    expectEqualGridCells(detectStoryboardGridCells(rgb, WIDTH, HEIGHT));
   });
 
-  it("rejects brighter scenery lines competing with slightly degraded real seams", () => {
+  it("uses the standard grid when scenery lines compete with degraded seams", () => {
     const { rgb } = makeGrid();
     const yEdges = [0, ...Y_SPLITS, HEIGHT];
     for (let row = 0; row < 3; row++) {
@@ -168,14 +172,29 @@ describe("detectStoryboardGridCells", () => {
     paint(rgb, 94, 0, 2, HEIGHT, [255, 255, 255]);
     paint(rgb, 206, 0, 2, HEIGHT, [255, 255, 255]);
 
-    // Picking the brighter pair would make the middle crop cross both true
-    // separators and contain strips of its neighboring panels.
-    expect(() => detectStoryboardGridCells(rgb, WIDTH, HEIGHT)).toThrow();
+    expectEqualGridCells(detectStoryboardGridCells(rgb, WIDTH, HEIGHT));
   });
 
-  it.each([255, 190])("rejects a uniform %i image without a grid", (value) => {
+  it.each([255, 190])("crops a uniform %i image without requiring divider detection", (value) => {
     const rgb = new Uint8Array(WIDTH * HEIGHT * 3).fill(value);
-    expect(() => detectStoryboardGridCells(rgb, WIDTH, HEIGHT)).toThrow();
+    expectEqualGridCells(detectStoryboardGridCells(rgb, WIDTH, HEIGHT));
+  });
+
+  it.each([[18, 18], [19, 23], [301, 541], [1001, 601], [601, 1001]])("keeps fallback crops ordered, nonempty and in bounds for %i × %i pixels", (width, height) => {
+    const cells = detectStoryboardGridCells(new Uint8Array(width * height * 3).fill(80), width, height);
+    expect(cells).toHaveLength(9);
+    cells.forEach((cell, index) => {
+      const row = Math.floor(index / 3), col = index % 3;
+      for (const value of Object.values(cell)) expect(Number.isInteger(value)).toBe(true);
+      expect(cell.w).toBeGreaterThan(0);
+      expect(cell.h).toBeGreaterThan(0);
+      expect(cell.x).toBeGreaterThanOrEqual(Math.floor(col * width / 3));
+      expect(cell.y).toBeGreaterThanOrEqual(Math.floor(row * height / 3));
+      expect(cell.x + cell.w).toBeLessThanOrEqual(Math.ceil((col + 1) * width / 3));
+      expect(cell.y + cell.h).toBeLessThanOrEqual(Math.ceil((row + 1) * height / 3));
+      expect(cell.w).toBeGreaterThan(width / 3 * 0.85);
+      expect(cell.h).toBeGreaterThan(height / 3 * 0.85);
+    });
   });
 
   it.each([

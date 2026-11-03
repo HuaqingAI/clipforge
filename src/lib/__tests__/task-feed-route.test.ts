@@ -110,6 +110,36 @@ describe("任务发现和恢复状态", () => {
     expect(db.select().from(schema.projects).all()).toHaveLength(2);
     expect(state.remove).not.toHaveBeenCalled();
   });
+  it.each(["queued", "running", "waiting", "importing", "needs_attention"])("allows project deletion when a deleted historical task still has a legacy %s item", async (status) => {
+    const now = Date.now();
+    for (const projectId of ["project-a", "project-b"]) {
+      db.insert(schema.generationRuns).values({ id: `historical-${projectId}`, projectId, clientRequestId: "historical-request", requestHash: "hash", kind: "video",
+        deletedAt: projectId === "project-a" ? now : null, createdAt: now, updatedAt: now }).run();
+      db.insert(schema.generationItems).values({ id: `historical-item-${projectId}`, runId: `historical-${projectId}`, projectId, kind: "video", status,
+        payload: "encrypted-input", nextRunAt: now, createdAt: now, updatedAt: now }).run();
+    }
+    const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE" }), { params: Promise.resolve({ id: "project-a" }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+    expect(db.select().from(schema.projects).all()).toMatchObject([{ id: "project-b" }]);
+    expect(state.remove).toHaveBeenCalledTimes(2);
+    expect(db.select().from(schema.generationRuns).where(eq(schema.generationRuns.id, "historical-project-b")).get()).toMatchObject({ projectId: "project-b", deletedAt: null });
+    expect(db.select().from(schema.generationItems).where(eq(schema.generationItems.id, "historical-item-project-b")).get()).toMatchObject({ projectId: "project-b", status });
+  });
+  it("returns only visible recovery links when deleted history and an unfinished live task coexist", async () => {
+    const now = Date.now();
+    for (const id of ["hidden-run", "visible-run"]) {
+      db.insert(schema.generationRuns).values({ id, projectId: "project-a", clientRequestId: id, requestHash: "hash", kind: "script",
+        deletedAt: id === "hidden-run" ? now : null, createdAt: now, updatedAt: now }).run();
+      db.insert(schema.generationItems).values({ id: `${id}-item`, runId: id, projectId: "project-a", kind: "script", status: "needs_attention",
+        payload: "encrypted-input", nextRunAt: now, createdAt: now, updatedAt: now }).run();
+    }
+    const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE" }), { params: Promise.resolve({ id: "project-a" }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ blockingTasks: [{ kind: "generation", id: "visible-run", href: "/project/project-a/script?runId=visible-run" }] });
+    expect(db.select().from(schema.projects).all()).toHaveLength(2);
+    expect(state.remove).not.toHaveBeenCalled();
+  });
   it("中断任务落库后多次刷新仍保留，接替任务成功后移除", async () => {
     run({ id: "orphan", status: "running", stage: "stock_fill" });
     for (let i = 0; i < 3; i++) {

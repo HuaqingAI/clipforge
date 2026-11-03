@@ -109,7 +109,7 @@ describe("finished generation record deletion", () => {
     expect(db.select().from(generationRuns).all()).toHaveLength(1);
     expect(state.execute).not.toHaveBeenCalled();
   });
-  it.each(["queued", "running", "waiting", "importing", "needs_attention", "cancelled", "unknown"])("rejects a failed batch containing a %s item", (status) => {
+  it.each(["queued", "running", "waiting", "importing", "unknown"])("rejects a failed batch containing a %s item", (status) => {
     const run = enqueueGenerationRun(input("A", 2));
     finish(run.id, ["failed", status]);
     expect(() => deleteGenerationRuns("A", run.id)).toThrow(expect.objectContaining({ status: 409, code: "GENERATION_RUN_NOT_DELETABLE" }));
@@ -220,6 +220,102 @@ describe("finished generation record deletion", () => {
     expect(() => enqueueGenerationRun({ ...request, clientRequestId: "overlapping-live-request" })).toThrow(expect.objectContaining({ status: 409, code: "GENERATION_ALREADY_ACTIVE" }));
     expect(db.select().from(generationRuns).all()).toHaveLength(2);
     expect(state.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe("stopped generation task unbinding", () => {
+  function stalledGrid() {
+    const request: EnqueueGenerationRunInput = { projectId: "A", clientRequestId: "original-grid", kind: "storyboard_grid",
+      items: [{ kind: "storyboard_grid", scriptId: "script-A", request: { provider: "mock", model: "original-grid-model" } }] };
+    const run = enqueueGenerationRun(request), db = getDb();
+    const item = db.select().from(generationItems).where(eq(generationItems.runId, run.id)).get()!;
+    const checkpoint = { imageUrls: ["https://example.test/original-grid.png"], gridPublicPath: "/api/files/A/original-grid.png", submissionState: "acknowledged", importFailures: 6 };
+    db.update(generationItems).set({ status: "needs_attention", stage: "needs_attention", error: "无法可靠识别九宫格的分隔线", errorCode: "GENERATION_IMPORT_FAILED",
+      checkpoint: encryptGenerationValue(checkpoint), result: { gridPath: checkpoint.gridPublicPath } }).where(eq(generationItems.id, item.id)).run();
+    return { request, run, item: db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!, checkpoint };
+  }
+  it("unbinds a stopped grid without losing its original result and allows a fresh generation", async () => {
+    const { run, item, request, checkpoint } = stalledGrid(), db = getDb();
+    const assetsBefore = db.select().from(assets).all(), scriptsBefore = db.select().from(scripts).all();
+    expect(getGenerationRun(run.id)).toMatchObject({ canDelete: true, items: [{ canUnbind: true }] });
+    expect(() => enqueueGenerationRun({ ...request, clientRequestId: "fresh-grid" })).toThrow(expect.objectContaining({ code: "GENERATION_ALREADY_ACTIVE" }));
+    const options = { projectId: "A", itemId: item.id, acknowledgePossibleCharge: true };
+    const released = generationRunAction(run.id, "unbind", options);
+    expect(released).toMatchObject({ status: "cancelled", canDelete: true, items: [{ status: "cancelled", stage: "released", canUnbind: false, error: item.error, result: item.result }] });
+    const row = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!;
+    expect(row.payload).toBe(item.payload);
+    expect(decryptGenerationValue(row.checkpoint!)).toEqual({ ...checkpoint, blockingReleasedAt: expect.any(Number), acknowledgedPossibleCharge: true });
+    expect(generationRunAction(run.id, "unbind", options)).toEqual(released);
+    expect(db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(row);
+    expect(() => generationRunAction(run.id, "retry_import")).toThrow(expect.objectContaining({ code: "GENERATION_RECOVERY_UNSAFE" }));
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick();
+    expect(state.execute).not.toHaveBeenCalled();
+    vi.stubEnv("NEXT_PHASE", "phase-production-build");
+    expect(enqueueGenerationRun({ ...request, clientRequestId: "fresh-grid" }).status).toBe("queued");
+    expect(db.select().from(assets).all()).toEqual(assetsBefore);
+    expect(db.select().from(scripts).all()).toEqual(scriptsBefore);
+  });
+  it("recovers an accepted synchronous image result without resubmitting it", () => {
+    const { run, item, checkpoint } = stalledGrid();
+    expect(generationRunAction(run.id, "retry_import")).toMatchObject({ status: "waiting", items: [{ stage: "recovering" }] });
+    expect(decryptGenerationValue(getDb().select().from(generationItems).where(eq(generationItems.id, item.id)).get()!.checkpoint!)).toEqual({ ...checkpoint, importFailures: 0 });
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it("does not treat a local grid path without its accepted image receipt as safe recovery", () => {
+    const { run, item, checkpoint } = stalledGrid();
+    const { imageUrls: _imageUrls, ...incomplete } = checkpoint;
+    getDb().update(generationItems).set({ checkpoint: encryptGenerationValue(incomplete) }).where(eq(generationItems.id, item.id)).run();
+    expect(() => generationRunAction(run.id, "retry_import")).toThrow(expect.objectContaining({ code: "GENERATION_RECOVERY_UNSAFE" }));
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it.each([undefined, false, "true"])("requires charge acknowledgement before unbinding (%s)", acknowledgePossibleCharge => {
+    const { run, item } = stalledGrid();
+    expect(() => generationRunAction(run.id, "unbind", { projectId: "A", itemId: item.id, acknowledgePossibleCharge })).toThrow(expect.objectContaining({ code: "GENERATION_RELEASE_ACK_REQUIRED" }));
+    expect(getDb().select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(item);
+  });
+  it.each([{ projectId: "B" }, { projectId: undefined }, { itemId: "other-item" }])("keeps unbinding within its original project and task (%j)", override => {
+    const { run, item } = stalledGrid();
+    expect(() => generationRunAction(run.id, "unbind", { projectId: "A", itemId: item.id, acknowledgePossibleCharge: true, ...override })).toThrow(expect.objectContaining({ code: "GENERATION_ITEM_NOT_FOUND" }));
+    expect(getDb().select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(item);
+  });
+  it("atomically unbinds and deletes a stopped attention task while retaining its tombstone and outputs", () => {
+    const { run, item, request, checkpoint } = stalledGrid(), db = getDb();
+    db.insert(assets).values({ id: "saved-grid", projectId: "A", shotId: 1, type: "ai_generated", filePath: "/api/files/A/original-grid.png", status: "done", selected: true }).run();
+    const assetsBefore = db.select().from(assets).all();
+    expect(deleteGenerationRuns("A")).toEqual({ deletedIds: [], deletedCount: 0 });
+    expect(deleteGenerationRuns("A", run.id)).toEqual({ deletedIds: [run.id], deletedCount: 1 });
+    expect(db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toMatchObject({ status: "cancelled", stage: "released", payload: item.payload, result: item.result, error: item.error });
+    expect(decryptGenerationValue(db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()!.checkpoint!)).toEqual({ ...checkpoint, blockingReleasedAt: expect.any(Number), acknowledgedPossibleCharge: true });
+    expect(db.select().from(assets).all()).toEqual(assetsBefore);
+    expect(listGenerationRuns("A")).toEqual([]);
+    expect(() => enqueueGenerationRun(request)).toThrow(expect.objectContaining({ code: "GENERATION_RUN_DELETED" }));
+    expect(enqueueGenerationRun({ ...request, clientRequestId: "grid-after-deletion" }).status).toBe("queued");
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it("rolls back unbinding if the deletion tombstone cannot commit", () => {
+    const { run, item } = stalledGrid();
+    state.sqlite!.exec("CREATE TRIGGER prevent_attention_delete BEFORE UPDATE OF deleted_at ON generation_runs WHEN NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'cannot delete'); END");
+    try { expect(() => deleteGenerationRuns("A", run.id)).toThrow("cannot delete"); }
+    finally { state.sqlite!.exec("DROP TRIGGER prevent_attention_delete"); }
+    expect(getDb().select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(item);
+    expect(getGenerationRun(run.id).status).toBe("needs_attention");
+  });
+  it("keeps active leases protected from both unbinding and deletion", () => {
+    const { run, item } = stalledGrid(), db = getDb();
+    db.update(generationItems).set({ leaseOwner: `${process.pid}:live`, leaseExpiresAt: Date.now() + 60000 }).where(eq(generationItems.id, item.id)).run();
+    const before = db.select().from(generationItems).where(eq(generationItems.id, item.id)).get();
+    expect(getGenerationRun(run.id)).toMatchObject({ canDelete: false, items: [{ canUnbind: false }] });
+    expect(() => generationRunAction(run.id, "unbind", { projectId: "A", itemId: item.id, acknowledgePossibleCharge: true })).toThrow(expect.objectContaining({ code: "GENERATION_UNBIND_CONFLICT" }));
+    expect(() => deleteGenerationRuns("A", run.id)).toThrow(expect.objectContaining({ code: "GENERATION_RUN_NOT_DELETABLE" }));
+    expect(db.select().from(generationItems).where(eq(generationItems.id, item.id)).get()).toEqual(before);
+  });
+  it("deletes cancelled and attention mixtures individually while bulk cleanup leaves them visible", () => {
+    const run = enqueueGenerationRun(input("A", 3)), db = getDb();
+    const items = db.select().from(generationItems).where(eq(generationItems.runId, run.id)).all();
+    for (const [index, item] of items.entries()) db.update(generationItems).set({ status: ["completed", "cancelled", "needs_attention"][index] }).where(eq(generationItems.id, item.id)).run();
+    expect(getGenerationRun(run.id).canDelete).toBe(true);
+    expect(deleteGenerationRuns("A")).toEqual({ deletedIds: [], deletedCount: 0 });
+    expect(deleteGenerationRuns("A", run.id)).toEqual({ deletedIds: [run.id], deletedCount: 1 });
   });
 });
 

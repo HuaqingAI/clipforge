@@ -765,19 +765,53 @@ describe("storyboard grid uploaded product references", () => {
     }
   });
 
-  it("rejects a provider image without a grid before replacing selected media or saving a manifest", async () => {
-    gridBase64 = productBytes[0].toString("base64");
-    const response = await POST(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-grid`, {
-      method: "POST",
-      body: JSON.stringify({ scriptId, provider: "openai", model: "gpt-image-2", apiKey: "test-key", baseUrl: "https://image-provider.test/v1" }),
-    }), { params: Promise.resolve({ id: projectId }) });
-    expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toMatchObject({ code: "STORYBOARD_GRID_LAYOUT_INVALID" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(db.select().from(schema.assets).all()).toEqual([
-      expect.objectContaining({ id: "previous-take", selected: true, status: "done" }),
-    ]);
-    await expect(readFile(join(directory, "storyboard-grids", `${projectId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  it.each([false, true])("replaces all nine keyframes without white separators (recovering stored grid: %s)", async (recovering) => {
+    db.update(schema.scripts).set({ shots: Array.from({ length: 9 }, (_, index) => ({ ...originalShots[0], shotId: index + 1 })) })
+      .where(eq(schema.scripts.id, scriptId)).run();
+    const rgb = Buffer.alloc(gridWidth * gridHeight * 3);
+    for (let y = 0; y < gridHeight; y++) for (let x = 0; x < gridWidth; x++) {
+      rgb.set(gridColors[Math.floor(y / (gridHeight / 3)) * 3 + Math.floor(x / (gridWidth / 3))], (y * gridWidth + x) * 3);
+    }
+    const seamless = execFileSync(process.env.FFMPEG_PATH!, [
+      "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${gridWidth}x${gridHeight}`,
+      "-i", "pipe:0", "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1",
+    ], { input: rgb });
+    gridBase64 = seamless.toString("base64");
+    const storedPath = `/api/files/${projectId}/stored-seamless-grid.png`;
+    let checkpoint: Record<string, unknown> = {};
+    if (recovering) {
+      await writeFile(join(directory, "uploads", projectId, "stored-seamless-grid.png"), seamless);
+      checkpoint = { imageUrls: ["https://expired-provider.test/original-grid.png"], gridPublicPath: storedPath, submissionState: "acknowledged", importFailures: 6 };
+    }
+    const execute = () => withGenerationContext({ itemId: `seamless-grid-${recovering}`, checkpoint,
+      save: (value) => { checkpoint = structuredClone(value); } }, () => requestGrid({ productImageUrls: productPaths }));
+    const response = await execute();
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toMatchObject({ count: 9, savedAsAlternatives: 0, cells: Array.from({ length: 9 }, (_, index) => ({ shotId: index + 1 })) });
+    expect(fetchMock).toHaveBeenCalledTimes(recovering ? 0 : 1);
+    if (recovering) expect(result.gridPath).toBe(storedPath);
+    const saved = db.select().from(schema.assets).all();
+    expect(saved.find((asset) => asset.id === "previous-take")?.selected).toBe(false);
+    expect(saved.filter((asset) => asset.selected)).toHaveLength(9);
+    for (const cell of result.cells) {
+      const pixels = execFileSync(process.env.FFMPEG_PATH!, [
+        "-v", "error", "-i", join(directory, "uploads", cell.filePath.replace("/api/files/", "")),
+        "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+      ]);
+      const expected = gridColors[cell.shotId - 1];
+      let foreignPixels = 0;
+      for (let offset = 0; offset < pixels.length; offset += 3) {
+        if (pixels[offset] !== expected[0] || pixels[offset + 1] !== expected[1] || pixels[offset + 2] !== expected[2]) foreignPixels++;
+      }
+      expect(pixels.length).toBeGreaterThan(0);
+      expect(foreignPixels, `seamless shot ${cell.shotId} was cropped from another panel`).toBe(0);
+    }
+    const again = await execute();
+    expect(again.status).toBe(200);
+    expect((await again.json()).cells).toEqual(result.cells);
+    expect(db.select().from(schema.assets).all()).toHaveLength(10);
+    expect(fetchMock).toHaveBeenCalledTimes(recovering ? 0 : 1);
   });
 
   it("keeps the presenter before every product view and gives the array precedence over the legacy field", async () => {

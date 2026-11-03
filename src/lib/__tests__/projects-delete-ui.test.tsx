@@ -107,6 +107,63 @@ describe("work deletion feedback", () => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("project deletion feedback", () => {
+  it.each(["script", "assets"])("links a blocking background task to its original %s page and retains the project and works", async (step) => {
+    const id = "run /?original";
+    const href = `/project/project-1/${step}?runId=${encodeURIComponent(id)}`;
+    const message = "项目仍有未完成或待恢复的生成任务，请先处理原任务，避免丢失结果";
+    deletion = async () => Response.json({ error: message, code: "PROJECT_HAS_UNRESOLVED_GENERATION_TASKS", blockingTasks: [{ kind: "generation", id, href }] }, { status: 409 });
+    await mount(); await clickDelete();
+    const card = projectCard()!;
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(card.querySelector(`a[href="${href}"]`)?.textContent).toBe("deleteReviewGeneration");
+    expect(projectCard("project-2")).not.toBeNull();
+    expect(projectCard("project-2")!.querySelector('[role="alert"]')).toBeNull();
+    expect(deleteButton().disabled).toBe(false);
+    expect(deleteCalls()).toHaveLength(1);
+    await act(async () => button("tabWorks").click());
+    expect(workCard()).not.toBeNull();
+    expect(workCard("work-2")).not.toBeNull();
+  });
+
+  it("deduplicates recovery links and keeps Kling links in a mixed generation blocker response", async () => {
+    const generation = { kind: "generation", id: "run-1", href: "/project/project-1/assets?runId=run-1" };
+    const job = { kind: "kling_job", id: "job-1", href: "/project/project-1/assets?klingJob=job-1" };
+    deletion = async () => Response.json({ error: blockedMessage, code: "PROJECT_HAS_UNRESOLVED_GENERATION_TASKS", blockingTasks: [generation, generation, job, job] }, { status: 409 });
+    await mount(); await clickDelete();
+    const issue = projectCard()!.querySelector('[role="alert"]')!;
+    expect(issue.querySelectorAll("a")).toHaveLength(2);
+    expect(issue.querySelector(`a[href="${generation.href}"]`)?.textContent).toContain("deleteReviewGeneration");
+    expect(issue.querySelector(`a[href="${job.href}"]`)?.textContent).toContain("deleteReviewJob");
+    expect(projectCard("project-2")).not.toBeNull();
+  });
+
+  it("rejects cross-project and untrusted background-task links while preserving the deletion error", async () => {
+    const hrefs = [
+      "/project/project-2/assets?runId=run-1",
+      "https://example.com/project/project-1/assets?runId=run-1",
+      "//example.com/project/project-1/assets?runId=run-1",
+      "javascript:alert(1)",
+      "/project/project-1/export?runId=run-1",
+      "/project/project-1/assets?runId=another-run",
+      "/project/project-1/assets?runId=run-1&redirect=https://example.com",
+      "/project/project-1/assets?runId=run-1#fragment",
+      "/project/project-1/assets?runId=run%2D1",
+    ];
+    deletion = async () => Response.json({ error: blockedMessage, code: "PROJECT_HAS_UNRESOLVED_GENERATION_TASKS", blockingTasks: [
+      ...hrefs.map((href) => ({ kind: "generation", id: "run-1", href })),
+      { kind: "unrecognized", id: "run-1", href: "/project/project-1/assets?runId=run-1" },
+      { kind: "generation", id: "", href: "/project/project-1/assets?runId=" },
+      null,
+    ] }, { status: 409 });
+    await mount(); await clickDelete();
+    const issue = projectCard()!.querySelector('[role="alert"]')!;
+    expect(issue.textContent).toBe(blockedMessage);
+    expect(issue.querySelectorAll("a")).toHaveLength(0);
+    expect(projectCard("project-2")).not.toBeNull();
+    expect(deleteButton().disabled).toBe(false);
+    expect(deleteCalls()).toHaveLength(1);
+  });
+
   it.each([
     { kind: "kling_film", id: "film-1", parameter: "klingFilm", label: "deleteReviewFilm" },
     { kind: "kling_job", id: "job-1", parameter: "klingJob", label: "deleteReviewJob" },

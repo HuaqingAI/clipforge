@@ -57,10 +57,12 @@ function runView(run: typeof generationRuns.$inferSelect, items: Item[]) {
   else if (count("cancelled")) status = "cancelled";
   return { id: run.id, projectId: run.projectId, kind: run.kind, label: run.label, status,
     cancelRequested: run.cancelRequested, total: items.length, done: count("completed"), failed: count("failed") + count("needs_attention"),
+    canDelete: individuallyDeletable(items, getDb()),
     createdAt: new Date(run.createdAt).toISOString(), updatedAt: new Date(Math.max(run.updatedAt, ...items.map((i) => i.updatedAt))).toISOString(),
     items: items.map((item) => ({ id: item.id, kind: item.kind, scriptId: item.scriptId, shotId: item.shotId, status: item.status,
       stage: item.stage, result: publicResult(item.result), error: item.error, errorCode: item.errorCode,
       canReleaseBlock: Boolean(releasableKlingJob(item, getDb())),
+      canUnbind: Boolean(unbindContext(item, getDb())),
       createdAt: new Date(item.createdAt).toISOString(), updatedAt: new Date(item.updatedAt).toISOString() })) };
 }
 
@@ -72,6 +74,7 @@ function publicResult(value: unknown): unknown {
 
 function hasRecoverableResult(checkpoint: Record<string, unknown>): boolean {
   return Boolean(checkpoint.taskId || checkpoint.remoteTaskId || checkpoint.childJobId || checkpoint.result || checkpoint.resultUrls || checkpoint.response || checkpoint.videoUrl || checkpoint.imageUrl
+    || (Array.isArray(checkpoint.imageUrls) && checkpoint.imageUrls.length)
     || (Array.isArray(checkpoint.generatedScripts) && checkpoint.generatedScripts.length));
 }
 
@@ -129,6 +132,46 @@ function releasableKlingJob(item: Item, tx: GenerationStore): KlingJob | null {
     || job.data.blockingReleasedAt || job.submissionState !== "submission_unknown"
     || job.remoteGenerationId || leaseStillActive(job)) return null;
   return job;
+}
+
+/** Explicit abandonment stops local observation while retaining the original paid work. */
+function unbindContext(item: Item, tx: GenerationStore): { checkpoint: Record<string, unknown>; job: KlingJob | null } | null {
+  if (item.status !== "needs_attention" || leaseStillActive(item)) return null;
+  let checkpoint: Record<string, unknown>, payload: GenerationPayload;
+  try {
+    checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
+    payload = decryptGenerationValue<GenerationPayload>(item.payload);
+  } catch { return null; }
+  const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
+  if (!jobs.length) return checkpoint.childJobId || item.result?.childJobId ? null : { checkpoint, job: null };
+  if (jobs.length !== 1 || item.kind !== "video" || payload.request.provider !== "kling-cli") return null;
+  const job = jobs[0];
+  if (job.profileId !== payload.request.profileId || job.scriptId !== item.scriptId || job.shotId !== item.shotId
+    || job.data.generationItemId && job.data.generationItemId !== item.id
+    || checkpoint.childJobId && checkpoint.childJobId !== job.id
+    || item.result?.childJobId && item.result.childJobId !== job.id
+    || leaseStillActive(job)) return null;
+  return { checkpoint, job };
+}
+
+function unbindItem(item: Item, tx: GenerationStore) {
+  const context = unbindContext(item, tx);
+  if (!context) throw new GenerationRunError("此任务状态已变化或仍在执行，不能解除绑定。请刷新并核对原任务。", 409, "GENERATION_UNBIND_CONFLICT");
+  const { checkpoint, job } = context, now = Date.now();
+  if (job) tx.update(klingJobs).set({ autoQueryPaused: true, needsConfirmation: false, nextQueryAt: null,
+    leaseOwner: null, leaseExpiresAt: null, revision: job.revision + 1, updatedAt: now,
+    data: { ...job.data, blockingReleasedAt: job.data.blockingReleasedAt ?? now, authorizedUntil: 0 },
+  }).where(eq(klingJobs.id, job.id)).run();
+  tx.update(generationItems).set({ status: "cancelled", stage: "released", leaseOwner: null, leaseExpiresAt: null,
+    ...(job ? { result: { ...item.result, childJobId: job.id } } : {}),
+    checkpoint: encryptGenerationValue({ ...checkpoint, ...(job ? { childJobId: job.id } : {}), blockingReleasedAt: now, acknowledgedPossibleCharge: true }), updatedAt: now,
+  }).where(eq(generationItems.id, item.id)).run();
+  tx.update(generationRuns).set({ updatedAt: now }).where(eq(generationRuns.id, item.runId)).run();
+}
+
+function individuallyDeletable(items: Item[], tx: GenerationStore): boolean {
+  return items.length > 0 && items.every((item) => item.status === "needs_attention" ? Boolean(unbindContext(item, tx))
+    : ["completed", "failed", "cancelled"].includes(item.status) && item.leaseOwner === null && item.leaseExpiresAt === null);
 }
 
 /** The child may finish saving after its parent stopped observing it. Reconcile local records only. */
@@ -207,8 +250,9 @@ export function deleteGenerationRuns(projectId: unknown, id?: string) {
     const scope = deletionProject(tx, projectId);
     const runs = tx.select().from(generationRuns).where(and(eq(generationRuns.projectId, scope), id === undefined ? isNull(generationRuns.deletedAt) : eq(generationRuns.id, id))).all();
     if (id !== undefined && !runs.length) throw new GenerationRunError("任务批次不存在。", 404, "GENERATION_RUN_NOT_FOUND");
-    const eligible = runs.filter((run) => run.deletedAt === null && deletableRun(run, runItems(tx, run.id)));
-    if (id !== undefined && runs[0].deletedAt === null && !eligible.length) throw new GenerationRunError("只能删除所有条目已结束的成功或失败任务记录。", 409, "GENERATION_RUN_NOT_DELETABLE");
+    const eligible = runs.filter((run) => run.deletedAt === null && (id === undefined ? deletableRun(run, runItems(tx, run.id)) : individuallyDeletable(runItems(tx, run.id), tx)));
+    if (id !== undefined && runs[0].deletedAt === null && !eligible.length) throw new GenerationRunError("只能删除已停止的任务记录；仍在执行的任务请等待结束。", 409, "GENERATION_RUN_NOT_DELETABLE");
+    for (const run of eligible) for (const item of runItems(tx, run.id)) if (item.status === "needs_attention") unbindItem(item, tx);
     const deletedIds = eligible.map((run) => run.id);
     if (deletedIds.length) tx.update(generationRuns).set({ deletedAt: Date.now() }).where(and(eq(generationRuns.projectId, scope), isNull(generationRuns.deletedAt), inArray(generationRuns.id, deletedIds))).run();
     return { deletedIds, deletedCount: deletedIds.length };
@@ -326,7 +370,14 @@ export function generationRunAction(id: string, action: string, options: { itemI
     const run = liveRun(tx, id);
     const items = reconciledItems(tx, runItems(tx, id));
     if (action === "retry_import" && runView(run, items).status === "completed") return runView(run, items);
-    if (action === "release_block") {
+    if (action === "unbind") {
+      if (typeof options.projectId !== "string" || options.projectId !== run.projectId) throw new GenerationRunError("请在原项目中解除该任务的绑定。", 404, "GENERATION_ITEM_NOT_FOUND");
+      if (options.acknowledgePossibleCharge !== true) throw new GenerationRunError("请先确认解除绑定不会取消原云端任务，重新生成可能再次计费。", 400, "GENERATION_RELEASE_ACK_REQUIRED");
+      const item = items.find((candidate) => candidate.id === options.itemId);
+      if (!item) throw new GenerationRunError("没有找到此任务。", 404, "GENERATION_ITEM_NOT_FOUND");
+      if (item.status === "cancelled" && item.stage === "released") return runView(run, items);
+      unbindItem(item, tx);
+    } else if (action === "release_block") {
       if (typeof options.projectId !== "string" || options.projectId !== run.projectId) throw new GenerationRunError("请在原项目中解除该镜头的阻塞。", 404, "GENERATION_ITEM_NOT_FOUND");
       if (options.acknowledgePossibleCharge !== true) throw new GenerationRunError("请先确认原任务可能仍在云端运行或计费，再解除阻塞。", 400, "GENERATION_RELEASE_ACK_REQUIRED");
       const item = items.find((candidate) => candidate.id === options.itemId);

@@ -123,7 +123,7 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
   const [submissionError, setSubmissionError] = useState<string>();
   const [submittedNotice, setSubmittedNotice] = useState(false);
   const [accepted, setAccepted] = useState<GenerationRun[]>([]);
-  const { runs, loading: tasksLoading, error: tasksError, refresh: refreshTasks } = useGenerationRuns(projectId);
+  const { runs, loading: tasksLoading, error: tasksError, refresh: refreshTasks, isRunDeleted } = useGenerationRuns(projectId);
   const [applyError, setApplyError] = useState<string>();
   const alive = useRef(true);
   const lock = useRef(false);
@@ -164,7 +164,7 @@ function RefinementSession({ onOpenChange, projectId, scriptId, shots: inputShot
   });
 
   const refinementRuns = useMemo(() => [...accepted.filter((run) => !runs.some((current) => current.id === run.id)), ...runs]
-    .filter((run) => run.projectId === projectId && run.items.some((item) => item.kind === "keyframe_refine" && item.scriptId === scriptId)), [accepted, runs, projectId, scriptId]);
+    .filter((run) => run.projectId === projectId && !isRunDeleted(run.id) && run.items.some((item) => item.kind === "keyframe_refine" && item.scriptId === scriptId)), [accepted, runs, projectId, scriptId, isRunDeleted]);
   const blockedShots = useMemo(() => new Set(refinementRuns.flatMap((run) => run.items.filter((item) => item.kind === "keyframe_refine" && item.scriptId === scriptId && item.shotId != null && ["queued", "running", "waiting", "importing", "needs_attention"].includes(item.status)).map((item) => item.shotId!))), [refinementRuns, scriptId]);
   const shotTasks = useMemo(() => {
     const tasks = new Map<number, { run: GenerationRun; item: GenerationRun["items"][number] }>();

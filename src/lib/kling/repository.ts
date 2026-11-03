@@ -70,7 +70,7 @@ export function klingJobView(row: KlingJob): KlingJobView {
     if (!row.data.blockingReleasedAt && !["failed", "cancelled", "completed"].includes(row.remoteState)) actions.push(row.autoQueryPaused ? "resume-query" : "pause-query");
   }
   if (row.remoteState === "completed") actions.push("import");
-  if (row.submissionState === "prepared" && row.needsConfirmation) actions.push("continue");
+  if (!row.data.blockingReleasedAt && row.submissionState === "prepared" && row.needsConfirmation) actions.push("continue");
   if (row.submissionState === "prepared" && !row.data.dispatchStartedAt) actions.push("cancel-prepared");
   if (row.submissionState === "submission_unknown" && !row.remoteGenerationId) actions.push("bind");
   if (isKlingJobUnresolved(row)) actions.push("dismiss");

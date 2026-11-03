@@ -11,7 +11,9 @@
 
 import { getDb } from "@/lib/db";
 import { aiTasks } from "@/lib/db/schema";
-import { and, eq, inArray, ne, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, or } from "drizzle-orm";
+import { generationItems, generationRuns } from "@/lib/generation-schema";
+import { decryptGenerationValue } from "@/lib/generation-secrets";
 import { sanitizeGenerationControlSummary, type GenerationControlSummary } from "@/lib/video-repair-plan";
 
 export type AiTaskStatus = "submitted" | "processing" | "completed" | "failed" | "unknown";
@@ -112,11 +114,35 @@ export async function listAiTasks(projectId: string, activeOnly: boolean) {
   const where = activeOnly
     ? and(eq(aiTasks.projectId, projectId), or(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES), and(eq(aiTasks.status, "completed"), ne(aiTasks.importState, "imported"))))
     : eq(aiTasks.projectId, projectId);
-  return db.select().from(aiTasks).where(where);
+  const rows = db.select().from(aiTasks).where(where).all();
+  return activeOnly ? withoutReleasedGenerationTasks(rows) : rows;
 }
 
 /** All still-active paid tasks across every project — the global task center's "money at risk" view */
 export async function listActiveAiTasksAllProjects() {
   const db = getDb();
-  return db.select().from(aiTasks).where(or(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES), and(eq(aiTasks.status, "completed"), ne(aiTasks.importState, "imported"))));
+  const rows = db.select().from(aiTasks).where(or(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES), and(eq(aiTasks.status, "completed"), ne(aiTasks.importState, "imported")))).all();
+  return withoutReleasedGenerationTasks(rows);
+}
+
+/** A released background task retains its recovery history without occupying its shot. */
+function withoutReleasedGenerationTasks(rows: Array<typeof aiTasks.$inferSelect>) {
+  const projectIds = [...new Set(rows.flatMap((row) => row.projectId ? [row.projectId] : []))];
+  if (!projectIds.length) return rows;
+  const released = getDb().select({ projectId: generationItems.projectId, payload: generationItems.payload, checkpoint: generationItems.checkpoint })
+    .from(generationItems).innerJoin(generationRuns, eq(generationRuns.id, generationItems.runId))
+    .where(and(inArray(generationItems.projectId, projectIds), or(eq(generationItems.stage, "released"), isNotNull(generationRuns.deletedAt)))).all();
+  const identities = new Set<string>();
+  for (const item of released) {
+    try {
+      const payload = decryptGenerationValue<{ request?: { provider?: unknown } }>(item.payload);
+      const checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
+      const provider = payload.request?.provider;
+      if (typeof provider !== "string") continue;
+      for (const taskId of [checkpoint.taskId, checkpoint.remoteTaskId]) {
+        if (typeof taskId === "string" && taskId) identities.add(JSON.stringify([item.projectId, provider, taskId]));
+      }
+    } catch { /* An unreadable association must not hide a recoverable paid task. */ }
+  }
+  return rows.filter((row) => !identities.has(JSON.stringify([row.projectId, row.provider, row.taskId])));
 }

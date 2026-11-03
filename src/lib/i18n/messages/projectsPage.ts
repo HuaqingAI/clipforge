@@ -58,6 +58,7 @@ export const projectsPage: NamespaceMessages = {
     deleteFailed: "删除失败，请重试",
     deleteReviewFilm: "查看整片任务",
     deleteReviewJob: "查看视频任务",
+    deleteReviewGeneration: "查看后台任务",
   },
   en: {
     pageTitle: "My projects",
@@ -115,5 +116,6 @@ export const projectsPage: NamespaceMessages = {
     deleteFailed: "Delete failed — please retry",
     deleteReviewFilm: "View film task",
     deleteReviewJob: "View video task",
+    deleteReviewGeneration: "Review background task",
   },
 };

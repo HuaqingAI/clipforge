@@ -293,7 +293,7 @@ describe("generation run history panel", () => {
     expect(container.querySelector(`details[data-run-id="${current.id}"]`)).not.toBeNull();
   });
 
-  it("offers deletion only when every item is completed or failed and confirms bulk cleanup", async () => {
+  it("offers single deletion for terminal items while bulk cleanup only clears completed and failed runs", async () => {
     let current = [finished("cleanup-done"), finished("cleanup-failed", "A", "failed"), run("cleanup-active"),
       run("cleanup-attention", "A", { status: "needs_attention" }), run("cleanup-cancelled", "A", { status: "cancelled" }),
       run("cleanup-mixed-cancelled", "A", { status: "failed", items: [{ id: "failed", kind: "image", status: "failed" }, { id: "cancelled", kind: "video", status: "cancelled" }] }),
@@ -303,8 +303,8 @@ describe("generation run history panel", () => {
       return Promise.resolve(Response.json({ runs: current }));
     });
     await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
-    expect(container.querySelectorAll('button[aria-label^="删除任务记录"]')).toHaveLength(2);
-    expect(container.querySelector('details[data-run-id="cleanup-mixed-cancelled"]')?.parentElement?.querySelector('button[aria-label^="删除任务记录"]')).toBeNull();
+    expect(container.querySelectorAll('button[aria-label^="删除任务记录"]')).toHaveLength(3);
+    expect(container.querySelector('details[data-run-id="cleanup-mixed-cancelled"]')?.parentElement?.querySelector('button[aria-label^="删除任务记录"]')).not.toBeNull();
     await click("清理已完成和失败");
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain("生成素材会保留");
     expect(request.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
@@ -576,7 +576,7 @@ describe("interrupted Kling shot release", () => {
       expect(onCompleted).not.toHaveBeenCalled();
       expect(generationChanged).toHaveBeenCalledOnce(); expect(feedChanged).toHaveBeenCalledOnce();
       expect(container.querySelector('[role="dialog"]')).toBeNull();
-      expect(container.textContent).toContain("镜头 4 · 已解除阻塞");
+      expect(container.textContent).toContain("镜头 4 · 已解除绑定");
       expect(container.textContent).toContain("镜头 5 · 已完成");
       expect(container.querySelector('summary')?.textContent).toContain("已结束");
       expect(container.textContent).toContain("提交进程已中断");
@@ -651,5 +651,142 @@ describe("interrupted Kling shot release", () => {
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain("解除镜头 4");
     const actions = request.mock.calls.filter(([, init]) => init?.method === "POST");
     expect(actions).toHaveLength(1); expect(JSON.parse(actions[0][1].body).projectId).toBe("A");
+  });
+});
+
+describe("needs-attention task unbinding and deletion", () => {
+  function grid(id = "grid-attention"): GenerationRun {
+    return run(id, "A", { kind: "storyboard_grid", status: "needs_attention", total: 1, done: 0, failed: 1, canDelete: true, items: [
+      { id: `${id}-item`, kind: "storyboard_grid", scriptId: "script-A", status: "needs_attention", canUnbind: true,
+        error: "无法可靠识别九宫格的分隔线，未替换分镜关键帧。", result: { imageUrls: ["/api/files/A/original-grid.png"] } },
+    ] });
+  }
+
+  function unbound(before: GenerationRun): GenerationRun {
+    return { ...before, status: "cancelled", failed: 0, items: before.items.map((item) => ({ ...item, status: "cancelled", stage: "released", canUnbind: false })) };
+  }
+
+  it("confirms grid unbinding once, preserves its original result and refreshes task feeds without generating", async () => {
+    let current = grid("grid-unbind");
+    let finish!: (response: Response) => void;
+    request.mockImplementation((_url: string, init?: RequestInit) => init?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve(Response.json({ runs: [current] })));
+    const onReleased = vi.fn(), onCompleted = vi.fn(), generationChanged = vi.fn(), feedChanged = vi.fn();
+    window.addEventListener(GENERATION_RUNS_REFRESH_EVENT, generationChanged);
+    window.addEventListener(TASK_FEED_REFRESH_EVENT, feedChanged);
+    try {
+      await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} onCompleted={onCompleted} />));
+      await click("解除绑定");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("原任务");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("素材");
+      expect(request.mock.calls.some(([, init]) => init?.method)).toBe(false);
+      const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认解除绑定")!;
+      await act(async () => { confirm.click(); confirm.click(); });
+      const actions = request.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(actions).toHaveLength(1);
+      expect(actions[0][0]).toBe("/api/generation-runs/grid-unbind");
+      expect(JSON.parse(actions[0][1].body)).toEqual({ action: "unbind", itemId: "grid-unbind-item", projectId: "A", acknowledgePossibleCharge: true });
+      expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "暂不解除")?.disabled).toBe(true);
+      current = unbound(current);
+      await act(async () => finish(Response.json(current)));
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(container.textContent).toContain("此任务已解除绑定，可以重新提交生成。原任务和素材已保留。");
+      expect(container.textContent).toContain("九宫格分镜 · 已解除绑定");
+      expect(container.textContent).toContain("无法可靠识别九宫格的分隔线");
+      expect(onReleased).toHaveBeenCalledOnce();
+      expect(onCompleted).not.toHaveBeenCalled();
+      expect(generationChanged).toHaveBeenCalledOnce();
+      expect(feedChanged).toHaveBeenCalledOnce();
+      expect(current.items[0].result).toEqual({ imageUrls: ["/api/files/A/original-grid.png"] });
+      expect(request.mock.calls.some(([url, init]) => url === "/api/generation-runs" && init?.method === "POST")).toBe(false);
+    } finally {
+      window.removeEventListener(GENERATION_RUNS_REFRESH_EVENT, generationChanged);
+      window.removeEventListener(TASK_FEED_REFRESH_EVENT, feedChanged);
+    }
+  });
+
+  it("confirms direct deletion of a needs-attention task and only removes its project-scoped record", async () => {
+    const target = grid("grid-delete-attention");
+    const retained = finished("grid-delete-retained");
+    let current = [target, retained];
+    request.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        current = [retained];
+        return Promise.resolve(Response.json({ deletedIds: [target.id], deletedCount: 1 }));
+      }
+      return Promise.resolve(Response.json({ runs: current }));
+    });
+    const feedChanged = vi.fn();
+    window.addEventListener(TASK_FEED_REFRESH_EVENT, feedChanged);
+    try {
+      await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
+      await click("删除任务");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("绑定");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("不会取消原云端任务");
+      expect(container.querySelector('[role="dialog"]')?.textContent).toContain("素材");
+      expect(request.mock.calls.some(([, init]) => init?.method)).toBe(false);
+      await click("暂不删除");
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      await click("删除任务");
+      await click("确认删除任务");
+      expect(request.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/generation-runs/grid-delete-attention?projectId=A"]);
+      expect(container.querySelector('details[data-run-id="grid-delete-attention"]')).toBeNull();
+      expect(container.querySelector('details[data-run-id="grid-delete-retained"]')).not.toBeNull();
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(target.items[0].result).toEqual({ imageUrls: ["/api/files/A/original-grid.png"] });
+      expect(feedChanged).toHaveBeenCalledOnce();
+      expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    } finally { window.removeEventListener(TASK_FEED_REFRESH_EVENT, feedChanged); }
+  });
+
+  it("uses server capabilities and stops an open confirmation when the task resumes execution", async () => {
+    let current = grid("grid-state-change");
+    request.mockImplementation(() => Promise.resolve(Response.json({ runs: [current] })));
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" />));
+    await click("解除绑定");
+    current = { ...current, status: "running", canDelete: false, items: current.items.map((item) => ({ ...item, status: "running", canUnbind: false })) };
+    await click("刷新任务");
+    const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认解除绑定")!;
+    expect(confirm.disabled).toBe(true);
+    await act(async () => confirm.click());
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("任务状态已变化");
+    expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+    await click("暂不解除");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "解除绑定" || button.textContent === "删除任务")).toBe(false);
+  });
+
+  it("keeps a rejected unbinding reviewable and permits an explicit retry", async () => {
+    let current = grid("grid-unbind-retry");
+    let attempts = 0;
+    request.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method !== "POST") return Promise.resolve(Response.json({ runs: [current] }));
+      if (++attempts === 1) return Promise.resolve(Response.json({ error: "原任务仍在执行，请稍后重试" }, { status: 409 }));
+      current = unbound(current);
+      return Promise.resolve(Response.json(current));
+    });
+    const onReleased = vi.fn();
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} />));
+    await click("解除绑定"); await click("确认解除绑定");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("原任务仍在执行");
+    expect(onReleased).not.toHaveBeenCalled();
+    await click("确认解除绑定");
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(onReleased).toHaveBeenCalledOnce();
+    expect(attempts).toBe(2);
+  });
+
+  it("bounds stalled unbinding and retains the original task for reconciliation", async () => {
+    vi.useFakeTimers();
+    request.mockImplementation((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
+      ? { ok: true, json: () => new Promise(() => {}) } : Response.json({ runs: [grid("grid-unbind-timeout")] })));
+    const onReleased = vi.fn();
+    await act(async () => root.render(<GenerationRunsPanel projectId="A" onReleased={onReleased} />));
+    await click("解除绑定"); await click("确认解除绑定");
+    await tick(15_000);
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("解除绑定超时，请刷新任务列表核对结果");
+    const action = request.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(action[1].signal.aborted).toBe(true);
+    expect(container.querySelector('details[data-run-id="grid-unbind-timeout"]')).not.toBeNull();
+    expect(onReleased).not.toHaveBeenCalled();
   });
 });

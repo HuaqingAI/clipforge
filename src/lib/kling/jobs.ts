@@ -801,6 +801,7 @@ export async function continueKlingJob(jobId: string, raw: unknown): Promise<voi
 async function continueUnderLease(jobId: string, raw: unknown): Promise<void> {
   const body = record(raw);
   const job = getKlingJob(jobId);
+  if (job.data.blockingReleasedAt) throw new KlingError("KLING_JOB_RELEASED", "已解除占用的原任务不能继续提交，请重新确认新任务。", 409);
   if (job.submissionState !== "prepared" || job.data.dispatchStartedAt) throw new KlingError("KLING_ALREADY_DISPATCHED", "此任务可能已经提交，只能查询原任务", 409);
   if (body.explicitConfirmation !== true) throw new KlingError("KLING_BILLING_ACK_REQUIRED", "继续提交前需要确认本次积分消耗", 422);
   const profile = await refreshProfile(job.profileId, undefined, { credits: false });
@@ -890,7 +891,7 @@ export async function selectKlingJobOutput(jobId: string, outputId: string, body
 
 async function reconcileKlingJobs(): Promise<void> {
   for (const row of listKlingJobs()) {
-    if (row.submissionState === "prepared" && (row.data.authorizedBootId !== runtime.bootId || row.data.authorizedUntil <= Date.now()) && !row.needsConfirmation) patchKlingJob(row.id, { needsConfirmation: true });
+    if (!row.data.blockingReleasedAt && row.submissionState === "prepared" && (row.data.authorizedBootId !== runtime.bootId || row.data.authorizedUntil <= Date.now()) && !row.needsConfirmation) patchKlingJob(row.id, { needsConfirmation: true });
     if (!["submitting", "submission_unknown"].includes(row.submissionState) || row.remoteGenerationId || (row.leaseExpiresAt && row.leaseExpiresAt > Date.now())) continue;
     await withKlingJobLease(row.id, async () => { try {
       const receipt = record(JSON.parse(await readFile(join(getDataDir(), "integrations", "kling", "receipts", row.id + ".json"), "utf8")));

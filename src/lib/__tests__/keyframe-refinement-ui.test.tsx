@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeyframeRefinementDialog, type KeyframeRefinementDialogProps } from "@/components/keyframe-refinement-dialog";
 import { KEYFRAME_REPAIR_ISSUES, type KeyframeRefinementCandidate } from "@/lib/keyframe-refinement";
-import { GENERATION_RUNS_REFRESH_EVENT, type GenerationRun, type GenerationRunInput } from "@/lib/hooks/use-generation-runs";
+import { GENERATION_RUNS_REFRESH_EVENT, rememberDeletedGenerationRuns, type GenerationRun, type GenerationRunInput } from "@/lib/hooks/use-generation-runs";
 
 const dialog = vi.hoisted(() => ({ close: undefined as undefined | ((open: boolean) => void), locale: "zh" as "zh" | "en" }));
 vi.mock("@/lib/i18n", () => ({ useLocale: () => dialog.locale, useT: () => (key: string) => key }));
@@ -95,6 +95,22 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 
 describe("keyframe refinement review and adoption", () => {
+  it("releases an accepted shot after its task is deleted while the dialog stays open", async () => {
+    const projectId = "deleted-refinement-project";
+    await mount({ projectId, initialShotId: 1 });
+    await click("生成高清候选");
+    expect(checkbox("分镜 1").disabled).toBe(true);
+    rememberDeletedGenerationRuns(projectId, [runs[0].id]);
+    runs = [];
+    await refreshTasks();
+    expect(checkbox("分镜 1").disabled).toBe(false);
+    await act(async () => checkbox("分镜 1").click());
+    expect(button("生成高清候选").disabled).toBe(false);
+    await click("生成高清候选");
+    expect(calls("POST")).toHaveLength(2);
+    expect(registered.size).toBe(2);
+  });
+
   it("keeps region repair off by default and leaves the ordinary request unchanged", async () => {
     await mount({ initialShotId: 1, modelTarget: { provider: "openai", model: "gpt-image-2", apiKey: "fixture-key" } });
     expect(checkbox("仅修复底部前景").checked).toBe(false);

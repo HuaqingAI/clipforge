@@ -34,21 +34,28 @@ interface WorkRow {
 
 interface ProjectDeleteIssue {
   message: string;
-  blockingTasks: Array<{ kind: "kling_job" | "kling_film"; id: string; href: string }>;
+  blockingTasks: Array<{ kind: "generation" | "kling_job" | "kling_film"; id: string; href: string }>;
 }
 
 function projectDeleteIssue(body: unknown, projectId: string, fallback: string): ProjectDeleteIssue {
   const payload = body && typeof body === "object" ? body as Record<string, unknown> : {};
   const message = typeof payload.error === "string" && payload.error.trim() ? payload.error : fallback;
   const blockingTasks: ProjectDeleteIssue["blockingTasks"] = [];
-  if (payload.code === "PROJECT_HAS_UNRESOLVED_KLING_TASKS" && Array.isArray(payload.blockingTasks)) {
+  const seen = new Set<string>();
+  if ((payload.code === "PROJECT_HAS_UNRESOLVED_GENERATION_TASKS" || payload.code === "PROJECT_HAS_UNRESOLVED_KLING_TASKS") && Array.isArray(payload.blockingTasks)) {
     for (const value of payload.blockingTasks) {
       if (!value || typeof value !== "object") continue;
       const task = value as Record<string, unknown>;
-      if ((task.kind !== "kling_job" && task.kind !== "kling_film") || typeof task.id !== "string" || !task.id) continue;
+      if ((task.kind !== "generation" && task.kind !== "kling_job" && task.kind !== "kling_film") || typeof task.id !== "string" || !task.id) continue;
+      const base = `/project/${encodeURIComponent(projectId)}`;
+      const encodedTaskId = encodeURIComponent(task.id);
       const query = task.kind === "kling_film" ? "klingFilm" : "klingJob";
-      const href = `/project/${encodeURIComponent(projectId)}/assets?${query}=${encodeURIComponent(task.id)}`;
-      if (task.href === href) blockingTasks.push({ kind: task.kind, id: task.id, href });
+      const hrefs = task.kind === "generation"
+        ? ["script", "assets"].map((step) => `${base}/${step}?runId=${encodedTaskId}`)
+        : [`${base}/assets?${query}=${encodedTaskId}`];
+      const href = hrefs.find((candidate) => candidate === task.href);
+      const key = `${task.kind}:${task.id}:${href}`;
+      if (href && !seen.has(key)) { blockingTasks.push({ kind: task.kind, id: task.id, href }); seen.add(key); }
     }
   }
   return { message, blockingTasks };
@@ -400,8 +407,8 @@ export default function ProjectsPage() {
                         {deleteIssues[p.id].blockingTasks.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
                             {deleteIssues[p.id].blockingTasks.map((task, index) => (
-                              <Link key={`${task.kind}:${task.id}`} href={task.href} className="text-primary underline underline-offset-2">
-                                {t(task.kind === "kling_film" ? "deleteReviewFilm" : "deleteReviewJob")}
+                              <Link key={`${task.kind}:${task.id}:${task.href}`} href={task.href} className="text-primary underline underline-offset-2">
+                                {t(task.kind === "generation" ? "deleteReviewGeneration" : task.kind === "kling_film" ? "deleteReviewFilm" : "deleteReviewJob")}
                                 {deleteIssues[p.id].blockingTasks.length > 1 ? ` ${index + 1}` : ""}
                               </Link>
                             ))}

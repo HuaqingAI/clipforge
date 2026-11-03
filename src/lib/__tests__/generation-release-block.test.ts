@@ -26,7 +26,7 @@ import { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { klingJobHasUnknownSubmission, klingJobHasUnresolvedWork } from "@/lib/kling/concurrency";
 import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation-secrets";
-import { enqueueGenerationRun, generationRunAction, getGenerationRun, runGenerationTick, stopGenerationRunner } from "@/lib/generation-runs";
+import { deleteGenerationRuns, enqueueGenerationRun, generationRunAction, getGenerationRun, runGenerationTick, stopGenerationRunner } from "@/lib/generation-runs";
 
 const originalError = "提交进程已中断，平台可能已受理，请先核对原任务";
 const release = { projectId: "A", itemId: "item-4", acknowledgePossibleCharge: true };
@@ -60,6 +60,45 @@ afterEach(() => { stopGenerationRunner(); vi.unstubAllEnvs(); });
 
 const itemRow = () => getDb().select().from(generationItems).where(eq(generationItems.id, "item-4")).get()!;
 const jobRow = () => getDb().select().from(klingJobs).where(eq(klingJobs.id, "job-4")).get()!;
+
+describe("explicit task unbinding with retained Kling work", () => {
+  it.each(["submission_unknown", "acknowledged"] as const)("unbinds stopped %s work without cancelling or deleting its remote identity", submissionState => {
+    const db = getDb();
+    db.update(klingJobs).set({ submissionState, remoteGenerationId: submissionState === "acknowledged" ? "paid-remote-task" : null,
+      remoteState: submissionState === "acknowledged" ? "processing" : "unknown" }).run();
+    const before = jobRow(), payload = itemRow().payload;
+    expect(getGenerationRun("run-A")).toMatchObject({ canDelete: true });
+    expect(getGenerationRun("run-A").items.find(item => item.id === "item-4")?.canUnbind).toBe(true);
+    const run = generationRunAction("run-A", "unbind", release);
+    expect(run.items.find(item => item.id === "item-4")).toMatchObject({ status: "cancelled", stage: "released", canUnbind: false });
+    expect(jobRow()).toMatchObject({ submissionState: before.submissionState, remoteState: before.remoteState, remoteGenerationId: before.remoteGenerationId,
+      autoQueryPaused: true, nextQueryAt: null, data: { ...before.data, authorizedUntil: 0, blockingReleasedAt: expect.any(Number) } });
+    expect(itemRow().payload).toBe(payload);
+    expect(klingJobHasUnresolvedWork(jobRow())).toBe(false);
+    expect(enqueueGenerationRun(replacement).status).toBe("queued");
+    expect(state.execute).not.toHaveBeenCalled();
+  });
+  it("deleting a stopped parent releases only its linked child and retains both records and the keyframe", () => {
+    const before = jobRow(), keyframe = getDb().select().from(assets).get();
+    expect(deleteGenerationRuns("A", "run-A")).toEqual({ deletedIds: ["run-A"], deletedCount: 1 });
+    expect(itemRow()).toMatchObject({ status: "cancelled", stage: "released", error: originalError, result: { childJobId: "job-4" } });
+    expect(jobRow()).toMatchObject({ id: before.id, remoteState: before.remoteState, submissionState: before.submissionState,
+      autoQueryPaused: true, data: { blockingReleasedAt: expect.any(Number) } });
+    expect(getDb().select().from(assets).get()).toEqual(keyframe);
+  });
+  it.each(["active child", "expired but living child", "wrong script", "wrong request", "conflicting checkpoint"])("refuses to unbind or delete with %s", scenario => {
+    const db = getDb();
+    if (scenario === "active child" || scenario === "expired but living child") db.update(klingJobs).set({ leaseOwner: `${process.pid}:live`, leaseExpiresAt: scenario === "active child" ? Date.now() + 90000 : 1 }).run();
+    if (scenario === "wrong script") db.update(klingJobs).set({ scriptId: "wrong-script" }).run();
+    if (scenario === "wrong request") db.update(klingJobs).set({ clientRequestId: "another-item" }).run();
+    if (scenario === "conflicting checkpoint") db.update(generationItems).set({ checkpoint: encryptGenerationValue({ childJobId: "another-job" }) }).where(eq(generationItems.id, "item-4")).run();
+    const beforeItem = itemRow(), beforeJob = jobRow();
+    expect(getGenerationRun("run-A")).toMatchObject({ canDelete: false });
+    expect(() => generationRunAction("run-A", "unbind", release)).toThrow(expect.objectContaining({ code: "GENERATION_UNBIND_CONFLICT" }));
+    expect(() => deleteGenerationRuns("A", "run-A")).toThrow(expect.objectContaining({ code: "GENERATION_RUN_NOT_DELETABLE" }));
+    expect(itemRow()).toEqual(beforeItem); expect(jobRow()).toEqual(beforeJob);
+  });
+});
 
 describe("explicit interrupted Kling block release", () => {
   it("atomically releases only shot four, retains the unknown paid-task audit and keyframe, and allows a new single shot", () => {

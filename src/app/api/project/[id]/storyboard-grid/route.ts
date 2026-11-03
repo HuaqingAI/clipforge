@@ -455,8 +455,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     generationCheckpoint({ gridPublicPath: publicPath, stage: "importing" });
     const probe = await probeMedia(absPath);
     if (!probe.width || !probe.height) throw new Error("无法读取九宫格图片尺寸");
-    // Validate the entire layout before saving/selecting any shot. Generated
-    // gutters regularly drift away from exact thirds, even with an equal-grid prompt.
+    // Prefer detected gutters; otherwise crop equal thirds so missing or
+    // ambiguous separators do not block saving the generated keyframes.
     const cells = await readStoryboardGridCells(absPath, probe.width, probe.height);
     const usedCells = cells.slice(0, shots.length);
     const resolutionInfo: StoryboardGridResolutionInfo = {
