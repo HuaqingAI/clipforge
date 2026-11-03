@@ -7,7 +7,6 @@ import { getDataDir } from "@/lib/paths";
 import { compositions, projects } from "@/lib/db/schema";
 import { generateCover } from "@/lib/video-composer/cover";
 import { apiError, errText } from "@/lib/api-error";
-import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -35,17 +34,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .where(eq(projects.id, id))
     .limit(1);
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
-  // Covers burn a large title into the extracted frame. Premium CG locks
-  // generated frame text, so an older client cannot request this sales output.
-  if (isPremiumProductCgProfile(project.creativeProfile)) {
-    return NextResponse.json(
-      {
-        error: errText(req, "高端产品 CG 不支持标题式封面文字", "Premium product CG does not allow title-based cover text."),
-        code: "PREMIUM_CG_OUTPUT_POLICY",
-      },
-      { status: 400 },
-    );
-  }
   const [comp] = await db
     .select()
     .from(compositions)

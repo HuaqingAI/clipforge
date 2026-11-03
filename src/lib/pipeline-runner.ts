@@ -23,7 +23,6 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { compositions, pipelineRuns, projects } from "@/lib/db/schema";
 import { isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
-import { isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
 import {
   autoApplicableRewrites,
   autoApplicableDescriptionRewrites,
@@ -99,9 +98,6 @@ async function runJudgeStage(input: StartPipelineInput): Promise<void> {
 
 /** Stock-fill stage: free footage matching, optional semantic rerank. Non-fatal. */
 async function runStockFillStage(input: StartPipelineInput): Promise<void> {
-  // Premium product CG must remain tied to product references and controlled generation.
-  // Keep the recorded stage for resumability, but do not invoke the stock-adoption route.
-  if (isPremiumCgStockFillBlocked(input.projectId)) return;
   try {
     await fetch(`${input.origin}/api/project/${input.projectId}/stock-fill`, {
       method: "POST",

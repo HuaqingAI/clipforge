@@ -8,7 +8,6 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import {
-  createPremiumProductCgProfile,
   createShortVideoSalesProfile,
   createTideweOutdoorProfile,
   type ProjectCreativeProfile,
@@ -22,7 +21,6 @@ let db: ReturnType<typeof drizzle<typeof schema>>;
 const projectId = "fixed-creation-type-project";
 const profiles = [
   createShortVideoSalesProfile(),
-  createPremiumProductCgProfile(),
   createTideweOutdoorProfile(),
 ];
 
@@ -87,7 +85,7 @@ describe("project creation type is fixed", () => {
     { label: "flat profileId", body: { profileId: "short_video_sales_v1" } },
     { label: "flat creativeProfileId", body: { creativeProfileId: "tidewe_outdoor_v1" } },
   ])("rejects creation type changes through $label", async ({ body }) => {
-    const original = seed(createPremiumProductCgProfile());
+    const original = seed(JSON.stringify(body).includes("tidewe") ? createShortVideoSalesProfile() : createTideweOutdoorProfile());
     const response = await patch(body);
 
     expect(response.status).toBe(400);
@@ -139,19 +137,19 @@ describe("project creation type is fixed", () => {
     const profile = createShortVideoSalesProfile();
     seed(profile);
     const response = await patch({
-      creativeProfileDrafts: { premium_product_cg: createPremiumProductCgProfile({ targetDuration: 60 }) },
+      creativeProfileDrafts: { tidewe_outdoor: createTideweOutdoorProfile({ targetDuration: 60 }) },
     });
 
     expect(response.status).toBe(200);
     expect(savedProject()).toMatchObject({
       creativeProfile: profile,
-      creativeProfileDrafts: { premium_product_cg: { targetDuration: 60 } },
+      creativeProfileDrafts: { tidewe_outdoor: { targetDuration: 60 } },
     });
   });
 
   it("keeps legacy projects on their resolved sales type and permits profile migration", async () => {
     const original = seed(null);
-    const rejected = await patch({ creativeProfile: createPremiumProductCgProfile() });
+    const rejected = await patch({ creativeProfile: createTideweOutdoorProfile() });
     expect(rejected.status).toBe(400);
     expect(await rejected.json()).toMatchObject({ code: "CREATION_TYPE_LOCKED", creationType: "short_video_sales" });
     expect(savedProject()).toEqual(original);

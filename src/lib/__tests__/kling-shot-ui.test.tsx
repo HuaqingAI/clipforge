@@ -143,7 +143,6 @@ describe("Kling single-shot UI", () => {
   });
 
   it.each([
-    { workflow: "CG", prompt: "Approved shot direction: 完整产品。\nPremium product CG motion.  " },
     { workflow: "short-video sales", prompt: "运镜：平稳前移。\n场景：带货商品展示。\n后端视频提示词。" },
   ])("omits sound controls and preserves the $workflow backend prompt and native audio setting", async ({ prompt }) => {
     const audioModel = { ...model, parameters: [...model.parameters, { name: "sound", type: "boolean" as const, required: true, default: true }], capabilities: { ...model.capabilities, audio: true } };

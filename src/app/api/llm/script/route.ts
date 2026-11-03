@@ -13,16 +13,7 @@ import { desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
 import { topConvertingStyle, topConvertingHook, buildPerformanceHint, type MetricInput } from "@/lib/performance-insights";
-import {
-  createCreativeProfileSnapshot,
-  createShortVideoSalesProfile,
-  isPremiumProductCgProfile,
-  isTideweOutdoorProfile,
-  TIDEWE_OUTDOOR_STYLE,
-  resolveCreativeProfile,
-  validateCreativeProfileInput,
-  type ProjectCreativeProfile,
-} from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createShortVideoSalesProfile, isTideweOutdoorProfile, TIDEWE_OUTDOOR_STYLE, resolveCreativeProfile, validateCreativeProfileInput, type ProjectCreativeProfile } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
 import { generationContextSnapshot, generationContextCheckpoint, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
@@ -34,7 +25,7 @@ import { analyzeTideweProductImages, isStaleTideweVisualObservations } from "@/l
 const VALID_SCRIPT_STYLE = new Set([
   "pain_point", "scene", "comparison", "story",
   "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head",
-  "premium_product_cg", "tidewe_outdoor", "custom",
+  "tidewe_outdoor", "custom",
 ]);
 
 type RequestLlmConfig = LLMConfig & { provider?: string };
@@ -58,7 +49,6 @@ interface ScriptRequestBody {
   creationType?: unknown;
   profileId?: unknown;
   creativeProfileId?: unknown;
-  narrationMode?: unknown;
   priceRange?: string;
   platforms?: string;
   usageAdvantage?: string;
@@ -246,7 +236,6 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
             styleType: body.styleType,
             videoMode: body.videoMode,
             targetDuration: body.targetDuration ?? body.duration,
-            narrationMode: body.narrationMode,
           }
         : undefined
     );
@@ -266,8 +255,6 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       });
     }
   }
-
-  const premiumProfile = isPremiumProductCgProfile(projectProfile) ? projectProfile : undefined;
   const tideweProfile = isTideweOutdoorProfile(projectProfile) ? projectProfile : undefined;
   let originalSelection: { id: string; hash: string } | undefined;
   let originalSource: { id: string; hash: string } | undefined;
@@ -334,10 +321,10 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
   // default instead of the hardcoded pain_point fallback; an explicit style is always respected
   const rawStyle = String(projectProfile.styleType ?? body.styleType ?? "").toLowerCase();
   const isAutoStyle = rawStyle === "" || rawStyle === "auto";
-  let styleType = tideweProfile ? TIDEWE_OUTDOOR_STYLE : premiumProfile ? "premium_product_cg" : normalizeStyle(projectProfile.styleType);
+  let styleType = tideweProfile ? TIDEWE_OUTDOOR_STYLE : normalizeStyle(projectProfile.styleType);
   const duration = projectProfile.targetDuration;
   // data flywheel: performance feedback is on by default; pass insightMode:false to opt out
-  const useInsights = !premiumProfile && !tideweProfile && body.insightMode !== false;
+  const useInsights = !tideweProfile && body.insightMode !== false;
 
   if (!productName) {
     return apiError(req, "请填写商品名称", "Please enter the product name");
@@ -398,8 +385,8 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     const scripts = savedGenerated ?? await generateScript({
       productName,
       category,
-      // CG accepts any product category; the legacy sales fallback must not relabel it as beauty.
-      ...((premiumProfile || tideweProfile) && { productCategoryHint: typeof effectiveCategory === "string" && effectiveCategory.trim() ? effectiveCategory.trim() : "unspecified" }),
+      // TIDEWE retains its outdoor category beyond the legacy sales categories.
+      ...(tideweProfile && { productCategoryHint: typeof effectiveCategory === "string" && effectiveCategory.trim() ? effectiveCategory.trim() : "unspecified" }),
       productDescription,
       productAnalysis: analysis,
       styleType,
@@ -415,7 +402,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         ...(body.copyText === undefined && body.sceneDescription?.trim() && { sceneDescription: body.sceneDescription.trim() }),
         count: 1,
       }),
-      ...(premiumProfile && { narrationMode: premiumProfile.narrationMode }),
+
       priceRange: body.priceRange,
       platforms: body.platforms,
       usageAdvantage: body.usageAdvantage,
@@ -424,7 +411,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       // ad-template creative direction (look + per-shot-type camera plan) and any other
       // caller-supplied requirements — buildUserPrompt already injects this field
       customRequirements: typeof body.customRequirements === "string" ? body.customRequirements.slice(0, 2000) : undefined,
-      performanceHint: premiumProfile || tideweProfile ? undefined : insights.hint,
+      performanceHint: tideweProfile ? undefined : insights.hint,
       // anti-homogenization: batch rotation pins a different opening hook mechanism per video (validated against the pattern library)
       preferredHookId:
         typeof body.preferredHookId === "string" && HOOK_PATTERNS.some((p) => p.id === body.preferredHookId)
@@ -446,7 +433,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     // Persist: write generated scripts to the scripts table so the script/assets pages can read them by projectId
     const generationMetadata = { ...scriptGenerationMetadata(
       llmConfig,
-      tideweProfile ? "tidewe-outdoor-script" : premiumProfile ? "premium-product-cg-script" : "commerce-script",
+      tideweProfile ? "tidewe-outdoor-script" : "commerce-script",
     ), ...(body.requestId && { requestId: body.requestId }) };
     let savedScripts = scripts;
     if (projectId) {
@@ -529,7 +516,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
               version: nextVersion,
               styleType: (VALID_SCRIPT_STYLE.has(s.styleType) ? s.styleType : "custom") as
                 | "pain_point" | "scene" | "comparison" | "story"
-                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head" | "premium_product_cg" | "tidewe_outdoor"
+                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head" | "tidewe_outdoor"
                 | "custom",
               title: s.title,
               totalDuration: s.totalDuration,

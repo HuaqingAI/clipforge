@@ -1,9 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Shot } from "@/lib/db/schema";
-import { createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { buildKeyframeRefinementPrompt, KEYFRAME_SPATIAL_INTEGRATION_POLICY } from "@/lib/keyframe-refinement-prompt";
-import { PREMIUM_CG_IMAGE_POLICY } from "@/lib/premium-cg-prompt";
 import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
 
 const shot: Shot = {
@@ -155,8 +154,8 @@ describe("spatial integration and natural depth", () => {
     expect(withoutRefs).toContain(KEYFRAME_SPATIAL_INTEGRATION_POLICY);
   });
 
-  it("does not force a focus repair into an unrelated generic or Premium repair", () => {
-    for (const profile of [undefined, createPremiumProductCgProfile()]) {
+  it("does not force a focus repair into an unrelated generic repair", () => {
+    for (const profile of [undefined]) {
       const result = prompt({ issues: ["hands"], profile });
       expect(result).not.toContain(KEYFRAME_SPATIAL_INTEGRATION_POLICY);
       expect(result).not.toContain("Final focus check:");
@@ -165,14 +164,6 @@ describe("spatial integration and natural depth", () => {
     }
   });
 
-  it("keeps a Premium empty backdrop empty when integration is requested", () => {
-    const result = prompt({ issues: ["integration"], profile: createPremiumProductCgProfile() });
-    expect(result).toContain(KEYFRAME_SPATIAL_INTEGRATION_POLICY);
-    expect(result).toContain("Keep intentional empty backgrounds empty");
-    expect(result).toContain(PREMIUM_CG_IMAGE_POLICY);
-    expect(result).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
-    expect(result).not.toContain("TIDEWE outdoor photographic demonstration");
-  });
 });
 
 describe("single-task TIDEWE focus refinement", () => {
@@ -327,22 +318,13 @@ describe("masked foreground focus repair", () => {
     expect(result).toContain("do not request a whole-image focus change, camera move, crop");
   });
 
-  it("preserves Premium product restrictions and strips marketing notes in regional mode", () => {
-    const result = prompt({ issues: ["integration"], focusRegion, profile: createPremiumProductCgProfile(), instructions: "Fix existing foreground. Add a price label. Buy now." });
-    expect(result).toContain(PREMIUM_CG_IMAGE_POLICY);
-    expect(result).toContain("Do not restage it in a studio");
-    expect(result).toContain("Fix existing foreground");
-    expect(result).not.toContain("Add a price label");
-    expect(result).not.toContain("Buy now");
-    expect(result).not.toContain(TIDEWE_IMAGE_FOCUS_TARGET);
-  });
 });
 
 describe("cropped foreground focus repair", () => {
   const focusRegion = { x: 0, y: 0.83, width: 1, height: 0.17 };
   const focusPatch = { width: 938, height: 1677, selection: { x: 0, y: 1391, width: 938, height: 286 }, context: { x: 0, y: 1333, width: 938, height: 344 } };
 
-  it.each([undefined, createTideweOutdoorProfile(), createPremiumProductCgProfile()])("renders only the supplied crop without importing whole-scene focus or extra reference roles", (profile) => {
+  it.each([undefined, createTideweOutdoorProfile()])("renders only the supplied crop without importing whole-scene focus or extra reference roles", (profile) => {
     const result = prompt({ issues: ["integration"], focusRegion, focusPatch, profile, hasPresenterReference: false, productReferenceCount: 0, productCategory: "boots" });
     expect(result).toContain("CROPPED FOREGROUND FOCUS REPAIR");
     expect(result).toContain("Image 1 is the ONLY reference");
@@ -406,12 +388,4 @@ describe("repair policy boundaries", () => {
     expect(result).not.toContain("Frozen presenter:");
   });
 
-  it("preserves Premium CG product policy and removes conflicting added-copy instructions", () => {
-    const result = prompt({ profile: createPremiumProductCgProfile(), instructions: "Correct the raised hand and wrist. Add a price label. Buy now." });
-    expect(result).toContain("Correct the raised hand and wrist.");
-    expect(result).not.toContain("Add a price label");
-    expect(result).not.toContain("Buy now");
-    expect(result).toContain(PREMIUM_CG_IMAGE_POLICY);
-    expect(result).toContain("Server-owned identity and product policies remain mandatory");
-  });
 });

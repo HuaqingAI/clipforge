@@ -9,7 +9,6 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import {
-  createPremiumProductCgProfile,
   createShortVideoSalesProfile,
 } from "@/lib/creative-profiles";
 
@@ -18,7 +17,6 @@ const state = vi.hoisted(() => ({
   generateCarousel: vi.fn(),
   generateEndCard: vi.fn(),
   generateShopQr: vi.fn(),
-  applyNativeFeel: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
@@ -26,13 +24,11 @@ vi.mock("@/lib/video-composer/carousel", () => ({ generateCarousel: state.genera
 vi.mock("@/lib/video-composer/end-card", () => ({ generateEndCard: state.generateEndCard }));
 vi.mock("@/lib/shop-qr", () => ({ generateShopQr: state.generateShopQr }));
 vi.mock("@/lib/video-composer/composer", () => ({ resolveChineseFontFile: vi.fn().mockReturnValue(undefined) }));
-vi.mock("@/lib/video-composer/native-feel", () => ({ applyNativeFeel: state.applyNativeFeel }));
 
 import { POST as carouselPost } from "@/app/api/project/[id]/carousel/route";
 import { POST as endCardPost } from "@/app/api/project/[id]/end-card/route";
 import { POST as shopQrPost } from "@/app/api/project/[id]/shop-qr/route";
 import { GET as subtitleGet } from "@/app/api/project/[id]/subtitle/route";
-import { POST as nativeFeelPost } from "@/app/api/project/[id]/native-feel/route";
 
 let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle<typeof schema>>;
@@ -50,7 +46,7 @@ function params(id: string) {
 }
 
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), "clipforge-premium-output-policy-"));
+  directory = mkdtempSync(join(tmpdir(), "clipforge-sales-output-routes-"));
   sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
   state.db = db;
@@ -58,7 +54,6 @@ beforeEach(() => {
   state.generateCarousel.mockReset().mockResolvedValue([join(directory, "carousel.png")]);
   state.generateEndCard.mockReset().mockResolvedValue(undefined);
   state.generateShopQr.mockReset().mockResolvedValue("https://shop.example.test/product?utm_source=clipforge");
-  state.applyNativeFeel.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -68,33 +63,7 @@ afterEach(() => {
   rmSync(directory, { recursive: true, force: true });
 });
 
-describe("premium CG direct output policy", () => {
-  it("blocks text, subtitle, and commerce outputs from the persisted premium profile", async () => {
-    const projectId = "premium-output-project";
-    db.insert(schema.projects).values({
-      id: projectId,
-      name: "Premium output policy",
-      shopUrl: "https://shop.example.test/product",
-      creativeProfile: createPremiumProductCgProfile({ brandEndCard: "approved" }),
-    }).run();
-
-    const responses = await Promise.all([
-      carouselPost(postRequest(projectId, "carousel"), params(projectId)),
-      endCardPost(postRequest(projectId, "end-card"), params(projectId)),
-      shopQrPost(postRequest(projectId, "shop-qr"), params(projectId)),
-      subtitleGet(new NextRequest(`http://localhost/api/project/${projectId}/subtitle?format=srt`), params(projectId)),
-      nativeFeelPost(postRequest(projectId, "native-feel"), params(projectId)),
-    ]);
-
-    for (const response of responses) {
-      expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ code: "PREMIUM_CG_OUTPUT_POLICY" });
-    }
-    expect(state.generateCarousel).not.toHaveBeenCalled();
-    expect(state.generateShopQr).not.toHaveBeenCalled();
-    expect(state.generateEndCard).not.toHaveBeenCalled();
-    expect(state.applyNativeFeel).not.toHaveBeenCalled();
-  });
+describe("sales direct output routes", () => {
 
   it("keeps legacy sales project output routes available", async () => {
     const projectId = "sales-output-project";

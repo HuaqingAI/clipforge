@@ -2,14 +2,12 @@ import type { Shot } from "@/lib/db/schema";
 import { getLookPreset, LOOK_NONE } from "@/lib/look-presets";
 import {
   buildMotionPrompt,
-  isPremiumCgPromptPolicy,
   type MotionIntensity,
-  type MotionPromptOutputPolicy,
   type MotionRealismTier,
 } from "@/lib/motion-prompt";
 import { compileCreativePrompt, sanitizeCreativeIntent, sanitizeVisualBible } from "@/lib/production-system";
 import { joinVideoPromptParts } from "@/lib/video-prompt";
-import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import type { TideweVideoDirection } from "@/lib/tidewe/video-direction";
 
@@ -57,8 +55,6 @@ export interface ShotVideoPromptInput {
   audioMode?: "native" | "post";
   /** Prepared English shot direction; source-language script stays unchanged. */
   tideweVideoDirection?: TideweVideoDirection;
-  /** Compatibility policy for callers that have not loaded the project profile yet. */
-  outputPolicy?: MotionPromptOutputPolicy;
   chainToNext?: boolean;
   locale?: "zh" | "en";
 }
@@ -71,11 +67,6 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
   if (isTideweOutdoorProfile(input.creativeProfile)) return compileTideweVisualPrompt(shot ?? {}, "video", input.creativeProfile.speechMode, input.creativeProfile.presenter, input.audioMode, { direction: input.tideweVideoDirection });
   const settings = normalizeVideoPromptSettings(input.settings);
   const look = getLookPreset(settings.visualLook);
-  const premiumProfile = isPremiumProductCgProfile(input.creativeProfile)
-    ? input.creativeProfile
-    : undefined;
-  const premiumCg = Boolean(premiumProfile) || isPremiumCgPromptPolicy(input.outputPolicy);
-  const premiumLook = premiumProfile?.visualDirection.look.trim();
   const visualDescription = shot?.visualIntent?.trim() || shot?.description;
   const probe = `${shot?.camera ?? ""}\n${visualDescription ?? ""}`.trim();
   const locale = input.locale ?? (!probe || /[一-鿿぀-ヿ가-힯]/.test(probe) ? "zh" : "en");
@@ -92,16 +83,10 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
     chainToNext: input.chainToNext,
     intensity: settings.motionIntensity,
     realism: settings.motionRealism,
-    // Global Look presets are tuned for the short-video sales workflow. Premium CG is
-    // defined by the persisted project profile, including its lighting direction.
-    look: premiumCg
-      ? premiumLook ? { zh: premiumLook, en: premiumLook } : undefined
-      : look?.motion,
-    opener: premiumCg ? undefined : look?.opener,
+    look: look?.motion,
+    opener: look?.opener,
     category: input.category ?? undefined,
     audioMode: "none",
-    creativeProfile: input.creativeProfile,
-    outputPolicy: input.outputPolicy,
   });
   const intent = sanitizeCreativeIntent(input.creativeIntent);
   const bible = sanitizeVisualBible(input.visualBible);
@@ -111,11 +96,7 @@ export function buildShotVideoPrompt(input: ShotVideoPromptInput): { prompt: str
     productConstraints: [...(intent.productConstraints ?? []), ...bible.productAnchors],
   }, locale);
   return {
-    // Sales-oriented free-form project direction can contain legacy hooks, offers, or CTA
-    // wording. Premium CG prompts only use the script, locked profile, and product references.
-    prompt: joinVideoPromptParts([motion, ...(!premiumCg && direction.prompt ? [`${locale === "zh" ? "项目方向：" : "Project direction: "}${direction.prompt}`] : [])], locale, "\n"),
-    negativePrompt: premiumCg
-      ? locale === "zh" ? "新增画面文字、字幕、价格、数字、营销图形、行动引导、水印" : "added on-screen text, subtitles, prices, numbers, promotional graphics, CTA, watermark"
-      : direction.negativePrompt,
+    prompt: joinVideoPromptParts([motion, ...(direction.prompt ? [`${locale === "zh" ? "项目方向：" : "Project direction: "}${direction.prompt}`] : [])], locale, "\n"),
+    negativePrompt: direction.negativePrompt,
   };
 }

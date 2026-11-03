@@ -162,7 +162,7 @@ describe("TIDEWE product facts input", () => {
 });
 
 describe("TIDEWE creation and script editing", () => {
-  it("keeps TIDEWE video and speech choices independent and isolated from sales and CG", async () => {
+  it("keeps TIDEWE video and speech choices independent and isolated from sales", async () => {
     i18nOptions.showModeCopy = true;
     await act(async () => root.render(createElement(NewProjectPage)));
     await click("label");
@@ -179,16 +179,11 @@ describe("TIDEWE creation and script editing", () => {
     expect(container.querySelector("#tidewe-speech-mode")).toBeNull();
     expect(container.textContent).toContain("AI 生成使用场景，不含人脸");
     expect(container.textContent).not.toContain("真人场景演示");
-    await click("creationTypeCgLabel");
-    expect(container.querySelector("#tidewe-speech-mode")).toBeNull();
-    expect(container.textContent).toContain("使用场景 CG");
-    expect(container.textContent).toContain("按产品品类匹配场景，以真实尺度与适度交互呈现产品");
-    expect(container.textContent).not.toContain("人物可露脸");
     await click("label");
     expect(button("产品特写").className).toContain("bg-primary/10");
     expect(container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")?.value).toBe("voiceover");
   });
-  it("keeps three independent duration drafts and skips domestic sales choices", async () => {
+  it("keeps independent sales and TIDEWE duration drafts and skips domestic sales choices", async () => {
     await act(async () => root.render(createElement(NewProjectPage)));
     await click("creationTypeSalesLabel"); await click("60s"); await click("label");
     expect(button("40s").className).toContain("bg-primary/10");
@@ -198,14 +193,13 @@ describe("TIDEWE creation and script editing", () => {
     expect(container.textContent).not.toContain("platformDouyin");
     expect(container.textContent).not.toContain("sourceIngestLead");
     expect(container.textContent).not.toContain("sourceExampleLead");
-    await click("30s"); await click("creationTypeCgLabel");
+    await click("30s");
     expect(button("30s").className).toContain("bg-primary/10");
     await click("creationTypeSalesLabel"); expect(button("60s").className).toContain("bg-primary/10");
     await click("label"); expect(button("30s").className).toContain("bg-primary/10");
   });
   it.each([
     ["short_video_sales", "creationTypeSalesLabel", "modeCloseupLabel"],
-    ["premium_product_cg", "creationTypeCgLabel", "cgModeCloseupLabel"],
   ])("opens the %s shortcut with its default configuration and product form", async (creationType, label, modeLabel) => {
     window.history.replaceState(null, "", `/project/new?creationType=${creationType}`);
     await act(async () => root.render(createElement(NewProjectPage)));
@@ -224,12 +218,14 @@ describe("TIDEWE creation and script editing", () => {
     expect(container.querySelector("#productName")).not.toBeNull();
     expect(container.querySelector("#tidewe-category")).not.toBeNull();
   });
-  it("leaves creation types unselected for an unknown shortcut", async () => {
-    window.history.replaceState(null, "", "/project/new?creationType=unknown");
+  it.each(["unknown", "premium_product_cg"])("leaves creation types unselected for an unavailable %s shortcut", async (creationType) => {
+    window.history.replaceState(null, "", `/project/new?creationType=${creationType}`);
     await act(async () => root.render(createElement(NewProjectPage)));
-    for (const label of ["creationTypeSalesLabel", "creationTypeCgLabel", "label"]) {
+    for (const label of ["creationTypeSalesLabel", "label"]) {
       expect(button(label).className).not.toContain("bg-primary/10");
     }
+    expect(container.textContent).not.toContain("creationTypeCgLabel");
+    expect(container.querySelectorAll('button[aria-pressed]')).toHaveLength(0);
     expect(container.querySelector("#productName")).toBeNull();
     expect(container.querySelector("#tidewe-category")).toBeNull();
   });

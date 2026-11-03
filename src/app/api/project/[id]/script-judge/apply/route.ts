@@ -4,7 +4,7 @@ import { getDb } from "@/lib/db";
 import { projects, scripts } from "@/lib/db/schema";
 import { apiError, errText } from "@/lib/api-error";
 import { scriptRevision } from "@/lib/asset-context";
-import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { parseJudgeResponse } from "@/lib/script-judge";
 import { actionableJudgeFeedback, buildJudgeApplyPrompt, parseJudgeApplyResponse } from "@/lib/script-judge-apply";
 import { completeWithJsonRetry, reasoningParams } from "@/lib/script-engine/generator";
@@ -38,9 +38,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const context = checkCreativeProfileContext(project, script);
     if (body.report.sourceScriptHash !== expectedScriptHash
       || !script.selected || scriptRevision(script) !== expectedScriptHash || !context.ok) return stale();
-    if (isPremiumProductCgProfile(context.scriptProfile)) {
-      return apiError(req, "该创作类型不提供判官团修改", "Judge edits are not available for this creation type", 400);
-    }
     const tideweProfile = isTideweOutdoorProfile(context.scriptProfile) ? context.scriptProfile : null;
     if (tideweProfile) assertTideweScript(script, tideweProfile.presenter ?? null);
     const report = parseJudgeResponse(JSON.stringify(body.report), script.shots ?? []);

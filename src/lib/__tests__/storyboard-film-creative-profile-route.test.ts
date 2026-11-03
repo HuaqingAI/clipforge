@@ -11,11 +11,10 @@ import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
 import {
   createCreativeProfileSnapshot,
-  createPremiumProductCgProfile,
+
   createShortVideoSalesProfile,
 } from "@/lib/creative-profiles";
 import { assetScopeForShot } from "@/lib/asset-context";
-import { PREMIUM_CG_VIDEO_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -81,7 +80,7 @@ function request(overrides: Record<string, unknown> = {}) {
 }
 
 function setCreativeContext(
-  profile: ReturnType<typeof createPremiumProductCgProfile> | ReturnType<typeof createShortVideoSalesProfile>,
+  profile: ReturnType<typeof createShortVideoSalesProfile>,
   shots: schema.Shot[] = silentShots,
   revision = 2,
 ) {
@@ -121,10 +120,10 @@ beforeEach(async () => {
   state.db = db;
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
 
-  const profile = createPremiumProductCgProfile({ narrationMode: "none" });
+  const profile = createShortVideoSalesProfile();
   db.insert(schema.projects).values({
     id: projectId,
-    name: "Premium film audio policy",
+    name: "Sales film audio policy",
     creativeProfile: profile,
     creativeConfigRevision: 2,
   }).run();
@@ -132,7 +131,7 @@ beforeEach(async () => {
     id: scriptId,
     projectId,
     selected: true,
-    styleType: "premium_product_cg",
+    styleType: "pain_point",
     shots: silentShots,
     creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 2),
   }).run();
@@ -154,7 +153,7 @@ beforeEach(async () => {
 
   state.generateVideo.mockReset().mockResolvedValue({
     modelId: "doubao-seedance-2.5",
-    videoUrls: ["https://example.test/premium-film.mp4"],
+    videoUrls: ["https://example.test/sales-film.mp4"],
   });
   state.createProvider.mockReset().mockReturnValue({ generateVideo: state.generateVideo });
   state.toRemoteUsableImage.mockReset().mockImplementation(async (value: unknown) => value);
@@ -173,96 +172,6 @@ afterEach(async () => {
 });
 
 describe("storyboard film creative-profile audio policy", () => {
-  it("drops forged audio controls for silent premium CG before provider submission", async () => {
-    const forgedCopy = "Buy today for an unbelievable limited-time price.";
-    const response = await request({
-      options: {
-        width: 1080,
-        audioEnabled: true,
-        negativePrompt: forgedCopy,
-        negative_prompt: `${forgedCopy} alias`,
-        voiceover: forgedCopy,
-        audioPrompt: forgedCopy,
-        referenceAudioUrls: ["https://example.test/forged-reference.wav"],
-        audioUrl: "https://example.test/forged-audio.wav",
-        audioReferenceUrl: "https://example.test/forged-audio-reference.wav",
-        tts: true,
-        ttsEnabled: true,
-        extra: {
-          audio: true,
-          sound: forgedCopy,
-          audio_prompt: forgedCopy,
-          audioPrompt: forgedCopy,
-          audio_enabled: true,
-          audioEnabled: true,
-          reference_audio: "https://example.test/forged-reference.wav",
-          reference_audios: ["https://example.test/forged-reference.wav"],
-          referenceAudioUrls: ["https://example.test/forged-reference.wav"],
-          voiceover: forgedCopy,
-          generate_audio: true,
-          enable_audio: true,
-          native_audio: true,
-          tts: true,
-          ttsEnabled: true,
-          prompt: "Overlay a giant BUY NOW price card.",
-          reference_images: ["https://example.test/forged-sale-card.png"],
-          retainProviderOption: "kept",
-        },
-      },
-    });
-
-    expect(response.status).toBe(200);
-    const options = state.generateVideo.mock.calls[0][0];
-    expect(options).toMatchObject({ audioEnabled: false, width: 1080 });
-    for (const key of [
-      "voiceover", "audioPrompt", "referenceAudioUrls", "audioUrl", "audioReferenceUrl", "tts", "ttsEnabled",
-    ]) {
-      expect(options).not.toHaveProperty(key);
-    }
-    expect(options.extra).toBeUndefined();
-    expect(options.negativePrompt).toBe(PREMIUM_CG_VIDEO_NEGATIVE_PROMPT);
-    expect(options).not.toHaveProperty("negative_prompt");
-    expect(options.prompt).not.toContain(forgedCopy);
-    expect(JSON.stringify(options)).not.toContain(`${forgedCopy} alias`);
-    expect(JSON.stringify(options)).not.toContain("forged-reference.wav");
-    expect(JSON.stringify(options)).not.toContain("forged-sale-card.png");
-  });
-
-  it("uses only approved restrained narration from the persisted CG script", async () => {
-    const approvedOne = "The walnut frame meets the woven seat with a quiet, precise line.";
-    const approvedTwo = "The material detail stays close to the supplied construction.";
-    setCreativeContext(createPremiumProductCgProfile({ narrationMode: "restrained" }), [
-      { ...silentShots[0], voiceover: approvedOne, narration: approvedOne },
-      { ...silentShots[1], voiceover: approvedTwo, narration: approvedTwo },
-    ]);
-
-    const forgedCopy = "Click the link now and claim the biggest discount.";
-    const response = await request({
-      options: {
-        voiceover: forgedCopy,
-        audioPrompt: forgedCopy,
-        referenceAudioUrls: ["https://example.test/forged-reference.wav"],
-        extra: {
-          audio: true,
-          audio_prompt: forgedCopy,
-          reference_audios: ["https://example.test/forged-reference.wav"],
-          generate_audio: true,
-        },
-      },
-    });
-
-    expect(response.status).toBe(200);
-    const options = state.generateVideo.mock.calls[0][0];
-    expect(options).toMatchObject({ audioEnabled: true });
-    expect(options.voiceover).toBeUndefined();
-    expect(options.audioPrompt).toBeUndefined();
-    expect(options.referenceAudioUrls).toBeUndefined();
-    expect(options.extra).toBeUndefined();
-    expect(options.prompt).toContain(approvedOne);
-    expect(options.prompt).toContain(approvedTwo);
-    expect(options.prompt).not.toContain(forgedCopy);
-    expect(JSON.stringify(options)).not.toContain("forged-reference.wav");
-  });
 
   it("keeps audio controls available for the legacy sales profile", async () => {
     setCreativeContext(createShortVideoSalesProfile({ styleType: "scene" }));

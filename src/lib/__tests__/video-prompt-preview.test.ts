@@ -7,8 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
+import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
@@ -365,21 +364,7 @@ describe("authoritative dynamic prompt preview", () => {
     expect(result.status).toBe(200);
     expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ referenceImageUrls: ["/api/files/product.png"] }));
   });
-  it("returns the exact existing CG backend template for first generation, retake and batch", async () => {
-    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
-    const cgShot = { ...shot, voiceover: "", type: "product_reveal" as const };
-    db.update(schema.projects).set({ creativeProfile: profile }).run();
-    db.update(schema.scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
-    const ordinary = await getPreview();
-    const retake = await getPreview(input({ retake: "blurry", batch: true, generateAudio: true }));
-    const expected = compilePremiumCgVideoPrompt(cgShot, profile);
-    expect(ordinary.response.status).toBe(200);
-    expect(ordinary.value).toMatchObject(expected);
-    expect(retake.value).toMatchObject(expected);
-    expect(ordinary.value.prompt).toContain(cgShot.visualIntent);
-    expect(ordinary.value.prompt).not.toContain("声音要求");
-    expect(state.provider).not.toHaveBeenCalled();
-  });
+
 
   it("compiles sales narration and references on the server and submits exactly the reviewed text", async () => {
     const request = input({ generateAudio: true, controlInputs: { firstFrameUrl: "/api/files/product.png", characterReferenceUrl: "/api/files/person.png", supportsAudio: true } });
@@ -409,31 +394,7 @@ describe("authoritative dynamic prompt preview", () => {
     expect(state.generate.mock.calls[0][0].prompt).toBe(value.prompt);
   });
 
-  it("includes approved native CG narration in the reviewed prompt and preserves it through submission", async () => {
-    const profile = createPremiumProductCgProfile({ narrationMode: "restrained" });
-    const approvedNarration = "柔和光线，呈现细腻的表面质感。";
-    const cgShot: schema.Shot = { ...shot, type: "product_reveal", voiceover: "", narration: approvedNarration };
-    db.update(schema.projects).set({ creativeProfile: profile }).run();
-    db.update(schema.scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
-    const request = input({ generateAudio: true });
-    const { response, value } = await getPreview(request);
-    expect(response.status).toBe(200);
-    expect(value.prompt).toContain(compilePremiumCgVideoPrompt(cgShot, profile).prompt);
-    expect(value.prompt).toContain(`「${approvedNarration}」`);
-    expect(value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
-    const result = await submit(value, request, { options: { audioEnabled: true, voiceover: approvedNarration, audioPrompt: value.controlPlan.audioPrompt } });
-    expect(result.status).toBe(200);
-    const providerOptions = state.generate.mock.calls[0][0];
-    expect(providerOptions).toMatchObject({ prompt: value.prompt, audioEnabled: true });
-    expect(providerOptions.prompt.split(approvedNarration)).toHaveLength(2);
-    expect(providerOptions.voiceover).toBeUndefined();
-    expect(providerOptions.audioPrompt).toBeUndefined();
-    const silent = await getPreview(input({ generateAudio: false }));
-    const kling = await getPreview(input({ provider: "kling-cli", model: '["kling-cli","image_to_video","fixture"]', generateAudio: true }));
-    expect(silent.value.prompt).toBe(compilePremiumCgVideoPrompt(cgShot, profile).prompt);
-    expect(kling.value.prompt).toContain(approvedNarration);
-    expect(kling.value.controlPlan).toMatchObject({ audioMode: "native", voiceoverBound: true });
-  });
+
 
   it("preserves saved sales exclusions before backend negative policy in preview and submission", async () => {
     db.update(schema.projects).set({ creativeIntent: { subject: "Approved product", negative: ["warped logo", "extra buttons"] } }).run();
@@ -448,15 +409,7 @@ describe("authoritative dynamic prompt preview", () => {
     expect(withoutSaved.value.contextKey).not.toBe(value.contextKey);
   });
 
-  it("keeps CG negative policy authoritative when saved sales exclusions are supplied", async () => {
-    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
-    const cgShot = { ...shot, type: "product_reveal" as const, voiceover: "" };
-    db.update(schema.projects).set({ creativeProfile: profile }).run();
-    db.update(schema.scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
-    const { response, value } = await getPreview(input({ negativePrompt: "custom exclusions from sales settings" }));
-    expect(response.status).toBe(200);
-    expect(value.negativePrompt).toBe(compilePremiumCgVideoPrompt(cgShot, profile).negativePrompt);
-  });
+
 
   it("rejects an oversized saved negative prompt before preview compilation", async () => {
     const { response } = await getPreview(input({ negativePrompt: "a".repeat(12001) }));

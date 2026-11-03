@@ -7,7 +7,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { assetScopeForShot, scriptRevision } from "@/lib/asset-context";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION } from "@/lib/tidewe/types";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
@@ -50,17 +50,6 @@ beforeEach(() => {
   ]).run();
 });
 afterEach(() => { vi.restoreAllMocks(); sqlite.close(); });
-
-function premium() {
-  const premiumProfile = createPremiumProductCgProfile({ narrationMode: "none" });
-  const productShot: schema.Shot = { ...shot, voiceover: "", tidewe: undefined };
-  db.update(schema.projects).set({ creativeProfile: premiumProfile }).run();
-  db.update(schema.scripts).set({ styleType: "premium_product_cg", copyDocument: null, shots: [productShot], creativeProfileSnapshot: createCreativeProfileSnapshot(premiumProfile, 2) }).run();
-  const originalPath = `/api/files/${projectId}/asset-1-123-grid.png`;
-  db.update(schema.assets).set({ ...assetScopeForShot(current(), productShot) }).run();
-  db.update(schema.assets).set({ filePath: originalPath, prompt: "[storyboard-grid-v2] Product" }).where(eq(schema.assets.id, "original")).run();
-  db.update(schema.assets).set({ sourceKeyframeUrl: originalPath }).where(eq(schema.assets.id, "refined")).run();
-}
 
 describe("adopting and restoring existing refined stills", () => {
   it("adopts a TIDEWE candidate and restores its original after revision-only drift", async () => {
@@ -108,41 +97,4 @@ describe("adopting and restoring existing refined stills", () => {
     expect(db.select().from(schema.assets).where(eq(schema.assets.id, "refined")).get()?.sourceRevision).toBe(originalScope.sourceRevision);
   });
 
-  it("adopts and restores trusted premium CG stills under unchanged frozen settings", async () => {
-    premium();
-    expect((await adopt("refined")).status).toBe(200);
-    expect(selectedIds()).toEqual(["refined"]);
-    expect((await adopt("original")).status).toBe(200);
-    expect(selectedIds()).toEqual(["original"]);
-  });
-
-  it("retains premium CG provenance validation for stale-compatible stills", async () => {
-    premium();
-    db.update(schema.assets).set({ prompt: "Untrusted image" }).where(eq(schema.assets.id, "refined")).run();
-    const response = await adopt("refined");
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: "PREMIUM_CG_ASSET_PROVENANCE_REQUIRED" });
-    expect(selectedIds()).toEqual(["original"]);
-  });
-
-  it("adopts trusted same-script premium CG videos after project revision changes", async () => {
-    premium();
-    db.update(schema.assets).set({ filePath: `/api/files/${projectId}/kling/take.mp4`, provider: "kling-cli" }).where(eq(schema.assets.id, "refined")).run();
-    const response = await adopt("refined");
-    expect(response.status).toBe(200);
-    expect(selectedIds()).toEqual(["refined"]);
-  });
-
-  it("uses the frozen premium CG context when live settings change inside the selection transaction", async () => {
-    premium();
-    const transaction = db.transaction.bind(db);
-    vi.spyOn(db, "transaction").mockImplementationOnce((callback, options) => {
-      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile({ narrationMode: "restrained" }) }).run();
-      return transaction(callback, options);
-    });
-    const response = await adopt("refined");
-    expect(response.status).toBe(200);
-    expect(selectedIds()).toEqual(["refined"]);
-    expect(current().creativeProfileSnapshot?.profile).toMatchObject({ narrationMode: "none" });
-  });
 });

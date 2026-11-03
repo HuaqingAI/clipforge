@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ScriptPage from "@/app/project/[id]/script/page";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createShortVideoSalesProfile } from "@/lib/creative-profiles";
 
 const navigation = vi.hoisted(() => ({ projectId: "project-1" }));
 const historyDialog = vi.hoisted(() => ({
@@ -159,101 +159,26 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("CG script product references", () => {
-  const productImages = [
-    "/uploads/chair-front.webp",
-    "/uploads/chair-seat.webp",
-    "/uploads/chair-side.webp",
-    "/uploads/chair-headrest.webp",
-  ];
-
-  function useProductFixture({
-    images = productImages,
-    premiumCg = true,
-    scripts = [oldScript],
-  }: {
-    images?: string[];
-    premiumCg?: boolean;
-    scripts?: ReturnType<typeof script>[];
-  } = {}) {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === scriptsUrl) return Promise.resolve(Response.json(scripts));
-      if (url === projectUrl) return Promise.resolve(Response.json({
-        name: "SwanSing chair",
-        productName: "SwanSing chair",
-        productImages: images,
-        videoMode: "product_closeup",
-        ...(premiumCg ? { creativeProfile: createPremiumProductCgProfile() } : {}),
-      }));
-      return normalFetch(url, init);
-    });
-  }
-
-  it.each(["simple", "pro", "empty"] as const)("shows all four original references on the %s CG page", async (mode) => {
-    useProductFixture({ scripts: mode === "empty" ? [] : [oldScript] });
-    if (mode === "empty") {
-      await act(async () => root!.render(createElement(ScriptPage)));
-      expect(container.textContent).toContain("emptyTitle");
-    } else {
-      await mount(mode);
-    }
-
-    const references = container.querySelector('section[aria-label="productReferencesTitle"]');
-    expect(references).not.toBeNull();
-    expect(references!.textContent).toContain("productReferencesCount");
-    const images = [...references!.querySelectorAll("img")];
-    expect(images.map((image) => image.getAttribute("src"))).toEqual(productImages);
-    for (const image of images) {
-      expect(image.alt).toBe("productReferenceAlt");
-      const preview = image.closest("a");
-      expect(preview?.getAttribute("href")).toBe(image.getAttribute("src"));
-      expect(preview?.getAttribute("target")).toBe("_blank");
-      expect(preview?.getAttribute("rel")).toContain("noopener");
-    }
-  });
-
-  it("shows a labelled original reference on every CG shot while preserving AI generation as its source", async () => {
-    const cgScript = {
-      ...oldScript,
-      shots: [oldScript.shots[0], { ...oldScript.shots[0], shotId: 2, visualSource: "product_image" }],
-    };
-    useProductFixture({ scripts: [cgScript] });
-    await mount();
-
-    const shotReferences = [...container.querySelectorAll('img[alt="productReferenceAlt"]')]
-      .filter((image) => !image.closest('section[aria-label="productReferencesTitle"]'));
-    expect(shotReferences).toHaveLength(2);
-    for (const image of shotReferences) expect(image.getAttribute("src")).toBe(productImages[0]);
-    expect(container.textContent?.match(/productReferenceShort/g)).toHaveLength(2);
-    expect(container.textContent).toContain("visualAiGenerate");
-    expect(container.textContent).toContain("visualProductImage");
-  });
-
-  it("keeps CG scripts usable when no product references were uploaded", async () => {
-    useProductFixture({ images: [] });
-    await mount();
-
-    expect(container.querySelector('section[aria-label="productReferencesTitle"]')).toBeNull();
-    expect(container.querySelector("img")).toBeNull();
-    expect(container.textContent).not.toContain("productReferenceShort");
-    expect(container.textContent).toContain("visualAiGenerate");
-    expectReady();
-  });
-
+describe("sales script product references", () => {
   it("keeps sales AI shots as placeholders and product-image shots as original photos", async () => {
     const salesScript = {
       ...oldScript,
       shots: [oldScript.shots[0], { ...oldScript.shots[0], shotId: 2, visualSource: "product_image" }],
     };
-    useProductFixture({ premiumCg: false, scripts: [salesScript] });
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === scriptsUrl) return Promise.resolve(Response.json([salesScript]));
+      if (url === projectUrl) return Promise.resolve(Response.json({
+        name: "Product", productName: "Product", productImages: ["/uploads/product.webp"],
+        creativeProfile: createShortVideoSalesProfile(),
+      }));
+      return normalFetch(url, init);
+    });
     await mount();
-
     expect(container.querySelector('section[aria-label="productReferencesTitle"]')).toBeNull();
-    expect(container.textContent).not.toContain("productReferenceShort");
     const images = [...container.querySelectorAll("img")];
     expect(images).toHaveLength(1);
-    expect(images[0].getAttribute("src")).toBe(productImages[0]);
+    expect(images[0].getAttribute("src")).toBe("/uploads/product.webp");
     expect(container.textContent).toContain("visualAiGenerate");
     expect(container.textContent).toContain("visualProductImage");
   });
@@ -261,7 +186,7 @@ describe("CG script product references", () => {
 
 describe("first script generation failure recovery", () => {
   it.each(["server diagnostic", "invalid error body", "stalled error body"] as const)(
-    "restores the empty CG page and allows retry after a %s",
+    "restores the empty sales page and allows retry after a %s",
     async (failure) => {
       const normalFetch = fetchMock.getMockImplementation()!;
       const generation = deferredResponse();
@@ -276,7 +201,7 @@ describe("first script generation failure recovery", () => {
           name: "AeroStretch",
           productName: "AeroStretch",
           productImages: [],
-          creativeProfile: createPremiumProductCgProfile({ narrationMode: "restrained" }),
+          creativeProfile: createShortVideoSalesProfile(),
         }));
         if (url === generationUrl) {
           attempts += 1;

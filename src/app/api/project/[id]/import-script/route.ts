@@ -4,12 +4,7 @@ import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects } from "@/lib/db/schema";
 import { splitNarrationIntoShots } from "@/lib/script-import";
 import { apiError } from "@/lib/api-error";
-import {
-  createCreativeProfileSnapshot,
-  isPremiumProductCgProfile,
-  isTideweOutdoorProfile,
-  resolveCreativeProfile,
-} from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 import { POST as generateScripts } from "@/app/api/llm/script/route";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
@@ -39,12 +34,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const profile = resolveCreativeProfile(project.creativeProfile, {
       videoMode: project.videoMode,
     });
-    if (isPremiumProductCgProfile(profile)) {
-      return NextResponse.json({
-        error: "Premium product CG requires structured visual beats; the narration importer cannot turn sales copy into CG scene descriptions.",
-        code: "CG_STRUCTURED_IMPORT_REQUIRED",
-      }, { status: 409 });
-    }
     if (isTideweOutdoorProfile(profile)) {
       return generateScripts(new NextRequest(new URL("/api/llm/script", req.url), {
         method: "POST", headers: { "Content-Type": "application/json", "Accept-Language": req.headers.get("accept-language") ?? "zh" },

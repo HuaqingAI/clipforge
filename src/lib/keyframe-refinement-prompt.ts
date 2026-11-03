@@ -1,7 +1,6 @@
 import type { Shot } from "@/lib/db/schema";
 import type { ProjectCreativeProfile } from "@/lib/creative-profiles";
-import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { PREMIUM_CG_IMAGE_POLICY, stripPremiumCgCopyDirectives } from "@/lib/premium-cg-prompt";
+import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_NATIVE_CAMERA_STYLE, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
 import { buildTideweCategoryGuidance } from "@/lib/tidewe/category-guidance";
@@ -44,14 +43,13 @@ export function buildKeyframeRefinementPrompt(input: {
   productReferenceCount: number;
 }): string {
   const { shot, profile } = input;
-  const premiumCg = isPremiumProductCgProfile(profile);
   const tidewe = isTideweOutdoorProfile(profile) ? profile : undefined;
   const personVisible = shot.tidewe?.personVisible !== false;
   const productVisible = shot.tidewe?.productVisible !== false;
   const categoryGuidance = tidewe && productVisible ? buildTideweCategoryGuidance(input.productCategory, { productName: input.productName }) : undefined;
   const repairHumanStructure = input.issues.some((issue) => issue === "hands" || issue === "anatomy");
   const repairSpatialIntegration = Boolean(tidewe) || input.issues.includes("integration");
-  const notes = premiumCg ? stripPremiumCgCopyDirectives(input.instructions) : input.instructions?.trim();
+  const notes = input.instructions?.trim();
   const tideweRepairStyle = tidewe ? [
     TIDEWE_NATIVE_CAMERA_STYLE,
     "上述风格只约束本次允许的精修范围；与源图及邻近未改区域的自然光、曝光、环境色和真实阴影一致，不扩大精修范围或重新布光。精修说明中的冲突光效或修饰要求服从此风格，已识别的局部缺陷仍须实际修正。",
@@ -77,7 +75,6 @@ export function buildKeyframeRefinementPrompt(input: {
       input.hasPresenterReference ? "Reference image 2 is the saved presenter identity reference only; do not import its background, depth of field, clothing or panel layout." : "",
       input.productReferenceCount > 0 ? `The last ${input.productReferenceCount} reference image(s) anchor the same product's visible construction and real markings only; do not import their background or lighting or add product copies.` : "",
       categoryGuidance ? `CATEGORY_EVIDENCE_BOUNDARY: ${JSON.stringify({ category: categoryGuidance.category, label: categoryGuidance.label, evidenceLimits: categoryGuidance.evidenceLimits })}. Apply only to already visible surfaces. Do not stage a category example or new demonstration.` : "",
-      premiumCg ? `${PREMIUM_CG_IMAGE_POLICY} Apply these product and text restrictions within the local repair only; the approved source already supplies the setting, scale, framing and light. Do not restage it in a studio.` : "",
       personVisible && tidewe?.presenter ? `Frozen presenter: ${tidewePresenterAnchor(tidewe.presenter)}. Preserve this identity.` : "",
       !personVisible ? "This approved shot has no visible person. Do not add a presenter, face, hands or bystanders." : "",
       !productVisible ? "This approved shot is environmental or contextual; do not add the product or brand markings." : "",
@@ -124,7 +121,6 @@ export function buildKeyframeRefinementPrompt(input: {
       !productVisible ? "This approved shot is environmental or contextual; do not add the product or brand markings." : "",
       "No new on-screen text, subtitles, sales graphics, prices, watermarks or invented logos. Keep only real markings visible in the product references. No thermal imaging, glowing heated zones, cutaways, invented mechanisms, performance demonstrations or standalone battery. A native-speech keyframe may have a natural visible mouth, but never draw dialogue, lip sequences or captions.",
     ].filter(Boolean).join("\n") : "",
-    premiumCg ? PREMIUM_CG_IMAGE_POLICY : "",
     "Before returning the image, check the requested repairs in their body or object context. For a hand repair, check arm-to-wrist continuity, palm/back orientation, thumb side and finger articulation; sharper texture alone does not satisfy the repair. Return the repaired image only. Preserve unreported, physically plausible details and the intended number of people and objects. Server-owned identity and product policies remain mandatory; within a reported defective region, correcting the defect takes priority over reproducing its source geometry or local pose.",
     repairSpatialIntegration ? "Final focus check: at every shot scale, inspect ALL existing foreground from the bottom edge to the subject, including isolated nearer objects disconnected from the support. Remove any foreground blur band, bokeh or top-and-bottom tilt-shift blur; keep the product, contact and nearby support naturally resolved. Existing midground and farther structures remain recognizable. Slight natural softness is allowed only in distant background BEHIND the subject. Do not add scenery or move the camera to satisfy this check. Do not simulate focus repair with global sharpening or a smeared subject." : "",
   ].filter(Boolean).join("\n\n");

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { productFactsHash, englishWordCount, TideweValidationError } from "@/lib/tidewe/validation";
 import { withGenerationContext } from "@/lib/generation-context";
 import { assetMatchesScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
@@ -298,13 +298,13 @@ describe("TIDEWE project context", () => {
     expect(response.status).toBe(400);
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeConfigRevision).toBe(1);
   });
-  it("creates three independent profile drafts and demotes image specifications to observations", async () => {
+  it("creates two independent profile drafts and demotes image specifications to observations", async () => {
     const response = await create(req("/api/project", { creativeProfile: { creationType: "tidewe_outdoor" }, productFacts: {
       ...facts, items: [{ id: "image-color", key: "color", value: "green", status: "confirmed", source: { kind: "uploaded_image", ref: "jacket.png" } }],
     } }));
     expect(response.status).toBe(201);
     const row = await response.json();
-    expect(Object.keys(row.creativeProfileDrafts).sort()).toEqual(["premium_product_cg", "short_video_sales", "tidewe_outdoor"]);
+    expect(Object.keys(row.creativeProfileDrafts).sort()).toEqual(["short_video_sales", "tidewe_outdoor"]);
     expect(row.productFacts.items[0].status).toBe("observed");
     expect(row.creativeProfile).toMatchObject({ creationType: "tidewe_outdoor", language: "en-US" });
   });
@@ -393,7 +393,7 @@ describe("TIDEWE optional AI scene direction", () => {
     expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
   });
 
-  it.each([createShortVideoSalesProfile(), createPremiumProductCgProfile()])("keeps scene direction out of $creationType generation", async creativeProfile => {
+  it.each([createShortVideoSalesProfile()])("keeps scene direction out of $creationType generation", async creativeProfile => {
     db.update(schema.projects).set({ creativeProfile }).where(eq(schema.projects.id, projectId)).run();
     const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription: { scene: "lake" } }));
     expect(response.status).toBe(200);

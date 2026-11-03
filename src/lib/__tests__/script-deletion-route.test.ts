@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createShortVideoSalesProfile } from "@/lib/creative-profiles";
 import { DELETE, GET, PATCH } from "@/app/api/project/[id]/scripts/route";
 
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
@@ -330,7 +331,7 @@ describe("script selection after concurrent deletion", () => {
     });
     const transaction = db.transaction.bind(db);
     vi.spyOn(db, "transaction").mockImplementationOnce((callback, config) => {
-      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile(), creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+      db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile(), creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
       return transaction(callback, config);
     });
 

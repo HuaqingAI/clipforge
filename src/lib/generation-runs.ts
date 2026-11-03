@@ -12,7 +12,7 @@ import { captureGenerationInputs } from "@/lib/generation-inputs";
 import type { GenerationKind, GenerationPayload } from "@/lib/generation-types";
 import { executeGenerationItem } from "@/lib/generation-executor";
 import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-context";
-import { isPremiumProductCgProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 import { resolveCharacterReferenceModel } from "@/lib/character-reference-model";
 import { DEFAULT_KEYFRAME_REFINEMENT_RESOLUTION, isKeyframeRefinementResolution, KEYFRAME_REPAIR_ISSUES, supportsKeyframeFocusMask } from "@/lib/keyframe-refinement";
@@ -324,9 +324,9 @@ export function enqueueGenerationRun(input: EnqueueGenerationRunInput) {
         if (!context.ok) throw new GenerationRunError("创作设置或商品事实已变化，请先按当前配置生成脚本再精修。", 409, context.code);
         const shot = script.shots!.find((item) => item.shotId === shotId)!;
         const profile = context.scriptProfile;
-        const tidewe = isTideweOutdoorProfile(profile), premiumCg = isPremiumProductCgProfile(profile);
+        const tidewe = isTideweOutdoorProfile(profile);
         let presenterReference = tidewe && shot.tidewe?.personVisible !== false ? tidewePresenterReference(profile) : undefined;
-        if (!tidewe && !premiumCg) {
+        if (!tidewe) {
           for (const id of [...new Set([shot.characterId, project.characterId])]) {
             if (!id) continue;
             const character = tx.select().from(characters).where(eq(characters.id, id)).get();

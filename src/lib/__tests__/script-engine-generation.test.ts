@@ -1,6 +1,5 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 import { generateScript, generateSingleScript, generateTopicScript, type ScriptInput } from "@/lib/script-engine/generator";
 
 const model = vi.hoisted(() => ({ create: vi.fn() }));
@@ -47,17 +46,5 @@ describe("direct script generation", () => {
     const scripts = await generateScript(input);
     expect(scripts.map(script => script.title)).toEqual(["Silent draft", generated.title]);
     expect(model.create).toHaveBeenCalledOnce();
-  });
-
-  it("applies premium CG prose without a repair and retains structural field normalization", async () => {
-    model.create.mockResolvedValue(reply(JSON.stringify({ ...generated, shots: [{
-      ...generated.shots[0], description: "Show a discount label beside the mug.",
-      textOverlay: { text: "Buy now" }, characterId: "host",
-    }] })));
-    const [script] = await generateScript({ ...input, creativeProfile: createPremiumProductCgProfile({ narrationMode: "none" }) });
-    expect(model.create).toHaveBeenCalledOnce();
-    expect(script.shots[0]).toMatchObject({ description: "Show a discount label beside the mug.", voiceover: "" });
-    expect(script.shots[0]).not.toHaveProperty("textOverlay");
-    expect(script.shots[0]).not.toHaveProperty("characterId");
   });
 });

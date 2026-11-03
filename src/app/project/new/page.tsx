@@ -13,13 +13,8 @@ import { AD_TEMPLATE_GROUPS, listAdTemplates, getAdTemplate, adTemplateScriptDir
 import { CAMERA_PRESETS } from "@/lib/camera-presets";
 import { LOOK_PRESETS } from "@/lib/look-presets";
 import { CAPTION_PRESET_IDS, type CaptionPresetId } from "@/lib/caption-presets";
-import { PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION, createTideweOutdoorProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
-import {
-  createPremiumCgRecipeSnapshot,
-  PREMIUM_CG_RECIPES,
-  type PremiumCgRecipeId,
-  type PremiumCgRecipeSnapshot,
-} from "@/lib/premium-cg-recipes";
+import { createTideweOutdoorProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
+
 import Link from "next/link";
 import { TideweProductFields, buildTideweProductFacts, type TideweProductInput } from "@/components/tidewe-product-fields";
 import { TidewePresenterPicker } from "@/components/tidewe-presenter-picker";
@@ -66,11 +61,6 @@ const videoModeOptions = [
   { value: "live_presenter", labelKey: "modePresenterLabel", descKey: "modePresenterDesc", icon: LuVideo },
 ];
 
-const cgVideoModeCopy: Record<CgVideoMode, { labelKey: string; descKey: string }> = {
-  product_closeup: { labelKey: "cgModeCloseupLabel", descKey: "cgModeCloseupDesc" },
-  scene_demo: { labelKey: "cgModeSceneLabel", descKey: "cgModeSceneDesc" },
-};
-
 // recipe-editor display labels for compose enums (bilingual data like the preset libraries, not i18n keys)
 const QUALITY_LABELS: Record<string, { zh: string; en: string }> = {
   fast: { zh: "快速", en: "Fast" },
@@ -112,7 +102,7 @@ const styleOptions = [
   { value: "auto", labelKey: "styleAutoLabel", descKey: "styleAutoDesc" },
 ];
 
-type CreationType = "short_video_sales" | "premium_product_cg" | "tidewe_outdoor";
+type CreationType = "short_video_sales" | "tidewe_outdoor";
 
 function CreationTypeQuerySync({ onSelect }: { onSelect: (type: CreationType) => void }) {
   const searchParams = useSearchParams();
@@ -122,17 +112,13 @@ function CreationTypeQuerySync({ onSelect }: { onSelect: (type: CreationType) =>
   useEffect(() => {
     if (appliedQuery.current === requestedType) return;
     appliedQuery.current = requestedType;
-    if (requestedType === "short_video_sales" || requestedType === "premium_product_cg" || requestedType === "tidewe_outdoor") {
+    if (requestedType === "short_video_sales" || requestedType === "tidewe_outdoor") {
       onSelect(requestedType);
     }
   }, [requestedType, onSelect]);
 
   return null;
 }
-type CgVideoMode = "product_closeup" | "scene_demo";
-type CgSetting = "studio" | "modern_home";
-type CgNarrationMode = "none" | "restrained";
-type CgSoundMode = "ambient" | "music" | "restrained-voice";
 
 interface SalesCreativeDraft {
   creationType: "short_video_sales";
@@ -151,64 +137,9 @@ interface SalesCreativeDraft {
   };
 }
 
-interface PremiumCgCreativeDraft {
-  creationType: "premium_product_cg";
-  id: "premium_product_cg_v1";
-  profileId: "premium_product_cg_v1";
-  styleType: "premium_product_cg";
-  videoMode: CgVideoMode;
-  targetDuration: 15 | 30 | 60;
-  narrationMode: CgNarrationMode;
-  soundMode: CgSoundMode;
-  textPolicy: {
-    generatedFrameText: "forbid-added";
-    productMarkings: "preserve-reference";
-    captions: false;
-    editorialGraphics: false;
-    productCard: false;
-    cta: "none";
-    brandEndCard: false;
-  };
-  visualDirection: {
-    setting: CgSetting;
-    look: string;
-    cameraSafety: "reference-limited";
-  };
-  recipeSnapshot: PremiumCgRecipeSnapshot;
-  promptCompilerVersion: typeof PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION;
-}
-
 type CreativeProfileDrafts = {
   short_video_sales: SalesCreativeDraft;
-  premium_product_cg: PremiumCgCreativeDraft;
   tidewe_outdoor: TideweOutdoorProfile;
-};
-
-const DEFAULT_CG_DRAFT: PremiumCgCreativeDraft = {
-  creationType: "premium_product_cg",
-  id: "premium_product_cg_v1",
-  profileId: "premium_product_cg_v1",
-  styleType: "premium_product_cg",
-  videoMode: "product_closeup",
-  targetDuration: 30,
-  narrationMode: "none",
-  soundMode: "ambient",
-  textPolicy: {
-    generatedFrameText: "forbid-added",
-    productMarkings: "preserve-reference",
-    captions: false,
-    editorialGraphics: false,
-    productCard: false,
-    cta: "none",
-    brandEndCard: false,
-  },
-  visualDirection: {
-    setting: "studio",
-    look: createPremiumCgRecipeSnapshot().visualLook,
-    cameraSafety: "reference-limited",
-  },
-  recipeSnapshot: createPremiumCgRecipeSnapshot(),
-  promptCompilerVersion: PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
 };
 
 function createSalesRecipeSnapshot(
@@ -257,7 +188,7 @@ export default function NewProjectPage() {
       selectedAdTemplateId: "",
       selectedCharacterId: null,
     },
-    premium_product_cg: DEFAULT_CG_DRAFT,
+
     tidewe_outdoor: createTideweOutdoorProfile(),
   });
 
@@ -267,9 +198,8 @@ export default function NewProjectPage() {
   const [platforms, setPlatforms] = useState<string[]>(["douyin"]);
   const [usageAdvantage, setUsageAdvantage] = useState("");
 
-  const premiumCgDraft = creativeProfileDrafts.premium_product_cg;
   const hasChosenCreationType = creationType !== null;
-  const isPremiumCg = creationType === "premium_product_cg";
+
   const isTidewe = creationType === "tidewe_outdoor";
   const isSales = creationType === "short_video_sales";
   const [tideweProduct, setTideweProduct] = useState<TideweProductInput>({ category: "other", sku: "", specifications: "", source: "" });
@@ -280,49 +210,6 @@ export default function NewProjectPage() {
   const tideweDraft = creativeProfileDrafts.tidewe_outdoor;
   const updateTideweDraft = (update: Partial<TideweOutdoorProfile>) => setCreativeProfileDrafts((previous) => ({ ...previous, tidewe_outdoor: { ...previous.tidewe_outdoor, ...update } }));
 
-  const updatePremiumCgDraft = (update: Partial<PremiumCgCreativeDraft>) => {
-    setCreativeProfileDrafts((prev) => ({
-      ...prev,
-      premium_product_cg: { ...prev.premium_product_cg, ...update },
-    }));
-  };
-
-  const selectPremiumCgRecipe = (recipeId: PremiumCgRecipeId) => {
-    const recipe = PREMIUM_CG_RECIPES.find((item) => item.id === recipeId);
-    if (!recipe) return;
-    updatePremiumCgDraft({
-      recipeSnapshot: createPremiumCgRecipeSnapshot(recipeId),
-      videoMode: recipe.videoMode,
-      visualDirection: {
-        ...premiumCgDraft.visualDirection,
-        setting: recipe.setting,
-        look: recipe.visualLook,
-      },
-    });
-    setVideoMode(recipe.videoMode);
-  };
-
-  // Mode and setting are convenient entry points, but each resolves to a complete
-  // curated recipe so the persisted snapshot can never contradict the visual plan.
-  const selectPremiumCgVideoMode = (nextMode: CgVideoMode) => {
-    const current = PREMIUM_CG_RECIPES.find((item) => item.id === premiumCgDraft.recipeSnapshot.recipeId);
-    const recipe = current?.videoMode === nextMode
-      ? current
-      : PREMIUM_CG_RECIPES.find((item) => (
-        item.videoMode === nextMode && item.setting === premiumCgDraft.recipeSnapshot.setting
-      )) ?? PREMIUM_CG_RECIPES.find((item) => item.videoMode === nextMode) ?? PREMIUM_CG_RECIPES[0];
-    selectPremiumCgRecipe(recipe.id);
-  };
-
-  const selectPremiumCgSetting = (nextSetting: CgSetting) => {
-    const current = PREMIUM_CG_RECIPES.find((item) => item.id === premiumCgDraft.recipeSnapshot.recipeId);
-    const recipe = current?.setting === nextSetting
-      ? current
-      : PREMIUM_CG_RECIPES.find((item) => (
-        item.setting === nextSetting && item.videoMode === premiumCgDraft.recipeSnapshot.videoMode
-      )) ?? PREMIUM_CG_RECIPES.find((item) => item.setting === nextSetting) ?? PREMIUM_CG_RECIPES[0];
-    selectPremiumCgRecipe(recipe.id);
-  };
 
   const persistSalesDraft = () => {
     setCreativeProfileDrafts((prev) => ({
@@ -343,7 +230,7 @@ export default function NewProjectPage() {
   const switchCreationType = (nextType: CreationType) => {
     if (nextType === creationType) return;
     if (creationType === "short_video_sales") persistSalesDraft();
-    if (creationType === "premium_product_cg") updatePremiumCgDraft({ videoMode: videoMode === "scene_demo" ? "scene_demo" : "product_closeup", targetDuration: Number(duration) as PremiumCgCreativeDraft["targetDuration"] });
+
     if (creationType === "tidewe_outdoor") updateTideweDraft({ videoMode: videoMode as TideweOutdoorProfile["videoMode"], targetDuration: Number(duration) as TideweOutdoorProfile["targetDuration"] });
     activeCreationType.current = nextType;
     setCreationType(nextType);
@@ -727,9 +614,7 @@ export default function NewProjectPage() {
     .join(" · ");
 
   const buildCreativeConfig = () => {
-    // The visible controls are shared by both creation types. Only write them
-    // back to the active draft, otherwise a CG selection would overwrite the
-    // user's saved sales style and template choices.
+    // Keep the controls in the active draft so switching creation types preserves each selection.
     const salesDraft: SalesCreativeDraft = !isSales
       ? creativeProfileDrafts.short_video_sales
       : {
@@ -742,20 +627,13 @@ export default function NewProjectPage() {
           selectedCharacterId,
           recipeSnapshot: createSalesRecipeSnapshot(selectedTemplateId, selectedAdTemplateId),
         };
-    const cgDraft: PremiumCgCreativeDraft = isPremiumCg
-      ? {
-          ...premiumCgDraft,
-          videoMode: videoMode === "scene_demo" ? "scene_demo" : "product_closeup",
-          targetDuration: Number(duration) as PremiumCgCreativeDraft["targetDuration"],
-        }
-      : premiumCgDraft;
+
     const drafts: CreativeProfileDrafts = {
       short_video_sales: salesDraft,
-      premium_product_cg: cgDraft,
       tidewe_outdoor: isTidewe ? createTideweOutdoorProfile({ ...tideweDraft, targetDuration: Number(duration), videoMode: videoMode as TideweOutdoorProfile["videoMode"] }) : tideweDraft,
     };
     return {
-      creativeProfile: isTidewe ? drafts.tidewe_outdoor : isPremiumCg ? cgDraft : salesDraft,
+      creativeProfile: isTidewe ? drafts.tidewe_outdoor : salesDraft,
       creativeProfileDrafts: drafts,
     };
   };
@@ -805,13 +683,13 @@ export default function NewProjectPage() {
       setProgress({
         step: "creating",
         percent: 15,
-        message: t(isPremiumCg ? "progressCreatingCg" : "progressCreating"),
+        message: t("progressCreating"),
       });
       const projectRes = await fetch("/api/project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: isTidewe ? `${productName} · TIDEWE` : `${productName}${t(isPremiumCg ? "projectNameCgSuffix" : "projectNameSalesSuffix")}`,
+          name: isTidewe ? `${productName} · TIDEWE` : `${productName}${t("projectNameSalesSuffix")}`,
           productName,
           productCategory: isTidewe ? tideweProduct.category : category,
           productDescription: isTidewe ? tideweProduct.specifications : sellingPoints,
@@ -842,7 +720,7 @@ export default function NewProjectPage() {
       setProgress({
         step: "uploading",
         percent: 35,
-        message: t(isPremiumCg ? "progressUploadingCg" : "progressUploading"),
+        message: t("progressUploading"),
       });
       const formData = new FormData();
       images.forEach((img) => formData.append("files", img.file));
@@ -867,7 +745,7 @@ export default function NewProjectPage() {
       setProgress({
         step: "generating",
         percent: 60,
-        message: isTidewe ? tt(useTideweOriginal ? "copyInputGenerating" : "generating") : t(isPremiumCg ? "progressGeneratingCg" : "progressGenerating"),
+        message: isTidewe ? tt(useTideweOriginal ? "copyInputGenerating" : "generating") : t("progressGenerating"),
       });
       // if a presenter character was selected, include their info
       const selectedCharacter = isSales && selectedCharacterId
@@ -909,8 +787,6 @@ export default function NewProjectPage() {
           },
           ...(isTidewe
             ? { platforms: "tiktok" }
-            : isPremiumCg
-            ? { usageAdvantage }
             : {
                 priceRange,
                 targetAudience: targetAudience.join(","),
@@ -955,18 +831,14 @@ export default function NewProjectPage() {
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight">
             {t("pageTitlePrefix")}<span className="brand-gradient-text">{isTidewe ? tt("title") : t(
-              isPremiumCg
-                ? "pageTitleAccentCg"
-                : hasChosenCreationType
+              hasChosenCreationType
                   ? "pageTitleAccent"
                   : "pageTitleAccentGeneral"
             )}</span>
           </h1>
           <p className="text-sm text-muted-foreground mt-1.5">
             {isTidewe ? tt("description") : t(
-              isPremiumCg
-                ? "pageSubtitleCg"
-                : hasChosenCreationType
+              hasChosenCreationType
                   ? "pageSubtitle"
                   : "pageSubtitleGeneral"
             )}
@@ -984,7 +856,7 @@ export default function NewProjectPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {([
                   { value: "short_video_sales" as const, icon: LuZap, labelKey: "creationTypeSalesLabel", descKey: "creationTypeSalesDesc" },
-                  { value: "premium_product_cg" as const, icon: LuBox, labelKey: "creationTypeCgLabel", descKey: "creationTypeCgDesc" },
+
                   { value: "tidewe_outdoor" as const, icon: LuEye, labelKey: "creationTypeTideweLabel", descKey: "creationTypeTideweDesc" },
                 ]).map((option) => {
                   const Icon = option.icon;
@@ -1035,7 +907,7 @@ export default function NewProjectPage() {
                 <div className="flex items-center gap-2">
                   <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">2</span>
                   <span className="text-sm font-semibold">
-                    {t(isPremiumCg ? "stepUploadTitleCg" : "stepUploadTitle")}
+                    {t("stepUploadTitle")}
                     <span className="text-destructive ml-0.5">*</span>
                   </span>
                 </div>
@@ -1074,11 +946,11 @@ export default function NewProjectPage() {
                     </div>
                     <div>
                       <p className="text-sm font-medium">
-                        {t(isPremiumCg ? "cgDropHintPrefix" : "dropHintPrefix")}
+                        {t("dropHintPrefix")}
                         <span className="brand-gradient-text font-semibold">{t("dropHintClick")}</span>
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {t(isPremiumCg ? "cgDropHintFormats" : "dropHintFormats")}
+                        {t("dropHintFormats")}
                       </p>
                     </div>
                   </div>
@@ -1096,7 +968,7 @@ export default function NewProjectPage() {
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={img.url}
-                        alt={t(isPremiumCg ? "cgImageAlt" : "imageAlt")}
+                        alt={t("imageAlt")}
                         className="h-full w-full object-cover"
                       />
                       {/* delete button */}
@@ -1117,9 +989,9 @@ export default function NewProjectPage() {
                 </div>
               )}
 
-              {isPremiumCg || isTidewe ? (
+              {isTidewe ? (
                 <div className="mt-4 rounded-lg border border-primary/25 bg-primary/[0.04] px-3.5 py-3">
-                  <p className="text-xs leading-relaxed text-muted-foreground">{isTidewe ? tt("modeHint") : t("cgReferenceGuidance")}</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">{tt("modeHint")}</p>
                 </div>
               ) : (
                 <>
@@ -1170,7 +1042,7 @@ export default function NewProjectPage() {
             <CardContent className="p-5 space-y-5">
               <div className="flex items-center gap-2 mb-4">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">3</span>
-                <span className="text-sm font-semibold">{t(isPremiumCg ? "stepInfoTitleCg" : "stepInfoTitle")}</span>
+                <span className="text-sm font-semibold">{t("stepInfoTitle")}</span>
               </div>
               {/* product name */}
               <div className="space-y-2">
@@ -1180,7 +1052,7 @@ export default function NewProjectPage() {
                 </Label>
                 <Input
                   id="productName"
-                  placeholder={isTidewe ? tt("productNamePlaceholder") : t(isPremiumCg ? "productNamePlaceholderCg" : "productNamePlaceholder")}
+                  placeholder={isTidewe ? tt("productNamePlaceholder") : t("productNamePlaceholder")}
                   value={productName}
                   onChange={(e) => setProductName(e.target.value)}
                   className="bg-muted/30 border-border/50 focus:border-primary"
@@ -1193,13 +1065,13 @@ export default function NewProjectPage() {
               {!isTidewe && <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="sellingPoints" className="text-sm font-medium">
-                    {t(isPremiumCg ? "cgProductFactsLabel" : "sellingPointsLabel")}
+                    {t("sellingPointsLabel")}
                   </Label>
                   <span className="text-xs text-muted-foreground">{t("optional")}</span>
                 </div>
                 <Textarea
                   id="sellingPoints"
-                  placeholder={t(isPremiumCg ? "cgProductFactsPlaceholder" : "sellingPointsPlaceholder")}
+                  placeholder={t("sellingPointsPlaceholder")}
                   value={sellingPoints}
                   onChange={(e) => setSellingPoints(e.target.value)}
                   rows={3}
@@ -1212,13 +1084,13 @@ export default function NewProjectPage() {
                   gate the flow — the default view stays name + selling points only */}
               {!isTidewe && <details className="group pt-1">
                 <summary className="flex items-center justify-between cursor-pointer list-none [&::-webkit-details-marker]:hidden text-sm text-muted-foreground hover:text-foreground transition-colors">
-                  <span>{t(isPremiumCg ? "cgMoreInfoSummary" : "moreInfoSummary")}</span>
+                  <span>{t("moreInfoSummary")}</span>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 transition-transform group-open:rotate-180">
                     <path d="m6 9 6 6 6-6" />
                   </svg>
                 </summary>
                 <div className="mt-4 space-y-5">
-                  <p className="text-xs text-muted-foreground">{t(isPremiumCg ? "cgMoreInfoHint" : "moreInfoHint")}</p>
+                  <p className="text-xs text-muted-foreground">{t("moreInfoHint")}</p>
 
                   {/* product category */}
                   <div className="space-y-2">
@@ -1332,13 +1204,13 @@ export default function NewProjectPage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="usageAdvantage" className="text-sm font-medium">
-                    {t(isPremiumCg ? "cgUsageLabel" : "usageLabel")}
+                    {t("usageLabel")}
                   </Label>
                   <span className="text-xs text-muted-foreground">{t("optional")}</span>
                 </div>
                 <Textarea
                   id="usageAdvantage"
-                  placeholder={t(isPremiumCg ? "cgUsagePlaceholder" : "usagePlaceholder")}
+                  placeholder={t("usagePlaceholder")}
                   value={usageAdvantage}
                   onChange={(e) => setUsageAdvantage(e.target.value)}
                   rows={3}
@@ -1355,7 +1227,7 @@ export default function NewProjectPage() {
             <CardContent className="p-5">
               <div className="flex items-center gap-2 mb-4">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">4</span>
-                <span className="text-sm font-semibold">{t(isPremiumCg ? "stepConfigTitleCg" : "stepConfigTitle")}</span>
+                <span className="text-sm font-semibold">{t("stepConfigTitle")}</span>
               </div>
 
               {/* target duration */}
@@ -1367,7 +1239,7 @@ export default function NewProjectPage() {
                     onClick={() => {
                       setDuration(opt.value);
                       if (isTidewe) updateTideweDraft({ targetDuration: Number(opt.value) as TideweOutdoorProfile["targetDuration"] });
-                      if (isPremiumCg) updatePremiumCgDraft({ targetDuration: Number(opt.value) as PremiumCgCreativeDraft["targetDuration"] });
+
                     }}
                     className={`relative flex items-center justify-center h-11 rounded-lg border text-sm font-medium transition-all ${
                       duration === opt.value
@@ -1398,21 +1270,19 @@ export default function NewProjectPage() {
 
               {/* video mode */}
               <Label className="text-sm font-medium mb-3 block">
-                {t(isPremiumCg ? "cgVideoModeLabel" : "videoModeLabel")}
+                {t("videoModeLabel")}
               </Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {videoModeOptions.filter((opt) => isSales || opt.value === "product_closeup" || opt.value === "scene_demo").map((opt) => {
                   const Icon = opt.icon;
-                  const copy = isPremiumCg
-                    ? cgVideoModeCopy[opt.value as CgVideoMode]
-                    : { labelKey: opt.labelKey, descKey: opt.descKey };
+                  const copy = { labelKey: opt.labelKey, descKey: opt.descKey };
                   const translateMode = isTidewe ? tt : t;
                   return (
                     <button
                       key={opt.value}
                       onClick={() => {
-                        if (isPremiumCg) selectPremiumCgVideoMode(opt.value as CgVideoMode);
-                        else { setVideoMode(opt.value); if (isTidewe) updateTideweDraft({ videoMode: opt.value as TideweOutdoorProfile["videoMode"] }); }
+                        setVideoMode(opt.value);
+                        if (isTidewe) updateTideweDraft({ videoMode: opt.value as TideweOutdoorProfile["videoMode"] });
                         // non-presenter mode: clear the character selection
                         if (opt.value !== "live_presenter") {
                           setSelectedCharacterId(null);
@@ -1459,12 +1329,6 @@ export default function NewProjectPage() {
                   {tt(tideweDraft.speechMode === "on_camera" ? "speechOnCameraDescription" : "speechVoiceoverDescription")}
                 </p>
               </div>}
-
-              {isPremiumCg && videoMode === "scene_demo" && (
-                <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3.5 py-3">
-                  <p className="text-xs leading-relaxed text-amber-200/90">{t("cgSceneReferenceWarning")}</p>
-                </div>
-              )}
 
               {isTidewe && <div className="mt-5 border-t border-border/40 pt-5">
                 <TidewePresenterPicker value={tideweDraft.presenter} onChange={(presenter) => updateTideweDraft({ presenter })} disabled={isSubmitting} />
@@ -1522,129 +1386,6 @@ export default function NewProjectPage() {
                 </>
               )}
 
-              {isPremiumCg && (
-                <div className="mt-5 space-y-5 border-t border-border/40 pt-5">
-                  <div>
-                    <Label className="text-sm font-medium mb-1 block">
-                      {locale === "zh" ? "产品影片配方" : "Product-film recipe"}
-                    </Label>
-                    <p className="mb-3 text-xs text-muted-foreground">
-                      {locale === "zh"
-                        ? "配方只调整镜头观察重点与场景，不会开启字幕、商品卡或购买引导。"
-                        : "Recipes adjust visual emphasis and setting only; they never enable captions, product cards, or CTAs."}
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      {PREMIUM_CG_RECIPES.map((recipe) => {
-                        const selected = premiumCgDraft.recipeSnapshot.recipeId === recipe.id;
-                        return (
-                          <button
-                            key={recipe.id}
-                            type="button"
-                            aria-pressed={selected}
-                            onClick={() => selectPremiumCgRecipe(recipe.id)}
-                            className={`relative flex min-h-24 flex-col items-start p-3 rounded-lg border text-left transition-all ${
-                              selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                            }`}
-                          >
-                            <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>
-                              {locale === "zh" ? recipe.name.zh : recipe.name.en}
-                            </span>
-                            <span className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                              {locale === "zh" ? recipe.description.zh : recipe.description.en}
-                            </span>
-                            {selected && <span className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full brand-gradient" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label className="text-sm font-medium mb-3 block">{t("cgSettingLabel")}</Label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {([
-                        { value: "studio" as const, labelKey: "cgSettingStudio", descKey: "cgSettingStudioDesc" },
-                        { value: "modern_home" as const, labelKey: "cgSettingHome", descKey: "cgSettingHomeDesc" },
-                      ]).map((option) => {
-                        const selected = premiumCgDraft.visualDirection.setting === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => selectPremiumCgSetting(option.value)}
-                            className={`relative flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
-                              selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                            }`}
-                          >
-                            <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>{t(option.labelKey)}</span>
-                            <span className="text-xs text-muted-foreground mt-0.5">{t(option.descKey)}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label className="text-sm font-medium mb-3 block">{t("cgNarrationLabel")}</Label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {([
-                        { value: "none" as const, labelKey: "cgNarrationNone", descKey: "cgNarrationNoneDesc" },
-                        { value: "restrained" as const, labelKey: "cgNarrationRestrained", descKey: "cgNarrationRestrainedDesc" },
-                      ]).map((option) => {
-                        const selected = premiumCgDraft.narrationMode === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => updatePremiumCgDraft({
-                              narrationMode: option.value,
-                              soundMode: option.value === "none" && premiumCgDraft.soundMode === "restrained-voice" ? "ambient" : premiumCgDraft.soundMode,
-                            })}
-                            className={`relative flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
-                              selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                            }`}
-                          >
-                            <span className={`text-sm font-medium ${selected ? "text-primary" : "text-foreground"}`}>{t(option.labelKey)}</span>
-                            <span className="text-xs text-muted-foreground mt-0.5">{t(option.descKey)}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label className="text-sm font-medium mb-3 block">{t("cgSoundLabel")}</Label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      {([
-                        { value: "ambient" as const, labelKey: "cgSoundAmbient" },
-                        { value: "music" as const, labelKey: "cgSoundMusic" },
-                        { value: "restrained-voice" as const, labelKey: "cgSoundVoice" },
-                      ]).map((option) => {
-                        const selected = premiumCgDraft.soundMode === option.value;
-                        const disabled = option.value === "restrained-voice" && premiumCgDraft.narrationMode === "none";
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            disabled={disabled}
-                            onClick={() => updatePremiumCgDraft({ soundMode: option.value })}
-                            className={`flex items-center justify-center min-h-11 px-3 rounded-lg border text-sm font-medium transition-all ${
-                              selected ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                            } disabled:cursor-not-allowed disabled:opacity-40`}
-                          >
-                            {t(option.labelKey)}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-primary/25 bg-primary/[0.04] px-3.5 py-3">
-                    <p className="text-sm font-medium text-primary">{t("cgTextPolicyTitle")}</p>
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t("cgTextPolicyDesc")}</p>
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
 
@@ -1653,13 +1394,13 @@ export default function NewProjectPage() {
             <CardContent className="p-5">
               <div className="flex items-center gap-2 mb-4">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">5</span>
-                <span className="text-sm font-semibold">{t(isPremiumCg ? "stepStyleTitleCg" : "stepStyleTitle")}</span>
+                <span className="text-sm font-semibold">{t("stepStyleTitle")}</span>
               </div>
               <Label className="text-sm font-medium mb-3 block">
-                {t(isPremiumCg ? "cgScriptStyleLabel" : "scriptStyleLabel")}
+                {t("scriptStyleLabel")}
               </Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {(isPremiumCg ? [{ value: "premium_product_cg", labelKey: "stylePremiumCgLabel", descKey: "stylePremiumCgDesc" }] : styleOptions).map((opt) => (
+                {styleOptions.map((opt) => (
                   <button
                     key={opt.value}
                     onClick={() => isSales && setScriptStyle(opt.value)}
@@ -1695,17 +1436,6 @@ export default function NewProjectPage() {
           </Card>
 
           }
-          {isPremiumCg && (
-            <Card className="glass-card">
-              <CardContent className="p-5">
-                <div className="flex items-center gap-2">
-                  <LuBox className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">{t("cgProfileSummaryTitle")}</span>
-                </div>
-                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("cgProfileSummaryDesc")}</p>
-              </CardContent>
-            </Card>
-          )}
 
           {/* templates drawer: hit-structure templates + ad recipes, folded by default —
               powerful but optional, so they no longer dominate the create flow */}
@@ -2270,8 +2000,8 @@ export default function NewProjectPage() {
                 </>
               ) : (
                 <>
-                  {isPremiumCg ? <LuBox className="w-5 h-5 mr-2" /> : <LuZap className="w-5 h-5 mr-2" />}
-                  {isTidewe ? tt(useTideweOriginal ? "copyInputGenerate" : "submit") : t(isPremiumCg ? "submitGenerateCg" : "submitGenerate")}
+                  <LuZap className="w-5 h-5 mr-2" />
+                  {isTidewe ? tt(useTideweOriginal ? "copyInputGenerate" : "submit") : t("submitGenerate")}
                 </>
               )}
             </Button>
@@ -2280,8 +2010,8 @@ export default function NewProjectPage() {
                 {!isLLMConfigured
                   ? t("hintNeedLlm")
                   : !isValid
-                    ? hasProductInput && originalCopyError ? tt(originalCopyError) : t(isPremiumCg ? "hintNeedInputCg" : "hintNeedInput")
-                    : isTidewe ? tt(useTideweOriginal ? "copyInputReady" : "ready") : t(isPremiumCg ? "hintReadyCg" : "hintReady")}
+                    ? hasProductInput && originalCopyError ? tt(originalCopyError) : t("hintNeedInput")
+                    : isTidewe ? tt(useTideweOriginal ? "copyInputReady" : "ready") : t("hintReady")}
               </p>
             )}
           </div>

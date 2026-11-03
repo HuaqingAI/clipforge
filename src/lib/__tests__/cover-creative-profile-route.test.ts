@@ -9,7 +9,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createPremiumProductCgProfile, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createShortVideoSalesProfile } from "@/lib/creative-profiles";
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -24,7 +24,7 @@ import { POST } from "@/app/api/project/[id]/cover/route";
 const directory = mkdtempSync(join(tmpdir(), "clipforge-cover-policy-"));
 const sqlite = new Database(":memory:");
 const db = drizzle(sqlite, { schema });
-const projectId = "premium-cover-project";
+const projectId = "sales-cover-project";
 const outputPath = join(directory, "composition.mp4");
 
 beforeAll(() => {
@@ -64,19 +64,7 @@ function request(title = "Quiet product portrait") {
   );
 }
 
-describe("premium product CG cover policy", () => {
-  it("rejects title overlays from the persisted premium CG profile", async () => {
-    db.update(schema.projects)
-      .set({ creativeProfile: createPremiumProductCgProfile() })
-      .where(eq(schema.projects.id, projectId))
-      .run();
-
-    const response = await request("Buy now - limited offer");
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: "PREMIUM_CG_OUTPUT_POLICY" });
-    expect(state.generateCover).not.toHaveBeenCalled();
-  });
+describe("sales cover generation", () => {
 
   it("keeps title cover generation available for sales projects", async () => {
     db.update(schema.projects)

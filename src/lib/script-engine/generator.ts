@@ -7,26 +7,17 @@
 import OpenAI from "openai";
 import {
   SYSTEM_PROMPT,
-  PREMIUM_PRODUCT_CG_SYSTEM_PROMPT,
   PRODUCT_ANALYSIS_PROMPT,
   TOPIC_SYSTEM_PROMPT,
   buildUserPrompt,
   buildBatchPrompt,
   buildTopicBatchPrompt,
-  premiumProductCgProfileForInput,
   type ScriptGenerationInput,
   type TopicScriptInput,
 } from "./prompts";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { createLLMClient, withLLMErrors, LLMRequestError, jsonModeParams } from "@/lib/llm-error";
 import { stripThinkBlocks } from "@/lib/llm-clean";
-import {
-  createPremiumProductCgProfile,
-  PREMIUM_PRODUCT_CG_STYLE,
-  sanitizeCreativeProfile,
-  type PremiumProductCgProfile,
-} from "@/lib/creative-profiles";
-import { lintCreativeProfileShot, type CreativePolicyLintIssue } from "@/lib/creative-policy-lint";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
 import { generateTideweScripts, type TideweCompletion } from "@/lib/tidewe/generator";
 import { tideweProfileForInput } from "@/lib/tidewe/prompts";
@@ -217,7 +208,6 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
   const validTypes: Shot["type"][] = ["hook", "pain_point", "product_reveal", "demo", "social_proof", "cta"];
   const validTransitions: Shot["transition"][] = ["ai_start_end", "ai_reference", "direct_concat", "ffmpeg_fade"];
   const validSources: Shot["visualSource"][] = ["ai_generate", "product_image", "user_upload"];
-  const validBeatRoles: NonNullable<Shot["beatRole"]>[] = ["establish", "form", "material", "craft", "function", "lifestyle", "hero"];
 
   const validMotions: NonNullable<Shot["motion"]>[] = ["zoom_in_slow", "pan_left", "pan_right", "ken_burns", "static"];
 
@@ -237,9 +227,7 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
     // Default transition matches the schema (videoClips.transitionType) and UI default (ai_start_end)
     transition: validTransitions.includes(shot.transition as Shot["transition"]) ? (shot.transition as Shot["transition"]) : "ai_start_end",
     voiceover: sanitizeVoiceover(shot.voiceover || ""),
-    ...(validBeatRoles.includes(shot.beatRole as NonNullable<Shot["beatRole"]>) && { beatRole: shot.beatRole }),
     ...(typeof shot.visualIntent === "string" && shot.visualIntent.trim() && { visualIntent: shot.visualIntent.trim() }),
-    ...(typeof shot.productFeatureRef === "string" && shot.productFeatureRef.trim() && { productFeatureRef: shot.productFeatureRef.trim() }),
     ...(typeof shot.narration === "string" && shot.narration.trim() && { narration: sanitizeVoiceover(shot.narration) }),
     prompt: shot.prompt || undefined,
     // Pass through LLM-generated extended fields (video mode) so they are not silently dropped
@@ -253,42 +241,6 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
       },
     }),
   };
-}
-
-/**
- * Removes executable overlay/character fields from a premium CG shot and reports visual or narration
- * advice for explicit review. Generation accepts the normalized shot without another model pass.
- */
-export function sanitizePremiumProductCgShot(
-  shot: Shot,
-  profile: PremiumProductCgProfile,
-): { shot: Shot; issues: CreativePolicyLintIssue[] } {
-  const voiceover = profile.narrationMode === "none" ? "" : shot.voiceover;
-  const narration = profile.narrationMode === "none" ? "" : shot.narration;
-  const issues = lintCreativeProfileShot(profile, { ...shot, voiceover, narration });
-  // Keep the policy boundary explicit: these fields are executable downstream controls, so they
-  // must be removed from the object that reaches composition even when the model emitted them.
-  const withoutForbiddenFields = { ...shot };
-  delete withoutForbiddenFields.textOverlay;
-  delete withoutForbiddenFields.characterId;
-  delete withoutForbiddenFields.narration;
-  return {
-    shot: {
-      ...withoutForbiddenFields,
-      voiceover,
-      ...(narration ? { narration } : {}),
-    },
-    issues,
-  };
-}
-
-function premiumProfileForValidation(
-  fallbackStyleType: string,
-  creativeProfile?: unknown,
-): PremiumProductCgProfile | undefined {
-  const profile = sanitizeCreativeProfile(creativeProfile);
-  if (profile?.creationType === "premium_product_cg") return profile;
-  return fallbackStyleType === PREMIUM_PRODUCT_CG_STYLE ? createPremiumProductCgProfile() : undefined;
 }
 
 /**
@@ -321,28 +273,21 @@ export function validateCharacters(raw: unknown): ScriptCharacter[] | undefined 
 function validateScript(
   raw: Record<string, unknown>,
   fallbackStyleType: string,
-  creativeProfile?: unknown,
 ): GeneratedScript {
-  const premiumProfile = premiumProfileForValidation(fallbackStyleType, creativeProfile);
   const shots = Array.isArray(raw.shots)
-    ? (raw.shots as Partial<Shot>[]).map((s, i) => {
-      const validated = validateShot(s, i);
-      if (!premiumProfile) return validated;
-      return sanitizePremiumProductCgShot(validated, premiumProfile).shot;
-    })
+    ? (raw.shots as Partial<Shot>[]).map(validateShot)
     : [];
 
   const totalDuration = typeof raw.totalDuration === "number"
     ? raw.totalDuration
     : shots.reduce((sum, s) => sum + s.duration, 0);
 
-  const characters = premiumProfile ? undefined : validateCharacters(raw.characters);
+  const characters = validateCharacters(raw.characters);
 
   return {
     title: (raw.title as string) || "未命名脚本",
-    // The server-selected fallback is authoritative. A model may not silently turn a CG brief into
-    // a talking-head or CTA script by returning a different raw styleType.
-    styleType: premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : fallbackStyleType,
+    // Keep the server-selected style authoritative over model output.
+    styleType: fallbackStyleType,
     totalDuration,
     shots,
     ...(characters && { characters }),
@@ -423,8 +368,7 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
     return generateTideweScripts({ ...input, count: 1 }, complete);
   }
   const userPrompt = buildBatchPrompt(input, batchCountFor(input.llmConfig.baseUrl));
-  const premiumProfile = premiumProductCgProfileForInput(input);
-  const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
+  const fallbackStyleType = input.styleType;
 
   // Accept the first generated script. json_object mode matches the batch prompt's object output.
   return completeOnce(
@@ -432,16 +376,16 @@ export async function generateScript(input: ScriptInput): Promise<GeneratedScrip
     {
       model: input.llmConfig.model,
       messages: [
-        { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
+        { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      temperature: premiumProfile ? 0.65 : 0.8,
+      temperature: 0.8,
       max_tokens: 16000,
       ...reasoningParams(input.llmConfig.baseUrl),
       ...jsonModeParams(input.llmConfig.baseUrl),
     },
     input.llmConfig,
-    (content) => parseScriptResponse(content, fallbackStyleType, premiumProfile),
+    (content) => parseScriptResponse(content, fallbackStyleType),
   );
 }
 
@@ -489,18 +433,17 @@ export async function generateSingleScript(input: ScriptInput): Promise<Generate
   if (tideweProfileForInput(input)) return (await generateScript({ ...input, count: 1 }))[0];
   const client = createClient(input.llmConfig);
   const userPrompt = buildUserPrompt(input);
-  const premiumProfile = premiumProductCgProfileForInput(input);
-  const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
+  const fallbackStyleType = input.styleType;
 
   return completeOnce(
     client,
     {
       model: input.llmConfig.model,
       messages: [
-        { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
+        { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      temperature: premiumProfile ? 0.65 : 0.8,
+      temperature: 0.8,
       ...reasoningParams(input.llmConfig.baseUrl),
       ...jsonModeParams(input.llmConfig.baseUrl),
     },
@@ -513,7 +456,7 @@ export async function generateSingleScript(input: ScriptInput): Promise<Generate
       } catch {
         throw new Error(`LLM 返回的内容不是合法 JSON${truncationHint(jsonStr)}: ${jsonStr.substring(0, 200)}`);
       }
-      return validateScript(parsed, fallbackStyleType, premiumProfile);
+      return validateScript(parsed, fallbackStyleType);
     },
   );
 }
@@ -546,8 +489,7 @@ export function generateScriptStream(
     }
     const client = createClient(input.llmConfig);
     const userPrompt = buildUserPrompt(input);
-    const premiumProfile = premiumProductCgProfileForInput(input);
-    const fallbackStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : input.styleType;
+    const fallbackStyleType = input.styleType;
 
     let fullContent = "";
 
@@ -557,10 +499,10 @@ export function generateScriptStream(
           client.chat.completions.create({
             model: input.llmConfig.model,
             messages: [
-              { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
+              { role: "system", content: SYSTEM_PROMPT },
               { role: "user", content: userPrompt },
             ],
-            temperature: premiumProfile ? 0.65 : 0.8,
+            temperature: 0.8,
             stream: true,
             ...reasoningParams(input.llmConfig.baseUrl),
           }, {
@@ -578,7 +520,7 @@ export function generateScriptStream(
       }
 
       // Parse the complete result after streaming finishes
-      const scripts = parseScriptResponse(fullContent, fallbackStyleType, premiumProfile);
+      const scripts = parseScriptResponse(fullContent, fallbackStyleType);
       callbacks.onComplete?.(scripts);
     } catch (error) {
       // User-initiated cancellation is not an error
@@ -611,7 +553,6 @@ export function createScriptStream(input: ScriptInput): ReadableStream<Uint8Arra
     async start(controller) {
       const client = createClient(input.llmConfig);
       const userPrompt = buildUserPrompt(input);
-      const premiumProfile = premiumProductCgProfileForInput(input);
 
       try {
         const stream = await withLLMErrors(
@@ -619,10 +560,10 @@ export function createScriptStream(input: ScriptInput): ReadableStream<Uint8Arra
             client.chat.completions.create({
               model: input.llmConfig.model,
               messages: [
-              { role: "system", content: premiumProfile ? PREMIUM_PRODUCT_CG_SYSTEM_PROMPT : SYSTEM_PROMPT },
+                { role: "system", content: SYSTEM_PROMPT },
                 { role: "user", content: userPrompt },
               ],
-            temperature: premiumProfile ? 0.65 : 0.8,
+              temperature: 0.8,
               stream: true,
               ...reasoningParams(input.llmConfig.baseUrl),
             }),
@@ -756,7 +697,6 @@ export function isRealVoiceover(voiceover: string): boolean {
 export function parseScriptResponse(
   content: string,
   fallbackStyleType: string,
-  creativeProfile?: unknown,
 ): GeneratedScript[] {
   const jsonStr = extractJSON(content);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -788,11 +728,9 @@ export function parseScriptResponse(
   // compositing / rendering would have nothing to work with, yet would not report an error.
   // Filter out null/non-object elements first: LLM occasionally emits [null, {...}], and validateScript
   // reads raw.shots on its first line, which throws on null and corrupts the entire parse.
-  const premiumProfile = premiumProfileForValidation(fallbackStyleType, creativeProfile);
-  const authoritativeStyleType = premiumProfile ? PREMIUM_PRODUCT_CG_STYLE : fallbackStyleType;
   const scripts = rawScripts
     .filter((raw): raw is Record<string, unknown> => typeof raw === "object" && raw !== null)
-    .map((raw) => validateScript(raw, authoritativeStyleType, premiumProfile))
+    .map((raw) => validateScript(raw, fallbackStyleType))
     .filter((s) => s.shots.length > 0);
   if (scripts.length === 0) {
     throw new Error("LLM 未生成有效分镜（脚本为空），请重试或调整输入");

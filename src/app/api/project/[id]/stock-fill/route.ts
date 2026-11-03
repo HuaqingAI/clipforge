@@ -21,7 +21,6 @@ import { rerankShotCandidates, type RerankShot, type SemanticLLMConfig } from "@
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { StockSourceId, StockMediaType, StockOrientation } from "@/lib/providers/stock-types";
 import { apiError } from "@/lib/api-error";
-import { isPremiumCgStockFillBlocked } from "@/lib/stock-fill";
 import { isTideweNativeSpeech, isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
@@ -75,12 +74,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
   if (!project) {
     return apiError(req, "项目不存在", "Project not found", 404);
-  }
-  if (isPremiumCgStockFillBlocked(id)) {
-    return NextResponse.json({
-      error: "高端产品 CG 不能使用免费素材库自动配画面，请通过受控的产品参考与分镜生成流程创建素材。",
-      code: "PREMIUM_CG_STOCK_FILL_FORBIDDEN",
-    }, { status: 409 });
   }
 
   // Historical scripts are not a current script after the last option is deleted.

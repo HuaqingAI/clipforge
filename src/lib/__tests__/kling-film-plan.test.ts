@@ -44,8 +44,7 @@ import { LEGACY_SILENT_PROMPT_SUFFIX, VIDEO_AUDIO_DIRECTIONS, withVideoAudioMode
 import { buildShotVideoPrompt as compileShotVideoPrompt } from "@/lib/shot-video-prompt";
 import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import type { CreativeIntent, VisualBible } from "@/lib/production-system";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
+import { createCreativeProfileSnapshot, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
@@ -282,36 +281,9 @@ describe("TIDEWE frozen film planning", () => {
 });
 
 describe("Kling frozen film planning", () => {
-  it.each(["product_image", "ai_generate"] as const)("freezes the same product reference as a text-tool CG child with visualSource=%s", async (visualSource) => {
-    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
-    const cgShot: Shot = { ...shot, type: "product_reveal", visualSource, voiceover: "", visualIntent: "Observe the approved product silhouette.", camera: "One restrained forward camera move." };
-    getDb().update(projects).set({ productImages: ["/api/files/frame.png"], creativeProfile: profile, creativeConfigRevision: 1 }).run();
-    getDb().update(scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
-    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
-    const view = await previewKlingFilm(request());
-    const planned = getKlingFilmShots(view.runId)[0];
-    const requestChild = buildFilmShotJobRequest(getKlingFilm(view.runId), planned);
-    const expectedInputHashes = planned.data.inputs.map(({ role, hash }) => ({ role, hash }));
-    expect(requestChild).toMatchObject({ mode: "text-to-video", imageUrl: "/api/files/frame.png" });
-    const { createKlingFilmShotJob } = await import("@/lib/kling/jobs");
-    const child = await createKlingFilmShotJob(requestChild, { filmRunId: view.runId, filmShotId: planned.id, authorizationEpoch: 1, expectedInputHashes });
-    expect(child.data.inputs.map(({ role, hash }) => ({ role, hash }))).toEqual(expectedInputHashes);
-    expect(child.data.options).toEqual(planned.data.options);
-  });
 
-  it("shows the exact paid backend CG template in the full-film plan", async () => {
-    useImageModel();
-    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
-    const cgShot: Shot = { ...shot, type: "product_reveal", visualSource: "product_image", voiceover: "", visualIntent: "Observe the approved product silhouette.", camera: "One restrained forward camera move." };
-    getDb().update(projects).set({ productImages: ["/api/files/frame.png"], creativeProfile: profile, creativeConfigRevision: 1 }).run();
-    getDb().update(scripts).set({ styleType: "premium_product_cg", shots: [cgShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
-    await fs.writeFile(path.join(state.directory, "uploads", "frame.png"), png);
-    const plan = await previewKlingFilm(request());
-    const planned = getKlingFilmShots(plan.runId)[0];
-    expect(planned.data.prompt).toBe(compilePremiumCgVideoPrompt(cgShot, profile).prompt);
-    expect(buildFilmShotJobRequest(getKlingFilm(plan.runId), planned).prompt).toBe(planned.data.prompt);
-    expect(planned.data.prompt).not.toContain("声音要求");
-  });
+
+
 
   it("uses the same configured image-to-video prompt as the single-shot path, including project direction", async () => {
     useImageModel();

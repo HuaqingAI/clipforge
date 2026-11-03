@@ -17,7 +17,7 @@ import { decodeStoredAdTemplate, adTemplateStorageKey, adTemplateAppliedKey } fr
 import { buildHookVariants } from "@/lib/script-engine/hook-variants";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
-import { sanitizeCreativeProfile, isTideweOutdoorProfile, isTideweNativeSpeech, type PremiumProductCgProfile, type TideweOutdoorProfile } from "@/lib/creative-profiles";
+import { sanitizeCreativeProfile, isTideweOutdoorProfile, isTideweNativeSpeech, type TideweOutdoorProfile } from "@/lib/creative-profiles";
 import { resolveNarrationVoice, TIDEWE_TTS_VOICES } from "@/lib/narration-voice";
 import { DEFAULT_FREE_VOICE, FREE_TTS_VOICES, ttsVoiceLocale, ttsVoicePreviewText } from "@/lib/tts-voices";
 import { ProjectHeader } from "@/components/project-header";
@@ -75,19 +75,6 @@ interface ComposeConfig {
   bgmVolume: number;
   /** Optional TTS de-broadcast chain and room-tone bed; disabled by default. */
   voiceGround: boolean;
-}
-
-function lockPremiumCgComposeConfig(config: ComposeConfig): ComposeConfig {
-  return {
-    ...config,
-    ttsEnabled: false,
-    voiceoverMode: "auto",
-    subtitles: false,
-    captionPreset: "standard",
-    ctaEnabled: false,
-    ctaText: "",
-    productCard: false,
-  };
 }
 
 function applyTideweComposeSnapshot(config: ComposeConfig, profile: TideweOutdoorProfile): ComposeConfig {
@@ -170,9 +157,7 @@ export default function VideoPage() {
     return asset?.filePath ? [[shotId, asset.filePath]] : [];
   })), [clips, savedAssets]);
   const [projectName, setProjectName] = useState("");
-  const [premiumCgProfile, setPremiumCgProfile] = useState<PremiumProductCgProfile | null>(null);
-  const premiumCg = premiumCgProfile !== null;
-  const premiumCgRef = useRef(false);
+
   const [tidewe, setTidewe] = useState(false);
   const [tideweNativeSpeech, setTideweNativeSpeech] = useState(false);
   const tideweRef = useRef(false);
@@ -222,11 +207,11 @@ export default function VideoPage() {
   const useElevenLabs = config.voiceService === "elevenlabs-cli";
   const elevenLabsEnabled = tts.enabled && tts.provider === "elevenlabs-cli";
   const useFreeTts = !useElevenLabs;
-  const voiceoverBlocked = !premiumCg && config.ttsEnabled && useElevenLabs && (!elevenLabsEnabled || !elevenLabsReady);
-  const selectedVoiceoverConfig = premiumCg || !config.ttsEnabled ? {} : useElevenLabs
+  const voiceoverBlocked = config.ttsEnabled && useElevenLabs && (!elevenLabsEnabled || !elevenLabsReady);
+  const selectedVoiceoverConfig = !config.ttsEnabled ? {} : useElevenLabs
     ? { ttsConfig: { provider: "elevenlabs-cli", baseUrl: "", apiKey: "", voice: config.elevenLabsVoice, model: config.elevenLabsModel, ...(tts.speed !== undefined && { speed: tts.speed }) } }
     : { freeTts: { enabled: true, voice: config.freeVoice } };
-  const composeFetch = !premiumCg && config.ttsEnabled && useElevenLabs ? elevenLabsFetch : fetch;
+  const composeFetch = config.ttsEnabled && useElevenLabs ? elevenLabsFetch : fetch;
 
   useEffect(() => {
     const restored = {
@@ -296,11 +281,11 @@ export default function VideoPage() {
       setLoadError(null);
       setAssetSelectionError(null);
       setLoadedProfileProjectId(null);
-      premiumCgRef.current = false;
+
       tideweRef.current = false;
       setTidewe(false);
       setTideweNativeSpeech(false);
-      setPremiumCgProfile(null);
+
       try {
         const [projectRes, scriptsRes, assetsRes] = await Promise.all([
           fetch(`/api/project/${id}`),
@@ -320,14 +305,11 @@ export default function VideoPage() {
           tideweRef.current = isTidewe;
           setTidewe(isTidewe);
           setTideweNativeSpeech(isTideweNativeSpeech(creativeProfile));
-          const cgProfile = creativeProfile?.creationType === "premium_product_cg" ? creativeProfile : null;
-          premiumCgRef.current = Boolean(cgProfile);
-          setPremiumCgProfile(cgProfile);
-          if (cgProfile) setConfig(lockPremiumCgComposeConfig);
+
           if (isTidewe) setConfig((current) => applyTideweComposeSnapshot(current, creativeProfile));
           if (Array.isArray(project.productionWorkflow)) {
             const voiceStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "voice");
-            if (voiceStage && !cgProfile && !isTidewe) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
+            if (voiceStage && !isTidewe) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
           }
           setLoadedProfileProjectId(id);
         }
@@ -401,7 +383,7 @@ export default function VideoPage() {
   const [packNotice, setPackNotice] = useState<string | null>(null);
 
   const applyStylePack = (pack: StylePack) => {
-    if (premiumCgRef.current || tideweRef.current) return;
+    if (tideweRef.current) return;
     const p = pack.compose;
     setConfig((c) => ({
       ...c,
@@ -422,7 +404,7 @@ export default function VideoPage() {
   useEffect(() => {
     if (loadedProfileProjectId !== id) return;
     try {
-      if (premiumCgRef.current || tideweRef.current) {
+      if (tideweRef.current) {
         localStorage.removeItem(adTemplateStorageKey(id));
         localStorage.removeItem(adTemplateAppliedKey(id));
         return;
@@ -579,7 +561,7 @@ export default function VideoPage() {
 
   /** Run the matrix: sequential compose per combo, each polled by its own compositionId. */
   const runMatrix = async () => {
-    if (premiumCg || tidewe || matrixRunning || isComposing || selectingAsset.current || voiceoverBlocked || !scriptId || matrixCombos.length === 0) return;
+    if (tidewe || matrixRunning || isComposing || selectingAsset.current || voiceoverBlocked || !scriptId || matrixCombos.length === 0) return;
     const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
     const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
     setMatrixRunning(true);
@@ -600,15 +582,15 @@ export default function VideoPage() {
             resolution: config.resolution,
             renderPreset: config.renderPreset,
             aspectRatio: config.aspectRatio,
-            subtitles: premiumCg ? false : config.subtitles,
+            subtitles: config.subtitles,
             label: combo.label,
-            ...(!premiumCg && hookShot && { voiceoverOverrides: [{ shotId: hookShot.shotId, voiceover: hookShot.voiceover ?? "" }] }),
-            ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
-            ...(!premiumCg && config.productCard && { productCard: true }),
-            ...(!premiumCg && { captionPreset: combo.caption }),
+            ...(hookShot && { voiceoverOverrides: [{ shotId: hookShot.shotId, voiceover: hookShot.voiceover ?? "" }] }),
+            ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
+            ...(config.productCard && { productCard: true }),
+            captionPreset: combo.caption,
             ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-            ...(!premiumCg && { voiceGround: config.voiceGround }),
-            ...(!premiumCg && config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
+            voiceGround: config.voiceGround,
+            ...(config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
             ...selectedVoiceoverConfig,
           }),
         });
@@ -674,15 +656,15 @@ export default function VideoPage() {
           resolution: config.resolution,
           renderPreset: config.renderPreset,
           aspectRatio: config.aspectRatio,
-          subtitles: premiumCg ? false : config.subtitles,
+          subtitles: config.subtitles,
           ...(tidewe && { ttsEnabled: config.ttsEnabled }),
           ...(tideweNativeSpeech && { nativeAudio: true }),
-          ...(!premiumCg && config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
-          ...(!premiumCg && config.productCard && { productCard: true }),
-          ...(!premiumCg && config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
+          ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
+          ...(config.productCard && { productCard: true }),
+          ...(config.captionPreset !== "standard" && { captionPreset: config.captionPreset }),
           ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-          ...(!premiumCg && { voiceGround: config.voiceGround }),
-          ...(!premiumCg && config.ttsEnabled && (tidewe || config.voiceoverMode !== "auto") && { voiceoverMode: config.voiceoverMode }),
+          voiceGround: config.voiceGround,
+          ...(config.ttsEnabled && (tidewe || config.voiceoverMode !== "auto") && { voiceoverMode: config.voiceoverMode }),
           ...selectedVoiceoverConfig,
         }),
       });
@@ -880,7 +862,7 @@ export default function VideoPage() {
             <h2 className="text-base font-semibold">{t("composeSettings")}</h2>
 
             {/* style packs: apply a whole look at once; import shared packs / export the current settings */}
-            {!premiumCg && !tidewe && <Card className="glass-card">
+            {!tidewe && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("stylePackLabel")}</Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -926,7 +908,7 @@ export default function VideoPage() {
             </Card>}
 
             {/* 配音设置 */}
-            {!premiumCg && <Card className="glass-card">
+            <Card className="glass-card">
               <CardContent className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium">{t("ttsLabel")}</Label>
@@ -1065,10 +1047,10 @@ export default function VideoPage() {
                   </button>
                 </div>
               </CardContent>
-            </Card>}
+            </Card>
 
             {/* 字幕设置 */}
-            {!premiumCg && <Card className="glass-card">
+            <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("subtitleLabel")}</Label>
                 <div className="flex items-center justify-between">
@@ -1125,10 +1107,10 @@ export default function VideoPage() {
                   <p className="text-[11px] text-muted-foreground">{t(`captionPresetDesc_${config.captionPreset}`)}</p>
                 </div>
               </CardContent>
-            </Card>}
+            </Card>
 
             {/* 带货转化：购买 CTA 片尾 */}
-            {!premiumCg && !tidewe && <Card className="glass-card">
+            {!tidewe && <Card className="glass-card">
               <CardContent className="p-4 space-y-3">
                 <Label className="text-sm font-medium">{t("complianceLabel")}</Label>
                 <div className="flex items-center justify-between">
@@ -1339,7 +1321,7 @@ export default function VideoPage() {
 
               {/* Variant matrix: hook × caption × BGM combos as
                   labeled outputs — same assets, compose-only reruns, zero AI-gen cost */}
-              {!premiumCg && !tidewe && clips.length > 0 && (
+              {!tidewe && clips.length > 0 && (
                 <div className="rounded-lg border border-border/50 bg-muted/10 p-3 space-y-2">
                   <button
                     type="button"

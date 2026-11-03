@@ -13,7 +13,6 @@ import {
   parseUnitUsd,
 } from "@/lib/storyboard-film";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
-import { createPremiumProductCgProfile } from "@/lib/creative-profiles";
 
 /**
  * Grid-to-film prompt contract (v0.8.84). The exact shape was field-proven on a
@@ -41,35 +40,7 @@ const zhShots: Shot[] = [
   mkShot({ shotId: 3, type: "cta", duration: 4, description: "举盒收尾", voiceover: "链接挂这了" }),
 ];
 
-describe("高端产品 CG 整片", () => {
-  it.each([
-    ["a glass perfume bottle with amber liquid", "a small vanity display"],
-    ["a wristwatch with its visible brushed bezel", "a watchmaker's display"],
-    ["headphones with a matte shell and visible controls", "an audio display"],
-  ])("保留 %s 的真实细节和场景，避免套用家具结构", (product, context) => {
-    const prompt = buildStoryboardFilmPrompt([
-      mkShot({ shotId: 1, duration: 4, description: `Observe ${product} on ${context}.`, camera: "A restrained slow lateral move." }),
-      mkShot({ shotId: 2, duration: 3, description: `A closer reference-supported view of ${product}.` }),
-    ], undefined, undefined, { creativeProfile: createPremiumProductCgProfile() });
 
-    expect(prompt).toContain(product);
-    expect(prompt).toContain(context);
-    expect(prompt).toContain("高端产品三维影像");
-    expect(prompt).toContain("资料已确认的使用环境");
-    expect(prompt).toContain("未指定使用环境时采用中性摄影棚");
-    expect(prompt).toContain("[0-4秒] 镜头1");
-    expect(prompt).toContain("[4-7秒] 镜头2");
-    expect(prompt).toContain("构图以第2张图片为基准");
-    expect(prompt).toContain("部件数量");
-    expect(prompt).toContain("表面处理");
-    expect(prompt).toContain("不虚构未展示的背面、内部、机构");
-    expect(prompt).toContain("不生成新增的画面文字");
-    expect(prompt).toContain("仅保留参考资料中已可见的产品标识");
-    expect(prompt).toContain("只有已批准镜头明确要求且产品事实支持时");
-    expect(prompt).toContain("不生成对白、旁白、配音");
-    expect(prompt).not.toMatch(/furniture|upholstery|\blegs\b|modern.home/i);
-  });
-});
 
 describe("时长计算", () => {
   it("filmTotalSeconds 求和；filmRequestSeconds 取整并夹在 4-30", () => {

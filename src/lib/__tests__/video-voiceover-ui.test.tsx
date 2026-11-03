@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import VideoPage from "@/app/project/[id]/video/page";
-import { createTideweOutdoorProfile, createPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { AD_TEMPLATES, adTemplateStorageKey, adTemplateAppliedKey } from "@/lib/ad-templates";
 import { elevenLabsFetch } from "@/lib/elevenlabs/browser-client";
 import { video } from "@/lib/i18n/messages/video";
@@ -456,19 +456,6 @@ describe("settings-owned voice services", () => {
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).toMatchObject({ nativeAudio: true, ttsEnabled: true, voiceoverMode: "auto", ttsConfig: { provider: "elevenlabs-cli", voice: "cloned-voice" } });
     expect(composeBodies().at(-1)).not.toHaveProperty("freeTts");
-  });
-
-  it("preserves premium CG's disabled narration without reading ElevenLabs", async () => {
-    settingsState.provider = "elevenlabs-cli";
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1"
-      ? Promise.resolve(Response.json({ name: "Premium", creativeProfile: createPremiumProductCgProfile() })) : normalFetch(url, init));
-    await mount();
-    expect(container.querySelector('[aria-label="ttsServiceLabel"]')).toBeNull();
-    await click(button("composeStart"));
-    expect(composeBodies().at(-1)).not.toHaveProperty("ttsConfig");
-    expect(composeBodies().at(-1)).not.toHaveProperty("freeTts");
-    expect(fetchMock.mock.calls.some(([url]) => url.includes("/elevenlabs/"))).toBe(false);
   });
 
   it.each(["auto", "unknown"])("normalizes old %s project selections to the current settings without storing invalid voice fields", async (voiceService) => {

@@ -3,15 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, projects, type Shot } from "@/lib/db/schema";
-import { translateShots, translateVoiceovers, defaultVoiceForLang, langName } from "@/lib/script-engine/translate";
+import { translateShots, defaultVoiceForLang, langName } from "@/lib/script-engine/translate";
 import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import { apiError, errText } from "@/lib/api-error";
-import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import {
-  checkCreativeProfileContext,
-  createCreativeProfileSnapshot,
-  isPremiumProductCgProfile,
-} from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, createCreativeProfileSnapshot } from "@/lib/creative-profiles";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -62,13 +57,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       scriptRevision: context.scriptRevision,
     }, { status: 409 });
   }
-  const premiumProfile = isPremiumProductCgProfile(context.scriptProfile) ? context.scriptProfile : undefined;
-  if (premiumProfile?.narrationMode === "none") {
-    return NextResponse.json({
-      error: "This premium product CG script is visual-only and cannot be dubbed.",
-      code: "CG_NARRATION_DISABLED",
-    }, { status: 409 });
-  }
+
   if (!shots.length) return apiError(req, "脚本没有分镜", "The script has no shots");
 
   let translated: Shot[];
@@ -78,29 +67,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       apiKey: llmConfig.apiKey ?? "",
       model: translationModel,
     };
-    if (premiumProfile) {
-      // CG narration is sparse and must not retime visual product beats during localization.
-      const sourceNarration = shots.map((shot) => shot.narration ?? shot.voiceover ?? "");
-      const localizedNarration = await translateVoiceovers(sourceNarration, targetLang, translationConfig);
-      translated = shots.map((shot, index) => {
-        const voiceover = localizedNarration[index] ?? "";
-        return {
-          ...shot,
-          voiceover,
-          ...(typeof shot.narration === "string" ? { narration: voiceover } : {}),
-        };
-      });
-      const issues = lintCreativeProfileShots(premiumProfile, translated);
-      if (issues.length > 0) {
-        return NextResponse.json({
-          error: "Translated narration violates the premium product CG policy.",
-          code: "CREATIVE_POLICY_VIOLATION",
-          issues,
-        }, { status: 400 });
-      }
-    } else {
-      translated = await translateShots(shots, targetLang, translationConfig);
-    }
+    translated = await translateShots(shots, targetLang, translationConfig);
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : errText(req, "翻译失败", "Translation failed") }, { status: 502 });
   }

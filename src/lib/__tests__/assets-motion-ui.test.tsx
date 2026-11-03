@@ -12,7 +12,7 @@ import type { KlingJobView } from "@/lib/kling/job-types";
 import type { VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import type { BatchMotionPanel } from "@/components/batch-motion-panel";
 import type { KeyframeRefinementDialogProps } from "@/components/keyframe-refinement-dialog";
-import { createPremiumProductCgProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { Shot } from "@/lib/db/schema";
 
 const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, runs: [] as Array<Record<string, unknown>>, showMaterialLibrary: false }));
@@ -1232,14 +1232,8 @@ describe("assets uses the configured provider through one motion entry", () => {
 
   it.each([
     { creationType: "sales", defaultModel: ark },
-    { creationType: "CG", defaultModel: ark },
     { creationType: "sales", defaultModel: kling.selectionKey },
-    { creationType: "CG", defaultModel: kling.selectionKey },
-  ])("uses the same backend text for initial and redo $creationType generation with $defaultModel", async ({ creationType, defaultModel }) => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => creationType === "CG" && url === "/api/project/project"
-      ? Promise.resolve(Response.json({ name: "Product", productImages: ["/api/files/product.jpg"], creativeProfile: createPremiumProductCgProfile() }))
-      : normalFetch(url, init));
+  ])("uses the same backend text for initial and redo $creationType generation with $defaultModel", async ({ defaultModel }) => {
     await mount(defaultModel);
     await click("btnConvertMotion");
     const firstPrompt = (container.querySelector("textarea") as HTMLTextAreaElement).value;
@@ -1632,18 +1626,6 @@ describe("assets uses the configured provider through one motion entry", () => {
     await click("btnConvertMotion");
     expect([...container.querySelectorAll("h2")].some((heading) => heading.textContent?.includes("确认镜头 1 视频生成"))).toBe(true);
     expect(container.querySelector('[aria-label="job-detail"]')).toBeNull();
-    expect(submissions()).toHaveLength(0);
-  });
-
-  it("blocks unsupported premium CG batch imports before starting a paid generation", async () => {
-    const normal = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project"
-      ? Promise.resolve(Response.json({ name: "Product", productImages: ["/api/files/product.jpg"], creativeProfile: createPremiumProductCgProfile() })) : normal(url, init));
-    await mount(ark);
-    await click("batchMotionButton");
-    expect(batch.props!.shots[0]).toMatchObject({ disabledReason: "batchMotionControlledModelRequired" });
-    expect(batch.props!.shots[0].draft).toBeUndefined();
-    expect((container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).disabled).toBe(true);
     expect(submissions()).toHaveLength(0);
   });
 

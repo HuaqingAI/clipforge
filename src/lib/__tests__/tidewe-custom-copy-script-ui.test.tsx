@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ScriptPage from "@/app/project/[id]/script/page";
-import { createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
 
@@ -285,7 +285,7 @@ describe("TIDEWE employee copy on existing projects", () => {
     expect(request).not.toHaveProperty("sceneDescription");
   });
 
-  it.each([createShortVideoSalesProfile(), createPremiumProductCgProfile()])("keeps the manual TIDEWE source control out of other creation types: $creationType", async (creativeProfile) => {
+  it.each([createShortVideoSalesProfile()])("keeps the manual TIDEWE source control out of other creation types: $creationType", async (creativeProfile) => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === projectUrl) return Response.json({ ...project, creativeProfile });
       if (url === scriptsUrl) return Response.json([script()]);

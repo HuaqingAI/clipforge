@@ -48,7 +48,6 @@ describe("Kling video submission failure responses", () => {
   it.each([
     ["TIDEWE_NATIVE_AUDIO_UNSUPPORTED", "当前 Kling 模型不支持原生音频，请选择支持英语真人口播的模型。"],
     ["TIDEWE_NATIVE_DURATION_UNSUPPORTED", "当前 Kling 模型支持的时长不足以完成本镜真人口播，请选择支持更长时长的模型。"],
-    ["PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED", "高端产品 CG 需要至少一张已保存的产品参考图。"],
   ])("preserves actionable submission validation for %s without CLI diagnostics", async (code, message) => {
     mocks.createJob.mockRejectedValueOnce(new KlingError(code, message, 422, rawResult));
 

@@ -5,12 +5,7 @@ import { aiTasks, assets, compositions, klingFilmRuns, klingJobs, pipelineRuns, 
 import { apiError, errText } from "@/lib/api-error";
 import { ACTIVE_AI_TASK_STATUSES } from "@/lib/ai-tasks";
 import { klingJobHasUnresolvedWork } from "@/lib/kling/concurrency";
-import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import {
-  checkCreativeProfileContext,
-  isPremiumProductCgProfile,
-  isTideweOutdoorProfile,
-} from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
 import { assertTideweScriptIntegrity } from "@/lib/tidewe/validation";
 import { POST as generateScripts } from "@/app/api/llm/script/route";
@@ -267,22 +262,6 @@ export async function PATCH(
           const updated = tx.update(scripts).set({ shots: currentShots }).where(eq(scripts.id, scriptId)).returning().get()!;
           return NextResponse.json({ success: true, script: scriptView(updated) });
         }, { behavior: "immediate" });
-      }
-      if (isPremiumProductCgProfile(profile)) {
-        if (profile.narrationMode === "none" && shots.some((shot) => shot.voiceover.trim() || shot.narration?.trim())) {
-          return NextResponse.json({
-            error: "Visual-only premium product CG scripts cannot contain narration.",
-            code: "CG_NARRATION_DISABLED",
-          }, { status: 400 });
-        }
-        const issues = lintCreativeProfileShots(profile, shots);
-        if (issues.length > 0) {
-          return NextResponse.json({
-            error: "Premium product CG script edits violate the no-added-text or restrained-narration policy.",
-            code: "CREATIVE_POLICY_VIOLATION",
-            issues,
-          }, { status: 400 });
-        }
       }
 
       const [updated] = await db.update(scripts).set({ shots }).where(eq(scripts.id, scriptId)).returning();

@@ -15,14 +15,10 @@ import { validateVideoPrompt } from "@/lib/video-prompt";
 import { getDb } from "@/lib/db";
 import { assets, projects, scripts } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
-import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
-import { lintCreativeProfileShot } from "@/lib/creative-policy-lint";
 import { filterAssetsForScript, shotKey, scriptRevision } from "@/lib/asset-context";
-import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
-import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
-import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import type { VideoOptions } from "@/lib/providers/types";
 import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
 import { beforeGenerationSubmission, generationCheckpoint, generationContextDefersPolling, GenerationTaskPending } from "@/lib/generation-context";
@@ -131,7 +127,6 @@ export async function POST(req: NextRequest) {
   let referenceAudioUrls = body.referenceAudioUrls;
   let controlPlan = sanitizeGenerationControlSummary(body.controlPlan);
   let sourceContext: VideoSourceContext | undefined;
-  let premiumCg = false;
   let tideweProductVisible = false;
   let tideweNative = false;
   let tidewePresenterImage: string | undefined;
@@ -249,82 +244,6 @@ export async function POST(req: NextRequest) {
         referenceAudioUrls = undefined;
         referenceVideoUrls = undefined;
       }
-      if (isPremiumProductCgProfile(profile)) {
-        premiumCg = true;
-        // Providers apply `extra` after their typed request body. Premium CG owns every
-        // prompt and media input, so no opaque provider override can accompany the request.
-        delete options.extra;
-        if (!scriptId) {
-          return apiError(req, "Missing selected script", "Premium product CG video generation requires a script id", 400);
-        }
-        if (shotId === undefined) {
-          return apiError(req, "高端产品 CG 视频生成必须指定当前镜头", "Premium product CG video generation requires a shot id", 400);
-        }
-        const shot = selected.shots?.find((item) => item.shotId === shotId);
-        if (!shot) return apiError(req, "镜头不存在", "Shot not found", 404);
-        const issues = lintCreativeProfileShot(profile, { ...shot, shotId });
-        if (issues.length) {
-          return NextResponse.json({
-            error: "Premium product CG video prompt violates the no-added-text or narration policy.",
-            code: "CREATIVE_POLICY_VIOLATION",
-            issues,
-          }, { status: 400 });
-        }
-        const selectedAssets = filterTrustedPremiumCgAssets(filterAssetsForScript(
-          db.select().from(assets).where(and(
-            eq(assets.projectId, projectId),
-            eq(assets.selected, true),
-            eq(assets.status, "done"),
-          )).all(),
-          selected,
-        ), projectId, selected);
-        const references = resolvePremiumCgVideoReferences({
-          productImages: project.productImages,
-          selectedAssets,
-          shotIds: selected.shots?.map((item) => item.shotId) ?? [],
-          shotId,
-          // Client media URLs are not part of the CG trust boundary. The resolver derives
-          // the first frame from saved product images or selected project keyframes, so a
-          // copied sales card or a remote reference cannot become a paid model input.
-        });
-        if (!references.ok) {
-          return NextResponse.json({
-            error: references.code === "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED"
-              ? "Premium product CG video generation requires a saved product reference image."
-              : "Premium product CG can use only saved product images and selected project keyframes.",
-            code: references.code,
-          }, { status: 400 });
-        }
-        const compiled = compilePremiumCgVideoPrompt(shot, profile);
-        prompt = reviewedPrompt?.prompt ?? compiled.prompt;
-        mode = "image-to-video";
-        imageUrl = references.imageUrl;
-        lastImageUrl = references.lastImageUrl;
-        referenceImageUrls = references.referenceImageUrls;
-        options.negativePrompt = compiled.negativePrompt;
-        // Product CG uses the approved keyframe/reference-image chain only. A browser-supplied
-        // reference video can import a legacy sales treatment or uncontrolled on-screen copy.
-        referenceVideoUrls = undefined;
-        if (profile.narrationMode === "none") {
-          stripCgAudioControls(options);
-          referenceAudioUrls = undefined;
-        } else {
-          const approvedNarration = shot.narration?.trim() || shot.voiceover?.trim() || "";
-          if (options.voiceover && options.voiceover !== approvedNarration) {
-            return apiError(req, "克制旁白必须与已批准的脚本文案一致", "Restrained narration must match the approved script", 400);
-          }
-          // The script snapshot is the only allowed narration source. Ambient/music choices
-          // are composed later rather than being injected as unreviewed provider prompts.
-          delete options.audioPrompt;
-          referenceAudioUrls = undefined;
-          if (options.audioEnabled) {
-            if (!approvedNarration) return apiError(req, "当前脚本没有可用的克制旁白", "The approved script has no restrained narration", 400);
-            options.voiceover = approvedNarration;
-          } else {
-            delete options.voiceover;
-          }
-        }
-      }
     }
 
     if (body.promptContext !== undefined) {
@@ -337,12 +256,6 @@ export async function POST(req: NextRequest) {
 
     const firstFrameUrl = await toRemoteUsableImage(imageUrl, { requireReadableLocal: Boolean(tidewePresenterImage || tideweProductVisible) });
     if ((tidewePresenterImage || tideweProductVisible) && imageUrl && !firstFrameUrl) return NextResponse.json({ error: "TIDEWE 当前关键帧不可用，请恢复或重新生成当前分镜图片。", code: "TIDEWE_REFERENCE_UNAVAILABLE" }, { status: 400 });
-    if (premiumCg && !firstFrameUrl) {
-      return NextResponse.json({
-        error: "Premium product CG product or approved keyframe reference is unavailable.",
-        code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
-      }, { status: 400 });
-    }
     // Keyframe chaining: pin the clip's last frame to the next
     // shot's keyframe so the transition is generated inside the clip (seamless on hard concat)
     const lastFrameUrl = lastImageUrl ? await toRemoteUsableImage(lastImageUrl, { requireReadableLocal: Boolean(tidewePresenterImage || tideweProductVisible) }) : undefined;

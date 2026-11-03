@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { assetScopeForShot } from "@/lib/asset-context";
-import { createCreativeProfileSnapshot, createPremiumProductCgProfile, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
@@ -146,7 +146,7 @@ describe("durable keyframe refinement execution", () => {
     try {
       expect(await runWorker(input)).toMatchObject({ pending: true });
       db.update(schema.scripts).set({ shots: [] }).run();
-      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile(), productImages: [] }).run();
+      db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile(), productImages: [] }).run();
       db.delete(schema.assets).run();
       expect(await runWorker(input)).toMatchObject({ pending: true });
       const result = await runWorker(input);
@@ -639,7 +639,7 @@ describe("single-frame refinement edit contract", () => {
 
   it.each([
     { category: "accessories" as const, name: "狩猎椅", canonical: "accessories", evidence: "不默认可折叠、旋转或调节" },
-    { category: "hunting_apparel" as const, name: "户外夹克", canonical: "apparel", evidence: "不默认迷彩、加热、防水" },
+    { category: "hunting_apparel" as const, name: "户外夹克", canonical: "apparel", evidence: "功能须有商品资料支持" },
     { category: "boots" as const, name: "狩猎靴", canonical: "boots", evidence: "靴子主类不等于防水靴或防蛇靴" },
   ])("uses the frozen $category category in the actual edit even when the current project changed", async ({ category, name, canonical, evidence }) => {
     tideweFixture();
@@ -666,7 +666,7 @@ describe("single-frame refinement edit contract", () => {
     if (changed === "facts") db.update(schema.projects).set({ productFacts: { ...facts, category: "hunting_chair" } }).run();
     if (changed === "presenter") db.update(schema.projects).set({ creativeProfile: { ...profile, presenter: { ...profile.presenter!, id: "different-presenter" } } }).run();
     if (changed === "speech") db.update(schema.projects).set({ creativeProfile: { ...profile, speechMode: "voiceover" } }).run();
-    if (changed === "type") db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile() }).run();
+    if (changed === "type") db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
     const list = await GET(new NextRequest(`http://localhost/api/project/${projectId}/keyframe-refine?scriptId=${scriptId}&shotId=1`), ctx());
     const response = await POST(request(), ctx());
     if (changed === "type") {
@@ -704,41 +704,6 @@ describe("single-frame refinement edit contract", () => {
     expect(await response.json()).toMatchObject({ code: "KEYFRAME_EDIT_MODEL_UNSUPPORTED", possiblyCharged: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(allAssets()).toMatchObject([{ id: "original", selected: true }]);
-  });
-
-  it("lets premium CG list, adopt, refine again, and roll back its trusted repair candidates", async () => {
-    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
-    const productShot: schema.Shot = { ...shot, description: "A complete hunting chair in a quiet wood-paneled room.", visualIntent: "Observe the supplied chair geometry and upholstery.", camera: "A static three-quarter product view.", voiceover: "" };
-    db.insert(schema.characters).values({ id: "legacy-host", name: "Legacy host", referenceImages: [presenterPath] }).run();
-    db.update(schema.projects).set({ creativeProfile: profile, characterId: "legacy-host", creativeConfigRevision: 6 }).run();
-    db.update(schema.scripts).set({ styleType: "premium_product_cg", shots: [productShot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
-    const trustedOriginal = `/api/files/${projectId}/asset-1-123-grid.png`;
-    await copyFile(join(directory, "uploads", projectId, "crop.png"), join(directory, "uploads", projectId, "asset-1-123-grid.png"));
-    db.update(schema.assets).set({ filePath: trustedOriginal }).run();
-    sourceScope();
-    const firstResponse = await POST(request({ issues: ["product", "duplicates"] }), ctx());
-    const firstResult = await firstResponse.json();
-    expect(firstResponse.status).toBe(200);
-    expect(firstResult.asset).toMatchObject({ selected: false, derivedFromAssetId: "original", sourceKeyframeUrl: trustedOriginal });
-    const { form, bytes } = await uploads();
-    expect(bytes).toEqual([cropBytes, productBytes]);
-    expect(form.get("prompt")).toContain("Premium product CG.");
-    expect(allAssets().find((row) => row.id === "original")?.selected).toBe(true);
-    const listRequest = () => new NextRequest(`http://localhost/api/project/${projectId}/keyframe-refine?scriptId=${scriptId}&shotId=1`);
-    expect((await (await GET(listRequest(), ctx())).json()).candidates).toHaveLength(2);
-    const adopt = (assetId: string) => PATCH(new NextRequest(`http://localhost/api/project/${projectId}/assets`, { method: "PATCH", body: JSON.stringify({ assetId }) }), ctx());
-    expect((await adopt(firstResult.asset.id)).status).toBe(200);
-    expect(allAssets().find((row) => row.id === firstResult.asset.id)?.selected).toBe(true);
-    const nextResponse = await POST(request({ sourceAssetId: firstResult.asset.id, issues: ["details"], resolution: "1080p" }), ctx());
-    const nextResult = await nextResponse.json();
-    expect(nextResponse.status).toBe(200);
-    expect(nextResult.asset).toMatchObject({ selected: false, derivedFromAssetId: firstResult.asset.id, sourceKeyframeUrl: firstResult.asset.filePath });
-    expect(allAssets().find((row) => row.id === firstResult.asset.id)?.selected).toBe(true);
-    expect((await (await GET(listRequest(), ctx())).json()).candidates).toHaveLength(3);
-    expect((await adopt(nextResult.asset.id)).status).toBe(200);
-    expect((await adopt("original")).status).toBe(200);
-    expect(allAssets().filter((row) => row.selected)).toMatchObject([{ id: "original", filePath: trustedOriginal }]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it.each(["other-shot", "other-script", "missing-file", "video"])("rejects %s sources and preserves the selection", async (invalid) => {

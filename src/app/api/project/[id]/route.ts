@@ -8,18 +8,7 @@ import { projects } from "@/lib/db/schema";
 import { getUploadsDir, getOutputDir } from "@/lib/paths";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
-import {
-  createPremiumProductCgProfile,
-  createShortVideoSalesProfile,
-  createTideweOutdoorProfile,
-  isTideweOutdoorProfile,
-  resolveCreativeProfile,
-  sanitizeCreativeProfileDrafts,
-  validateCreativeProfileInput,
-  type CreativeProfileFallback,
-  type ProjectCreativeProfile,
-  type ProjectCreativeProfileDrafts,
-} from "@/lib/creative-profiles";
+import { createShortVideoSalesProfile, createTideweOutdoorProfile, isTideweOutdoorProfile, resolveCreativeProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type CreativeProfileFallback, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
 import { generationItems, generationRuns } from "@/lib/generation-schema";
 
@@ -94,7 +83,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   const profile: JsonRecord = {};
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
-    "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
+    "duration",
     "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
@@ -108,8 +97,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
 function hasProfileSettings(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return [
-    "styleType", "videoMode", "targetDuration", "duration", "narrationMode", "soundMode",
-    "textPolicy", "visualDirection", "brandEndCard", "composeSnapshot", "compose",
+    "styleType", "videoMode", "targetDuration", "duration", "composeSnapshot", "compose",
     "creativeSettings", "recipeSnapshot",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ].some((key) => hasOwn(value, key));
@@ -126,10 +114,8 @@ function mergeCreativeProfileDrafts(
     ...(sanitizeCreativeProfileDrafts(incoming) ?? {}),
   };
   if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
-  if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
   if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
-  if (profile.creationType === "premium_product_cg") drafts.premium_product_cg = profile;
-  else if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
+  if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
   else drafts.short_video_sales = profile;
   return drafts;
 }
@@ -275,16 +261,12 @@ export async function PATCH(
         // Identity-only saves retain the saved settings for the project's fixed creation type.
         nextProfile = hasProfileSettings(profileInput)
           ? profileResult.profile
-          : profileResult.profile.creationType === "premium_product_cg"
-            ? preliminaryDrafts.premium_product_cg ?? profileResult.profile
-            : profileResult.profile.creationType === "tidewe_outdoor"
+          : profileResult.profile.creationType === "tidewe_outdoor"
               ? preliminaryDrafts.tidewe_outdoor ?? profileResult.profile
             : preliminaryDrafts.short_video_sales ?? profileResult.profile;
       } else if (hasDraftUpdate) {
         const incoming = sanitizeCreativeProfileDrafts(incomingDrafts);
-        const activeDraft = currentProfile.creationType === "premium_product_cg"
-          ? incoming?.premium_product_cg
-          : currentProfile.creationType === "tidewe_outdoor"
+        const activeDraft = currentProfile.creationType === "tidewe_outdoor"
             ? incoming?.tidewe_outdoor
           : incoming?.short_video_sales;
         if (activeDraft) nextProfile = activeDraft;

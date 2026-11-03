@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkCreativeProfileContext,
   createCreativeProfileSnapshot,
-  createPremiumProductCgProfile,
+  createShortVideoSalesProfile,
   createTideweOutdoorProfile,
 } from "@/lib/creative-profiles";
 import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-context";
@@ -46,15 +46,8 @@ describe("existing-keyframe creative context", () => {
 
   it("never allows a creation-type mismatch", () => {
     const { project, script } = fixture();
-    expect(checkKeyframeRefinementContext({ ...project, creativeProfile: createPremiumProductCgProfile() }, script))
+    expect(checkKeyframeRefinementContext({ ...project, creativeProfile: createShortVideoSalesProfile() }, script))
       .toMatchObject({ ok: false, code: "CREATIVE_PROFILE_MISMATCH" });
   });
 
-  it("keeps premium CG narration policy frozen to the selected script", () => {
-    const profile = createPremiumProductCgProfile({ narrationMode: "none" });
-    const script = { styleType: "premium_product_cg", creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 2) };
-    expect(checkKeyframeRefinementContext({ creativeProfile: profile, creativeConfigRevision: 6 }, script).ok).toBe(true);
-    expect(checkKeyframeRefinementContext({ creativeProfile: createPremiumProductCgProfile({ narrationMode: "restrained" }), creativeConfigRevision: 6 }, script))
-      .toMatchObject({ ok: true, projectProfile: script.creativeProfileSnapshot.profile, scriptProfile: script.creativeProfileSnapshot.profile });
-  });
 });

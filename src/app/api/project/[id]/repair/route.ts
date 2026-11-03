@@ -25,7 +25,6 @@ import {
 import { finalizeVideoRepair } from "@/lib/video-repair-finalize";
 import { extractFrameAtTime } from "@/lib/video-composer/frame-extract";
 import { isKlingVideoSelection } from "@/lib/assets-view";
-import { isPremiumProductCgProject } from "@/lib/creative-profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -222,9 +221,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   } catch {
     return apiError(req, "无效的修复参数", "Invalid repair payload", 400);
   }
-  // Repair uses a generic video-to-video prompt and can introduce a different visual
-  // treatment. Keep premium product CG on its controlled generation path until it has
-  // a dedicated repair compiler and provenance contract.
   const db = getDb();
   const [project] = await db
     .select({ creativeProfile: projects.creativeProfile, videoMode: projects.videoMode })
@@ -232,15 +228,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .where(eq(projects.id, id))
     .limit(1);
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
-  if (isPremiumProductCgProject(project)) {
-    return NextResponse.json(
-      {
-        error: "高端产品 CG 暂不支持通用视频修复，请从受控分镜重新生成。",
-        code: "PREMIUM_CG_OUTPUT_POLICY",
-      },
-      { status: 400 },
-    );
-  }
   try {
     if (body.action === "finalize") {
       const summary = sanitizeVideoRepairSummary(body.plan);

@@ -3,8 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { projects, scripts as scriptsTable } from "@/lib/db/schema";
 import { shotsToSrt, shotsToVtt } from "@/lib/subtitle-export";
-import { apiError, errText } from "@/lib/api-error";
-import { isPremiumProductCgProfile } from "@/lib/creative-profiles";
+import { apiError } from "@/lib/api-error";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -25,12 +24,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     .where(eq(projects.id, id))
     .limit(1);
   if (!project) return apiError(req, "项目不存在", "Project not found", 404);
-  if (isPremiumProductCgProfile(project.creativeProfile)) {
-    return NextResponse.json({
-      error: errText(req, "高端产品 CG 不支持字幕导出，因为字幕在该创作档案中已锁定关闭。", "Premium product CG does not allow subtitle export because captions are locked off."),
-      code: "PREMIUM_CG_OUTPUT_POLICY",
-    }, { status: 400 });
-  }
   const [script] = await db
     .select({ shots: scriptsTable.shots })
     .from(scriptsTable)

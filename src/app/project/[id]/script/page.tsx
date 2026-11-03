@@ -33,7 +33,6 @@ import { normalizeProductFacts } from "@/lib/tidewe/facts";
 import { tideweCopyInputError } from "@/lib/tidewe/copy-input";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 import {
-  createPremiumProductCgProfile,
   createShortVideoSalesProfile,
   createTideweOutdoorProfile,
   resolveCreativeProfile,
@@ -60,13 +59,11 @@ const styleLabelKeys: Record<string, string> = {
   scene: "styleScene",
   comparison: "styleComparison",
   story: "styleStory",
-  premium_product_cg: "stylePremiumCg",
   tidewe_outdoor: "styleTidewe",
 };
 
 const creationTypeLabelKeys: Record<CreationType, string> = {
   short_video_sales: "creativeTypeSales",
-  premium_product_cg: "creativeTypeCg",
   tidewe_outdoor: "styleTidewe",
 };
 
@@ -108,12 +105,9 @@ function projectMetaFromResponse(value: unknown): ProjectMeta {
   const parsedDrafts = sanitizeCreativeProfileDrafts(parseJsonRecord(project.creativeProfileDrafts)) ?? {};
   const creativeProfileDrafts: ProjectCreativeProfileDrafts = {
     short_video_sales: parsedDrafts.short_video_sales ?? createShortVideoSalesProfile(fallback),
-    premium_product_cg: parsedDrafts.premium_product_cg ?? createPremiumProductCgProfile(),
     tidewe_outdoor: parsedDrafts.tidewe_outdoor ?? createTideweOutdoorProfile(),
   };
-  if (creativeProfile.creationType === "premium_product_cg") {
-    creativeProfileDrafts.premium_product_cg = creativeProfile;
-  } else if (creativeProfile.creationType === "tidewe_outdoor") {
+  if (creativeProfile.creationType === "tidewe_outdoor") {
     creativeProfileDrafts.tidewe_outdoor = creativeProfile;
   } else {
     creativeProfileDrafts.short_video_sales = creativeProfile;
@@ -404,24 +398,24 @@ export default function ScriptPage() {
   }, [id, completedScriptRuns]);
 
   const currentScript = scripts[selectedScript];
-  const isPremiumCgProject = projectMeta?.creativeProfile.creationType === "premium_product_cg";
+
   const isTideweProject = projectMeta?.creativeProfile.creationType === "tidewe_outdoor";
   // pre-render ad compliance scan: rule-check the current script's voiceover and text overlays; warn on risky terms (non-blocking)
   const adViolations = useMemo(
-    () => (currentScript && !isPremiumCgProject && !isTideweProject ? checkScriptCompliance(currentScript.shots as { voiceover?: string; textOverlay?: { text?: string } | null }[]) : []),
-    [currentScript, isPremiumCgProject, isTideweProject]
+    () => (currentScript && !isTideweProject ? checkScriptCompliance(currentScript.shots as { voiceover?: string; textOverlay?: { text?: string } | null }[]) : []),
+    [currentScript, isTideweProject]
   );
   // pre-publish readiness check: inspect banned words / hook / duration / subtitles / CTA / three-act structure item by item (AIGC label is handled by the compose page, not checked here)
   const readiness = useMemo(
     () =>
-      currentScript && !isPremiumCgProject && !isTideweProject
+      currentScript && !isTideweProject
         ? checkPublishReadiness(currentScript.shots as Shot[], currentScript.totalDuration, {
             locale,
             // commerce hard rule "product visible in the first 3s" — only for product videos (topic videos have no productName)
             productName: projectMeta?.productName || undefined,
           })
         : null,
-    [currentScript, locale, projectMeta?.productName, isPremiumCgProject, isTideweProject]
+    [currentScript, locale, projectMeta?.productName, isTideweProject]
   );
 
   // template-related state
@@ -594,7 +588,7 @@ export default function ScriptPage() {
 
   /** Poll the project's latest pipeline run to a terminal status, mirroring stage labels. */
   const attachPipeline = async () => {
-    if (!SHOW_FREE_QUICK_CUT || isPremiumCgProject || isTideweProject) return;
+    if (!SHOW_FREE_QUICK_CUT || isTideweProject) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setResumableRun(null);
@@ -622,7 +616,7 @@ export default function ScriptPage() {
 
   /** Start (or resume) the server-side run, then attach as an observer. */
   const startPipeline = async (resume: boolean) => {
-    if (!SHOW_FREE_QUICK_CUT || isPremiumCgProject || isTideweProject) return;
+    if (!SHOW_FREE_QUICK_CUT || isTideweProject) return;
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
     setAutoFinishing(true);
@@ -653,7 +647,7 @@ export default function ScriptPage() {
   const [pipelineChecked, setPipelineChecked] = useState(!SHOW_FREE_QUICK_CUT);
   useEffect(() => {
     if (!SHOW_FREE_QUICK_CUT || !projectMeta) return;
-    if (isPremiumCgProject || isTideweProject) {
+    if (isTideweProject) {
       setPipelineChecked(true);
       return;
     }
@@ -675,17 +669,17 @@ export default function ScriptPage() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount; attachPipeline is a stable page-level handler
-  }, [id, isPremiumCgProject, isTideweProject, projectMeta]);
+  }, [id, isTideweProject, projectMeta]);
 
   // ?auto=1 fresh start (from the /start hero flows) — only after the re-attach check settled,
   // so an already-live or breakpointed run is never silently restarted from the top
   useEffect(() => {
-    if (!SHOW_FREE_QUICK_CUT || !projectMeta || isPremiumCgProject || isTideweProject || !autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
+    if (!SHOW_FREE_QUICK_CUT || !projectMeta || isTideweProject || !autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
     setAutoModeTriggered(true);
     // the AI path lands on the "script ready" gate instead of auto-running the free chain
     if (genPref !== "ai") autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun, isPremiumCgProject, isTideweProject, projectMeta]);
+  }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun, isTideweProject, projectMeta]);
 
   // Reports and open edits belong to a script ID; regeneration may retain the same list index.
   useEffect(() => {
@@ -919,14 +913,7 @@ export default function ScriptPage() {
             {t(creationTypeLabelKeys[projectMeta.creativeProfile.creationType])}
           </Badge>
         </div>
-        {projectMeta.creativeProfile.creationType === "premium_product_cg" && (
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span className="text-primary">{t("creativeTypeCgActive")}</span>
-            <span>{t("creativeProfileDuration", { n: projectMeta.creativeProfile.targetDuration })}</span>
-            <span>{projectMeta.creativeProfile.narrationMode === "none" ? t("creativeProfileVisualOnly") : t("creativeProfileRestrainedVoice")}</span>
-            <span>{t("creativeProfileNoText")}</span>
-          </div>
-        )}
+
         {projectMeta.creativeProfile.creationType === "tidewe_outdoor" && <TideweProjectSettings
           key={`${id}-${projectMeta.creativeConfigRevision}`}
           projectId={id} revision={projectMeta.creativeConfigRevision} facts={projectMeta.productFacts}
@@ -934,7 +921,7 @@ export default function ScriptPage() {
           disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing}
           onBusyChange={setCreativeConfigSaving} onSaved={(project) => setProjectMeta(projectMetaFromResponse(project))}
         />}
-        {(isPremiumCgProject || isTideweProject) && projectMeta.productImages.length > 0 && (
+        {isTideweProject && projectMeta.productImages.length > 0 && (
           <section aria-label={t("productReferencesTitle")} className="mt-4 border-t border-border/50 pt-4">
             <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
               <span className="font-medium">{t("productReferencesTitle")}</span>
@@ -1039,7 +1026,7 @@ export default function ScriptPage() {
 
   // Hands-off takeover: while the auto chain (free) runs,
   // beginners see one progress card, not the editor
-  if (SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) {
+  if (SHOW_FREE_QUICK_CUT && !isTideweProject && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
@@ -1074,7 +1061,7 @@ export default function ScriptPage() {
         {isTideweProject && currentScript?.copyDocument && <TideweCopyEditor key={`${currentScript.id}:${currentScript.scriptHash}`} document={currentScript.copyDocument} busy={scriptActionsBusy || creativeConfigSaving} onSave={saveTideweCopy} />}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
-        {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && resumableRun && !autoFinishing && (
+        {SHOW_FREE_QUICK_CUT && !isTideweProject && resumableRun && !autoFinishing && (
           <div className="mx-auto mb-5 max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
             <p className="text-sm font-medium text-amber-500">
               ⏸ {resumableRun.interrupted ? t("pipelineInterruptedTitle") : t("pipelineFailedTitle")}
@@ -1130,8 +1117,8 @@ export default function ScriptPage() {
               </div>
             )}
             <div className="flex flex-col items-center gap-3">
-              <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject ? "sm:grid-cols-2" : ""}`}>
-                {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && <Button
+              <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT && !isTideweProject ? "sm:grid-cols-2" : ""}`}>
+                {SHOW_FREE_QUICK_CUT && !isTideweProject && <Button
                   size="lg"
                   variant={genPref === "ai" ? "outline" : "default"}
                   className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
@@ -1147,7 +1134,7 @@ export default function ScriptPage() {
                   </Button>
                 </Link>
               </div>
-              {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
+              {SHOW_FREE_QUICK_CUT && !isTideweProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
               <div className="flex flex-wrap items-center gap-3">
                 {!isTideweProject && <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
                   {isGenerating && <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" />}
@@ -1244,7 +1231,7 @@ export default function ScriptPage() {
                   <TabsTrigger value="text">{t("tabText")}</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2">
-                  {!isPremiumCgProject && <Button
+                  <Button
                       variant="outline"
                       className="text-sm"
                       disabled={scriptActionsBusy}
@@ -1259,8 +1246,8 @@ export default function ScriptPage() {
                       ) : (
                         <>⚖️ {t("judgeButton")}</>
                       )}
-                    </Button>}
-                  {SHOW_FREE_QUICK_CUT && !isPremiumCgProject && !isTideweProject && <Button
+                    </Button>
+                  {SHOW_FREE_QUICK_CUT && !isTideweProject && <Button
                     variant="outline"
                     className="text-sm"
                     disabled={autoFinishing}
@@ -1509,14 +1496,8 @@ export default function ScriptPage() {
                                     )}
                                   </div>
                                 </div>
-                                {/* CG shots show the product reference, labeled separately from the future generated frame. */}
                                 <div className="w-20 h-14 bg-muted/30 rounded-md shrink-0 overflow-hidden flex items-center justify-center border border-border/30 relative">
-                                  {isPremiumCgProject && projectMeta?.productImages[0] ? (
-                                    <>
-                                      <Image src={projectMeta.productImages[0]} alt={t("productReferenceAlt", { n: 1 })} fill unoptimized sizes="80px" className="object-contain" />
-                                      <span className="absolute inset-x-0 bottom-0 bg-background/85 py-0.5 text-center text-[9px] text-muted-foreground">{t("productReferenceShort")}</span>
-                                    </>
-                                  ) : shot.visualSource === "product_image" && projectMeta?.productImages?.[0] ? (
+                                  {shot.visualSource === "product_image" && projectMeta?.productImages?.[0] ? (
                                     // eslint-disable-next-line @next/next/no-img-element
                                     <img
                                       src={projectMeta.productImages[0]}

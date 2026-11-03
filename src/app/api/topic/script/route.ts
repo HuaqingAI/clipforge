@@ -10,15 +10,7 @@ import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { scriptRevision } from "@/lib/asset-context";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
-import {
-  createPremiumProductCgProfile,
-  createShortVideoSalesProfile,
-  sanitizeCreativeProfileDrafts,
-  validateCreativeProfileInput,
-  type CreativeProfileFallback,
-  type ProjectCreativeProfileDrafts,
-  type ShortVideoSalesProfile,
-} from "@/lib/creative-profiles";
+import { createShortVideoSalesProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type CreativeProfileFallback, type ProjectCreativeProfileDrafts, type ShortVideoSalesProfile } from "@/lib/creative-profiles";
 
 const VALID_NARRATION = new Set<TopicNarrationStyle>([
   "knowledge",
@@ -48,7 +40,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   const profile: JsonRecord = {};
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
-    "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
+    "duration",
     "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
@@ -76,7 +68,6 @@ function createProfileDrafts(
 ): ProjectCreativeProfileDrafts {
   const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
   if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
-  if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
   drafts.short_video_sales = profile;
   return drafts;
 }

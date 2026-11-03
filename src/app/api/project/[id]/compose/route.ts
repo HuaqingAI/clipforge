@@ -27,19 +27,7 @@ import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
 import { desc, and } from "drizzle-orm";
 import { readCompositionError, saveCompositionError } from "@/lib/composition-error";
-import {
-  isPremiumProductCgProfile,
-  isTideweOutdoorProfile,
-  isTideweNativeSpeech,
-  sanitizeCreativeProfile,
-  checkCreativeProfileContext,
-} from "@/lib/creative-profiles";
-import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import {
-  filterTrustedPremiumCgAssets,
-  hasTrustedPremiumCgAssetProvenance,
-  PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-} from "@/lib/premium-cg-assets";
+import { isTideweOutdoorProfile, isTideweNativeSpeech, sanitizeCreativeProfile, checkCreativeProfileContext } from "@/lib/creative-profiles";
 import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { assertTideweMediaDuration } from "@/lib/tidewe/visual-policy";
@@ -167,47 +155,6 @@ function profileFromSnapshot(value: unknown): unknown {
   return isRecord(value) ? value.profile : undefined;
 }
 
-function forbidsAddedFrameText(value: unknown): boolean {
-  if (value === "forbid-added") return true;
-  if (!isRecord(value)) return false;
-  if (value.generatedFrameText === "forbid-added" || value.textPolicy === "forbid-added") return true;
-  return isRecord(value.textPolicy) && value.textPolicy.generatedFrameText === "forbid-added";
-}
-
-function premiumCgComposeConflicts(body: ComposeRequestBody, narrationMode: "none" | "restrained"): boolean {
-  const freeTtsEnabled = isRecord(body.freeTts) && body.freeTts.enabled === true;
-  const requestedTtsConfig = isRecord(body.ttsConfig) && Object.keys(body.ttsConfig).length > 0;
-  const requestedVoiceoverOverride = Array.isArray(body.voiceoverOverrides) && body.voiceoverOverrides.length > 0;
-  const customAigcBadgeText = typeof body.aigcBadgeText === "string" && body.aigcBadgeText.trim().length > 0;
-  return body.subtitles === true
-    || body.karaoke === true
-    || body.captionPreset === "karaoke"
-    || body.productCard === true
-    || body.textOverlay !== undefined
-    || body.textOverlays !== undefined
-    || body.ctaEnabled === true
-    || body.editorialGraphics === true
-    || (typeof body.ctaText === "string" && body.ctaText.trim().length > 0)
-    || customAigcBadgeText
-    || (narrationMode === "none" && (
-      body.ttsEnabled === true
-      || freeTtsEnabled
-      || requestedTtsConfig
-      || requestedVoiceoverOverride
-      || body.voiceoverMode === "replace"
-      || body.voiceoverMode === "mix"
-    ))
-    || (narrationMode === "restrained" && (
-      // The profile owns the voice and replacement policy. Accepting a caller
-      // supplied provider or mix mode would let an old sales UI bypass it.
-      freeTtsEnabled
-      || requestedTtsConfig
-      || requestedVoiceoverOverride
-      || body.ttsEnabled === true
-      || body.voiceoverMode === "mix"
-    ));
-}
-
 // 合成视频：读取已选脚本分镜 + 已生成素材，用 FFmpeg 合成带运镜与中文字幕的成片
 export async function POST(
   req: NextRequest,
@@ -247,8 +194,7 @@ export async function POST(
 
     // A script snapshot is immutable provenance. Reject a type/revision
     // mismatch before touching assets or creating a composition. Snapshotless
-    // rows are classified as legacy sales by the shared checker, so a stale
-    // sales script cannot enter a current CG production path.
+    // rows are classified as legacy sales by the shared checker.
     if (projectProfile) {
       const context = checkCreativeProfileContext(
         {
@@ -296,20 +242,7 @@ export async function POST(
         return NextResponse.json({ error: "TIDEWE 使用文案中的自然推荐，不叠加默认购买条或商品卡。", code: "TIDEWE_OUTPUT_POLICY" }, { status: 400 });
       }
     }
-    const premiumProfile = activeProfile?.creationType === "premium_product_cg" ? activeProfile : undefined;
-    const premiumCg = Boolean(premiumProfile)
-      || (!activeProfile && (isPremiumProductCgProfile(body.creativeProfile) || isPremiumProductCgProfile(body.outputPolicy)
-        || forbidsAddedFrameText(body.creativeProfile) || forbidsAddedFrameText(body.outputPolicy)));
-    const narrationMode: "none" | "restrained" = premiumProfile?.narrationMode ?? "none";
-    if (premiumCg && premiumCgComposeConflicts(body, narrationMode)) {
-      return NextResponse.json(
-        { error: "高端产品 CG 不支持字幕、编辑性文字、购买 CTA 或商品卡；旁白由创作档案统一控制", code: "PREMIUM_CG_OUTPUT_POLICY" },
-        { status: 400 },
-      );
-    }
-    // A premium CG project is visual-first. Omitted switches resolve to the
-    // profile's locked-off output policy; legacy projects preserve their default.
-    const subtitles = premiumCg ? false : requestedSubtitles;
+    const subtitles = requestedSubtitles;
     let shots = selected.shots as Shot[];
     if (tidewe) {
       // The copy document owns executable narration; never prefer legacy narration fields.
@@ -320,31 +253,6 @@ export async function POST(
         delete clean.textOverlay;
         return clean;
       });
-    }
-    if (premiumProfile) {
-      // A silent CG profile deliberately discards historical sales narration.
-      // Restrained mode checks exactly the line that will reach controlled TTS
-      // (`narration` has precedence over legacy `voiceover`).
-      const policyShots = shots.map((shot) => {
-        if (premiumProfile.narrationMode === "none") {
-          return { ...shot, voiceover: "", narration: "" };
-        }
-        const narration = typeof shot.narration === "string" && shot.narration.trim()
-          ? shot.narration.trim()
-          : shot.voiceover;
-        return { ...shot, voiceover: narration, narration: "" };
-      });
-      const issues = lintCreativeProfileShots(premiumProfile, policyShots);
-      // textOverlay is removed below as a legacy executable field. Visual
-      // copy/marketing instructions and promotional narration require a fresh
-      // script instead of being silently rewritten at compose time.
-      const blocking = issues.filter((issue) => issue.code !== "text_overlay");
-      if (blocking.length > 0) {
-        return NextResponse.json(
-          { error: "高端产品 CG 脚本包含新增文字或营销指令，请重新生成脚本", code: "CREATIVE_POLICY_VIOLATION", issues: blocking },
-          { status: 400 },
-        );
-      }
     }
     // Transitions describe entry into the named shot and affect this render only.
     if (body.transitionOverrides !== undefined) {
@@ -386,26 +294,6 @@ export async function POST(
         return v ? { ...s, voiceover: v } : s;
       });
     }
-    if (premiumCg) {
-      // Stored overlays, presenter anchors, and sales voiceover fields are
-      // executable controls from older templates. Normalize them in memory so
-      // a render cannot reintroduce copy without mutating the saved script.
-      shots = shots.map((shot) => {
-        const clean: Shot = { ...shot };
-        delete clean.textOverlay;
-        delete clean.characterId;
-        if (narrationMode === "none") {
-          clean.voiceover = "";
-          delete clean.narration;
-        } else {
-          clean.voiceover = typeof clean.narration === "string" && clean.narration.trim()
-            ? clean.narration.trim()
-            : clean.voiceover?.trim() ?? "";
-          delete clean.narration;
-        }
-        return clean;
-      });
-    }
     // Dialogue-script cast (drama style): deterministic per-character Edge voices, free multi-voice
     // dialogue. Narrator shots (no characterId) keep the default/free voice below.
     const scriptCharacters = (selected.characters ?? []) as ScriptCharacter[];
@@ -421,9 +309,7 @@ export async function POST(
       await db.select().from(assetsTable).where(eq(assetsTable.projectId, id)).orderBy(desc(assetsTable.createdAt)),
       selected,
     );
-    const assetRows = premiumCg
-      ? filterTrustedPremiumCgAssets(scopedAssetRows, id, selected)
-      : scopedAssetRows;
+    const assetRows = scopedAssetRows;
     const assetByShot = new Map<number, string>();
     const assetAudioModeByShot = new Map<number, string>();
     for (const a of assetRows) {
@@ -462,15 +348,6 @@ export async function POST(
         if (tidewe && asset?.type === "stock_footage" && shots.find((shot) => shot.shotId === item.shotId)?.tidewe?.productVisible !== false) {
           return NextResponse.json({ error: `镜头 ${item.shotId} 的库存素材不能作为 TIDEWE 商品展示。`, code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 409 });
         }
-        if (premiumCg && asset && !hasTrustedPremiumCgAssetProvenance(asset, id, selected)) {
-          return NextResponse.json(
-            {
-              error: "Premium product CG can only compose controlled storyboard or Kling outputs from the current script.",
-              code: PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-            },
-            { status: 409 },
-          );
-        }
         if (!asset || asset.status !== "done" || !asset.filePath || !toLocalPath(asset.filePath)) {
           return NextResponse.json({ error: `镜头 ${item.shotId} 选择的素材已失效，请刷新后重新选择` }, { status: 409 });
         }
@@ -484,7 +361,7 @@ export async function POST(
     const ttsEnabled = body.ttsEnabled !== false;
     // 可选 TTS 配音配置（前端从设置带入）
     let ttsConfig: TTSConfig | undefined;
-    if (!premiumCg && ttsEnabled && body.ttsConfig?.provider === "elevenlabs-cli") {
+    if (ttsEnabled && body.ttsConfig?.provider === "elevenlabs-cli") {
       // An explicit CLI selection must never become the implicit Edge fallback
       // when its voice or model is missing, including on TIDEWE projects.
       const validation = validateElevenLabsConfig(body.ttsConfig);
@@ -492,22 +369,16 @@ export async function POST(
       try { await assertElevenLabsLocalRequest(req); }
       catch (error) { return elevenLabsRouteError(error); }
       ttsConfig = validation.config;
-    } else if (!premiumCg && ttsEnabled && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice) {
+    } else if (ttsEnabled && body.ttsConfig?.baseUrl && body.ttsConfig?.apiKey && body.ttsConfig?.model && body.ttsConfig?.voice) {
       ttsConfig = body.ttsConfig;
     }
     // 免费配音兜底（微软 Edge keyless TTS，无需 Key）：未配付费 TTS 时让「一句话主题成片」也能出声
-    const freeTts = premiumCg ? undefined : body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
-    // Restrained CG narration is a controlled post-production voice track. It
-    // uses the keyless Edge voice without exposing provider/voice switches to
-    // the request, and always replaces model-native speech when present.
-    const usePremiumRestrainedTts = Boolean(premiumProfile && narrationMode === "restrained");
+    const freeTts = body.freeTts as { enabled?: boolean; voice?: string; rate?: string } | undefined;
     // TIDEWE defaults to an English narration fallback. Whether it is needed is
     // decided from the chosen mode and each clip's audible audio and intent.
-    const useFreeTts = usePremiumRestrainedTts || (!premiumCg && ttsEnabled && !ttsConfig && (tidewe || freeTts?.enabled === true));
+    const useFreeTts = ttsEnabled && !ttsConfig && (tidewe || freeTts?.enabled === true);
     // Both extra switches are off in auto mode: audible source audio takes priority.
-    const voiceoverMode = usePremiumRestrainedTts
-      ? "replace"
-      : !premiumCg && (body.voiceoverMode === "auto" || body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
+    const voiceoverMode = (body.voiceoverMode === "auto" || body.voiceoverMode === "replace" || body.voiceoverMode === "mix")
         ? body.voiceoverMode
         : tidewe && !tideweNative ? "replace" : "auto";
     let freeVoice: string;
@@ -642,9 +513,7 @@ export async function POST(
       crf: profile.crf,
     };
 
-    // The AIGC disclosure is a deterministic compliance layer, not generated
-    // marketing copy. Premium CG may explicitly enable it; custom wording is
-    // rejected above so the platform default remains stable.
+    // The AIGC disclosure is an explicit deterministic compliance layer.
     const aigcBadge = body.aigcBadge === true;
 
     // Variant label (variant-matrix batch renders): surfaces on the export page's output list
@@ -706,11 +575,7 @@ export async function POST(
           : undefined;
       const audioPath = vo?.file;
       // A missing/failed voiceover keeps the original audio, including in replace mode.
-      // Product-CG videos never inherit model-native speech. Silent CG uses
-      // visual-only footage; restrained CG replaces it with the profile-owned
-      // post-production narration. Ambient or music belongs in the explicit
-      // BGM layer where it remains reviewable.
-      const keepNativeAudio = !premiumCg && nativeAudio && (!audioPath || voiceoverMode === "mix");
+      const keepNativeAudio = nativeAudio && (!audioPath || voiceoverMode === "mix");
 
       // Effective duration (core fix for issue #14 "next segment starts before speech ends"):
       // 1) TTS narration → actual audio length + breathing gap (clamped 1.5–20s); when the probe
@@ -807,15 +672,13 @@ export async function POST(
     );
     const subtitleTexts = timeline.cues;
     const karaokeLines = timeline.karaokeLines;
-    const overlays: { text: string; style: "title" | "highlight" | "price" | "badge"; startTime: number; endTime: number }[] = premiumCg
-      ? []
-      : [...timeline.overlays];
+    const overlays: { text: string; style: "title" | "highlight" | "price" | "badge"; startTime: number; endTime: number }[] = [...timeline.overlays];
 
     // 可选叠加：片头角标（默认关）+ 片尾购买 CTA，按 body 开关
     overlays.push(
       ...buildComplianceOverlays(
         {
-          ctaText: !premiumCg && typeof body.ctaText === "string" ? body.ctaText : undefined,
+          ctaText: typeof body.ctaText === "string" ? body.ctaText : undefined,
           aigcBadge,
           aigcBadgeText: typeof body.aigcBadgeText === "string" ? body.aigcBadgeText : undefined,
         },
@@ -858,7 +721,7 @@ export async function POST(
     }
 
     // 商品卡贴片（opt-in）：用商品图首图 + 商品名做左下角挂车卡
-    if (!premiumCg && body.productCard === true) {
+    if (body.productCard === true) {
       const cardImg = toLocalPath(productImages[0]);
       if (cardImg) {
         config.productCard = {

@@ -29,41 +29,9 @@ import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { apiError, errText } from "@/lib/api-error";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import { isKlingVideoSelection } from "@/lib/assets-view";
-import {
-  checkCreativeProfileContext,
-  isPremiumProductCgProfile,
-  isPremiumProductCgProject,
-  isTideweOutdoorProfile,
-  resolveCreativeProfile,
-} from "@/lib/creative-profiles";
-import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
-import { PREMIUM_CG_VIDEO_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
+import { checkCreativeProfileContext, isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
-
-/** Audio controls that providers accept directly or through their pass-through `extra` object. */
-const PREMIUM_CG_AUDIO_CONTROL_KEYS = new Set([
-  "audio",
-  "audioenabled",
-  "audioprompt",
-  "audioreference",
-  "audioreferenceurl",
-  "audioreferenceurls",
-  "audiourl",
-  "enableaudio",
-  "generateaudio",
-  "nativeaudio",
-  "referenceaudio",
-  "referenceaudiourl",
-  "referenceaudiourls",
-  "referenceaudios",
-  "sound",
-  "texttospeech",
-  "tts",
-  "ttsenabled",
-  "voiceover",
-]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -71,37 +39,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function isPremiumCgAudioControl(key: string): boolean {
-  return PREMIUM_CG_AUDIO_CONTROL_KEYS.has(key.replace(/[_-]/g, "").toLowerCase());
-}
-
-/**
- * Preserve the legacy sales request as-is. Premium CG owns every audio input on the
- * server so a client cannot inject copy, a voice reference, or a provider-specific
- * audio toggle after the persisted profile has selected silent or restrained narration.
- */
-function controlledFilmOptions(
-  raw: unknown,
-  premiumNarrationMode?: "none" | "restrained",
-): Record<string, unknown> {
-  const options = isPlainRecord(raw) ? { ...raw } : {};
-  if (premiumNarrationMode === undefined) return options;
-
-  for (const key of Object.keys(options)) {
-    if (isPremiumCgAudioControl(key)) delete options[key];
-  }
-
-  // Provider adapters apply opaque extras after their typed request body. The CG branch owns
-  // the compiled prompt and project references, so no nested value may replace either one.
-  delete options.extra;
-  delete options.negativePrompt;
-  delete options.negative_prompt;
-
-  // Approved restrained narration is embedded by buildStoryboardFilmPrompt. No caller
-  // supplied voiceover, prompt, or reference audio is allowed through to a provider.
-  options.audioEnabled = premiumNarrationMode === "restrained";
-  options.negativePrompt = PREMIUM_CG_VIDEO_NEGATIVE_PROMPT;
-  return options;
+function normalizeFilmOptions(raw: unknown): Record<string, unknown> {
+  return isPlainRecord(raw) ? { ...raw } : {};
 }
 
 function filmOutputDimensions(options: Record<string, unknown>): { width?: number; height?: number } {
@@ -146,15 +85,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       if (!project) return apiError(req, "Project not found", "Project not found", 404);
       if (isTideweOutdoorProfile(resolveCreativeProfile(project.creativeProfile))) {
         return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成；此原生整片路径不能可靠添加规范英语旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 409 });
-      }
-      if (isPremiumProductCgProject(project)) {
-        return NextResponse.json(
-          {
-            error: "Premium product CG does not recover legacy full-film outputs.",
-            code: "PREMIUM_CG_OUTPUT_POLICY",
-          },
-          { status: 409 },
-        );
       }
       return await recoverFilm(req, id, body);
     }
@@ -209,23 +139,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (isTideweOutdoorProfile(creativeProfile)) {
       return NextResponse.json({ error: "TIDEWE 请使用逐镜生成后合成；当前一次调用整片路径不支持规范英语后期旁白。", code: "TIDEWE_FILM_COMPOSE_UNSUPPORTED" }, { status: 422 });
     }
-    const premiumCgProfile = isPremiumProductCgProfile(creativeProfile) ? creativeProfile : undefined;
-    const premiumCg = !!premiumCgProfile;
-    const filmOptions = controlledFilmOptions(options, premiumCgProfile?.narrationMode);
+
+    const filmOptions = normalizeFilmOptions(options);
     const shots = Array.isArray(script.shots) ? script.shots : [];
-    if (premiumCg) {
-      const issues = lintCreativeProfileShots(creativeProfile, shots);
-      if (issues.length) {
-        return NextResponse.json({
-          error: "Premium product CG scripts cannot request generated text, promotional graphics, or unapproved narration.",
-          code: "CREATIVE_POLICY_VIOLATION",
-          issues,
-        }, { status: 400 });
-      }
-    }
-    // CG products never use a presenter identity reference. A stale client field cannot
-    // shift @Image indices or introduce a person into a product-film generation.
-    const effectiveCharacterSheetUrl = premiumCg ? undefined : characterSheetUrl;
+    const effectiveCharacterSheetUrl = characterSheetUrl;
     if (shots.length < 2) {
       return apiError(req, "分镜太少，一键整片至少需要 2 个分镜", "Too few shots — the film pass needs at least 2", 400);
     }
@@ -312,9 +229,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
       script,
     );
-    const assetRows = premiumCg
-      ? filterTrustedPremiumCgAssets(scopedAssetRows, id, script)
-      : scopedAssetRows;
+    const assetRows = scopedAssetRows;
     const byShot = new Map(assetRows.map((a) => [a.shotId, a]));
     const keyframes: string[] = [];
     const missing: number[] = [];
@@ -387,9 +302,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // portrait 720p unless the caller asked otherwise — maps to resolution+ratio provider-side
       width: opts.width ?? 720,
       height: opts.height ?? 1280,
-      // Sales films retain native dialogue. CG is silent by default; only an approved
-      // restrained-narration profile may request generated speech.
-      audioEnabled: !premiumCg || premiumCgProfile.narrationMode === "restrained",
+      // Full-film generation retains native dialogue.
+      audioEnabled: true,
     };
 
     // legacy single-phase path for providers without two-phase task support
@@ -556,7 +470,7 @@ async function recoverFilm(req: NextRequest, projectId: string, body: Record<str
 }
 
 class FilmPersistencePolicyError extends Error {
-  readonly code = "PREMIUM_CG_OUTPUT_POLICY";
+  readonly code = "FILM_CONTEXT_CHANGED";
 }
 
 /** A delayed result may only be written while the initiating project/script context remains current. */
@@ -565,9 +479,6 @@ async function assertFilmPersistenceContext(projectId: string, scriptId?: string
   const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
   if (!project) throw new Error("PROJECT_NOT_FOUND");
   if (!scriptId) {
-    if (isPremiumProductCgProject(project)) {
-      throw new FilmPersistencePolicyError("Premium product CG does not accept a recovered legacy full-film result.");
-    }
     return;
   }
   const [script] = await db.select().from(scripts).where(and(eq(scripts.id, scriptId), eq(scripts.projectId, projectId)));

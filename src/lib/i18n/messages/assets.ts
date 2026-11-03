@@ -41,7 +41,6 @@ export const assets: NamespaceMessages = {
     batchMotionExistingTask: "此分镜已有生成中或待恢复的任务，请先核对原任务",
     batchMotionTasksUnavailable: "Kling 任务列表尚未就绪，请先恢复任务列表后再提交",
     batchMotionUnavailable: "此分镜暂时无法转动态，请检查素材和生成设置",
-    batchMotionControlledModelRequired: "高端产品 CG 项目请在设置中选择 Kling 图生视频模型，再批量转动态",
     // 九宫格分镜（一图锁全片一致性）
     gridButton: "🎬 九宫格分镜",
     gridRunning: "九宫格生成中…",
@@ -260,7 +259,6 @@ export const assets: NamespaceMessages = {
     batchMotionExistingTask: "This shot has an active or recoverable task. Check the original task first",
     batchMotionTasksUnavailable: "The Kling task list is not ready. Restore it before submitting new shots",
     batchMotionUnavailable: "This shot cannot be animated yet. Check its asset and generation settings",
-    batchMotionControlledModelRequired: "For Premium product CG, choose a Kling image-to-video model in Settings before batch animation",
     gridButton: "🎬 Storyboard grid",
     gridRunning: "Rendering the grid…",
     gridResolutionLabel: "Storyboard grid resolution",

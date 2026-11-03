@@ -8,7 +8,7 @@ import { getDb } from "@/lib/db";
 import { aiTasks, assets, projects, scripts } from "@/lib/db/schema";
 import { getUploadsDir } from "@/lib/paths";
 import { probeMedia } from "@/lib/media-probe";
-import { filterAssetsForScript, shotKey, assetMatchesScript, scriptRevision } from "@/lib/asset-context";
+import { filterAssetsForScript, assetMatchesScript, scriptRevision } from "@/lib/asset-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { extractFirstFrame, extractLastFrame } from "@/lib/video-composer/frame-extract";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
@@ -17,12 +17,7 @@ import { assertKlingJobLease, getKlingJob, getKlingOutputs, patchKlingJob, patch
 import { downloadPublicFile } from "./download";
 import { KlingError } from "./errors";
 import { cleanupDeletedKlingJob } from "./delete-job";
-import { checkCreativeProfileContext, isPremiumProductCgProfile } from "@/lib/creative-profiles";
-import {
-  filterTrustedPremiumCgAssets,
-  hasTrustedPremiumCgAssetProvenance,
-  PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-} from "@/lib/premium-cg-assets";
+import { checkCreativeProfileContext } from "@/lib/creative-profiles";
 
 async function exists(file: string): Promise<boolean> {
   return stat(file).then((value) => value.isFile()).catch(() => false);
@@ -46,14 +41,11 @@ function registerOutput(job: KlingJob, output: KlingJobOutput): void {
     const scriptRows = tx.select().from(scripts).where(eq(scripts.projectId, job.projectId)).all();
     const selectedScript = resolveCurrentScript(scriptRows);
     const creativeContext = selectedScript ? checkCreativeProfileContext(project, selectedScript) : undefined;
-    const premiumCg = isPremiumProductCgProfile(creativeContext?.projectProfile);
     const scopedRaw = selectedScript ? filterAssetsForScript(
       tx.select().from(assets).where(and(eq(assets.projectId, job.projectId), eq(assets.shotId, job.shotId), eq(assets.selected, true))).all(),
       selectedScript,
     ) : [];
-    const scoped = premiumCg
-      ? filterTrustedPremiumCgAssets(scopedRaw, job.projectId, selectedScript)
-      : scopedRaw;
+    const scoped = scopedRaw;
     const baselineMatches = (scoped[0]?.id ?? null) === job.data.expectedSelectedAssetId;
     const contextMatches = Boolean(creativeContext?.ok
       && (!job.data.generationItemId || (selectedScript && scriptRevision(selectedScript) === job.data.scriptRevision
@@ -165,26 +157,6 @@ export async function importKlingOutputs(jobId: string): Promise<void> {
   } finally { cleanupDeletedKlingJob(jobId); }
 }
 
-/** Verify the original job/output record independently of the current shot's edits. */
-function hasTrustedKlingOutput(
-  original: typeof assets.$inferSelect,
-  job: KlingJob,
-  output: KlingJobOutput,
-  currentScriptId: string,
-): boolean {
-  const sourceShot = job.data.videoPromptAudit?.sourceShot;
-  const outputStem = `/api/files/${job.projectId}/kling/${job.id}/${output.id}`;
-  if (!sourceShot || sourceShot.shotId !== job.shotId || job.scriptId !== currentScriptId
-    || output.jobId !== job.id || output.assetId !== original.id
-    || original.projectId !== job.projectId || original.shotId !== job.shotId
-    || original.provider !== "kling-cli" || original.filePath !== output.data.filePath
-    || ![`${outputStem}.mp4`, `${outputStem}.webm`].includes(original.filePath ?? "")
-    || original.sourceScriptId !== job.scriptId || original.sourceRevision !== job.data.scriptRevision
-    || original.sourceShotKey !== job.data.shotKey
-    || shotKey(job.scriptId, sourceShot) !== job.data.shotKey) return false;
-  return hasTrustedPremiumCgAssetProvenance(original, job.projectId, { id: job.scriptId, shots: [sourceShot] });
-}
-
 /** Select a recovered take from the same script alternative without generating again. */
 export function selectKlingOutput(jobId: string, outputId: string, _adoptCurrentContext: boolean): void {
   void _adoptCurrentContext; // Retain the API argument for older clients; identity determines reuse.
@@ -211,17 +183,7 @@ export function selectKlingOutput(jobId: string, outputId: string, _adoptCurrent
       );
     }
     const matches = assetMatchesScript(original, script);
-    const premiumCg = isPremiumProductCgProfile(creativeContext.projectProfile);
     const belongsToJob = original.projectId === job.projectId && original.shotId === job.shotId;
-    const trusted = belongsToJob && matches && hasTrustedPremiumCgAssetProvenance(original, job.projectId, script)
-      && hasTrustedKlingOutput(original, job, output, script.id);
-    if (premiumCg && !trusted) {
-      throw new KlingError(
-        PREMIUM_CG_ASSET_PROVENANCE_REQUIRED,
-        "Premium product CG can only select a verified Kling output from this script.",
-        409,
-      );
-    }
     if (script.id !== job.scriptId || !belongsToJob || !matches) {
       throw new KlingError("KLING_CONTEXT_CHANGED", "此视频属于其他脚本方案，不能用于当前镜头", 409);
     }

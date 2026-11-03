@@ -9,17 +9,7 @@ import { parseProductFromHtml } from "@/lib/product-ingest";
 import { inferExtension, MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { safeFetch } from "@/lib/ssrf-guard";
 import { apiError, errText } from "@/lib/api-error";
-import {
-  createPremiumProductCgProfile,
-  createShortVideoSalesProfile,
-  createTideweOutdoorProfile,
-  isTideweOutdoorProfile,
-  sanitizeCreativeProfileDrafts,
-  validateCreativeProfileInput,
-  type CreativeProfileFallback,
-  type ProjectCreativeProfile,
-  type ProjectCreativeProfileDrafts,
-} from "@/lib/creative-profiles";
+import { createShortVideoSalesProfile, createTideweOutdoorProfile, isTideweOutdoorProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type CreativeProfileFallback, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 
 const UA = "Mozilla/5.0 (compatible; ClipForge/1.0; +https://github.com/xixihhhh/clipforge)";
@@ -45,7 +35,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   const profile: JsonRecord = {};
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
-    "duration", "narrationMode", "soundMode", "textPolicy", "visualDirection", "brandEndCard",
+    "duration",
     "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
@@ -74,10 +64,8 @@ function createProfileDrafts(
 ): ProjectCreativeProfileDrafts {
   const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
   if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
-  if (!drafts.premium_product_cg) drafts.premium_product_cg = createPremiumProductCgProfile();
   if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
-  if (profile.creationType === "premium_product_cg") drafts.premium_product_cg = profile;
-  else if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
+  if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
   else drafts.short_video_sales = profile;
   return drafts;
 }

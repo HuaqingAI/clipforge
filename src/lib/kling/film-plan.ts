@@ -15,14 +15,11 @@ import { validateVideoPrompt } from "@/lib/video-prompt";
 import { withVideoAudioMode, type VideoAudioMode } from "@/lib/video-audio";
 import {
   checkCreativeProfileContext,
-  isPremiumProductCgProfile,
   isTideweOutdoorProfile,
   isTideweNativeSpeech,
   resolveCreativeProfile,
   type ProjectCreativeProfile,
 } from "@/lib/creative-profiles";
-import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
 import { DEFAULT_FREE_VOICE } from "@/lib/tts-voices";
 import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { assertTideweScript } from "@/lib/tidewe/validation";
@@ -42,8 +39,6 @@ import { isKlingRuntimeEnabled } from "./runtime";
 import type { KlingFilmOutputSettings, KlingFilmView } from "./film-types";
 import type { KlingVideoModelDescriptor } from "./types";
 import type { KlingSubmitRequest } from "./job-types";
-import { compilePremiumCgVideoPrompt } from "@/lib/premium-cg-prompt";
-import { resolvePremiumCgVideoReferences } from "@/lib/premium-cg-video";
 import { normalizeTideweVideoDirectionConfig, prepareTideweVideoDirections, resolveTideweVideoDirection, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -89,17 +84,7 @@ function outputSettings(raw: unknown, creativeProfile?: ProjectCreativeProfile):
   }
   const settings = { resolution: value.resolution ?? "720p", aspectRatio: value.aspectRatio ?? "9:16", audioStrategy: value.audioStrategy ?? (tideweNative ? "native" : "edge-tts"), voice, subtitles: value.subtitles ?? (isTideweOutdoorProfile(creativeProfile) ? creativeProfile.composeSnapshot.subtitles !== false : true) };
   if (!["720p", "1080p"].includes(String(settings.resolution)) || !["9:16", "16:9", "1:1"].includes(String(settings.aspectRatio)) || !["edge-tts", "edge-tts-mix", "native"].includes(String(settings.audioStrategy)) || typeof settings.subtitles !== "boolean" || typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice)) throw fail("KLING_FILM_OUTPUT_INVALID", "整片分辨率、画幅、配音或字幕设置无效。");
-  const normalized = settings as KlingFilmOutputSettings;
-  if (!isPremiumProductCgProfile(creativeProfile)) return normalized;
-
-  // Premium product CG never sends a presenter-like native-audio request. Voice, when the
-  // project explicitly allows it, is added later from the approved script snapshot only.
-  return {
-    ...normalized,
-    audioStrategy: "edge-tts",
-    subtitles: false,
-    narrationMode: creativeProfile.narrationMode,
-  };
+  return settings as KlingFilmOutputSettings;
 }
 function generationOptions(
   model: KlingVideoModelDescriptor,
@@ -107,12 +92,12 @@ function generationOptions(
   output: KlingFilmOutputSettings,
   seconds: number,
   negativePrompt: string,
-  premiumCg = false,
+  controlledPrompt = false,
   minimumDuration?: number,
 ): { options: Record<string, string | number | boolean>; duration: number } {
   const duration = model.parameters.find((item) => DURATION_NAMES.includes(item.name));
   const source = { ...raw };
-  if (premiumCg) {
+  if (controlledPrompt) {
     delete source.negative_prompt;
     delete source.negativePrompt;
   }
@@ -129,14 +114,14 @@ function generationOptions(
   if (duration) source[duration.name] = chosen;
   const aspect = model.parameters.find((item) => ASPECT_NAMES.includes(item.name));
   if (aspect && !ASPECT_NAMES.some((name) => source[name] !== undefined)) source[aspect.name] = output.aspectRatio;
-  const nativeAudio = output.audioStrategy !== "edge-tts" && output.narrationMode !== "none";
+  const nativeAudio = output.audioStrategy !== "edge-tts";
   const audio = model.parameters.find((item) => AUDIO_NAMES.includes(item.name) && klingAudioParameterValue(item, nativeAudio) !== undefined);
   for (const name of AUDIO_NAMES) delete source[name];
   const audioValue = audio && klingAudioParameterValue(audio, nativeAudio);
   if (audio && audioValue !== undefined) source[audio.name] = audioValue;
   const negativeParameter = model.parameters.find((parameter) => ["negative_prompt", "negativePrompt"].includes(parameter.name));
   if (negativePrompt && negativeParameter) {
-    const existing = premiumCg
+    const existing = controlledPrompt
       ? []
       : [source.negative_prompt, source.negativePrompt].filter((value) => value !== undefined && value !== null && value !== "");
     if (existing.some((value) => typeof value !== "string")) throw fail("KLING_FILM_INPUT_INVALID", "负面提示词必须是文本。");
@@ -160,18 +145,14 @@ function projectPromptRevision(project: typeof projects.$inferSelect): string {
 }
 function promptFor(shot: Shot, model: KlingVideoModelDescriptor, output: KlingFilmOutputSettings, ordinal: number, project: typeof projects.$inferSelect, settings: VideoPromptSettings, creativeProfile: ProjectCreativeProfile): { prompt: string; negativePrompt: string } {
   const audioMode: VideoAudioMode = output.audioStrategy === "edge-tts" ? "silent" : output.audioStrategy === "edge-tts-mix" ? "ambient" : "native";
-  const premiumCg = isPremiumProductCgProfile(creativeProfile);
-  if (premiumCg) return compilePremiumCgVideoPrompt(shot, creativeProfile);
   const tidewe = isTideweOutdoorProfile(creativeProfile);
   const direction = buildShotVideoPrompt({ shot, ordinal, settings, category: project.productCategory, creativeIntent: project.creativeIntent, visualBible: project.visualBible, creativeProfile,
-    audioMode: audioMode === "native" && output.narrationMode !== "none" ? "native" : "post",
+    audioMode: audioMode === "native" ? "native" : "post",
     ...(tidewe ? { tideweVideoDirection: resolveTideweVideoDirection(shot) } : {}), locale: tidewe ? "en" : "zh" });
   if (isTideweOutdoorProfile(creativeProfile)) return direction;
-  // A legacy free-form prompt can contain sales language. CG always compiles from the controlled
-  // visual direction and profile policy instead of inheriting that older prompt field.
-  const parts = model.tool === "text_to_video" && !premiumCg ? [shot.visualIntent?.trim() || shot.description, direction.prompt] : [direction.prompt];
+  const parts = model.tool === "text_to_video" ? [shot.visualIntent?.trim() || shot.description, direction.prompt] : [direction.prompt];
   const approvedNarration = shot.narration?.trim() || shot.voiceover?.trim();
-  if (output.audioStrategy === "native" && output.narrationMode !== "none" && approvedNarration) parts.push(`原生音频必须逐字说出以下台词，不改写、不增添：${JSON.stringify(approvedNarration)}`);
+  if (output.audioStrategy === "native" && approvedNarration) parts.push(`原生音频必须逐字说出以下台词，不改写、不增添：${JSON.stringify(approvedNarration)}`);
   // Normalize legacy audio templates in both saved text-to-video prompts and motion text.
   const prompt = withVideoAudioMode(parts.join("\n"), audioMode, "zh");
   const issues = validateVideoPrompt(prompt);
@@ -230,13 +211,6 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
     catch (error) { throw fail("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 原文覆盖无效"); }
     if (!project.productImages?.length && shots.some((shot) => shot.tidewe?.productVisible)) throw fail("TIDEWE_PRODUCT_REFERENCE_REQUIRED", "TIDEWE 产品镜需要当前商品参考图。");
   }
-  if (isPremiumProductCgProfile(creativeProfile)) {
-    if (!Array.isArray(project.productImages) || !project.productImages.some((image) => typeof image === "string" && image.trim())) {
-      throw fail("PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED", "高端产品 CG 整片需要至少一张已保存的产品参考图。");
-    }
-    const issues = lintCreativeProfileShots(creativeProfile, shots);
-    if (issues.length) throw fail("CREATIVE_POLICY_VIOLATION", "高端产品 CG 脚本包含画面文字、营销图形或不符合旁白策略的内容，请修改脚本后重试。");
-  }
   const output = outputSettings(body.output, creativeProfile);
   if (!shots.length || shots.length > MAX_SHOTS || new Set(shots.map((shot) => shot.shotId)).size !== shots.length || shots.some((shot) => !Number.isSafeInteger(shot.shotId) || shot.shotId < 0 || !Number.isFinite(shot.duration) || shot.duration <= 0) || shots.reduce((sum, shot) => sum + shot.duration, 0) > MAX_SECONDS) throw fail("KLING_FILM_LIMIT_EXCEEDED", "整片需要 1–50 个有效镜头，总时长不能超过 600 秒。");
   if (tidewe) {
@@ -255,14 +229,10 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
     db.select().from(assets).where(and(eq(assets.projectId, project.id), eq(assets.selected, true))).all(),
     script,
   );
-  const selectedAssets = isPremiumProductCgProfile(creativeProfile)
-    ? filterTrustedPremiumCgAssets(scopedSelectedAssets, project.id, script)
-    : scopedSelectedAssets;
+  const selectedAssets = scopedSelectedAssets;
   const runId = randomUUID(), now = Date.now(), warnings: string[] = [];
   const planned: Array<typeof klingFilmShots.$inferInsert> = [];
-  // A selected video can be a legacy sales take. Premium CG always regenerates from a
-  // project-owned product/keyframe image instead of silently inserting that take into a film.
-  const reuseExistingVideos = !isPremiumProductCgProfile(creativeProfile) && body.reuseExistingVideos !== false;
+  const reuseExistingVideos = body.reuseExistingVideos !== false;
   let generatedSeconds = 0;
   for (const [ordinal, shot] of shots.entries()) {
     const selected = selectedAssets.filter((asset) => asset.shotId === shot.shotId);
@@ -291,16 +261,11 @@ export async function previewKlingFilm(raw: unknown): Promise<KlingFilmView> {
         output,
         shot.duration,
         direction.negativePrompt,
-        isPremiumProductCgProfile(creativeProfile) || tidewe,
+        tidewe,
         isTideweNativeSpeech(creativeProfile) && output.audioStrategy === "native" ? shot.duration : undefined,
       );
       data.options = generated.options; data.generationDuration = generated.duration; generatedSeconds += generated.duration;
       data.keyframeUrl = keyframe(asset, shot, project.productImages);
-      if (model.tool === "text_to_video" && isPremiumProductCgProfile(creativeProfile)) {
-        const references = resolvePremiumCgVideoReferences({ productImages: project.productImages, selectedAssets, shotIds: shots.map((item) => item.shotId), shotId: shot.shotId });
-        if (!references.ok) throw fail(references.code, "高端产品 CG 需要当前项目已保存的产品参考图或关键帧。");
-        data.keyframeUrl = references.imageUrl;
-      }
       // Text-to-video can receive the approved product and presenter references
       // directly, even when this shot has no separately saved keyframe yet.
       if (model.tool === "text_to_video" && tidewe && shot.tidewe?.productVisible && !data.keyframeUrl) data.keyframeUrl = project.productImages?.[0];
@@ -360,9 +325,7 @@ function assertContext(run: KlingFilmRun, shots: KlingFilmShot[]): void {
     db.select().from(assets).where(and(eq(assets.projectId, run.projectId), eq(assets.selected, true))).all(),
     script,
   );
-  const active = isPremiumProductCgProfile(context.projectProfile)
-    ? filterTrustedPremiumCgAssets(scopedActive, run.projectId, script)
-    : scopedActive;
+  const active = scopedActive;
   for (const shot of shots) {
     // The plan owns order, prompts and copy; the live script only supplies identity.
     if (shot.ordinal < 0 || !script.shots?.some((item) => item.shotId === shot.shotId) || shot.data.shot.shotId !== shot.shotId) throw fail("KLING_CONTEXT_CHANGED", "整片镜头已不存在或不属于原计划。");

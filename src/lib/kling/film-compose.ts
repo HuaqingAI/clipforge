@@ -85,7 +85,7 @@ function loadPlan(runId: string): { run: KlingFilmRun; shots: KlingFilmShot[]; c
       assertTideweScript(run.data.scriptSnapshot);
       if (!nativeSpeech) resolveNarrationVoice(run.data.creativeProfile, settings.voice);
     } catch (error) { throw failure("TIDEWE_SCRIPT_INVALID", error instanceof Error ? error.message : "TIDEWE 口播快照无效"); }
-    if (settings.audioStrategy !== (nativeSpeech ? "native" : "edge-tts") || settings.narrationMode !== undefined) {
+    if (settings.audioStrategy !== (nativeSpeech ? "native" : "edge-tts")) {
       throw failure("TIDEWE_OUTPUT_POLICY", nativeSpeech
         ? "TIDEWE 真人口播必须保留视频原生英语声音，不能重复添加 TTS，请重新预览计划。"
         : "TIDEWE 画外音整片必须添加已确认英文旁白并替换源人声，请重新预览计划。");
@@ -94,8 +94,7 @@ function loadPlan(runId: string): { run: KlingFilmRun; shots: KlingFilmShot[]; c
   }
   if (!["720p", "1080p"].includes(settings.resolution) || !["9:16", "16:9", "1:1"].includes(settings.aspectRatio) ||
     !["edge-tts", "edge-tts-mix", "native"].includes(settings.audioStrategy) || typeof settings.subtitles !== "boolean" ||
-    typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice) ||
-    (settings.narrationMode !== undefined && !["none", "restrained"].includes(settings.narrationMode))) throw failure("KLING_FILM_OUTPUT_INVALID", "整片输出配置无效，请重新预览整片计划。");
+    typeof settings.voice !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.voice)) throw failure("KLING_FILM_OUTPUT_INVALID", "整片输出配置无效，请重新预览整片计划。");
   const shots = db.select().from(klingFilmShots).where(eq(klingFilmShots.runId, runId)).orderBy(asc(klingFilmShots.ordinal)).all();
   const snapshot = run.data.scriptSnapshot.shots;
   if (!snapshot.length || shots.length !== snapshot.length || shots.some((item, ordinal) => {
@@ -198,7 +197,7 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
       throw failure("KLING_FILM_COMPOSITION_CONFLICT", "整片合成编号已关联其他输出，请刷新任务后恢复。");
     }
     if (!current) tx.insert(compositions).values({ id: compositionId, projectId: run.projectId, resolution: run.data.output.resolution,
-      aspectRatio: run.data.output.aspectRatio, ttsEnabled: run.data.output.audioStrategy !== "native" && run.data.output.narrationMode !== "none", status: "pending", label: "Kling 自动整片" }).run();
+      aspectRatio: run.data.output.aspectRatio, ttsEnabled: run.data.output.audioStrategy !== "native", status: "pending", label: "Kling 自动整片" }).run();
   });
   try {
     await mkdir(dirname(outputPath), { recursive: true });
@@ -230,11 +229,10 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
         assertOwned();
         const native = run.data.output.audioStrategy === "native";
         const mix = run.data.output.audioStrategy === "edge-tts-mix";
-        const narrationDisabled = run.data.output.narrationMode === "none";
         const preserveNativeAudio = native && source.probe.hasAudio;
         // Catalog metadata does not decide a model's abilities. Keep the returned audio;
         // when the returned clip has no track, add the approved copy during composition.
-        const speech = preserveNativeAudio || narrationDisabled ? undefined : await narration(shot, resolveNarrationVoice(run.data.creativeProfile, run.data.output.voice), workDir);
+        const speech = preserveNativeAudio ? undefined : await narration(shot, resolveNarrationVoice(run.data.creativeProfile, run.data.output.voice), workDir);
         assertOwned();
         const duration = preserveNativeAudio ? source.probe.duration : Math.max(native ? source.probe.duration : shot.data.shot.duration, mix ? source.probe.duration : 0, speech ? speech.duration + 0.45 : 0);
         if (tidewe) assertTideweMediaDuration(shot.shotId, duration, source.probe.duration);
@@ -251,10 +249,9 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
         if (tidewe) assertTideweMediaDuration(item.shot.shotId, item.clip.duration, item.clip.sourceDuration ?? 0);
       });
       const timeline = buildSubtitleTimeline(rendered.map((item) => {
-        const premiumCg = run.data.output.narrationMode !== undefined;
-        const overlay = premiumCg || tidewe ? undefined : item.shot.data.shot.textOverlay;
+        const overlay = tidewe ? undefined : item.shot.data.shot.textOverlay;
         return { duration: item.clip.duration, transition: item.clip.transition,
-          voiceover: !premiumCg && run.data.output.subtitles ? stripPauseMarks(item.shot.data.shot.voiceover ?? "") : undefined,
+          voiceover: run.data.output.subtitles ? stripPauseMarks(item.shot.data.shot.voiceover ?? "") : undefined,
           voiceSec: item.voiceSec, words: item.words,
           ...(overlay && overlay.style !== "subtitle" ? { overlay: { text: overlay.text, style: overlay.style } } : {}) };
       }));

@@ -15,8 +15,7 @@ import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { getVideoParamSpec } from "@/lib/providers/atlas-video-params";
 import { arkSeedanceVersion } from "@/lib/ark-video-models";
-import { isPremiumCgPromptPolicy, sanitizePremiumCgVisualText } from "@/lib/motion-prompt";
-import { sanitizeCreativeProfile, isTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import type { TideweVideoDirection } from "@/lib/tidewe/video-direction";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
@@ -275,7 +274,7 @@ export function referenceQuotaCheck(referenceImageCount: number, modelId: string
 export function buildStoryboardFilmPrompt(
   shots: Shot[],
   characters?: ScriptCharacter[] | null,
-  refs?: { characterSheet?: boolean; creativeProfile?: unknown; outputPolicy?: unknown },
+  refs?: { characterSheet?: boolean; creativeProfile?: unknown },
   opts?: {
     /**
      * Raw phone-shot texture block (default on — the film chain is UGC by design).
@@ -284,15 +283,11 @@ export function buildStoryboardFilmPrompt(
      */
     realism?: boolean;
     creativeProfile?: unknown;
-    outputPolicy?: unknown;
     /** Prepared directions keep timed TIDEWE shots on the same pure video compiler. */
     tideweVideoDirections?: Record<number, TideweVideoDirection>;
   }
 ): string {
-  const profileValue = opts?.creativeProfile ?? opts?.outputPolicy ?? refs?.creativeProfile ?? refs?.outputPolicy;
-  if (isPremiumCgPromptPolicy(profileValue)) {
-    return buildPremiumStoryboardFilmPrompt(shots, refs, profileValue);
-  }
+  const profileValue = opts?.creativeProfile ?? refs?.creativeProfile;
   if (isTideweOutdoorProfile(profileValue)) {
     const total = filmTotalSeconds(shots);
     if (total > FILM_MAX_SECONDS || shots.length > 9) throw new Error("当前整片模式无法容纳此 TIDEWE 脚本，请使用逐镜生成或明确重新规划，不能截断旁白或镜头。");
@@ -405,57 +400,4 @@ export function buildStoryboardFilmPrompt(
     ]
       .filter(Boolean)
       .join("\n");
-}
-
-/**
- * Premium product CG film contract. Kept separate from the legacy UGC film prompt so a
- * new policy cannot accidentally inherit presenter, handheld, dialogue, or CTA language.
- */
-function buildPremiumStoryboardFilmPrompt(
-  shots: Shot[],
-  refs: { characterSheet?: boolean } | undefined,
-  profileValue: unknown,
-): string {
-  const profile = sanitizeCreativeProfile(profileValue);
-  const restrainedNarration = profile?.creationType === "premium_product_cg" && profile.narrationMode === "restrained";
-  const visualShots = shots.map((shot) => ({
-    ...shot,
-    visual: sanitizePremiumCgVisualText(shot.visualIntent || shot.description) || "安静观察产品，保持形体与材质细节稳定",
-    camera: sanitizePremiumCgVisualText(shot.camera),
-    narration: restrainedNarration
-      ? sanitizePremiumCgVisualText(shot.narration || shot.voiceover)
-      : "",
-  }));
-  const total = filmRequestSeconds(shots);
-  const rawTotal = filmTotalSeconds(shots) || shots.length;
-  const scale = total / rawTotal;
-  let cursor = 0;
-  const aggressiveCamera = /\b(?:fast|rapid|quick|whip|crash|slam|jerk|handheld|shaky|spinning)\b|快|急|甩|手持|剧烈/i;
-  const segments = visualShots.map((shot, index) => {
-    const start = cursor;
-    const rawLength = Number.isFinite(shot.duration) && shot.duration > 0 ? shot.duration : rawTotal / shots.length;
-    cursor = index === visualShots.length - 1 ? total : Math.min(total, cursor + rawLength * scale);
-    const camera = shot.camera && !aggressiveCamera.test(shot.camera)
-      ? shot.camera
-      : "克制缓慢地前移或短距离横移，角度限于参考图已展示的范围";
-    const narration = shot.narration;
-    return `[${fmtSec(start)}-${fmtSec(cursor)}秒] 镜头${index + 1}（产品观察，构图以第${index + 1}张图片为基准）：${shot.visual}。运镜：${camera}。${narration ? `已批准的克制事实旁白，保持原文语言并逐字说出：{${narration}}` : ""}`;
-  });
-
-  const mapping = refs?.characterSheet
-    ? "素材对应：从第1张图片起依次为产品关键帧。人物定妆照或身份参考不用于场景内容，不得据此引入主持人或人物角色。"
-    : `素材对应：第1张图片至第${shots.length}张图片，依次为镜头1至镜头${shots.length}的产品关键帧。`;
-  return [
-    `竖屏 9:16 高端产品三维影像，总时长约 ${total} 秒，共 ${shots.length} 个克制镜头，一次生成整片，在以下时间点硬切。`,
-    mapping,
-    "全片保持同一件产品：类别、轮廓、比例、部件数量、可见结构、表面处理、材质、颜色和已有标识均以参考资料为准。尺度、构图、照明和场景须与已批准镜头中的真实产品及资料已确认的使用环境相符；未指定使用环境时采用中性摄影棚。保持灯光受控且一致、几何形体稳定、反射克制，节奏符合产品影像。",
-    "仅使用参考资料支持的结构、功能、材质和拍摄角度。不虚构未展示的背面、内部、机构、尺寸、认证或功能。产品始终是主体。只有已批准镜头明确要求且产品事实支持时，才允许局部手部或不露脸的人物用于说明尺度或演示一种简单用法；其余镜头只展示产品。不出现主持人口播、人物生活表演、手机手持质感、内容创作者自拍视频构图或带货表演。",
-    "不生成新增的画面文字、标题、字幕、数字、价格、促销图形、购买引导、标志或水印；仅保留参考资料中已可见的产品标识。",
-    restrainedNarration
-      ? "声音要求：仅允许已批准的克制事实旁白与自然的产品声或室内环境声；不出现对白表演、夸张宣传、稀缺性话术、对比宣传或购买引导。不生成字幕。"
-      : "声音要求：不生成对白、旁白、配音、音乐或人声；视频保持静音，需要时在后期加入已批准的环境声。不生成字幕。",
-    "旁白须保持已批准原文及原有语言，不翻译、不改写。",
-    "分镜（每张参考图片是对应的产品关键帧，须忠实保留产品身份与构图）：",
-    ...segments,
-  ].filter(Boolean).join("\n");
 }

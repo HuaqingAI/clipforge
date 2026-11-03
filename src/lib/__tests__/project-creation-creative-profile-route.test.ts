@@ -61,6 +61,22 @@ afterEach(() => {
 });
 
 describe("project creation requires an explicit creative profile", () => {
+  it.each([
+    { creativeProfile: { creationType: "premium_product_cg" } },
+    { creationType: "premium_product_cg" },
+    { creativeProfile: "premium_product_cg_v1" },
+    { creativeProfile: { styleType: "premium_product_cg" } },
+  ])("rejects a removed creation type without writing a project or fetching a product: %j", async (identity) => {
+    const response = await createProject(request("http://localhost/api/project", { name: "Removed type", ...identity }));
+    expect(response.status).toBe(400);
+    const imported = await ingestProduct(request("http://localhost/api/ingest/product", {
+      url: "https://example.test/products/chair", createProject: true, ...identity,
+    }));
+    expect(imported.status).toBe(400);
+    expect(state.safeFetch).not.toHaveBeenCalled();
+    expect(db.select().from(schema.projects).all()).toHaveLength(0);
+  });
+
   it("rejects a direct project create without a creation type", async () => {
     const response = await createProject(request("http://localhost/api/project", { name: "Missing profile" }));
 

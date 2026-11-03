@@ -118,19 +118,14 @@ describe("TIDEWE custom copy before project creation", () => {
     await click("creationTypeSalesLabel");
     expect(container.querySelector("#tidewe-copy-input-scene-description")).toBeNull();
     await click("submitGenerate");
-    await click("creationTypeCgLabel");
-    expect(container.querySelector("#tidewe-copy-input-scene-description")).toBeNull();
-    await click("submitGenerateCg");
     const requests = generationBodies();
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(3);
     expect(requests[0]).toMatchObject({ copyText: original, count: 1 });
     expect(requests[0]).not.toHaveProperty("sceneDescription");
     expect(requests[1]).toMatchObject({ sceneDescription: scene.trim(), styleType: "tidewe_outdoor", count: 1 });
     expect(requests[1]).not.toHaveProperty("copyText");
     expect(requests[2]).not.toHaveProperty("count");
-    expect(requests[3]).not.toHaveProperty("count");
     expect(requests[2]).not.toHaveProperty("sceneDescription");
-    expect(requests[3]).not.toHaveProperty("sceneDescription");
     await click("label");
     expect((container.querySelector("#tidewe-copy-input-scene-description") as HTMLTextAreaElement).value).toBe(scene);
   });
@@ -201,7 +196,7 @@ describe("TIDEWE custom copy before project creation", () => {
     expect(generationBodies()).toEqual([]);
   });
 
-  it("keeps the manual draft across source and style switches without sending it for AI, sales or CG", async () => {
+  it("keeps the manual draft across source and style switches without sending it for AI or sales", async () => {
     await act(async () => root.render(createElement(NewProjectPage)));
     await product();
     await source("manual");
@@ -213,10 +208,7 @@ describe("TIDEWE custom copy before project creation", () => {
     await click("creationTypeSalesLabel");
     expect(container.querySelector("#tidewe-copy-input")).toBeNull();
     await click("submitGenerate");
-    await click("creationTypeCgLabel");
-    expect(container.querySelector("#tidewe-copy-input")).toBeNull();
-    await click("submitGenerateCg");
-    expect(generationBodies()).toHaveLength(3);
+    expect(generationBodies()).toHaveLength(2);
     expect(generationBodies()[0]).toHaveProperty("count", 1);
     for (const body of generationBodies()) {
       expect(body).not.toHaveProperty("copyText");

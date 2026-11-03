@@ -7,9 +7,10 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
+import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import {
   createCreativeProfileSnapshot,
-  createPremiumProductCgProfile,
+
   createShortVideoSalesProfile,
 } from "@/lib/creative-profiles";
 import { GET, PATCH } from "@/app/api/project/[id]/scripts/route";
@@ -183,13 +184,13 @@ describe("PATCH historical script restoration", () => {
 
   it("rejects a different creative type with a readable conflict", async () => {
     db.update(schema.scripts).set({
-      styleType: "premium_product_cg", creativeProfileSnapshot: createCreativeProfileSnapshot(createPremiumProductCgProfile(), 0),
+      styleType: "tidewe_outdoor", creativeProfileSnapshot: createCreativeProfileSnapshot(createTideweOutdoorProfile(), 0),
     }).where(eq(schema.scripts.id, historicalId)).run();
     const before = rows();
     const response = await restore(historicalId, projectId, "zh-CN");
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      code: "CREATIVE_PROFILE_MISMATCH", currentCreationType: "short_video_sales", scriptCreationType: "premium_product_cg",
+      code: "CREATIVE_PROFILE_MISMATCH", currentCreationType: "short_video_sales", scriptCreationType: "tidewe_outdoor",
       error: "该历史方案的创作类型与当前项目不一致，暂时无法恢复。",
     });
     expect(rows()).toEqual(before);
@@ -199,7 +200,7 @@ describe("PATCH historical script restoration", () => {
     const transaction = db.transaction.bind(db);
     vi.spyOn(db, "transaction").mockImplementationOnce((callback, config) => {
       expect(config).toEqual({ behavior: "immediate" });
-      db.update(schema.projects).set({ creativeProfile: createPremiumProductCgProfile(), creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
+      db.update(schema.projects).set({ creativeProfile: createTideweOutdoorProfile(), creativeConfigRevision: 1 }).where(eq(schema.projects.id, projectId)).run();
       return transaction(callback, config);
     });
     const response = await restore();

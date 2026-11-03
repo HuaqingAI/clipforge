@@ -76,13 +76,13 @@ describe("topic project creation creative profiles", () => {
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toMatchObject({ error: expect.stringContaining("Unknown") });
 
-    const premium = await POST(request({
+    const unsupported = await POST(request({
       topic: "A considered home design topic",
-      creativeProfile: { creationType: "premium_product_cg" },
+      creativeProfile: { creationType: "tidewe_outdoor" },
       llmConfig,
     }));
-    expect(premium.status).toBe(400);
-    await expect(premium.json()).resolves.toMatchObject({ code: "TOPIC_CREATIVE_PROFILE_UNSUPPORTED" });
+    expect(unsupported.status).toBe(400);
+    await expect(unsupported.json()).resolves.toMatchObject({ code: "TOPIC_CREATIVE_PROFILE_UNSUPPORTED" });
     expect(state.generateTopicScript).not.toHaveBeenCalled();
     expect(db.select().from(schema.projects).all()).toHaveLength(0);
   });
@@ -119,7 +119,6 @@ describe("topic project creation creative profiles", () => {
           styleType: "story",
           videoMode: "scene_demo",
         },
-        premium_product_cg: { creationType: "premium_product_cg" },
       },
     });
     expect(state.generateTopicScript).toHaveBeenCalledOnce();

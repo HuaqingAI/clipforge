@@ -54,8 +54,7 @@ export const projects = sqliteTable("projects", {
   // The active creative profile is the source of truth for new generation. The legacy
   // video_mode column remains populated so existing project views and integrations work.
   creativeProfile: text("creative_profile", { mode: "json" }).$type<ProjectCreativeProfile>(),
-  // Keep the last configuration for each creation type so switching between sales and
-  // premium CG restores the user's deliberate settings instead of leaking defaults.
+  // Keep independent saved settings for short-video sales and TIDEWE.
   creativeProfileDrafts: text("creative_profile_drafts", { mode: "json" }).$type<ProjectCreativeProfileDrafts>(),
   creativeConfigRevision: integer("creative_config_revision").notNull().default(0),
   sourceType: text("source_type", { enum: ["manual", "clone"] }).default("manual"), // manual=created by hand, clone=viral-video remake
@@ -78,7 +77,7 @@ export const scripts = sqliteTable("scripts", {
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   version: integer("version").notNull().default(1),
   styleType: text("style_type", {
-    enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "premium_product_cg", "tidewe_outdoor", "custom"],
+    enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "tidewe_outdoor", "custom"],
   }).notNull(),
   title: text("title"),
   totalDuration: integer("total_duration"), // Total duration in seconds
@@ -444,13 +443,9 @@ export interface Shot {
   visualSource: "ai_generate" | "product_image" | "user_upload";
   transition: "ai_start_end" | "ai_reference" | "direct_concat" | "ffmpeg_fade";
   voiceover: string; // Voiceover copy
-  /** Premium product CG narrative role. Existing commerce shots keep this absent. */
-  beatRole?: "establish" | "form" | "material" | "craft" | "function" | "lifestyle" | "hero";
-  /** Pure visual direction for CG shots; never a request to render copy into the frame. */
+  /** Visual direction shared by storyboard and image-generation workflows. */
   visualIntent?: string;
-  /** Optional identifier for a verified product-fact source. */
-  productFeatureRef?: string;
-  /** Separate sparse narration field used by premium CG contracts. */
+  /** Legacy narration metadata; TIDEWE uses its canonical copy document. */
   narration?: string;
   prompt?: string; // AI image/video generation prompt
   /** English stock-footage keywords for this shot (1-3), used to auto-match footage from free libraries (key for topic-based videos without a product) */

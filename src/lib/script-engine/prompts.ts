@@ -7,14 +7,6 @@ import { getTemplatesByCategory, categoryNameMap, type ProductCategory } from ".
 import { buildHookGuidance } from "./hook-patterns";
 import { EMOTION_RESTRAINT_RULES, presenterPromptBlock } from "@/lib/presenters";
 import { cameraPresetGuide } from "@/lib/camera-presets";
-import {
-  createPremiumProductCgProfile,
-  isPremiumProductCgProfile,
-  sanitizeCreativeProfile,
-  type NarrationMode,
-  type PremiumProductCgProfile,
-} from "@/lib/creative-profiles";
-import { getPremiumCgRecipeFromSnapshot } from "@/lib/premium-cg-recipes";
 import { buildTideweScriptPrompt, tideweProfileForInput } from "@/lib/tidewe/prompts";
 import type { ProductFacts } from "@/lib/tidewe/types";
 
@@ -48,30 +40,6 @@ export const SYSTEM_PROMPT = `你是一位顶级电商短视频编导，拥有�
 【输出要求】
 你必须严格按照指定的 JSON 格式输出脚本，不要输出任何额外的解释文字。`;
 
-/**
- * A separate role prompt for premium product CG films. Do not merge this into SYSTEM_PROMPT:
- * the sales prompt deliberately optimizes for hooks, conversion, and on-screen copy, which conflicts
- * with a quiet product film and cannot be reliably overridden by a final negative instruction.
- */
-export const PREMIUM_PRODUCT_CG_SYSTEM_PROMPT = `You are a director for premium product CG films across product categories.
-
-Your work treats the supplied product as the subject: its silhouette, proportions, visible finish,
-documented materials and craftsmanship, and relationship to an appropriate use context. Adapt the
-visual language to the actual product category and scale. Build a deliberate visual sequence.
-
-Rules:
-- Use only product facts supplied in the brief. Do not invent dimensions, mechanisms, materials, or unseen sides.
-- Preserve the supplied product's geometry, color, finish, proportions, and existing markings. If a material, process, function, or use is not documented, show only observable appearance.
-- Choose product-appropriate settings and details; do not assume a specific product type, material, component, or use environment.
-- Every shot has one visual observation and one simple, physically plausible camera movement.
-- Write description, visualIntent, camera, and prompt in Chinese for every product. The product-brief language determines only the title and any narration.
-- Favor quiet natural light or controlled studio light, restrained movement, stable geometry, believable contact shadows, and material detail.
-- A cropped hand or unfaced person may appear only for a simple, documented use or scale cue when the brief supports it; never as a presenter. Omit interactions when unsupported.
-- Generated frames contain no added text, subtitles, price, labels, promotional graphics, watermark, or call to action. Existing markings visible in supplied product reference may be preserved.
-- Do not use urgency, discounts, comparisons, audience bait, or purchase language.
-
-Return only the requested JSON object. Do not add commentary or markdown.`;
-
 // ==================== Style Structure Templates ====================
 
 /** Script style type */
@@ -86,7 +54,6 @@ export type ScriptStyleType =
   | "unboxing"
   | "product_pov"
   | "talking_head"
-  | "premium_product_cg"
   | "tidewe_outdoor"
   | "custom";
 
@@ -103,7 +70,6 @@ export const styleNameMap: Record<ScriptStyleType, string> = {
   unboxing: "开箱测评",
   product_pov: "物品拟人",
   talking_head: "达人口播",
-  premium_product_cg: "高端产品 CG",
   custom: "自定义",
 };
 
@@ -116,7 +82,6 @@ export const styleFormGroups: { form: string; formEn: string; styles: ScriptStyl
   { form: "物品形", formEn: "Product forms", styles: ["unboxing", "product_pov", "comparison"] },
   { form: "口播形", formEn: "Talking-head forms", styles: ["talking_head", "pain_point"] },
   { form: "场景形", formEn: "Scene forms", styles: ["scene"] },
-  { form: "产品 CG", formEn: "Premium product CG", styles: ["premium_product_cg"] },
 ];
 
 /** Structured prompt directives keyed by style */
@@ -301,14 +266,6 @@ ${presenterPromptBlock()}`,
 情绪节奏：被人设镇住 → 好奇理由 → 被证据说服 → 信任 → 果断下单
 
   ${presenterPromptBlock()}`,
-
-  premium_product_cg: `
-【脚本风格：高端产品 CG】
-适用于各类高端产品，按实际品类、尺度和参考资料选择镜头。建议使用“产品全貌 → 形体观察 → 表面或材质细节 → 已验证的工艺或功能 → 适配场景与尺度 → 主视觉收束”的递进；每镜只回答一个视觉问题。材质、工艺、功能及使用动作仅在资料支持时呈现，缺少依据时以可见外观、光影与构图替代。场景服务于产品用途，不预设家居空间或特定品类部件。
-
-严格禁止：价格、促销、购买引导、夸张承诺、人物口播、文字贴片、字幕、数字标签、画面内生成品牌字。产品原图已有的真实标识可保留，但不能额外添加文字。
-
-镜头保持克制：优先缓慢推进、短距离横移、细节微距滑动或小幅焦点转移；单一参考图不得编造背面、内部结构或大角度环绕。`,
 };
 
 // ==================== Video Mode Directives ====================
@@ -739,16 +696,14 @@ export interface ScriptGenerationInput {
   productName: string;
   /** product category */
   category: ProductCategory;
-  /** Original category before commerce normalization; CG uses this to retain unsupported or unspecified categories. */
+  /** Original product category before commerce normalization. */
   productCategoryHint?: string;
   /** product description / selling points */
   productDescription?: string;
   /** script style */
   styleType: ScriptStyleType;
-  /** Server-authoritative creation profile. Premium CG takes precedence over generic sales fields. */
+  /** Server-authoritative creation profile. */
   creativeProfile?: unknown;
-  /** Compatibility input for callers that have not yet embedded narrationMode in creativeProfile. */
-  narrationMode?: NarrationMode;
   /** target duration in seconds */
   targetDuration?: number;
   /** target audience */
@@ -780,159 +735,12 @@ export interface ScriptGenerationInput {
   preferredHookId?: string;
 }
 
-/** Resolves the one profile that must bypass the commerce prompt compiler. */
-export function premiumProductCgProfileForInput(input: ScriptGenerationInput): PremiumProductCgProfile | undefined {
-  const supplied = sanitizeCreativeProfile(input.creativeProfile);
-  if (isPremiumProductCgProfile(supplied)) return supplied;
-  if (input.styleType !== "premium_product_cg") return undefined;
-  return createPremiumProductCgProfile({
-    targetDuration: input.targetDuration,
-    videoMode: input.videoMode,
-    narrationMode: input.narrationMode,
-  });
-}
-
-function premiumProductCgOutputFormat(profile: PremiumProductCgProfile): string {
-  const narrationRule = profile.narrationMode === "none"
-    ? `- voiceover: every shot must use an empty string. This is a silent visual film; do not write placeholder narration.`
-    : `- voiceover: may be empty. When present, use one short, calm, factual sentence grounded in the supplied brief; never sell, compare, urge, or address the viewer.`;
-  return `
-【Premium product CG JSON format】
-Return one JSON object only:
-{
-  "title": "简短的产品短片标题，沿用商品资料的语言",
-  "totalDuration": ${profile.targetDuration},
-  "shots": [
-    {
-      "shotId": 1,
-      "type": "product_reveal",
-      "beatRole": "establish | form | material | craft | function | lifestyle | hero",
-      "duration": 4,
-      "description": "用中文描述所提供产品具体可见的画面构图",
-      "visualIntent": "用中文写明该镜头要呈现的单一视觉事实",
-      "camera": "用中文描述一次克制、符合物理规律的镜头运动",
-      "visualSource": "product_image | ai_generate | user_upload",
-      "transition": "direct_concat | ai_reference | ai_start_end | ffmpeg_fade",
-      "voiceover": "",
-      "prompt": "中文视觉生成提示词，包含材质、光线和构图，不新增画面文字"
-    }
-  ]
-}
-
-Field rules:
-- Use 5-8 shots whose durations add up to totalDuration. Do not use cta as a shot type.
-- description, visualIntent, camera, and prompt describe only visible product and environment facts. Never tell a generator to show words, labels, subtitles, numbers, price, a logo, or a graphic overlay.
-- description、visualIntent、camera、prompt 始终使用中文，与商品资料、标题和口播文案的语言无关；JSON 字段名和枚举值保持原样。
-- Do not output textOverlay, characters, SEO cover copy, or purchase instructions.
-- Preserve only markings already visible in the supplied product reference; do not invent branding.
-${narrationRule}`;
-}
-
-const PREMIUM_PRODUCT_CG_MODE_DIRECTIVES: Record<PremiumProductCgProfile["videoMode"], string> = {
-  product_closeup: `
-【CG visual mode: product portrait】
-Keep the supplied product as the sole subject. Establish its silhouette and proportions at its actual scale, then observe visible surfaces and documented material or craft details. Use a calm studio or minimal background appropriate to the product. Omit unsupported construction or function beats. Do not introduce people, a presenter, or a sales demonstration.`,
-  scene_demo: `
-【CG visual mode: product context and scale】
-Choose a restrained use environment appropriate to the supplied product category and documented use. Let the supplied use context determine the background and preserve realistic scale. A cropped hand, back view, or unfaced silhouette is allowed only for one simple documented interaction; omit the person and interaction when unsupported. The product remains the subject. Do not create a host, testimonial, or direct-to-camera performance.`,
-};
-
-function premiumProductCgCategoryLabel(input: ScriptGenerationInput): string {
-  const hint = input.productCategoryHint?.trim();
-  if (!hint) return categoryNameMap[input.category] ?? input.category;
-  const key = hint.toLowerCase();
-  if (key === "digital") return categoryNameMap.tech;
-  if (key === "other" || key === "unspecified") {
-    return "unspecified; identify the actual product category from the supplied product brief";
-  }
-  return categoryNameMap[key as ProductCategory] ?? hint;
-}
-
-/** Builds the isolated prompt branch for premium product CG. */
-export function buildPremiumProductCgUserPrompt(
-  input: ScriptGenerationInput,
-  profile: PremiumProductCgProfile = premiumProductCgProfileForInput(input) ?? createPremiumProductCgProfile(),
-): string {
-  const recipe = getPremiumCgRecipeFromSnapshot(profile.recipeSnapshot);
-  const parts: string[] = [
-    "Create a premium product CG film tailored to the supplied product category, scale, and verified reference.",
-    "\n【Product brief】",
-    `- Product name: ${input.productName}`,
-    `- Product category: ${premiumProductCgCategoryLabel(input)} (use the specific product brief to resolve the category and suitable setting)`,
-    `- Target duration: ${profile.targetDuration} seconds`,
-    `- Creation profile: ${profile.id}`,
-    `- Narration mode: ${profile.narrationMode}`,
-    `- Visual setting: ${profile.visualDirection.setting === "modern_home" ? "category-appropriate use context matched to the product brief" : "neutral studio matched to product scale"}`,
-    `- Visual look: ${profile.visualDirection.look}`,
-    `- Camera safety: ${profile.visualDirection.cameraSafety}`,
-    `\n${PREMIUM_PRODUCT_CG_MODE_DIRECTIVES[profile.videoMode]}`,
-    `\n【Non-negotiable frame policy】
-- Generate no added text in any frame: no caption, subtitle, title, price, label, number, watermark, product card, purchase prompt, or promotional graphic.
-- Do not add textOverlay. Do not describe words appearing, fading, animating, or being placed in the image.
-- No CTA, discount, urgency, sales hook, review, comparison, or audience-interaction language.
-- Product markings visible in approved reference imagery may remain unchanged; do not add or redraw brand copy.
-- Preserve the supplied product's geometry, proportions, color, finish, and visible markings.
-- Never invent an unseen back, mechanism, material, process, or feature. Use only supplied facts.
-- Select details and surroundings for the actual product category. Show material, craftsmanship, function, and interaction only when supported by supplied notes or visible reference evidence; otherwise use observable form, surface, light, and composition.
-- Treat recipe beats as visual priorities, not permission to invent missing details or force a use interaction.`,
-  ];
-
-  if (recipe) {
-    parts.push(`\n【CG visual recipe: ${recipe.name.en}】\n${recipe.promptDirective}\nPreferred visual beats: ${recipe.shotBeats.join(" -> ")}.`);
-  }
-
-  if (input.productDescription) {
-    parts.push(`\n【Verified product notes】\n${input.productDescription}`);
-  }
-  if (input.productAnalysis) {
-    parts.push(`\n【Reference-image observations】\n${input.productAnalysis}\nUse only directly visible product attributes and legible existing markings as reference evidence. Inferred audiences, scenarios, pain points, selling claims, and suggested script styles are not verified product facts. They cannot establish a material, manufacturing process, function, scale, or supported interaction; omit those details unless the product brief independently confirms them.`);
-  }
-  if (input.targetAudience) {
-    parts.push(`\n【Intended setting or viewer context】\n${input.targetAudience}`);
-  }
-  if (input.usageAdvantage) {
-    parts.push(`\n【Verified use or feature notes】\n${input.usageAdvantage}`);
-  }
-  if (input.customRequirements) {
-    parts.push(`\n【Additional creative direction】\n${input.customRequirements}\nThis direction cannot override the non-negotiable frame policy.`);
-  }
-
-  parts.push(`\n${premiumProductCgOutputFormat(profile)}`);
-  const productText = `${input.productName || ""} ${input.productDescription || ""} ${input.usageAdvantage || ""}`;
-  if (productText.trim() && !/[一-鿿]/.test(productText)) {
-    parts.push("\n【语言】title 和任何克制旁白沿用商品资料的语言；description、visualIntent、camera、prompt 等视觉字段始终使用中文，不随商品或旁白语言切换。");
-  }
-  return parts.join("\n");
-}
-
-/** Batch variant for CG: varies visual sequencing only, never narrative marketing strategy. */
-export function buildPremiumProductCgBatchPrompt(
-  input: ScriptGenerationInput,
-  profile: PremiumProductCgProfile,
-  count: number,
-): string {
-  const base = buildPremiumProductCgUserPrompt(input, profile);
-  return `${base}
-
-【CG batch requirement】
-Generate ${count} product-film options. Keep the same profile, product category, verified facts, and hard frame policy in every option. Vary only the visual emphasis and shot ordering, such as form portrait, supported surface or craft detail, or product-appropriate context and scale. Skip unsupported materials, mechanisms, processes, or interactions in every option. Do not vary into sales scripts, hooks, testimonials, captions, or CTAs.
-
-Return:
-{
-  "scripts": [
-    { "title": "...", "totalDuration": ${profile.targetDuration}, "shots": [] }
-  ]
-}`;
-}
-
 /**
  * Assembles the full user prompt
  * Combines all templates, strategies, and constraints into a single generation instruction
  */
 export function buildUserPrompt(input: ScriptGenerationInput): string {
   if (tideweProfileForInput(input)) return buildTideweScriptPrompt(input);
-  const premiumProfile = premiumProductCgProfileForInput(input);
-  if (premiumProfile) return buildPremiumProductCgUserPrompt(input, premiumProfile);
 
   const {
     productName,
@@ -1082,8 +890,6 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
  */
 export function buildBatchPrompt(input: ScriptGenerationInput, count: number = 3): string {
   if (tideweProfileForInput(input)) return buildTideweScriptPrompt(input);
-  const premiumProfile = premiumProductCgProfileForInput(input);
-  if (premiumProfile) return buildPremiumProductCgBatchPrompt(input, premiumProfile, count);
 
   const basePrompt = buildUserPrompt(input);
 

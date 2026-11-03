@@ -107,7 +107,7 @@ export function klingRouteError(error: unknown): NextResponse {
   const problem = (error && typeof error === "object" ? error : {}) as { code?: string; status?: number; message?: string; retryable?: boolean; jobId?: string };
   // Creative-profile validation runs before a job exists, so its actionable reason
   // must reach the submitting shot instead of being replaced by an environment error.
-  const known = typeof problem.code === "string" && /^(?:KLING|CREATIVE|TIDEWE|PREMIUM_CG)_[A-Z][A-Z0-9_]*$/.test(problem.code) &&
+  const known = typeof problem.code === "string" && /^(?:KLING|CREATIVE|TIDEWE)_[A-Z][A-Z0-9_]*$/.test(problem.code) &&
     typeof problem.message === "string" && Boolean(problem.message.trim());
   if (!known) {
     const detail = error instanceof Error ? error.stack ?? error.message : typeof problem.message === "string" ? problem.message : String(error);

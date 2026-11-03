@@ -16,7 +16,6 @@ import { GenerationRunsPanel } from "@/components/generation-runs-panel";
 import { klingFetch, klingErrorMessage } from "@/lib/kling/client";
 import type { KlingJobView } from "@/lib/kling/job-types";
 
-
 import { Suspense, useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { LuCheck, LuCircleX, LuImage, LuArrowRight, LuLoaderCircle, LuTriangleAlert, LuUpload, LuScissors, LuPlay, LuFileText, LuSparkles } from "react-icons/lu";
@@ -72,7 +71,7 @@ import {
   type CreativeIntent,
   type VisualBible,
 } from "@/lib/production-system";
-import { isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
 
@@ -283,10 +282,10 @@ function AssetsPageContent() {
   const klingProfileId = providers["kling-cli"]?.profileId;
   const klingEnabled = providers["kling-cli"]?.enabled === true;
   const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, productSafe, productImages, presenterSheet, presenterLib: isTideweOutdoorProfile(projectCreativeProfile) ? undefined : presenterLib });
-  const premiumCg = isPremiumProductCgProfile(projectCreativeProfile);
+
   const tidewe = isTideweOutdoorProfile(projectCreativeProfile);
   const tideweNative = isTideweNativeSpeech(projectCreativeProfile);
-  const premiumCgVisualOnly = premiumCg && projectCreativeProfile.narrationMode === "none";
+
   const pendingKeyframeShots = assets.filter((asset) =>
     (asset.status === "pending" || asset.status === "failed")
     && (!asset.visualSource || asset.visualSource === "ai_generate")
@@ -295,9 +294,8 @@ function AssetsPageContent() {
     && !pendingTasks.some((task) => task.shotId === asset.shotId && task.status !== "failed")
     && !klingJobs.some((job) => job.scriptId === scriptId && job.shotId === asset.shotId && klingJobBlocksSubmission(job))
   );
-  // Premium CG always starts from the supplied product reference. Sales users may still
-  // choose a freer text-to-image treatment through the existing toggle.
-  const productReferenceLocked = premiumCg || tidewe || productSafe;
+  // TIDEWE locks the supplied product reference; sales users can choose product-safe redraws.
+  const productReferenceLocked = tidewe || productSafe;
   const refinableShots = assets.flatMap((asset) => asset.assetId && asset.status === "done" && !asset.isVideo
     && asset.thumbnailUrl && !/\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(asset.thumbnailUrl)
     ? [{ assetId: asset.assetId, shotId: asset.shotId, imageUrl: asset.thumbnailUrl, description: asset.description }]
@@ -816,10 +814,10 @@ function AssetsPageContent() {
         : undefined;
       const characterReference = tidewe
         ? (asset?.tidewe?.personVisible !== false || (tideweNative && asset?.tidewe?.speechDelivery !== "off_camera" && asset?.voiceover?.trim()) ? presenterSheet : undefined)
-        : !premiumCg && asset?.characterId
+        : asset?.characterId
         ? presenterLib.find((character) => character.id === asset.characterId)?.referenceImages?.[0] ?? presenterSheet
         : undefined;
-      const productReference = productReferenceLocked && (tidewe ? asset?.tidewe?.productVisible !== false : premiumCg || asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
+      const productReference = productReferenceLocked && (tidewe ? asset?.tidewe?.productVisible !== false : asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""))
         ? productImages[0]
         : undefined;
       const expectedAssetKey = motionAssetKey(asset);
@@ -834,11 +832,11 @@ function AssetsPageContent() {
         settings: { visualLook, motionIntensity, motionRealism },
         ...(videoParams.negativePrompt && { negativePrompt: videoParams.negativePrompt }),
         chainToNext: !!chainFrame, locale, batch, retake,
-        generateAudio: tideweNative || (!tidewe && !batch && !premiumCgVisualOnly && videoParams.audioEnabled !== false),
+        generateAudio: tideweNative || (!tidewe && !batch && videoParams.audioEnabled !== false),
         controlInputs: {
-          supportsAudio: tideweNative ? videoModelTarget.supportsAudio : tidewe || batch || premiumCgVisualOnly || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
+          supportsAudio: tideweNative ? videoModelTarget.supportsAudio : tidewe || batch || videoParams.audioEnabled === false ? false : videoModelTarget.supportsAudio,
           firstFrameUrl: effectiveFirstFrame, lastFrameUrl: chainFrame,
-          characterReferenceUrl: isKling || premiumCg ? undefined : characterReference,
+          characterReferenceUrl: isKling ? undefined : characterReference,
           productReferenceUrl: isKling ? undefined : productReference,
           continuityReferenceUrl: isKling || batch ? undefined : previousTail,
         },
@@ -863,7 +861,7 @@ function AssetsPageContent() {
       if (asset?.duration) {
         videoOptions.duration = Math.min(15, Math.max(4, tideweNative ? Math.ceil(asset.duration) : Math.round(asset.duration)));
       }
-      if ((tidewe && controlPlan.audioMode !== "native") || (batch && !tideweNative) || premiumCgVisualOnly) {
+      if ((tidewe && controlPlan.audioMode !== "native") || (batch && !tideweNative)) {
         // Keep the browser-side confirmation honest. The route derives the same policy from the
         // persisted project profile and remains authoritative if a request is forged.
         videoOptions.audioEnabled = false;
@@ -884,7 +882,7 @@ function AssetsPageContent() {
       }
       const referenceImageUrls = isKling ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "image").map((item) => item.url);
       const referenceVideoUrls = isKling ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "video").map((item) => item.url);
-      const referenceAudioUrls = isKling || batch || premiumCgVisualOnly ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
+      const referenceAudioUrls = isKling || batch ? [] : controlPlan.referenceInputs.filter((item) => item.mediaType === "audio").map((item) => item.url);
       const controlSummary = sanitizeVideoControlSummary(controlPlan);
       const request = {
         provider: videoModelTarget.provider, model: videoModelTarget.model,
@@ -951,7 +949,7 @@ function AssetsPageContent() {
             },
       };
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, premiumCg, premiumCgVisualOnly, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
   );
 
   const generateMotion = useCallback(async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom) => {
@@ -1012,7 +1010,6 @@ function AssetsPageContent() {
         const disabledReason = asset.isVideo ? t("batchMotionAlreadyVideo")
           : asset.status !== "done" || !asset.thumbnailUrl || /\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(asset.thumbnailUrl) ? t("batchMotionNeedImage")
           : backgroundShots.has(asset.shotId) || motionShots.has(asset.shotId) || unresolvedMotionShots.has(asset.shotId) || existingTask || pendingTasks.some((task) => task.shotId === asset.shotId && task.status !== "failed") ? t("batchMotionExistingTask")
-          : premiumCg && !isKlingDefault ? t("batchMotionControlledModelRequired")
           : (klingEnabled || isKlingDefault) && (!klingJobsLoaded || klingJobsError) ? t("batchMotionTasksUnavailable")
           : undefined;
         if (disabledReason) return { asset, disabledReason };
@@ -1032,7 +1029,7 @@ function AssetsPageContent() {
       batchMotionLock.current = false;
       setPreparingBatchMotion(false);
     }
-  }, [assets, scriptId, videoModelTarget, videoConfigurationKey, klingJobs, motionShots, unresolvedMotionShots, pendingTasks, backgroundShots, klingEnabled, isKlingDefault, premiumCg, klingJobsLoaded, klingJobsError, prepareMotion, batchMotionBusy, isGridGenerating, t]);
+  }, [assets, scriptId, videoModelTarget, videoConfigurationKey, klingJobs, motionShots, unresolvedMotionShots, pendingTasks, backgroundShots, klingEnabled, isKlingDefault, klingJobsLoaded, klingJobsError, prepareMotion, batchMotionBusy, isGridGenerating, t]);
 
   // Generate and save one shot, then offer motion generation when enabled.
   const generateOne = useCallback(
@@ -1092,7 +1089,7 @@ function AssetsPageContent() {
 
       // product fidelity: AI shot featuring product + product image available + toggle on → redraw with product image (image-to-image, locks in the product subject)
       const useProductSafe =
-        productReferenceLocked && !!productImages[0] && (tidewe ? asset.tidewe?.productVisible !== false : premiumCg || PRODUCT_SHOT_TYPES.has(asset.type));
+        productReferenceLocked && !!productImages[0] && (tidewe ? asset.tidewe?.productVisible !== false : PRODUCT_SHOT_TYPES.has(asset.type));
       const characterReference = tidewe && (asset.tidewe?.personVisible !== false || (tideweNative && asset.tidewe?.speechDelivery !== "off_camera" && asset.voiceover?.trim())) ? presenterSheet : undefined;
       const referenceImageUrls = tidewe ? [...new Set([...(characterReference ? [characterReference] : []), ...(useProductSafe ? productImages : [])])] : [];
       const hasImageReferences = useProductSafe || referenceImageUrls.length > 0;
@@ -1101,18 +1098,16 @@ function AssetsPageContent() {
       const basePrompt = asset.prompt || asset.description;
       // cast shots: pin the anti-"AI face" realism constraint onto the keyframe too,
       // so the person is ordinary-looking from the very first frame the i2v runs on
-      const castSuffix = !premiumCg && asset.characterId ? `。${realFaceLine(basePrompt)}` : "";
+      const castSuffix = asset.characterId ? `。${realFaceLine(basePrompt)}` : "";
       // global look: one lighting/palette block across every keyframe keeps shots in one video
       // from drifting between styles (the LLM improvises style words per shot otherwise)
-      const lookText = premiumCg ? "" : lookImageSuffix(visualLook, basePrompt);
+      const lookText = lookImageSuffix(visualLook, basePrompt);
       const lookSuffix = lookText ? `。${lookText}` : "";
       // frame-position directive: a keyframe is the frozen instant JUST BEFORE the action,
       // holding visible potential energy — gives the i2v pass a beat to play out instead of
       // animating an already-completed pose
       const frameSuffix = `。${keyframeInstantLine(basePrompt)}`;
-      const productIdentitySuffix = premiumCg
-        ? " Preserve the supplied product's visible silhouette, proportions, materials, colors, seams, hardware, and existing markings. Re-render only the described setting, background, and lighting."
-        : "。严格保持商品的外观、包装、颜色、logo 和文字完全不变，只重绘符合描述的场景、背景与光线。";
+      const productIdentitySuffix = "。严格保持商品的外观、包装、颜色、logo 和文字完全不变，只重绘符合描述的场景、背景与光线。";
       const shotPrompt = useProductSafe
         ? `${basePrompt}${productIdentitySuffix}${castSuffix}${lookSuffix}${frameSuffix}`
         : `${basePrompt}${castSuffix}${lookSuffix}${frameSuffix}`;
@@ -1167,7 +1162,7 @@ function AssetsPageContent() {
         );
       }
     },
-    [assets, id, scriptId, scriptHash, modelTarget, productImages, productReferenceLocked, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, premiumCg, tidewe, tideweNative, boundPresenter, presenterSheet, visualLook, generateMotion, t]
+    [assets, id, scriptId, scriptHash, modelTarget, productImages, productReferenceLocked, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, tidewe, tideweNative, boundPresenter, presenterSheet, visualLook, generateMotion, t]
   );
 
   // Register missing keyframes with the durable queue; execution continues in the background.
@@ -1199,7 +1194,7 @@ function AssetsPageContent() {
       // identity/product anchoring: with a presenter sheet or product photo attached the
       // grid runs in edit mode (multi-reference) — field-proven to lock person AND product
       const productRefs = productReferenceLocked ? productImages : [];
-      const hasRefs = (!premiumCg && !!presenterSheet) || productRefs.length > 0;
+      const hasRefs = !!presenterSheet || productRefs.length > 0;
       const request = {
           scriptId,
           provider: modelTarget.provider,
@@ -1207,7 +1202,7 @@ function AssetsPageContent() {
           apiKey: modelTarget.apiKey,
           baseUrl: modelTarget.baseUrl,
           gridResolution,
-          ...(!premiumCg && presenterSheet && { characterSheetUrl: presenterSheet }),
+          ...(presenterSheet && { characterSheetUrl: presenterSheet }),
           productImageUrls: productRefs,
           // the grid itself is 9:16 so each of the 3x3 cells is exactly 9:16 too
           options: buildImageOptions(imageParams ? { ...imageParams, aspectRatio: "9:16", count: 1 } : undefined),
@@ -1219,7 +1214,7 @@ function AssetsPageContent() {
     } finally {
       setIsGridGenerating(false);
     }
-  }, [id, scriptId, modelTarget, imageParams, gridResolution, isGridGenerating, presenterSheet, premiumCg, productReferenceLocked, productImages, t]);
+  }, [id, scriptId, modelTarget, imageParams, gridResolution, isGridGenerating, presenterSheet, productReferenceLocked, productImages, t]);
 
   return (
     <div className="min-h-screen grid-bg">
@@ -1275,7 +1270,7 @@ function AssetsPageContent() {
       />}
       <KlingJobDetail jobId={klingJobId} open={klingJobId !== null} onOpenChange={(open) => { if (!open) { setKlingJobId(null); clearTaskQuery("job"); } }} onChanged={() => { void reloadKlingJobs(); void reloadAssets(); }} />
       <StoryboardFilmPanel creativeProfile={projectCreativeProfile} open={klingFilmOpen && !!scriptId} onOpenChange={(open) => { setKlingFilmOpen(open); if (!open) { setFilmTaskId(undefined); setKlingFilmRunId(undefined); clearTaskQuery("film"); } }}
-        projectId={id} scriptId={scriptId} presenterId={premiumCg ? undefined : presenterId}
+        projectId={id} scriptId={scriptId} presenterId={presenterId}
         initialRunId={klingFilmRunId} initialTaskId={filmTaskId} onAssetsChanged={reloadAssets} />
 
       {/* single hidden input reused for every per-shot upload; target shot tracked in pendingUploadShot */}
@@ -1456,7 +1451,7 @@ function AssetsPageContent() {
           <span className="mr-1 text-xs font-semibold tracking-wide text-muted-foreground">{t("directorPanel")}</span>
           {/* Presenter picker: characters from the library; ones with a multi-view sheet
               anchor the person's identity through the grid and film passes */}
-          {!premiumCg && !tidewe && presenterLib.length > 0 && (
+          {!tidewe && presenterLib.length > 0 && (
             <div
               className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1.5 h-8"
               title={t("presenterTip")}
@@ -1479,7 +1474,7 @@ function AssetsPageContent() {
           )}
           {/* Visual-look picker with enumerated lighting/palette
               panel): applies to keyframe image prompts AND pins lighting through the i2v pass */}
-          {!premiumCg && <div
+          <div
             className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1.5 h-8"
             title={t("lookTip")}
           >
@@ -1506,7 +1501,7 @@ function AssetsPageContent() {
                 ))}
               </optgroup>
             </select>
-          </div>}
+          </div>
           {videoModelTarget && !isKlingDefault && (
             <div
               className="flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1 h-8"
@@ -1557,7 +1552,7 @@ function AssetsPageContent() {
               {t("autoMotion")}{autoMotion ? t("on") : t("off")}
             </button>
           )}
-          {!premiumCg && productImages.length > 0 && (
+          {productImages.length > 0 && (
             <button
               type="button"
               onClick={() => setProductSafe((v) => !v)}
@@ -1584,8 +1579,8 @@ function AssetsPageContent() {
             resolution={videoParams.resolution}
             aspectRatio={videoParams.aspectRatio}
             chainMode={chainMode}
-            audioEnabled={!premiumCgVisualOnly && videoModelTarget.supportsAudio === true}
-            referenceImageCount={Number(!premiumCg && Boolean(presenterSheet)) + Number(Boolean(productReferenceLocked && productImages[0]))}
+            audioEnabled={videoModelTarget.supportsAudio === true}
+            referenceImageCount={Number(Boolean(presenterSheet)) + Number(Boolean(productReferenceLocked && productImages[0]))}
           />
         )}
 

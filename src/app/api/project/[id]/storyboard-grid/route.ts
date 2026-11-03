@@ -23,14 +23,11 @@ import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/
 import { generationContextSnapshot, generationContextCheckpoint, generationContextItemId, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
 import { generationAssetId } from "@/lib/asset-persistence";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
-import { lintCreativeProfileShots } from "@/lib/creative-policy-lint";
-import { checkCreativeProfileContext, isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { getTideweProductCoverageIssues } from "@/lib/tidewe/planning-quality";
 import { TIDEWE_VISUAL_NEGATIVE_PROMPT } from "@/lib/tidewe/visual-policy";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
-import { filterTrustedPremiumCgAssets } from "@/lib/premium-cg-assets";
-import { PREMIUM_CG_IMAGE_NEGATIVE_PROMPT } from "@/lib/premium-cg-prompt";
 import {
   normalizeStoryboardGridResolution,
   storyboardGridTargetDimensions,
@@ -71,17 +68,14 @@ function gridPlanOptions(options: Record<string, unknown>, resolution: string): 
   }
   if (typeof options.negativePrompt === "string") {
     result.negativePromptHash = createHash("sha256").update(options.negativePrompt).digest("hex");
-    if ([TIDEWE_VISUAL_NEGATIVE_PROMPT, PREMIUM_CG_IMAGE_NEGATIVE_PROMPT].includes(options.negativePrompt)) result.negativePrompt = options.negativePrompt;
+    if (options.negativePrompt === TIDEWE_VISUAL_NEGATIVE_PROMPT) result.negativePrompt = options.negativePrompt;
   }
   if (["standard", "2k", "4k"].includes(String(options.imageResolution))) result.imageResolution = String(options.imageResolution);
   return result;
 }
 
-/**
- * Premium CG owns the prompt and all visual reference inputs. Providers merge their
- * opaque `extra` object after those fields, so it cannot cross the CG boundary.
- */
-function gridGenerationOptions(value: unknown, premiumCg: boolean): Record<string, unknown> {
+/** TIDEWE owns the prompt and references, including provider pass-through options. */
+function gridGenerationOptions(value: unknown, controlled: boolean): Record<string, unknown> {
   const options = value && typeof value === "object" && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
@@ -92,11 +86,10 @@ function gridGenerationOptions(value: unknown, premiumCg: boolean): Record<strin
     options.width = 1080;
     options.height = 1920;
   }
-  if (!premiumCg) return options;
+  if (!controlled) return options;
   for (const key of ["modelId", "mode", "prompt", "referenceImageUrl", "referenceImageUrls", "negativePrompt", "negative_prompt", "extra"]) {
     delete options[key];
   }
-  options.negativePrompt = PREMIUM_CG_IMAGE_NEGATIVE_PROMPT;
   return options;
 }
 
@@ -232,7 +225,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 409 });
     }
     const creativeProfile = profileContext.projectProfile;
-    const premiumCg = isPremiumProductCgProfile(creativeProfile);
     const tidewe = isTideweOutdoorProfile(creativeProfile);
     if (tidewe) {
       try { assertTideweScript(script, creativeProfile.presenter ?? null); }
@@ -251,7 +243,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }
     }
     const resolution = normalizeStoryboardGridResolution(originalGridPlan?.options.gridResolution ?? gridResolution);
-    const baseGenerationOptions = gridGenerationOptions(options, premiumCg || tidewe);
+    const baseGenerationOptions = gridGenerationOptions(options, tidewe);
     if (tidewe) baseGenerationOptions.negativePrompt = TIDEWE_VISUAL_NEGATIVE_PROMPT;
     const targetDimensions = storyboardGridTargetDimensions(
       typeof originalGridPlan?.options.width === "number" ? originalGridPlan.options.width : baseGenerationOptions.width as number,
@@ -263,64 +255,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const requestedProductImageUrls = Array.isArray(productImageUrls)
       ? productImageUrls.map(nonEmptyString).filter((u): u is string => Boolean(u))
       : [];
-    // Keep the pre-existing array-over-single selection behavior for actual generation,
-    // while validating every supplied field for the stricter premium-CG boundary.
+    // Product reference arrays take precedence over the legacy singular input.
     const requestedProductRefs = Array.isArray(productImageUrls)
       ? requestedProductImageUrls
       : requestedProductImageUrl ? [requestedProductImageUrl] : [];
-    const allRequestedProductRefs = [
-      ...(requestedProductImageUrl ? [requestedProductImageUrl] : []),
-      ...requestedProductImageUrls,
-    ];
     const projectProductRefs = Array.isArray(project.productImages)
       ? project.productImages.map(nonEmptyString).filter((u): u is string => Boolean(u))
       : [];
     if (!recoveringGrid && tidewe && shots.some((shot) => shot.tidewe?.productVisible) && !projectProductRefs.length) {
       return NextResponse.json({ error: "TIDEWE 产品镜需要当前商品参考图。", code: "TIDEWE_PRODUCT_REFERENCE_REQUIRED" }, { status: 400 });
     }
-    if (premiumCg) {
-      // The profile came from a matching, canonical project/script context above.
-      // Do not accept a request-level fallback here: an untrusted output policy
-      // could otherwise change how premium CG shots are classified.
-      const issues = lintCreativeProfileShots(creativeProfile, shots);
-      const narrationMode = creativeProfile && typeof creativeProfile === "object" && !Array.isArray(creativeProfile)
-        ? (creativeProfile as { narrationMode?: unknown }).narrationMode
-        : undefined;
-      if (narrationMode === "none") {
-        for (const shot of shots) {
-          if (typeof shot.voiceover === "string" && shot.voiceover.trim()) {
-            issues.push({ code: "promotional_voiceover", field: "voiceover", shotId: shot.shotId, message: "Premium product CG with narrationMode=none must not contain narration." });
-          }
-          if (typeof shot.narration === "string" && shot.narration.trim()) {
-            issues.push({ code: "promotional_voiceover", field: "narration", shotId: shot.shotId, message: "Premium product CG with narrationMode=none must not contain narration." });
-          }
-        }
-      }
-      if (issues.length) {
-        return NextResponse.json({ error: "Premium product CG shot policy violation.", code: "CREATIVE_POLICY_VIOLATION", issues }, { status: 400 });
-      }
-      if (!recoveringGrid && projectProductRefs.length === 0) {
-        return NextResponse.json({
-          error: "高端产品 CG 九宫格至少需要一张已保存的产品参考图。",
-          code: "PREMIUM_CG_PRODUCT_REFERENCE_REQUIRED",
-        }, { status: 400 });
-      }
-      const projectProductRefSet = new Set(projectProductRefs);
-      if (!recoveringGrid && allRequestedProductRefs.some((reference) => !projectProductRefSet.has(reference))) {
-        return NextResponse.json({
-          error: "高端产品 CG 九宫格只能使用本项目已保存的产品参考图。",
-          code: "PREMIUM_CG_PRODUCT_REFERENCE_INVALID",
-        }, { status: 400 });
-      }
-    }
     const revision = scriptRevision(script);
     const scopedBaselineAssets = filterAssetsForScript(
       await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
       script,
     );
-    const baselineAssets = premiumCg
-      ? filterTrustedPremiumCgAssets(scopedBaselineAssets, id, script)
-      : tidewe ? scopedBaselineAssets.filter((asset) => asset.type !== "stock_footage" || shots.find((shot) => shot.shotId === asset.shotId)?.tidewe?.productVisible === false) : scopedBaselineAssets;
+    const baselineAssets = tidewe ? scopedBaselineAssets.filter((asset) => asset.type !== "stock_footage" || shots.find((shot) => shot.shotId === asset.shotId)?.tidewe?.productVisible === false) : scopedBaselineAssets;
     const savedBaseline = generationContextCheckpoint()?.gridBaseline;
     const baselineByShot = new Map(shots.map((shot) => [shot.shotId, savedBaseline && typeof savedBaseline === "object"
       ? (savedBaseline as Record<string, string | null>)[String(shot.shotId)] ?? null
@@ -350,16 +300,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     // reference images (order matters — the prompt cites them by position):
     // [character sheet?, ...product photos]; local /api/files paths travel as Base64
-    // A CG grid always remains tied to the product identity. Explicit valid refs can
-    // narrow the view set; a missing/empty request uses the project's persisted images.
-    const productRefs = tidewe ? projectProductRefs : premiumCg
-      ? (requestedProductRefs.length > 0 ? requestedProductRefs : projectProductRefs)
-      : requestedProductRefs;
+    const productRefs = tidewe ? projectProductRefs : requestedProductRefs;
     const frozenPresenter = tidewe && shots.some((shot) => shot.tidewe?.personVisible !== false || (isTideweNativeSpeech(creativeProfile) && shot.tidewe?.speechDelivery !== "off_camera" && shot.voiceover?.trim())) ? tidewePresenterReference(creativeProfile) : undefined;
     const requestedSheet = nonEmptyString(characterSheetUrl);
     if (!recoveringGrid && tidewe && requestedSheet && requestedSheet !== frozenPresenter) return NextResponse.json({ error: "TIDEWE 主播已随脚本冻结，请回到脚本设置更换主播并重新规划。", code: "TIDEWE_PRESENTER_REFERENCE_INVALID" }, { status: 400 });
     const sheetRef = tidewe ? frozenPresenter ?? "" : requestedSheet ?? "";
-    const useCharacterSheet = !premiumCg && Boolean(sheetRef);
+    const useCharacterSheet = Boolean(sheetRef);
     const refInputs = [...(useCharacterSheet ? [sheetRef] : []), ...productRefs];
     // An acknowledged output only needs importing/cropping; its original refs may
     // have moved. Never read them or use today's refs to rebuild its frozen plan.
@@ -375,10 +321,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .slice(useCharacterSheet ? 1 : 0)
       .find((u): u is string => Boolean(u));
     const primaryReferenceImageUrl = frozenPresenter ? referenceImageUrls[0] : primaryProductReference ?? referenceImageUrls[0];
-    if (!recoveringGrid && (premiumCg || (tidewe && shots.some((shot) => shot.tidewe?.productVisible))) && !primaryProductReference) {
+    if (!recoveringGrid && (tidewe && shots.some((shot) => shot.tidewe?.productVisible)) && !primaryProductReference) {
       return NextResponse.json({
-        error: "高端产品 CG 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
-        code: "PREMIUM_CG_PRODUCT_REFERENCE_UNAVAILABLE",
+        error: "TIDEWE 的产品参考图不可用，请重新上传或选择项目中可访问的产品图。",
+        code: "TIDEWE_PRODUCT_REFERENCE_UNAVAILABLE",
       }, { status: 400 });
     }
 
@@ -408,9 +354,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))),
         script,
       );
-      const selectedAssets = premiumCg
-        ? filterTrustedPremiumCgAssets(scopedSelectedAssets, id, script)
-        : scopedSelectedAssets;
+      const selectedAssets =  scopedSelectedAssets;
       const cached = await reusableStoryboardGrid(id, signature, shots.map((shot) => shot.shotId), selectedAssets);
       if (cached) {
         return NextResponse.json({ gridPath: cached.gridPath, cells: cached.cells, count: cached.cells.length, reused: true, savedAsAlternatives: 0,
@@ -524,9 +468,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const scopedCurrentSelected = currentScript
       ? filterAssetsForScript(await db.select().from(assets).where(and(eq(assets.projectId, id), eq(assets.selected, true))), currentScript)
       : [];
-    const currentSelected = premiumCg && currentScript
-      ? filterTrustedPremiumCgAssets(scopedCurrentSelected, id, currentScript)
-      : scopedCurrentSelected;
+    const currentSelected =  scopedCurrentSelected;
     const fullMatchingGrid = saved.length === shots.length && !alternatives && currentScript?.id === scriptId && scriptRevision(currentScript) === revision &&
       saved.every((cell) => currentSelected.filter((asset) => asset.shotId === cell.shotId).length === 1 && currentSelected.some((asset) => asset.shotId === cell.shotId && asset.filePath === cell.filePath && asset.status === "done"));
     if (fullMatchingGrid && signature && (!recoveringGrid || originalGridPlan?.cropVersion === STORYBOARD_GRID_CROP_VERSION)) await saveStoryboardGridManifest(id, { version: STORYBOARD_GRID_CROP_VERSION, signature, gridPath: publicPath, cells: saved, resolution: resolutionInfo })

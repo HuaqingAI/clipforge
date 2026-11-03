@@ -1,9 +1,3 @@
-import {
-  createPremiumCgRecipeSnapshot,
-  getPremiumCgRecipeFromSnapshot,
-  normalizePremiumCgRecipeSnapshot,
-  type PremiumCgRecipeSnapshot,
-} from "@/lib/premium-cg-recipes";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION } from "@/lib/tidewe/types";
 import type { TidewePresenterSnapshot } from "@/lib/tidewe/types";
 import { isValidTidewePresenterInput, snapshotTidewePresenter } from "@/lib/tidewe/presenter";
@@ -15,19 +9,13 @@ import { isValidTidewePresenterInput, snapshotTidewePresenter } from "@/lib/tide
  * generation-performance profiles (resolution, duration, and provider costs).
  */
 
-export const PREMIUM_PRODUCT_CG_STYLE = "premium_product_cg" as const;
-export const PREMIUM_PRODUCT_CG_PROFILE_ID = "premium_product_cg_v1" as const;
-export const PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION = "premium-product-cg-2" as const;
 export const SHORT_VIDEO_SALES_PROFILE_ID = "short_video_sales_v1" as const;
 export const TIDEWE_OUTDOOR_STYLE = "tidewe_outdoor" as const;
 export const TIDEWE_OUTDOOR_PROFILE_ID = "tidewe_outdoor_v1" as const;
 export const TIDEWE_OUTDOOR_PROMPT_COMPILER_VERSION = TIDEWE_COMPILER_VERSION;
 
-export type CreationType = "short_video_sales" | "premium_product_cg" | "tidewe_outdoor";
-export type NarrationMode = "none" | "restrained";
-export type PremiumSoundMode = "ambient" | "music" | "restrained-voice";
+export type CreationType = "short_video_sales" | "tidewe_outdoor";
 export type LegacyVideoMode = "product_closeup" | "graphic_montage" | "scene_demo" | "live_presenter";
-export type PremiumProductCgVideoMode = Extract<LegacyVideoMode, "product_closeup" | "scene_demo">;
 export type LegacySalesStyle =
   | "pain_point"
   | "scene"
@@ -63,24 +51,6 @@ export interface LegacyCreativeSettings {
   [key: string]: unknown;
 }
 
-export interface PremiumProductCgTextPolicy {
-  generatedFrameText: "forbid-added";
-  productMarkings: "preserve-reference";
-  captions: false;
-  editorialGraphics: false;
-  productCard: false;
-  cta: "none";
-  /** An explicitly approved end card is a deterministic post-production layer, never generated pixels. */
-  brandEndCard: false | "approved";
-}
-
-export interface PremiumProductCgVisualDirection {
-  /** modern_home is the legacy storage key for a category-appropriate usage context. */
-  setting: "studio" | "modern_home";
-  look: string;
-  cameraSafety: "reference-limited";
-}
-
 export interface ShortVideoSalesProfile {
   version: 1;
   id: typeof SHORT_VIDEO_SALES_PROFILE_ID;
@@ -94,28 +64,12 @@ export interface ShortVideoSalesProfile {
   promptCompilerVersion: "short-video-sales-1";
 }
 
-export interface PremiumProductCgProfile {
-  version: 1;
-  id: typeof PREMIUM_PRODUCT_CG_PROFILE_ID;
-  creationType: "premium_product_cg";
-  styleType: typeof PREMIUM_PRODUCT_CG_STYLE;
-  videoMode: PremiumProductCgVideoMode;
-  targetDuration: 15 | 30 | 60;
-  narrationMode: NarrationMode;
-  soundMode: PremiumSoundMode;
-  textPolicy: PremiumProductCgTextPolicy;
-  visualDirection: PremiumProductCgVisualDirection;
-  /** Frozen selection from the curated CG recipe library. */
-  recipeSnapshot: PremiumCgRecipeSnapshot;
-  promptCompilerVersion: typeof PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION;
-}
-
 export interface TideweOutdoorProfile {
   version: 1;
   id: typeof TIDEWE_OUTDOOR_PROFILE_ID;
   creationType: "tidewe_outdoor";
   styleType: "tidewe_outdoor";
-  videoMode: PremiumProductCgVideoMode;
+  videoMode: "product_closeup" | "scene_demo";
   targetDuration: 30 | 40 | 60;
   language: "en-US";
   reviewLanguage: "zh-CN";
@@ -129,11 +83,10 @@ export interface TideweOutdoorProfile {
   composeSnapshot: LegacyComposeSettings;
 }
 
-export type ProjectCreativeProfile = ShortVideoSalesProfile | PremiumProductCgProfile | TideweOutdoorProfile;
+export type ProjectCreativeProfile = ShortVideoSalesProfile | TideweOutdoorProfile;
 
 export interface ProjectCreativeProfileDrafts {
   short_video_sales?: ShortVideoSalesProfile;
-  premium_product_cg?: PremiumProductCgProfile;
   tidewe_outdoor?: TideweOutdoorProfile;
 }
 
@@ -208,35 +161,12 @@ const VIDEO_MODES = new Set<LegacyVideoMode>([
   "live_presenter",
 ]);
 
-const PREMIUM_VIDEO_MODES = new Set<PremiumProductCgVideoMode>([
-  "product_closeup",
-  "scene_demo",
-]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asTrimmedString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function boundedText(value: unknown, fallback: string, maxLength = 240): string {
-  const text = asTrimmedString(value);
-  return text ? text.slice(0, maxLength) : fallback;
-}
-
-/** Upgrade only shipped defaults; an explicitly chosen custom look remains intact. */
-function normalizePremiumCgLook(value: unknown, fallback: string): string {
-  const look = asTrimmedString(value);
-  if (look === "quiet premium furniture product film") return fallback;
-  if (look === "controlled neutral studio light, calm architectural backdrop, measured silhouette and edge highlights") {
-    return createPremiumCgRecipeSnapshot("form_portrait").visualLook;
-  }
-  if (look === "bright quiet contemporary residence, soft natural window light, low-saturation neutral materials and balanced spatial scale") {
-    return createPremiumCgRecipeSnapshot("living_scale").visualLook;
-  }
-  return boundedText(look, fallback);
 }
 
 function shallowJsonRecord(value: unknown): Record<string, unknown> | undefined {
@@ -271,31 +201,9 @@ function normalizeVideoMode(value: unknown): LegacyVideoMode {
   return raw && VIDEO_MODES.has(raw as LegacyVideoMode) ? raw as LegacyVideoMode : "product_closeup";
 }
 
-function normalizePremiumVideoMode(value: unknown): PremiumProductCgVideoMode {
-  const candidate = normalizeVideoMode(value);
-  return PREMIUM_VIDEO_MODES.has(candidate as PremiumProductCgVideoMode) ? candidate as PremiumProductCgVideoMode : "product_closeup";
-}
-
 function normalizeSalesDuration(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 30;
   return Math.max(1, Math.min(600, Math.round(value)));
-}
-
-function normalizePremiumDuration(value: unknown): 15 | 30 | 60 {
-  return value === 15 || value === 30 || value === 60 ? value : 30;
-}
-
-function normalizeNarrationMode(value: unknown): NarrationMode {
-  return value === "restrained" ? "restrained" : "none";
-}
-
-function normalizeSoundMode(value: unknown, narrationMode: NarrationMode): PremiumSoundMode {
-  if (narrationMode === "none") {
-    return value === "music" ? "music" : "ambient";
-  }
-  return value === "ambient" || value === "music" || value === "restrained-voice"
-    ? value
-    : "restrained-voice";
 }
 
 function sanitizeComposeSnapshot(value: unknown): LegacyComposeSettings {
@@ -321,65 +229,6 @@ export function createShortVideoSalesProfile(fallback: CreativeProfileFallback =
     ...(recipeSnapshot && { recipeSnapshot }),
     promptCompilerVersion: "short-video-sales-1",
   };
-}
-
-/**
- * Creates the canonical premium product CG profile. The text and compose policy is deliberately
- * not configurable here: user input cannot re-enable generated copy, captions, overlays, cards, or CTAs.
- */
-export function createPremiumProductCgProfile(options: {
-  targetDuration?: unknown;
-  videoMode?: unknown;
-  narrationMode?: unknown;
-  soundMode?: unknown;
-  visualDirection?: unknown;
-  recipeSnapshot?: unknown;
-  brandEndCard?: unknown;
-} = {}): PremiumProductCgProfile {
-  const recipeSnapshot = normalizePremiumCgRecipeSnapshot(options.recipeSnapshot)
-    ?? createPremiumCgRecipeSnapshot();
-  const recipe = getPremiumCgRecipeFromSnapshot(recipeSnapshot);
-  const direction = isRecord(options.visualDirection) ? options.visualDirection : {};
-  const narrationMode = normalizeNarrationMode(options.narrationMode);
-  return {
-    version: 1,
-    id: PREMIUM_PRODUCT_CG_PROFILE_ID,
-    creationType: "premium_product_cg",
-    styleType: PREMIUM_PRODUCT_CG_STYLE,
-    videoMode: options.videoMode === undefined
-      ? recipeSnapshot.videoMode
-      : normalizePremiumVideoMode(options.videoMode),
-    targetDuration: normalizePremiumDuration(options.targetDuration),
-    narrationMode,
-    soundMode: normalizeSoundMode(options.soundMode, narrationMode),
-    textPolicy: {
-      generatedFrameText: "forbid-added",
-      productMarkings: "preserve-reference",
-      captions: false,
-      editorialGraphics: false,
-      productCard: false,
-      cta: "none",
-      brandEndCard: options.brandEndCard === "approved" ? "approved" : false,
-    },
-    visualDirection: {
-      setting: direction.setting === "modern_home"
-        ? "modern_home"
-        : direction.setting === "studio"
-          ? "studio"
-          : recipeSnapshot.setting,
-      look: normalizePremiumCgLook(direction.look, recipe?.visualLook ?? "quiet premium product film"),
-      cameraSafety: "reference-limited",
-    },
-    recipeSnapshot,
-    promptCompilerVersion: PREMIUM_PRODUCT_CG_PROMPT_COMPILER_VERSION,
-  };
-}
-
-function premiumSignal(value: Record<string, unknown>): boolean {
-  const id = value.id ?? value.profileId ?? value.creativeProfileId;
-  return value.creationType === "premium_product_cg"
-    || value.styleType === PREMIUM_PRODUCT_CG_STYLE
-    || id === PREMIUM_PRODUCT_CG_PROFILE_ID;
 }
 
 export function createTideweOutdoorProfile(options: {
@@ -424,7 +273,6 @@ export function assertSupportedTideweProfile(profile: TideweOutdoorProfile): voi
 
 function profileTypeFromId(value: unknown): CreationType | undefined {
   if (value === TIDEWE_OUTDOOR_PROFILE_ID) return "tidewe_outdoor";
-  if (value === PREMIUM_PRODUCT_CG_PROFILE_ID) return "premium_product_cg";
   if (value === SHORT_VIDEO_SALES_PROFILE_ID) return "short_video_sales";
   return undefined;
 }
@@ -432,7 +280,6 @@ function profileTypeFromId(value: unknown): CreationType | undefined {
 function profileTypeFromStyle(value: unknown): CreationType | undefined {
   const style = asTrimmedString(value)?.toLowerCase();
   if (!style) return undefined;
-  if (style === PREMIUM_PRODUCT_CG_STYLE) return "premium_product_cg";
   if (style === TIDEWE_OUTDOOR_STYLE) return "tidewe_outdoor";
   const aliases: Record<string, LegacySalesStyle> = {
     "pain-point": "pain_point",
@@ -453,9 +300,6 @@ function profileTypeFromStyle(value: unknown): CreationType | undefined {
  */
 export function validateCreativeProfileInput(value: unknown): CreativeProfileInputResult {
   if (value === TIDEWE_OUTDOOR_STYLE || value === TIDEWE_OUTDOOR_PROFILE_ID) return { profile: createTideweOutdoorProfile() };
-  if (value === PREMIUM_PRODUCT_CG_PROFILE_ID || value === PREMIUM_PRODUCT_CG_STYLE) {
-    return { profile: createPremiumProductCgProfile() };
-  }
   if (value === SHORT_VIDEO_SALES_PROFILE_ID) {
     return { profile: createShortVideoSalesProfile() };
   }
@@ -466,7 +310,7 @@ export function validateCreativeProfileInput(value: unknown): CreativeProfileInp
   const identities: CreationType[] = [];
   const creationType = value.creationType;
   if (creationType !== undefined) {
-    if (creationType !== "short_video_sales" && creationType !== "premium_product_cg" && creationType !== "tidewe_outdoor") {
+    if (creationType !== "short_video_sales" && creationType !== "tidewe_outdoor") {
       return { error: "Unknown creative creationType." };
     }
     identities.push(creationType);
@@ -513,15 +357,9 @@ export function validateCreativeProfileInput(value: unknown): CreativeProfileInp
 /**
  * Strictly sanitizes persisted or client supplied profile data. It returns undefined for data that
  * does not identify a creative profile; callers that need a default should use resolveCreativeProfile.
- *
- * Compatibility: old clients may send profileId/creativeProfileId and a string textPolicy. Neither
- * can weaken the premium policy; they only identify the premium profile to be canonicalized.
  */
 export function sanitizeCreativeProfile(value: unknown): ProjectCreativeProfile | undefined {
   if (value === TIDEWE_OUTDOOR_STYLE || value === TIDEWE_OUTDOOR_PROFILE_ID) return createTideweOutdoorProfile();
-  if (value === PREMIUM_PRODUCT_CG_PROFILE_ID || value === PREMIUM_PRODUCT_CG_STYLE) {
-    return createPremiumProductCgProfile();
-  }
   if (value === SHORT_VIDEO_SALES_PROFILE_ID) {
     return createShortVideoSalesProfile();
   }
@@ -535,23 +373,12 @@ export function sanitizeCreativeProfile(value: unknown): ProjectCreativeProfile 
       ...(typeof value.promptCompilerVersion === "string" && { promptCompilerVersion: value.promptCompilerVersion }) };
   }
 
-  if (premiumSignal(value)) {
-    const legacyTextPolicy = value.textPolicy;
-    const textPolicy = isRecord(legacyTextPolicy) ? legacyTextPolicy : {};
-    return createPremiumProductCgProfile({
-      targetDuration: value.targetDuration,
-      videoMode: value.videoMode,
-      narrationMode: value.narrationMode,
-      soundMode: value.soundMode,
-      visualDirection: value.visualDirection,
-      recipeSnapshot: value.recipeSnapshot,
-      brandEndCard: textPolicy.brandEndCard ?? value.brandEndCard,
-    });
-  }
-
   const id = value.id ?? value.profileId ?? value.creativeProfileId;
   const declaresSales = value.creationType === "short_video_sales" || id === SHORT_VIDEO_SALES_PROFILE_ID;
-  const hasLegacySalesShape = typeof value.styleType === "string" || typeof value.videoMode === "string";
+  if (value.creationType !== undefined && value.creationType !== "short_video_sales") return undefined;
+  if (id !== undefined && id !== SHORT_VIDEO_SALES_PROFILE_ID) return undefined;
+  const hasLegacySalesShape = profileTypeFromStyle(value.styleType) === "short_video_sales"
+    || (value.styleType === undefined && typeof value.videoMode === "string");
   if (!declaresSales && !hasLegacySalesShape) return undefined;
 
   return createShortVideoSalesProfile({
@@ -576,27 +403,11 @@ export function resolveCreativeProfile(
 export function sanitizeCreativeProfileDrafts(value: unknown): ProjectCreativeProfileDrafts | undefined {
   if (!isRecord(value)) return undefined;
   const sales = sanitizeCreativeProfile(value.short_video_sales ?? value.sales);
-  const premium = sanitizeCreativeProfile(value.premium_product_cg ?? value.cg);
   const tidewe = sanitizeCreativeProfile(value.tidewe_outdoor);
   const result: ProjectCreativeProfileDrafts = {};
   if (sales?.creationType === "short_video_sales") result.short_video_sales = sales;
-  if (premium?.creationType === "premium_product_cg") result.premium_product_cg = premium;
   if (tidewe?.creationType === "tidewe_outdoor") result.tidewe_outdoor = tidewe;
   return Object.keys(result).length > 0 ? result : undefined;
-}
-
-/** True only for the canonical premium CG profile (including compatibility-shaped input). */
-export function isPremiumProductCgProfile(profile?: unknown): profile is PremiumProductCgProfile {
-  return sanitizeCreativeProfile(profile)?.creationType === "premium_product_cg";
-}
-
-/** Resolve a persisted project row before deciding whether a restricted CG policy applies. */
-export function isPremiumProductCgProject(
-  project: Pick<CreativeProfileProjectContext, "creativeProfile" | "videoMode">,
-): boolean {
-  return isPremiumProductCgProfile(resolveCreativeProfile(project.creativeProfile, {
-    videoMode: project.videoMode,
-  }));
 }
 
 /** Makes the script-level immutable creative context persisted with a generated script revision. */

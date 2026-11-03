@@ -20,31 +20,9 @@ import { getDb } from "@/lib/db";
 import { assets as assetsTable, projects, scripts } from "@/lib/db/schema";
 import { assetScopeForShot, filterAssetsForScript } from "@/lib/asset-context";
 import { and, eq } from "drizzle-orm";
-import { isPremiumProductCgProfile, isTideweOutdoorProfile, isTideweNativeSpeech, resolveCreativeProfile } from "@/lib/creative-profiles";
-
-export const PREMIUM_CG_STOCK_FILL_FORBIDDEN = "PREMIUM_CG_STOCK_FILL_FORBIDDEN";
-
-export class PremiumCgStockFillForbiddenError extends Error {
-  readonly code = PREMIUM_CG_STOCK_FILL_FORBIDDEN;
-
-  constructor() {
-    super("Premium product CG cannot adopt stock footage. Use controlled product-reference generation instead.");
-    this.name = "PremiumCgStockFillForbiddenError";
-  }
-}
-
-/** Shared policy check for route callers and internal pipelines. */
-export function isPremiumCgStockFillBlocked(projectId: string): boolean {
-  const project = getDb()
-    .select({ creativeProfile: projects.creativeProfile, videoMode: projects.videoMode })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .get();
-  return Boolean(project && isPremiumProductCgProfile(resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode })));
-}
+import { isTideweOutdoorProfile, isTideweNativeSpeech, resolveCreativeProfile } from "@/lib/creative-profiles";
 
 function assertStockFillAllowed(projectId: string, shotId?: number): void {
-  if (isPremiumCgStockFillBlocked(projectId)) throw new PremiumCgStockFillForbiddenError();
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   const profile = project && resolveCreativeProfile(project.creativeProfile, { videoMode: project.videoMode });
@@ -194,8 +172,7 @@ export async function persistCandidate(
  */
 export async function fillShotStock(input: FillShotInput): Promise<Record<string, unknown> | null> {
   const { projectId, shotId, query, source, searchOpts, usedIds, sameSourceAuthors, slotSec, subjectEn } = input;
-  // Reject before searching/downloading so direct library callers cannot source arbitrary B-roll
-  // for a Premium CG project.
+  // Apply TIDEWE product and speech restrictions before searching or downloading stock.
   assertStockFillAllowed(projectId, shotId);
 
   const search = await searchShotCandidates(query, source, searchOpts, { subjectEn });
