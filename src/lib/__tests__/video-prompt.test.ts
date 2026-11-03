@@ -32,6 +32,22 @@ describe("video prompt assembly and final checks", () => {
     expect(codes("The creator’s camera stays on the product’s screen.")).not.toContain("unclosed_quote");
   });
   it.each([
+    "Show the waders’ camouflage chest and pant legs, olive-brown lower legs, and dark olive boots as natural folds form during the bend.",
+    "Keep the WADERS’ fabric visible.",
+    "Preserve the boots’ shape.",
+  ])("accepts plural possessives in motion directions: %s", (prompt) => {
+    expect(validateVideoPrompt(prompt)).toEqual([]);
+    expect(joinVideoPromptParts([prompt], "en")).toBe(prompt);
+  });
+  it("still closes single-quoted display copy ending in s", () => {
+    expect(validateVideoPrompt("Display “Show the waders’ fabric.”")).toEqual([]);
+    expect(validateVideoPrompt("Fixed camera. Display ‘Camera pans’ on the label.")).toEqual([]);
+    expect(codes("Display ‘waders’ and an unmatched closing quote ’.")).toContain("unclosed_quote");
+  });
+  it("continues checking instructions after plural possessives", () => {
+    expect(codes("Fixed camera. Preserve the waders’ fabric. Camera pans left.")).toContain("camera_conflict");
+  });
+  it.each([
     ["固定镜头。运镜幅度大胆明显。", "camera_conflict"],
     ["固定机位。镜头平稳向左横移。", "camera_conflict"],
     ["商品与购买引导保持静止。手部演示动作自然连贯，转动机身。", "subject_conflict"],

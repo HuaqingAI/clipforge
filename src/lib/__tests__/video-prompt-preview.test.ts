@@ -95,6 +95,24 @@ function useTidewe(speechMode: "on_camera" | "voiceover" = "voiceover", presente
 }
 
 describe("authoritative TIDEWE video preview and dispatch", () => {
+  it("previews and submits English plural possessives without rewriting the direction", async () => {
+    useTidewe();
+    const focus = "Show the waders’ camouflage chest and pant legs, olive-brown lower legs, and dark olive boots as natural folds form during the bend.";
+    const direction = {
+      action: "Bend and place the duck-shaped decoy in the shallow water, then begin straightening.",
+      camera: "Hold the existing phone framing with a small natural handheld drift.",
+      focus,
+    };
+    vi.mocked(resolveTideweVideoDirection).mockReturnValueOnce(direction);
+    const request = input();
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.prompt).toContain(focus);
+    vi.mocked(resolveTideweVideoDirection).mockReturnValueOnce(direction);
+    const result = await submit(value, request);
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ prompt: value.prompt }));
+  });
   it.each(["kling-video-v2", "kling-video-v4_0", "future-model"].flatMap((model) => [false, true].map((batch) => ({ model, batch }))))("preserves on-camera Kling speech and keyframe identity for $model with batch=$batch", async ({ model, batch }) => {
     const { shot } = useTidewe("on_camera", { id: "host", name: "Host", appearance: "Short brown hair", referenceImages: ["/api/files/host.png"] });
     db.insert(schema.assets).values({ id: "presenter-keyframe", projectId, shotId: 1, type: "ai_generated", status: "done", filePath: "/api/files/keyframe.png", sourceScriptId: scriptId }).run();

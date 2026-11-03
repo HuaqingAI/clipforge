@@ -14,7 +14,13 @@ function inspectQuotes(value: string): { masked: string; quoted: boolean[]; bala
   for (let index = 0; index < value.length; index++) {
     const char = value[index];
     const escaped = char === '"' && /(?:^|[^\\])(?:\\\\)*\\$/.test(value.slice(0, index));
-    const apostrophe = char === "’" && /[A-Za-z0-9]/.test(value[index - 1] ?? "") && /[A-Za-z0-9]/.test(value[index + 1] ?? "");
+    const previous = value[index - 1] ?? "";
+    const next = value[index + 1] ?? "";
+    // A plural possessive (waders’ fabric) is prose; an expected ’ still closes quoted copy.
+    const apostrophe = char === "’" && (
+      (/[A-Za-z0-9]/.test(previous) && /[A-Za-z0-9]/.test(next))
+      || (/[sS]/.test(previous) && !/[A-Za-z0-9]/.test(next) && stack.at(-1) !== "’")
+    );
     const inside = stack.length > 0;
     let delimiter = false;
     if (!escaped && !apostrophe && char === stack.at(-1)) { stack.pop(); delimiter = true; }
