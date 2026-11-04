@@ -4,12 +4,13 @@ import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { ffmpegFilterFileArgs } from "@/lib/ffmpeg-filter-file";
 import { mkdir, writeFile, rm } from "fs/promises";
 import { existsSync } from "fs";
-import { TRANSITIONS, type TransitionMode } from "./transitions";
+import type { TransitionMode } from "./transitions";
 import { MOTIONS, DEFAULT_MOTION } from "./motions";
 import { safeEncodeParams } from "@/lib/compose-presets";
 import { createLimiter, type Limiter } from "@/lib/concurrency";
 import { buildAigcMetadataArgs, buildAigcMetadataArgv } from "@/lib/compliance-metadata";
 import { CAPTION_SAFE_BOTTOM_RATIO, CAPTION_SAFE_BOTTOM_RATIO_NOCARD } from "./safe-zone";
+import { nativeSpeechSlotDuration, type NativeSpeechEdit } from "@/lib/tidewe/native-speech-edit";
 
 /**
  * Detect an available Chinese font file path.
@@ -391,6 +392,8 @@ export interface ClipInput {
   strictSourceDuration?: boolean;
   /** Keep recorded speech and lips at source speed and length; explicit transitions may overlap them. */
   preserveNativeSpeech?: boolean;
+  /** Opt-in, alignment-derived source trim and pitch-preserving audio correction. */
+  nativeSpeechEdit?: NativeSpeechEdit;
 }
 
 // resolution mapping
@@ -456,8 +459,9 @@ export function buildClipAudioFilters(input: {
   ttsInput?: string;
   nativeInput?: string;
   preserveNativeSpeech?: boolean;
+  nativeSpeechEdit?: NativeSpeechEdit;
 }): string[] {
-  const { duration, outputLabel, ttsInput, nativeInput, preserveNativeSpeech } = input;
+  const { duration, outputLabel, ttsInput, nativeInput, preserveNativeSpeech, nativeSpeechEdit } = input;
   const filters: string[] = [];
   if (ttsInput !== undefined) {
     const label = nativeInput !== undefined ? `${outputLabel}_tts` : outputLabel;
@@ -466,10 +470,13 @@ export function buildClipAudioFilters(input: {
   if (nativeInput !== undefined) {
     const label = ttsInput !== undefined ? `${outputLabel}_native` : outputLabel;
     // Keep the original ambience, softening its edges without shortening the clip.
-    const edgeFade = !preserveNativeSpeech && duration > 0.1
-      ? `,afade=t=in:st=0:d=0.02,afade=t=out:st=${Math.max(0, duration - 0.02).toFixed(3)}:d=0.02`
-      : "";
-    filters.push(`[${nativeInput}:a]aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS${edgeFade}[${label}]`);
+    const edgeFade = nativeSpeechEdit
+      ? `${nativeSpeechEdit.fadeInSec ? `,afade=t=in:st=0:d=${nativeSpeechEdit.fadeInSec}` : ""}${nativeSpeechEdit.fadeOutSec ? `,afade=t=out:st=${Math.max(0, duration - nativeSpeechEdit.fadeOutSec).toFixed(6)}:d=${nativeSpeechEdit.fadeOutSec}` : ""}`
+      : !preserveNativeSpeech && duration > 0.1
+        ? `,afade=t=in:st=0:d=0.02,afade=t=out:st=${Math.max(0, duration - 0.02).toFixed(3)}:d=0.02`
+        : "";
+    const edit = nativeSpeechEdit ? `atrim=start=${nativeSpeechEdit.startSec}:end=${nativeSpeechEdit.endSec},asetpts=PTS-STARTPTS,atempo=${nativeSpeechEdit.speed},` : "";
+    filters.push(`[${nativeInput}:a]${edit}aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS${edgeFade}[${label}]`);
   }
   if (ttsInput !== undefined && nativeInput !== undefined) {
     // Preserve narration level and constrain combined peaks; compensate limiter lookahead to keep sync.
@@ -488,6 +495,9 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
   if (!config.clips || config.clips.length === 0) {
     throw new Error("没有可合成的片段（clips 为空）——请先为分镜配好画面素材再合成");
   }
+  if (config.clips.some(clip => clip.nativeSpeechEdit) && config.clips.some(clip => clip.transition !== "direct_concat")) {
+    throw new Error("词对齐口播剪辑必须直接拼接，不能用转场重叠语音。");
+  }
   const { width, height } = RESOLUTIONS[config.output.aspectRatio][config.output.resolution];
   const outputDir = join(getDataDir(), "output", config.projectId);
   const outputPath = join(outputDir, `final_${Date.now()}.mp4`);
@@ -502,12 +512,24 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
 
   // process each clip
   config.clips.forEach((clip, i) => {
+    if (clip.nativeSpeechEdit) {
+      const edit = clip.nativeSpeechEdit;
+      if (clip.type !== "video" || !clip.hasAudio || clip.audioPath || clip.mixNativeAudio || clip.preserveNativeSpeech
+        || !Number.isFinite(clip.sourceDuration) || !Number.isFinite(edit.startSec) || !Number.isFinite(edit.endSec)
+        || !Number.isFinite(edit.speed) || edit.startSec < 0 || edit.endSec <= edit.startSec
+        || edit.endSec > (clip.sourceDuration ?? 0) + 0.001 || edit.speed < 1 || edit.speed > 1.5
+        || [edit.fadeInSec ?? 0, edit.fadeOutSec ?? 0].some(fade => !Number.isFinite(fade) || fade < 0 || fade > 0.005)
+        || typeof edit.syncVideo !== "boolean" || clip.transition !== "direct_concat"
+        || Math.abs(clip.duration - nativeSpeechSlotDuration(edit)) > 0.000001) {
+        throw new Error(`片段 ${i + 1} 的词对齐口播剪辑参数无效，不能截词、重配音或重叠语音。`);
+      }
+    }
     if (clip.preserveNativeSpeech && (clip.type !== "video" || !clip.hasAudio || clip.audioPath || clip.mixNativeAudio
       || !Number.isFinite(clip.sourceDuration) || (clip.sourceDuration ?? 0) <= 0
       || Math.abs(clip.duration - (clip.sourceDuration ?? 0)) > 0.01)) {
       throw new Error(`片段 ${i + 1} 的原生口播必须保留完整视频、原声音轨与原始速度，不能重配音或改变片段时长。`);
     }
-    if (clip.type === "video" && clip.strictSourceDuration && (!Number.isFinite(clip.sourceDuration)
+    if (clip.type === "video" && clip.strictSourceDuration && !clip.nativeSpeechEdit && (!Number.isFinite(clip.sourceDuration)
       || (clip.sourceDuration ?? 0) <= 0 || clip.duration > (clip.sourceDuration ?? 0) + 0.01)) {
       throw new Error(`片段 ${i + 1} 的实际视频时长不足或无法核验，请补长/重生成对应镜头。`);
     }
@@ -554,8 +576,10 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
         !clip.hasAudio &&
         ratio > 0 &&
         ((ratio > 1.001 && ratio <= SPEEDFIT_MAX_RATIO) || (ratio >= SPEEDFIT_MIN_RATIO && ratio < 0.999));
+      const edit = clip.nativeSpeechEdit;
       const fit = speedFit ? `setpts=PTS/${ratio.toFixed(4)},` : "";
-      filterParts.push(`[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,${fit}tpad=stop_mode=clone:stop_duration=${clip.duration},trim=duration=${clip.duration},setpts=PTS-STARTPTS,${SEGMENT_NORM}[v${i}]`);
+      const sourceEdit = edit ? `trim=start=${edit.startSec}:end=${edit.syncVideo ? edit.endSec : edit.startSec + clip.duration},setpts=(PTS-STARTPTS)/${edit.syncVideo ? edit.speed : 1},` : "";
+      filterParts.push(`[${i}:v]${sourceEdit}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,${fit}tpad=stop_mode=clone:stop_duration=${clip.duration},trim=duration=${clip.duration},setpts=PTS-STARTPTS,${SEGMENT_NORM}[v${i}]`);
     }
   });
 
@@ -571,7 +595,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
       const nativeInput = clip.hasAudio && clip.type === "video" && (!clip.audioPath || clip.mixNativeAudio)
         ? String(i)
         : undefined;
-      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, preserveNativeSpeech: clip.preserveNativeSpeech }));
+      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, preserveNativeSpeech: clip.preserveNativeSpeech, nativeSpeechEdit: clip.nativeSpeechEdit }));
     });
   }
 

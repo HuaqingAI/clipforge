@@ -2,6 +2,7 @@ import type { Shot } from "@/lib/db/schema";
 import { claimableFacts, normalizeProductFacts } from "./facts";
 import { TIDEWE_INTERACTION_FIELDS, type ProductFacts, type TideweCopyBeat, type TideweCopyDocument, type TideweInteractionPlan, type TideweVisualPlan, type TideweVisualRole } from "./types";
 import { englishWordCount, mapTideweCopySpans, TideweValidationError } from "./validation";
+import { TIDEWE_PACING } from "./pacing";
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const ROLES = new Set<TideweVisualRole>(["presenter", "demonstration", "detail", "context"]);
@@ -168,7 +169,7 @@ export function assertTidewePlanQuality(shots: Shot[], options: Omit<TideweProdu
     catch (error) { fail(`Shot ${shot.shotId}: ${error instanceof Error ? error.message : String(error)}`); }
     if (!Number.isFinite(shot.duration) || shot.duration <= 0) fail(`Shot ${shot.shotId} requires a positive finite duration.`);
     if (shot.voiceover.trim()) {
-      const minimum = englishWordCount(shot.voiceover) / 2.6 + 0.3;
+      const minimum = englishWordCount(shot.voiceover) * 60 / TIDEWE_PACING.speechWpm + TIDEWE_PACING.headSec + TIDEWE_PACING.tailSec;
       if (shot.duration + 0.01 < minimum) {
         fail(`Shot ${shot.shotId} needs at least ${(Math.ceil(minimum * 10) / 10).toFixed(1)}s for its ${englishWordCount(shot.voiceover)} spoken words and a brief pause; extend it or split the exact narration without rewriting it.`);
       }

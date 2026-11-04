@@ -35,7 +35,6 @@ vi.mock("@/lib/video-composer/frame-extract", () => ({ extractFirstFrame: vi.fn(
 
 import { getDb } from "@/lib/db";
 import { assets, compositions, projects, scripts, settings, videoClips, type Shot } from "@/lib/db/schema";
-import { klingFilmRuns, klingFilmShots, type KlingFilmData, type KlingFilmRun } from "@/lib/kling/film-schema";
 import { klingJobs, klingJobOutputs, type KlingJobData } from "@/lib/kling/job-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { importKlingOutputs } from "@/lib/kling/output-import";
@@ -77,14 +76,6 @@ function output(localPath = file("uploads/project-1/kling-output.mp4"), linkedAs
     data: { scriptRevision: "original-revision", shotKey: "original-shot", expectedSelectedAssetId: null, model: { remoteModelId: "kling-test" }, inputs: [], options: {}, args: [], queryAttempts: 1 } as unknown as KlingJobData }).run();
   return getDb().insert(klingJobOutputs).values({ id: "output-1", jobId: "job-1", workKey: "provider-work-1", assetId: linkedAssetId, importState: "imported", createdAt: now, updatedAt: now,
     data: { url: "https://provider.invalid/private-signed-video?token=secret", urlObtainedAt: now, providerWorkId: "provider-work-1", localPath, durationMs: 6500, selectionOutcome: "kept_as_alternative" } }).returning().get()!;
-}
-
-function film(status: KlingFilmRun["status"], path: string, assetId?: string) {
-  const now = Date.now();
-  getDb().insert(klingFilmRuns).values({ id: "film-1", projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: "principal", status,
-    data: { expiresAt: now + 60_000, stage: "working", authorizationEpoch: 1, scriptSnapshot: { shots: [shot()] }, warnings: [] } as unknown as KlingFilmData, createdAt: now, updatedAt: now }).run();
-  getDb().insert(klingFilmShots).values({ id: "film-shot-1", runId: "film-1", shotId: 1, ordinal: 0, assetId, status: "ready", updatedAt: now,
-    data: { shot: shot(), source: "reuse", sourceFilePath: path, inputs: [], baselineAssetId: assetId ?? null } as never }).run();
 }
 
 function listed(name: string) {
@@ -182,20 +173,6 @@ describe("local generated shot library", () => {
     expect(existsSync(outside)).toBe(true);
   });
 
-  it("lists a generated film shot saved before its asset or job binding", () => {
-    script();
-    const path = file("uploads/project-1/orphan-film-shot.mp4");
-    film("completed", path);
-    const row = getDb().select().from(klingFilmShots).get()!;
-    getDb().update(klingFilmShots).set({ data: { ...row.data, source: "generate", videoUrl: "/api/files/project-1/orphan-film-shot.mp4" } }).run();
-    expect(listed("orphan-film-shot.mp4")).toMatchObject({ scriptId: "script-1", shotId: 1, shotDescription: "The original script shot" });
-  });
-
-  it("does not infer generation from a reused film source without a generated asset or job", () => {
-    script();
-    film("completed", file("uploads/project-1/uploaded-film-source.mp4"));
-    expect(listLocalShotVideos()).toEqual([]);
-  });
 });
 
 describe("local shot deletion", () => {
@@ -255,6 +232,32 @@ describe("local shot deletion", () => {
     expect(getDb().select().from(assets).all().some((item) => item.id === row.id)).toBe(false);
   });
 
+  it("keeps registered historical media available without reviving retired orchestration", () => {
+    script();
+    const row = asset("historical-take", { sourceScriptId: "script-1" });
+    output(row.filePath!, row.id);
+    const final = file("output/project-1/historical-final.mp4");
+    const archivedOnly = file("uploads/project-1/archived-only.mp4");
+    getDb().insert(compositions).values({ id: "work-1", projectId: "project-1", outputPath: final, status: "done" }).run();
+    const archiveData = JSON.stringify({ expiresAt: Date.now() + 60_000, videoUrl: final });
+    const shotData = JSON.stringify({ source: "generate", sourceFilePath: row.filePath, videoUrl: archivedOnly });
+    state.sqlite!.prepare("INSERT INTO kling_film_runs (id, project_id, script_id, profile_id, principal_key, status, data, lease_owner, lease_expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("retired-run", "project-1", "script-1", "profile-1", "principal", "running", archiveData, "retired-worker", Date.now() + 60_000, Date.now(), Date.now());
+    state.sqlite!.prepare("INSERT INTO kling_film_shots (id, run_id, shot_id, ordinal, status, asset_id, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("retired-shot", "retired-run", 1, 0, "ready", row.id, shotData, Date.now());
+
+    expect(listed("historical-take.mp4")).toMatchObject({ scriptId: "script-1", shotId: 1 });
+    expect(existsSync(row.filePath!)).toBe(true);
+    expect(existsSync(final)).toBe(true);
+    expect(existsSync(archivedOnly)).toBe(true);
+    expect(deleteLocalShotVideo(listed("historical-take.mp4").id)).toMatchObject({ success: true, deletedFiles: 1 });
+    expect(state.sqlite!.prepare("SELECT data FROM kling_film_runs WHERE id = ?").get("retired-run")).toEqual({ data: archiveData });
+    expect(state.sqlite!.prepare("SELECT data FROM kling_film_shots WHERE id = ?").get("retired-shot")).toEqual({ data: shotData });
+    expect(getDb().select().from(compositions).get()?.outputPath).toBe(final);
+    expect(existsSync(final)).toBe(true);
+    expect(existsSync(archivedOnly)).toBe(true);
+  });
+
   it("marks Kling output history deleted so a future import cannot resurrect the shot", async () => {
     script();
     const row = asset("kling-take", { sourceScriptId: "script-1" });
@@ -281,24 +284,11 @@ describe("local shot deletion", () => {
     expect(existsSync(row.filePath!)).toBe(true);
   });
 
-  it.each(["running", "paused", "composing"] as const)("protects an input used by a %s film", (status) => {
-    const row = asset(); film(status, row.filePath!, row.id);
-    expectStatus(() => deleteLocalShotVideo(listed("asset-1.mp4").id), 409);
-    expect(existsSync(row.filePath!)).toBe(true);
-  });
-
   it("protects a locally downloaded output while its worker lease is live", () => {
     script(); output();
     getDb().update(klingJobs).set({ leaseOwner: "worker", leaseExpiresAt: Date.now() + 60_000 }).run();
     expectStatus(() => deleteLocalShotVideo(listed("kling-output.mp4").id), 409);
     expect(getDb().select().from(klingJobOutputs).get()?.data.localPath).toBeDefined();
-  });
-
-  it("protects a completed film input until its worker releases its lease", () => {
-    const row = asset(); film("completed", row.filePath!, row.id);
-    getDb().update(klingFilmRuns).set({ leaseOwner: "worker", leaseExpiresAt: Date.now() + 60_000 }).run();
-    expectStatus(() => deleteLocalShotVideo(listed("asset-1.mp4").id), 409);
-    expect(existsSync(row.filePath!)).toBe(true);
   });
 
   it("removes a standalone downloaded output before it has an asset binding", () => {
@@ -309,28 +299,6 @@ describe("local shot deletion", () => {
     expect(existsSync(row.data.localPath!)).toBe(false);
     expect(listLocalShotVideos()).toEqual([]);
     expect(getDb().select().from(klingJobOutputs).get()).toMatchObject({ assetId: null, data: { deletedAt: expect.any(Number) } });
-  });
-
-  it("clears completed film-shot video references while preserving the film plan and its final", () => {
-    script();
-    const row = asset("finished-film-input", { sourceScriptId: "script-1" });
-    film("completed", row.filePath!, row.id);
-    const filmShot = getDb().select().from(klingFilmShots).get()!;
-    getDb().update(klingFilmShots).set({ data: { ...filmShot.data, videoUrl: "/api/files/project-1/finished-film-input.mp4", sourceFileHash: "previous-hash" } }).run();
-    const final = file("output/project-1/film-final.mp4");
-    getDb().insert(compositions).values({ id: "work-1", projectId: "project-1", outputPath: final, status: "done" }).run();
-
-    deleteLocalShotVideo(listed("finished-film-input.mp4").id);
-    const updatedShot = getDb().select().from(klingFilmShots).get()!;
-    expect(updatedShot.assetId).toBeNull();
-    expect(updatedShot.data.baselineAssetId).toBeNull();
-    expect(updatedShot.data.videoUrl).toBeUndefined();
-    expect(updatedShot.data.sourceFilePath).toBeUndefined();
-    expect(updatedShot.data.sourceFileHash).toBeUndefined();
-    expect(updatedShot.data.shot).toEqual(shot());
-    expect(getDb().select().from(klingFilmRuns).get()?.status).toBe("completed");
-    expect(getDb().select().from(compositions).get()?.outputPath).toBe(final);
-    expect(existsSync(final)).toBe(true);
   });
 
   it("restores staged files and database references when the database delete fails", () => {

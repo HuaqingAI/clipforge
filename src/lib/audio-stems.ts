@@ -17,6 +17,7 @@ export interface AudioStemClip {
   hasAudio?: boolean;
   mixNativeAudio?: boolean;
   preserveNativeSpeech?: boolean;
+  nativeSpeechEdit?: ClipInput["nativeSpeechEdit"];
 }
 
 export interface RenderAudioStemsInput {
@@ -60,6 +61,7 @@ function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): strin
       ttsInput,
       nativeInput,
       preserveNativeSpeech: clip.preserveNativeSpeech,
+      nativeSpeechEdit: clip.nativeSpeechEdit,
     }));
   });
   let current = "v0";

@@ -13,12 +13,9 @@ import { ARK_AGENT_PLAN_BASE_URL } from "@/lib/ark-config";
 import { VolcEngineProvider } from "@/lib/providers/volcengine";
 import { ProviderError } from "@/lib/providers/base";
 
-const state = vi.hoisted(() => ({ db: null as unknown, record: vi.fn(), update: vi.fn(), klingPreview: vi.fn(), klingStart: vi.fn(), klingGet: vi.fn() }));
+const state = vi.hoisted(() => ({ db: null as unknown, record: vi.fn(), update: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
 vi.mock("@/lib/ai-tasks", () => ({ recordAiTask: state.record, updateAiTask: state.update }));
-vi.mock("@/lib/kling/film-plan", () => ({ previewKlingFilm: state.klingPreview }));
-vi.mock("@/lib/kling/films", () => ({ startKlingFilm: state.klingStart }));
-vi.mock("@/lib/kling/film-repository", () => ({ getKlingFilm: state.klingGet }));
 vi.mock("@/lib/providers/atlas-catalog", () => ({
   fetchAtlasCatalog: vi.fn().mockResolvedValue([]), getCachedAtlasEntry: () => undefined,
 }));
@@ -195,7 +192,7 @@ function rejectImage(index: number) {
 }
 
 describe("film rejected input mapping and task recovery", () => {
-  it.each([undefined, "bytedance/seedance-2.0/text-to-video", "doubao-seedance-2.1"])("rejects missing or incompatible defaults without substituting a paid model: %s", async (model) => {
+  it.each([undefined, "bytedance/seedance-2.0/text-to-video", "doubao-seedance-2.1", '["kling-cli","image_to_video","official"]'])("rejects missing or incompatible defaults without substituting a paid model: %s", async (model) => {
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
     for (const dryRun of [true, false]) {
       const response = await request({ model, dryRun });
@@ -206,27 +203,6 @@ describe("film rejected input mapping and task recovery", () => {
     }
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.record).not.toHaveBeenCalled();
-  });
-  it.each([
-    { provider: "kling-cli", model: "official" },
-    { provider: "atlas-cloud", model: JSON.stringify(["kling-cli", "image_to_video", "official"]) },
-    { provider: "atlas-cloud", selectionKey: JSON.stringify(["kling-cli", "image_to_video", "official"]) },
-  ])("rejects removed Kling film generation, preview, and recovery before downstream work: %o", async (selection) => {
-    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
-    const readDb = vi.spyOn(db, "select");
-    for (const extra of [{ dryRun: true }, { dryRun: false, planId: "old-plan" }, { action: "recover", taskId: "old-task" }]) {
-      const response = await request({ ...selection, ...extra });
-      expect(response.status).toBe(410);
-      expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(await response.json()).toMatchObject({ error: { code: "KLING_FILM_REMOVED", message: expect.stringContaining("Kling 整片生成功能已移除"), retryable: false } });
-    }
-    expect(readDb).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(state.record).not.toHaveBeenCalled();
-    expect(state.update).not.toHaveBeenCalled();
-    expect(state.klingPreview).not.toHaveBeenCalled();
-    expect(state.klingStart).not.toHaveBeenCalled();
-    expect(state.klingGet).not.toHaveBeenCalled();
   });
   it("submits the exact previewed prompt without creating a task after image rejection", async () => {
     const fetchMock = rejectImage(1);

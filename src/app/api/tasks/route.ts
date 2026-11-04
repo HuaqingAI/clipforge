@@ -8,7 +8,6 @@ import { isPipelineRunActive } from "@/lib/pipeline-runner";
 import { listActiveAiTasksAllProjects } from "@/lib/ai-tasks";
 import { listLatestPipelineRuns } from "@/lib/pipeline-history";
 import { listKlingJobs, isKlingJobUnresolved } from "@/lib/kling/repository";
-import { listKlingFilms, getKlingFilmShots } from "@/lib/kling/film-repository";
 
 /**
  * 汇总所有项目的运行任务、待恢复任务，以及最近 24 小时的成片。
@@ -25,7 +24,7 @@ export async function GET() {
 
     const active: Array<Record<string, unknown>> = [];
     const attention: Array<Record<string, unknown>> = [];
-    const filmRecent: Array<Record<string, unknown>> = [];
+    const recentGenerations: Array<Record<string, unknown>> = [];
     for (const run of listGenerationRuns()) {
       const row = { kind: "generation", id: run.id, projectId: run.projectId,
         projectName: projectName.get(run.projectId) ?? "", generationKind: run.kind,
@@ -34,24 +33,7 @@ export async function GET() {
         createdAt: run.updatedAt };
       if (["queued", "running", "waiting", "importing"].includes(run.status)) active.push(row);
       else if (["failed", "needs_attention"].includes(run.status)) attention.push(row);
-      else if (run.status === "completed" && new Date(run.updatedAt).getTime() > Date.now() - 24 * 3600 * 1000) filmRecent.push(row);
-    }
-    const filmComposeIds = new Set<string>();
-    const filmChildJobIds = new Set<string>();
-    for (const run of listKlingFilms()) {
-      if (run.data.compositionId) filmComposeIds.add(run.data.compositionId);
-      if (["draft", "cancelled"].includes(run.status)) continue;
-      const shots = getKlingFilmShots(run.id);
-      const row = { kind: "kling_film", id: run.id, filmRunId: run.id, projectId: run.projectId,
-        projectName: projectName.get(run.projectId) ?? "", provider: "kling-cli", model: run.data.model.displayName,
-        ready: shots.filter((shot) => shot.status === "ready").length, total: shots.length, stage: run.data.stage,
-        status: run.status, createdAt: new Date(run.updatedAt).toISOString() };
-      if (run.status === "completed") {
-        if (run.updatedAt > Date.now() - 24 * 3600 * 1000) filmRecent.push(row);
-      } else {
-        (["paused", "needs_attention"].includes(run.status) || shots.some((shot) => shot.status === "needs_attention") ? attention : active).push(row);
-        for (const shot of shots) if (shot.jobId) filmChildJobIds.add(shot.jobId);
-      }
+      else if (run.status === "completed" && new Date(run.updatedAt).getTime() > Date.now() - 24 * 3600 * 1000) recentGenerations.push(row);
     }
 
     // server-side pipelines: verify against the in-process registry; a "running" row whose
@@ -100,7 +82,7 @@ export async function GET() {
     // renders in flight (skip ones already represented by their pipeline row)
     const composing = await db.select().from(compositions).where(eq(compositions.status, "composing"));
     for (const c of composing) {
-      if (pipelineComposeIds.has(c.id) || transcriptComposeIds.has(c.id) || filmComposeIds.has(c.id)) continue;
+      if (pipelineComposeIds.has(c.id) || transcriptComposeIds.has(c.id)) continue;
       active.push({
         kind: "compose",
         id: c.id,
@@ -128,7 +110,6 @@ export async function GET() {
       });
     }
     for (const job of listKlingJobs()) {
-      if (filmChildJobIds.has(job.id)) continue;
       if (job.dismissedAt || !isKlingJobUnresolved(job)) continue;
       const needsAttention = job.submissionState === "submission_unknown" || job.needsConfirmation ||
         !!job.data.blockedReason || ["failed", "partial"].includes(job.importState);
@@ -176,7 +157,7 @@ export async function GET() {
       .where(and(eq(compositions.status, "done"), gt(compositions.createdAt, dayAgo)))
       .orderBy(desc(compositions.createdAt))
       .limit(8);
-    const recent = [...filmRecent, ...recentRows.filter((c) => !filmComposeIds.has(c.id)).map((c) => ({
+    const recent = [...recentGenerations, ...recentRows.map((c) => ({
       kind: "done",
       id: c.id,
       projectId: c.projectId,

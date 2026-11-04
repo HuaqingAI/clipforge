@@ -7,7 +7,6 @@ import { aiTasks, assets, compositions, mediaSources, scripts, videoClips } from
 import { assetMatchesScript } from "@/lib/asset-context";
 import { getOutputDir, getUploadsDir } from "@/lib/paths";
 import { klingJobs, klingJobOutputs, type KlingJob } from "./job-schema";
-import { klingFilmRuns, klingFilmShots } from "./film-schema";
 import { KlingError } from "./errors";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -74,15 +73,6 @@ export function deleteKlingJob(id: string): { deleted: true; jobId: string } {
         for (const asset of allAssets) if (!removed.has(asset.id) && asset.derivedFromAssetId && removed.has(asset.derivedFromAssetId) &&
           asset.provider === "kling-cli" && roots.some((root) => root.filePath === asset.filePath)) { removed.add(asset.id); changed = true; }
       }
-      const outputFiles = new Set(outputs.flatMap((output) => [localPath(output.data.filePath), localPath(output.data.localPath)]).filter((value): value is string => !!value));
-      const filmRuns = tx.select().from(klingFilmRuns).all();
-      const filmShots = tx.select().from(klingFilmShots).all();
-      const protectedRuns = new Set(filmRuns.filter((run) => !["completed", "cancelled"].includes(run.status) &&
-        (run.status !== "draft" || run.data.expiresAt > Date.now())).map((run) => run.id));
-      const refersToVideo = (value: string | null | undefined) => !!value && outputFiles.has(localPath(value) ?? "");
-      if ((row.data.filmRunId && protectedRuns.has(row.data.filmRunId)) || filmShots.some((shot) => protectedRuns.has(shot.runId) &&
-        (shot.jobId === id || (shot.assetId && removed.has(shot.assetId)) || (shot.data.baselineAssetId && removed.has(shot.data.baselineAssetId)) ||
-          refersToVideo(shot.data.videoUrl) || refersToVideo(shot.data.sourceFilePath)))) busy("此视频正在被有效的整片计划或未完成的整片任务使用，请先完成或取消该整片任务。");
       if (tx.select().from(compositions).all().some((item) => item.projectId === row.projectId && ["pending", "composing"].includes(item.status))) busy("此项目正在合成视频，请等待合成结束后再删除镜头素材。");
 
       // A reference from another asset/source/clip always keeps the shared bytes alive.
@@ -97,7 +87,6 @@ export function deleteKlingJob(id: string): { deleted: true; jobId: string } {
       const clips = tx.select().from(videoClips).all();
       for (const clip of clips) keep(clip.filePath);
       for (const composition of tx.select().from(compositions).all()) { keep(composition.outputPath); keep(composition.thumbnailPath); }
-      for (const shot of filmShots) { keep(shot.data.keyframeUrl); for (const input of shot.data.inputs) { keep(input.path); keep(input.sourceUrl); } }
 
       const directory = jobDirectory(row);
       const candidates = new Set<string>();
@@ -175,7 +164,6 @@ export function cleanupDeletedKlingJob(id: string): void {
     for (const source of tx.select().from(mediaSources).all()) keep(source.filePath);
     for (const clip of tx.select().from(videoClips).all()) keep(clip.filePath);
     for (const composition of tx.select().from(compositions).all()) { keep(composition.outputPath); keep(composition.thumbnailPath); }
-    for (const shot of tx.select().from(klingFilmShots).all()) { keep(shot.data.keyframeUrl); for (const input of shot.data.inputs) { keep(input.path); keep(input.sourceUrl); } }
     let retry = false;
     for (const outputId of job.data.deletePendingOutputIds) if (SAFE_ID.test(outputId)) {
       for (const suffix of [".part", ".mp4", ".webm", ".mp4.thumb.jpg", ".webm.thumb.jpg", ".mp4.last.jpg", ".webm.last.jpg"]) {

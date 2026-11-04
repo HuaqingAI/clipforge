@@ -18,6 +18,7 @@ import { and, eq } from "drizzle-orm";
 import { checkCreativeProfileContext, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
+import { englishWordCount, getTideweGenerationDuration, TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 import { filterAssetsForScript, shotKey, scriptRevision } from "@/lib/asset-context";
 import type { VideoOptions } from "@/lib/providers/types";
 import { assertReviewedVideoPrompt, VideoPromptError } from "@/lib/server/video-prompt";
@@ -237,8 +238,13 @@ export async function POST(req: NextRequest) {
         if (tideweNative) {
           // The persisted plan owns the speaking budget. Browser rounding or a
           // forged shorter duration must not truncate the last English words.
-          options.minimumDuration = shot.duration;
-          options.duration = Math.max(Math.ceil(shot.duration), options.duration ?? 0);
+          const paced = selected.copyDocument?.pacingVersion === TIDEWE_PACING_VERSION;
+          const minimum = paced ? getTideweGenerationDuration(shot.duration, englishWordCount(shot.voiceover)) : shot.duration;
+          if (paced && minimum > 15) {
+            return NextResponse.json({ error: `镜头 ${shot.shotId} 的完整台词需要至少 ${minimum} 秒生成时长，请按原文拆分镜头后重试。`, code: "TIDEWE_SPEECH_BUDGET_EXCEEDED" }, { status: 422 });
+          }
+          options.minimumDuration = minimum;
+          options.duration = Math.max(Math.ceil(minimum), options.duration ?? 0);
         }
         delete options.extra;
         referenceAudioUrls = undefined;

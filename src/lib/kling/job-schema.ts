@@ -28,7 +28,7 @@ export interface KlingJobData {
   model: KlingVideoModelDescriptor;
   prompt: string;
   /** Server-owned validation version and source shot; optional for older persisted jobs. */
-  videoPromptAudit?: { version: number; sourceShot: Shot };
+  videoPromptAudit?: { version: number; sourceShot: Shot; pacingVersion?: string };
   promptContext?: VideoPromptContext;
   /** Frozen audio intent follows the imported clip even when it has incidental ambience. */
   generationPlan?: VideoControlSummary;
@@ -41,10 +41,8 @@ export interface KlingJobData {
   authorizedBootId: string;
   authorizedUntil: number;
   authorizationEpoch: number;
-  /** Server-owned FilmRun linkage; browser single-shot requests cannot supply these fields. */
+  /** Legacy quarantine marker: never submit old one-click-film jobs as new single shots. */
   filmRunId?: string;
-  filmShotId?: string;
-  filmAuthorizationEpoch?: number;
   billingAcknowledgedAt: number;
   dispatchStartedAt?: number;
   acknowledgedAt?: number;

@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ffmpegBin, ffprobeBin } from "@/lib/ffmpeg-path";
 import { buildComposeCommand, composeVideo, type ClipInput, type ComposeConfig } from "@/lib/video-composer/composer";
+import { nativeSpeechSlotDuration } from "@/lib/tidewe/native-speech-edit";
+import { renderAudioStems } from "@/lib/audio-stems";
 
 const clip: ClipInput = { type: "video", filePath: "/tmp/native.mp4", duration: 5, sourceDuration: 5,
   transition: "direct_concat", hasAudio: true, strictSourceDuration: true, preserveNativeSpeech: true };
@@ -15,6 +17,21 @@ function config(clips: ClipInput[] = [clip]): ComposeConfig {
 }
 
 describe("native speech renderer guards", () => {
+  it("retimes only the opt-in aligned window, synchronizing visible lips and preserving pitch", () => {
+    const edited: ClipInput = { ...clip, preserveNativeSpeech: undefined, duration: 2, sourceDuration: 5,
+      nativeSpeechEdit: { startSec: 1, endSec: 3.5, speed: 1.25, syncVideo: true, fadeInSec: 0.005, fadeOutSec: 0.005 } };
+    const command = buildComposeCommand(config([edited]));
+    expect(command).toContain("trim=start=1:end=3.5,setpts=(PTS-STARTPTS)/1.25");
+    expect(command).toContain("atrim=start=1:end=3.5,asetpts=PTS-STARTPTS,atempo=1.25");
+    expect(command).toContain("afade=t=in:st=0:d=0.005");
+    const offCamera = buildComposeCommand(config([{ ...edited, nativeSpeechEdit: { ...edited.nativeSpeechEdit!, syncVideo: false } }]));
+    expect(offCamera).toContain("trim=start=1:end=3,setpts=(PTS-STARTPTS)/1,");
+    expect(offCamera).toContain("atempo=1.25");
+    expect(() => buildComposeCommand(config([edited, { ...clip, transition: "ffmpeg_fade" }]))).toThrow("重叠语音");
+    expect(() => buildComposeCommand(config([{ ...edited, duration: 1.9 }]))).toThrow("词对齐");
+    expect(() => buildComposeCommand(config([{ ...edited, preserveNativeSpeech: true }]))).toThrow("词对齐");
+  });
+
   it("keeps native speech at source speed without edge fades, TTS or fabricated room tone", () => {
     const command = buildComposeCommand(config());
     expect(command).toContain("[0:a]");
@@ -78,6 +95,39 @@ describe("native speech transition rendering", () => {
     expect(stdout.length).toBe(12);
     return [...stdout.subarray(0, 3)];
   }
+
+  it("renders seven fractional edits without cumulative A/V drift and keeps pitch in both output and stem", async () => {
+    const edit = { startSec: 0.15, endSec: 1.74, speed: 1.17, syncVideo: true, fadeInSec: 0.005, fadeOutSec: 0.005 };
+    const duration = nativeSpeechSlotDuration(edit);
+    const clips = Array.from({ length: 7 }, (_, index): ClipInput => ({ ...sources[0],
+      preserveNativeSpeech: undefined, duration, nativeSpeechEdit: { ...edit, syncVideo: index % 2 === 0 } }));
+    const renderConfig = config(clips);
+    renderConfig.output = { ...renderConfig.output, aspectRatio: "16:9", videoPreset: "ultrafast" };
+    const output = await composeVideo(renderConfig);
+    const totalDuration = duration * clips.length;
+    const { stdout } = await exec(ffprobeBin(), ["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", output]);
+    const { streams } = JSON.parse(stdout) as { streams: { codec_type: string; duration: string }[] };
+    for (const stream of streams) expect(Number(stream.duration)).toBeCloseTo(totalDuration, 2);
+    const stems = await renderAudioStems({ clips, totalDuration, outputDir: join(directory, "paced-stems") });
+    for (const path of [output, stems.voicePath!]) {
+      const { stdout: samples } = await exec(ffmpegBin(), ["-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
+        { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 });
+      expect(samples.length / 4 / 16000).toBeCloseTo(totalDuration, 1);
+      const from = Math.round((duration * 6 + 0.3) * 16000);
+      const length = 8000;
+      const amplitude = (frequency: number) => {
+        let sine = 0; let cosine = 0;
+        for (let i = 0; i < length; i++) {
+          const sample = samples.readFloatLE((from + i) * 4);
+          sine += sample * Math.sin(2 * Math.PI * frequency * i / 16000);
+          cosine += sample * Math.cos(2 * Math.PI * frequency * i / 16000);
+        }
+        return 2 * Math.hypot(sine, cosine) / length;
+      };
+      expect(amplitude(440)).toBeGreaterThan(0.05);
+      expect(amplitude(440 * edit.speed)).toBeLessThan(0.01);
+    }
+  }, 60_000);
 
   it("renders selected hard cuts and cross-fades with different pixels and matching audio/video durations", async () => {
     for (const transition of ["direct_concat", "ffmpeg_fade"] as const) {

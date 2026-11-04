@@ -23,7 +23,6 @@ import { VIDEO_PROMPT_VERSION } from "@/lib/video-prompt";
 import { getKlingJob, getKlingOutputs, patchKlingJob, isKlingJobUnresolved, listKlingJobs, withKlingJobLease, klingJobView, assertKlingJobLease, withoutKlingJobLease } from "./repository";
 import { importKlingOutputs, selectKlingOutput } from "./output-import";
 import type { KlingSubmitRequest } from "./job-types";
-import { klingFilmRuns } from "./film-schema";
 import { klingJobHasUnknownSubmission } from "./concurrency";
 import { cleanupDeletedKlingJobs } from "./delete-job";
 import { isKlingRuntimeEnabled } from "./runtime";
@@ -39,6 +38,7 @@ import { buildVideoControlPlan, sanitizeVideoControlSummary } from "@/lib/video-
 import { generationContextItemId, generationContextSnapshot } from "@/lib/generation-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { resolveTideweVideoDirection, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
+import { englishWordCount, getTideweGenerationDuration, TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
@@ -89,7 +89,9 @@ function controlledSilentVideoOptions(
 }
 
 /** Request native speech on every Kling model; use a declared switch when available. */
-function controlledNativeVideoOptions(model: KlingVideoModelDescriptor, raw: Record<string, unknown>, negativePrompt: string, minimumDuration: number): Record<string, string | number | boolean> {
+function controlledNativeVideoOptions(model: KlingVideoModelDescriptor, raw: Record<string, unknown>, negativePrompt: string, shot: Shot, paced: boolean): Record<string, string | number | boolean> {
+  const minimumDuration = paced ? getTideweGenerationDuration(shot.duration, englishWordCount(shot.voiceover)) : shot.duration;
+  if (paced && minimumDuration > 15) throw new KlingError("TIDEWE_SPEECH_BUDGET_EXCEEDED", `镜头 ${shot.shotId} 的完整台词需要至少 ${minimumDuration} 秒生成时长，请按原文拆分镜头后重试。`, 422);
   const audio = model.parameters.find((parameter) => KLING_AUDIO_PARAMETER_NAMES.includes(parameter.name) && klingAudioParameterValue(parameter, true) !== undefined);
   const value = audio && klingAudioParameterValue(audio, true);
   const source = { ...raw };
@@ -97,7 +99,10 @@ function controlledNativeVideoOptions(model: KlingVideoModelDescriptor, raw: Rec
   if (audio && value !== undefined) source[audio.name] = value;
   const negative = model.parameters.find((parameter) => NEGATIVE_PARAMETER_NAMES.includes(parameter.name));
   if (negative) source[negative.name] = negativePrompt;
-  return normalizeVideoParameters(model, source, minimumDuration);
+  const normalized = normalizeVideoParameters(model, source, minimumDuration);
+  const duration = model.parameters.find((parameter) => ["duration", "duration_seconds", "durationSeconds", "duration_sec"].includes(parameter.name));
+  if (paced && duration && Number(normalized[duration.name]) > 15) throw new KlingError("TIDEWE_SPEECH_BUDGET_EXCEEDED", `镜头 ${shot.shotId} 的生成参数超过 15 秒，请调整时长参数或按原文拆分镜头后重试。`, 422);
+  return normalized;
 }
 
 type KlingReferenceInput = { role: "image" | "tailImage"; sourceUrl: string };
@@ -117,7 +122,6 @@ function validateTideweVideoInputs(
   script: typeof scripts.$inferSelect,
   shotId: number,
   refs: KlingReferenceInput[],
-  includeFrozenPresenter: boolean,
 ): KlingReferenceInput[] {
   const profile = checkCreativeProfileContext(project, script).projectProfile;
   try { assertTideweScript(script, isTideweOutdoorProfile(profile) ? profile.presenter ?? null : null); }
@@ -137,8 +141,7 @@ function validateTideweVideoInputs(
       .flatMap((asset) => [asset.filePath, asset.sourceKeyframeUrl, asset.thumbnailPath]).filter((value): value is string => Boolean(value && /\.(?:png|jpe?g|webp|gif|avif|bmp)(?:$|\?)/i.test(value))),
   ]);
   if (refs.some((ref) => !allowedImages.has(ref.sourceUrl))) throw new KlingError("TIDEWE_PRODUCT_REFERENCE_INVALID", "TIDEWE 只能使用当前脚本已保存的关键帧及商品参考。", 422);
-  if (!presenter || !includeFrozenPresenter) return refs;
-  return refs.some((ref) => ref.role === "image" && ref.sourceUrl === presenter) ? refs : [...refs, { role: "image", sourceUrl: presenter }];
+  return refs;
 }
 
 function creativeProfileContextError(context: ReturnType<typeof checkCreativeProfileContext>): KlingError | undefined {
@@ -162,30 +165,6 @@ function assertCreativeProfileContext(
   return context;
 }
 
-export interface KlingFilmShotContext {
-  filmRunId: string;
-  filmShotId: string;
-  authorizationEpoch: number;
-  expectedInputHashes?: Array<{ role: string; hash: string }>;
-}
-export interface KlingFilmDispatchGrant extends KlingFilmShotContext {
-  /** Must synchronously verify the durable parent run, shot binding, boot and authorization epoch. */
-  assertDispatchAllowed(): void;
-}
-function filmContext(input: KlingFilmShotContext): KlingFilmShotContext {
-  if (!input || typeof input.filmRunId !== "string" || typeof input.filmShotId !== "string" || !ID.test(input.filmRunId) || !ID.test(input.filmShotId) || !Number.isSafeInteger(input.authorizationEpoch) || input.authorizationEpoch < 1 ||
-    (input.expectedInputHashes !== undefined && (!Array.isArray(input.expectedInputHashes) || input.expectedInputHashes.length > 10 || input.expectedInputHashes.some((item) => !item || !["image", "tailImage"].includes(item.role) || !/^[a-f\d]{64}$/i.test(item.hash))))) throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片镜头的服务端授权上下文无效。", 409);
-  return { filmRunId: input.filmRunId, filmShotId: input.filmShotId, authorizationEpoch: input.authorizationEpoch,
-    ...(input.expectedInputHashes !== undefined ? { expectedInputHashes: input.expectedInputHashes.map((item) => ({ role: item.role, hash: item.hash.toLowerCase() })) } : {}) };
-}
-function assertFilmDispatchAllowed(grant: KlingFilmDispatchGrant): void {
-  const result: unknown = grant.assertDispatchAllowed();
-  if (result && (typeof result === "object" || typeof result === "function") && typeof (result as { then?: unknown }).then === "function") {
-    // An async guard would yield between the parent's check and the durable paid-dispatch claim.
-    void Promise.resolve(result).catch(() => {});
-    throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片派发校验必须同步完成，已阻止生成。", 409);
-  }
-}
 function failure(error: unknown, fallback = "Kling 操作暂时失败，请查询原任务"): { code: string; message: string; retryable: boolean } {
   return error instanceof KlingError ? { code: error.code, message: error.message, retryable: true } :
     { code: "KLING_LOCAL_FAILED", message: fallback, retryable: true };
@@ -229,21 +208,12 @@ function requestPayload(raw: unknown): KlingSubmitRequest {
 
 export async function createKlingJob(raw: unknown): Promise<KlingJob> {
   const browser = record(raw);
-  if (["filmRunId", "filmShotId", "filmAuthorizationEpoch", "filmContext", "suppressAutoDispatch"].some((key) => Object.hasOwn(browser, key))) throw new KlingError("KLING_SCOPE_UNSUPPORTED", "整片镜头必须由整片编排服务创建。", 422);
-  return createJob(raw);
-}
-
-/** Trusted server-only entrypoint. Creating a child never grants the generic job runner permission to generate. */
-export async function createKlingFilmShotJob(raw: unknown, context: KlingFilmShotContext): Promise<KlingJob> {
-  return createJob(raw, filmContext(context));
-}
-async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<KlingJob> {
+  if (["filmRunId", "filmShotId", "filmAuthorizationEpoch", "filmContext", "suppressAutoDispatch"].some((key) => Object.hasOwn(browser, key))) throw new KlingError("KLING_SCOPE_UNSUPPORTED", "Kling 一键整片功能已移除，请使用单镜头生成或批量转动态。", 422);
   const request = requestPayload(raw);
-  const linkage = film ? { filmRunId: film.filmRunId, filmShotId: film.filmShotId, expectedInputHashes: film.expectedInputHashes } : undefined;
   // Preserve the cheap idempotent path for legacy/sales requests. Reviewed requests are
   // canonicalized below before this same check, so a changed client prompt cannot reuse a job.
   const preliminary = getDb().select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
-  if (preliminary && preliminary.data.payloadHash === contentHash(film ? { request, linkage } : request)) {
+  if (preliminary && preliminary.data.payloadHash === contentHash(request)) {
     getKlingJob(preliminary.id);
     return preliminary;
   }
@@ -281,16 +251,9 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
   const allScripts = db.select().from(scripts).where(eq(scripts.projectId, request.projectId)).all();
   const script = resolveCurrentScript(allScripts);
-  const currentShot = script?.shots?.find((item) => item.shotId === request.shotId);
-  if (!script || script.id !== request.scriptId || !currentShot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
-  const parent = film ? db.select().from(klingFilmRuns).where(eq(klingFilmRuns.id, film.filmRunId)).get() : undefined;
-  if (film && (!parent || parent.projectId !== project.id || parent.scriptId !== script.id || parent.principalKey !== profile.principalKey)) {
-    throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片父任务不存在或账号、项目、脚本不一致", 409);
-  }
-  // An approved film keeps its reviewed shot even when the same script is edited.
-  const frozenShot = parent?.data.scriptSnapshot.shots.find((item) => item.shotId === request.shotId);
-  if (parent && !frozenShot) throw new KlingError("KLING_FILM_CONTEXT_INVALID", "当前镜头不属于已确认的整片计划", 409);
-  const shot = frozenShot ?? currentShot;
+  const shot = script?.shots?.find((item) => item.shotId === request.shotId);
+  if (!script || script.id !== request.scriptId || !shot) throw new KlingError("KLING_CONTEXT_CHANGED", "当前脚本或镜头已改变，请刷新后生成", 409);
+  const pacingVersion = script.copyDocument?.pacingVersion;
   const creativeContext = assertCreativeProfileContext(project, script);
   const tidewe = isTideweOutdoorProfile(creativeContext.projectProfile);
   let reviewed: ReturnType<typeof assertReviewedVideoPrompt> | undefined;
@@ -312,17 +275,16 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   let options: Record<string, string | number | boolean>;
   let generationPlan = reviewed ? sanitizeVideoControlSummary(reviewed.controlPlan) ?? undefined : undefined;
   if (tidewe) {
-    refs = validateTideweVideoInputs(project, script, request.shotId, refs, Boolean(film));
-    if (!film && !reviewed) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "TIDEWE 单镜视频须先预览并确认当前脚本的提示词。", 409);
+    refs = validateTideweVideoInputs(project, script, request.shotId, refs);
+    if (!reviewed) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "TIDEWE 单镜视频须先预览并确认当前脚本的提示词。", 409);
     const profile = creativeContext.projectProfile;
     const nativeSpeech = isTideweNativeSpeech(profile)
-      && (reviewed ? reviewed.controlPlan.audioMode === "native" : parent?.data.output.audioStrategy !== "edge-tts");
+      && reviewed.controlPlan.audioMode === "native";
     const postNarration = isTideweNativeSpeech(profile) && !nativeSpeech;
     const compiled = compileTideweVisualPrompt(shot, "video", isTideweOutdoorProfile(profile) ? profile.speechMode : "voiceover", isTideweOutdoorProfile(profile) ? profile.presenter : undefined, postNarration ? "post" : "native", { direction: tideweDirection(shot) });
-    if (film && prompt !== compiled.prompt) throw new KlingError("CREATIVE_POLICY_VIOLATION", "TIDEWE 整片镜头未使用当前脚本的服务端视觉提示词。", 422);
     prompt = reviewed?.prompt ?? compiled.prompt;
     const negativePrompt = reviewed?.negativePrompt ?? compiled.negativePrompt;
-    options = nativeSpeech ? controlledNativeVideoOptions(model, request.options ?? {}, negativePrompt, shot.duration) : controlledSilentVideoOptions(model, request.options ?? {}, negativePrompt, postNarration ? shot.duration : undefined);
+    options = nativeSpeech ? controlledNativeVideoOptions(model, request.options ?? {}, negativePrompt, shot, pacingVersion === TIDEWE_PACING_VERSION) : controlledSilentVideoOptions(model, request.options ?? {}, negativePrompt, postNarration ? shot.duration : undefined);
     generationPlan = sanitizeVideoControlSummary(buildVideoControlPlan({
       provider: "kling-cli", modelId: model.selectionKey, supportsAudio: true, generateAudio: nativeSpeech, voiceover: shot.voiceover, locale: "en",
       firstFrameUrl: refs.find((ref) => ref.role === "image")?.sourceUrl, lastFrameUrl: refs.find((ref) => ref.role === "tailImage")?.sourceUrl,
@@ -335,7 +297,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     }
     options = normalizeVideoParameters(model, source);
   }
-  if (!film && reviewed) assertReviewedFrameInputs(refs, reviewed.controlPlan);
+  if (reviewed) assertReviewedFrameInputs(refs, reviewed.controlPlan);
   const scopedEligible = filterAssetsForScript(
     db.select().from(assets).where(and(eq(assets.projectId, request.projectId), eq(assets.shotId, request.shotId), eq(assets.selected, true))).all(),
     script,
@@ -353,7 +315,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
       options,
     }
     : request;
-  const payloadHash = contentHash(film ? { request: effectiveRequest, linkage } : effectiveRequest);
+  const payloadHash = contentHash(effectiveRequest);
   const existing = db.select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
   if (existing) {
     getKlingJob(existing.id);
@@ -362,20 +324,18 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
   }
   const id = randomUUID();
   const inputs = await prepareKlingInputs(id, model, refs);
-  if (film?.expectedInputHashes !== undefined && canonicalJson(inputs.map(({ role, hash }) => ({ role, hash }))) !== canonicalJson(film.expectedInputHashes)) throw new KlingError("KLING_INPUT_CHANGED", "整片参考图与已确认的输入快照不一致，已阻止生成。", 409);
   const args = buildKlingVideoArguments(model, prompt, options, inputs, id, tidewe && generationPlan?.audioMode !== "native");
   const now = Date.now();
   const data: KlingJobData = {
     ...(generationContextItemId() ? { generationItemId: generationContextItemId(), generationProjectSignature: projectGenerationSignature(generationContextSnapshot()?.project ?? project as unknown as Record<string, unknown>) } : {}),
     scriptRevision: scriptRevision(script), shotKey: shotKey(script.id, shot), expectedSelectedAssetId: eligible[0]?.id ?? null,
-    payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script), ...(linkage ? { linkage } : {}) }),
+    payloadHash, requestHash: contentHash({ principal: profile.principalKey, region: profile.region, model, prompt, options, inputs: inputs.map(({ role, hash }) => ({ role, hash })), scriptRevision: scriptRevision(script) }),
     model, prompt, options, inputs, args, accountLabel: profile.accountSummary?.displayName ?? profile.accountSummary?.id,
-    videoPromptAudit: { version: VIDEO_PROMPT_VERSION, sourceShot: structuredClone(shot) },
+    videoPromptAudit: { version: VIDEO_PROMPT_VERSION, sourceShot: structuredClone(shot), ...(tidewe && pacingVersion ? { pacingVersion } : {}) },
     ...(generationPlan ? { generationPlan } : {}),
     ...(request.promptContext ? { promptContext: structuredClone(request.promptContext) } : {}),
     cliVersion: profile.cliVersion, adapterVersion: KLING_ADAPTER_VERSION,
     authorizedBootId: runtime.bootId, authorizedUntil: now + 120_000, authorizationEpoch: 1, billingAcknowledgedAt: now, queryAttempts: 0,
-    ...(film ? { filmRunId: film.filmRunId, filmShotId: film.filmShotId, filmAuthorizationEpoch: film.authorizationEpoch } : {}),
   };
   const created = db.transaction((tx) => {
     const retry = tx.select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
@@ -383,13 +343,6 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
       getKlingJob(retry.id);
       if (retry.data.payloadHash !== payloadHash) throw new KlingError("KLING_REQUEST_CONFLICT", "相同请求编号的内容不同", 409);
       return retry;
-    }
-    const films = tx.select().from(klingFilmRuns).all();
-    if (!film && films.some((row) => !["draft", "completed", "cancelled"].includes(row.status) && (row.principalKey === profile.principalKey || row.projectId === request.projectId))) {
-      throw new KlingError("KLING_FILM_CONFLICT", "已有未完成的历史整片任务，请先在任务记录中取消原计划", 409);
-    }
-    if (film && !films.some((row) => row.id === film.filmRunId && row.projectId === request.projectId && row.principalKey === profile.principalKey)) {
-      throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片父任务不存在或账号、项目不一致", 409);
     }
     const accountJobs = tx.select().from(klingJobs).where(and(eq(klingJobs.principalKey, profile.principalKey!), eq(klingJobs.region, profile.region))).all();
     assertNoUnknownSubmission(accountJobs);
@@ -409,7 +362,7 @@ async function createJob(raw: unknown, film?: KlingFilmShotContext): Promise<Kli
     }).run();
     return tx.select().from(klingJobs).where(eq(klingJobs.id, id)).get()!;
   }, { behavior: "immediate" });
-  if (!film) { startKlingJobRunner(); wakeKlingJobRunner(); }
+  startKlingJobRunner(); wakeKlingJobRunner();
   return created;
 }
 
@@ -457,7 +410,13 @@ async function checkedProfile(job: KlingJob, lease: KlingLease) {
   return profile;
 }
 
+/** Historical one-click-film jobs can only query or save work already submitted. */
+function assertSingleShotJob(job: KlingJob): void {
+  if (job.data.filmRunId) throw new KlingError("KLING_FILM_MANAGED_JOB", "Kling 一键整片功能已移除，历史整片镜头不能继续付费提交。请重新确认单镜头任务。", 409);
+}
+
 function assertCurrentContext(job: KlingJob): void {
+  assertSingleShotJob(job);
   const db = getDb();
   const project = db.select().from(projects).where(eq(projects.id, job.projectId)).get();
   if (!project) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在，已阻止首次生成。", 404);
@@ -474,19 +433,18 @@ function assertCurrentContext(job: KlingJob): void {
     if (receipt.scriptId !== job.scriptId || receipt.shotId !== job.shotId || receipt.provider !== "kling-cli" || receipt.model !== job.data.model.selectionKey) {
       throw new KlingError("KLING_VIDEO_PROMPT_CONTEXT_CHANGED", "已确认的提示词不属于当前脚本、镜头或模型。", 409);
     }
-    if (!job.data.filmRunId) assertReviewedFrameInputs(job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl })), receipt.controlInputs ?? {});
+    assertReviewedFrameInputs(job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl })), receipt.controlInputs ?? {});
   }
   if (isTideweOutdoorProfile(creativeContext.projectProfile)) {
     const refs = job.data.inputs.map(({ role, sourceUrl }) => ({ role, sourceUrl }));
-    const bound = validateTideweVideoInputs(project, selected, job.shotId, refs, Boolean(job.data.filmRunId));
-    if (canonicalJson(bound) !== canonicalJson(refs)) throw new KlingError("TIDEWE_PRESENTER_REFERENCE_INVALID", "待提交镜头缺少脚本中冻结的主播参考，请重新准备关键帧或任务。", 422);
+    validateTideweVideoInputs(project, selected, job.shotId, refs);
     const nativeSpeech = isTideweNativeSpeech(creativeContext.projectProfile)
       && (job.data.generationPlan ? job.data.generationPlan.audioMode === "native" : job.data.promptContext?.generateAudio !== false);
     const postNarration = isTideweNativeSpeech(creativeContext.projectProfile) && !nativeSpeech;
     const compiled = compileTideweVisualPrompt(shot, "video", creativeContext.projectProfile.speechMode, creativeContext.projectProfile.presenter, postNarration ? "post" : "native", { direction: tideweDirection(shot, true) });
-    if (!job.data.filmRunId && !job.data.promptContext) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 单镜缺少提示词预览，请重新创建任务。", 409);
+    if (!job.data.promptContext) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 单镜缺少提示词预览，请重新创建任务。", 409);
     if (job.data.prompt !== compiled.prompt && !job.data.prompt.startsWith(compiled.prompt + "\n")) throw new KlingError("TIDEWE_PROMPT_REVIEW_REQUIRED", "待提交的 TIDEWE 提示词版本已更新，请重新预览、确认并创建任务。", 409);
-    const expectedOptions = nativeSpeech ? controlledNativeVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, shot.duration) : controlledSilentVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, postNarration ? shot.duration : undefined);
+    const expectedOptions = nativeSpeech ? controlledNativeVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, shot, job.data.videoPromptAudit?.pacingVersion === TIDEWE_PACING_VERSION) : controlledSilentVideoOptions(job.data.model, job.data.options, compiled.negativePrompt, postNarration ? shot.duration : undefined);
     if (canonicalJson(expectedOptions) !== canonicalJson(job.data.options)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头未满足当前口播及视觉提示词策略，请重新创建任务。", 422);
     const expectedArgs = buildKlingVideoArguments(job.data.model, job.data.prompt, expectedOptions, job.data.inputs, job.id, postNarration);
     if (canonicalJson(expectedArgs) !== canonicalJson(job.data.args)) throw new KlingError("CREATIVE_POLICY_VIOLATION", "待提交的 TIDEWE 镜头参数已失去服务端约束，请重新创建任务。", 422);
@@ -506,26 +464,10 @@ function assertCurrentContext(job: KlingJob): void {
 }
 
 export async function dispatchKlingJob(jobId: string): Promise<void> {
-  return dispatchJob(jobId);
-}
-/** A fresh, parent-validated grant is required each time a FilmRun considers a new paid dispatch. */
-export async function dispatchKlingFilmShotJob(jobId: string, grant: KlingFilmDispatchGrant): Promise<void> {
-  const context = filmContext(grant);
-  if (typeof grant.assertDispatchAllowed !== "function") throw new KlingError("KLING_FILM_CONTEXT_INVALID", "整片镜头缺少服务端派发校验。", 409);
-  await dispatchJob(jobId, { ...context, assertDispatchAllowed: () => grant.assertDispatchAllowed() });
-  startKlingJobRunner(); wakeKlingJobRunner();
-}
-async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promise<void> {
   await withKlingJobLease(jobId, async () => {
     let job = getKlingJob(jobId);
+    assertSingleShotJob(job);
     if (job.data.blockingReleasedAt) return;
-    if (job.data.filmRunId) {
-      if (!grant || grant.filmRunId !== job.data.filmRunId || grant.filmShotId !== job.data.filmShotId || grant.authorizationEpoch < (job.data.filmAuthorizationEpoch ?? 0)) throw new KlingError("KLING_FILM_MANAGED_JOB", "整片镜头只能由原整片编排服务授权派发。", 409);
-      if (grant.expectedInputHashes !== undefined && canonicalJson(job.data.inputs.map(({ role, hash }) => ({ role, hash }))) !== canonicalJson(grant.expectedInputHashes)) throw new KlingError("KLING_INPUT_CHANGED", "整片镜头输入与原批次确认快照不一致，已阻止生成。", 409);
-      assertFilmDispatchAllowed(grant);
-      if (job.submissionState === "prepared") job = patchKlingJob(jobId, { needsConfirmation: false }, { authorizedBootId: runtime.bootId, authorizedUntil: Date.now() + 120_000,
-        authorizationEpoch: job.data.authorizationEpoch + 1, filmAuthorizationEpoch: grant.authorizationEpoch });
-    } else if (grant) throw new KlingError("KLING_FILM_MANAGED_JOB", "普通单镜头任务不能接管为整片任务。", 409);
     if (job.submissionState !== "prepared" || job.needsConfirmation) return;
     if (job.data.authorizedBootId !== runtime.bootId || job.data.authorizedUntil <= Date.now()) {
       patchKlingJob(jobId, { needsConfirmation: true }); return;
@@ -550,13 +492,13 @@ async function dispatchJob(jobId: string, grant?: KlingFilmDispatchGrant): Promi
           // The profile check must happen in the same immediate transaction as the paid-dispatch claim.
           // A profile edit between the earlier preflight and this point invalidates the prepared job.
           assertCurrentContext(job);
-          // Root's synchronous guard reads the parent run inside the same SQLite transaction as this claim.
-          if (grant) assertFilmDispatchAllowed(grant);
+          assertSingleShotJob(getKlingJob(jobId));
           return tx.update(klingJobs).set({
           submissionState: "submitting", data: { ...job.data, dispatchStartedAt: Date.now() }, revision: job.revision + 1, updatedAt: Date.now(),
         }).where(and(eq(klingJobs.id, jobId), eq(klingJobs.submissionState, "prepared"), eq(klingJobs.needsConfirmation, false), eq(klingJobs.revision, job.revision),
           sql`json_extract(${klingJobs.data}, '$.authorizedBootId') = ${runtime.bootId}`,
           sql`json_extract(${klingJobs.data}, '$.authorizedUntil') > ${Date.now()}`,
+          sql`json_extract(${klingJobs.data}, '$.filmRunId') IS NULL`,
           sql`json_extract(${klingJobs.data}, '$.authorizationEpoch') = ${job.data.authorizationEpoch}`)).returning().get();
         }, { behavior: "immediate" });
         if (!claimed) return;
@@ -699,7 +641,7 @@ export async function retryKlingImport(jobId: string): Promise<void> {
 }
 
 export async function continueKlingJob(jobId: string, raw: unknown): Promise<void> {
-  if (getKlingJob(jobId).data.filmRunId) throw new KlingError("KLING_FILM_MANAGED_JOB", "整片镜头需要在原整片任务中确认恢复，不能单独继续付费提交。", 409);
+  assertSingleShotJob(getKlingJob(jobId));
   await withKlingJobLease(jobId, () => continueUnderLease(jobId, raw));
 }
 async function continueUnderLease(jobId: string, raw: unknown): Promise<void> {
@@ -717,6 +659,7 @@ async function continueUnderLease(jobId: string, raw: unknown): Promise<void> {
   getDb().transaction((tx) => {
     assertKlingJobLease(jobId);
     const row = tx.select().from(klingJobs).where(eq(klingJobs.id, jobId)).get()!;
+    assertSingleShotJob(row);
     if (row.submissionState !== "prepared" || row.data.dispatchStartedAt) throw new KlingError("KLING_ALREADY_DISPATCHED", "此任务已开始提交", 409);
     tx.update(klingJobs).set({
       needsConfirmation: false, data: { ...row.data, model, authorizedBootId: runtime.bootId, authorizedUntil: Date.now() + 120_000,

@@ -15,6 +15,7 @@ import {
 } from "@/lib/script-judge";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
 import { getTideweProductCoverageIssues } from "@/lib/tidewe/planning-quality";
+import { TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 const SHOTS = [
   { shotId: 1, voiceover: "这款纸巾我回购了十次，真的谁用谁知道", description: "女生举着纸巾对镜头说话" },
@@ -115,6 +116,25 @@ describe("judge timing context", () => {
     expect(prompts[1]).toContain("英文词数 / 2.3 + 0.3 秒");
     expect(prompts[1]).toContain("Return feedback only; do not rewrite or translate it.");
     expect(prompts[1]).toContain("Do not demand dual CTAs, a mid-video suspense hook");
+  });
+
+  it("reviews new pacing-tagged copy at final 195 WPM while distinguishing brisk spoken delivery and estimated timing", () => {
+    const copy: TideweCopyDocument = {
+      version: 1, language: "en-US", text: "I would check the fit first.", translation: "我会先检查合脚程度。",
+      angle: "choice", hookType: "question", claimedFactIds: [],
+      factsSnapshot: { version: 1, brand: "TIDEWE", category: "boots", items: [] },
+      factsHash: "test", corpusVersion: "test", compilerVersion: "test", exampleIds: [], wordCount: 6, estimatedDuration: 1.8,
+      pacingVersion: TIDEWE_PACING_VERSION,
+    };
+    const prompt = buildTideweJudgePrompt(copy, timedShots, { timelineShots: timedShots, plannedTotalDuration: 30 });
+    expect(prompt).toContain("成片平均目标 195 英文词/分钟");
+    expect(prompt).toContain("215 WPM（210–220）");
+    expect(prompt).toContain("全部分镜总秒数");
+    expect(prompt).toContain("不能只计算有台词镜头或把成片 195 WPM 当成开口语速");
+    expect(prompt).toContain("不是实测音频或成片时长");
+    expect(prompt).toContain('"wordCount":6,"estimatedFinalDurationSec":1.8');
+    expect(prompt).not.toContain("2.6 词/秒为上限");
+    expect(prompt).toContain("Return feedback only; do not rewrite or translate it.");
   });
 });
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { aiTasks, assets, compositions, klingFilmRuns, klingJobs, pipelineRuns, projects, scripts } from "@/lib/db/schema";
+import { aiTasks, assets, compositions, klingJobs, pipelineRuns, projects, scripts } from "@/lib/db/schema";
 import { apiError, errText } from "@/lib/api-error";
 import { ACTIVE_AI_TASK_STATUSES } from "@/lib/ai-tasks";
 import { klingJobHasUnresolvedWork } from "@/lib/kling/concurrency";
@@ -75,10 +75,7 @@ export async function DELETE(
       const unresolvedKlingJob = tx.select().from(klingJobs).where(and(
         eq(klingJobs.projectId, id), eq(klingJobs.scriptId, scriptId),
       )).all().some(klingJobHasUnresolvedWork);
-      const unresolvedKlingFilm = tx.select({ status: klingFilmRuns.status }).from(klingFilmRuns).where(and(
-        eq(klingFilmRuns.projectId, id), eq(klingFilmRuns.scriptId, scriptId),
-      )).all().some((run) => !["draft", "completed", "cancelled"].includes(run.status));
-      if (runningPipeline || runningComposition || generatingAsset || activeAiTask || unresolvedKlingJob || unresolvedKlingFilm) {
+      if (runningPipeline || runningComposition || generatingAsset || activeAiTask || unresolvedKlingJob) {
         return apiError(req, "脚本或项目仍有未完成的生成任务，请先完成或处理任务后再删除", "This script or project has unfinished generation tasks. Complete or resolve them before deleting the script.", 409);
       }
 
@@ -194,9 +191,7 @@ export async function PATCH(
           eq(aiTasks.projectId, id), inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES),
         )).get();
         const unresolvedKlingJob = tx.select().from(klingJobs).where(eq(klingJobs.projectId, id)).all().some(klingJobHasUnresolvedWork);
-        const unresolvedKlingFilm = tx.select({ status: klingFilmRuns.status }).from(klingFilmRuns)
-          .where(eq(klingFilmRuns.projectId, id)).all().some((run) => !["draft", "completed", "cancelled"].includes(run.status));
-        if (runningPipeline || runningComposition || generatingAsset || activeAiTask || unresolvedKlingJob || unresolvedKlingFilm) {
+        if (runningPipeline || runningComposition || generatingAsset || activeAiTask || unresolvedKlingJob) {
           return apiError(req, "项目仍有未完成的生成任务，请先完成或处理任务后再恢复历史方案。", "This project has unfinished generation tasks. Complete or resolve them before restoring a historical script.", 409);
         }
 

@@ -14,6 +14,7 @@ import type { BatchMotionPanel } from "@/components/batch-motion-panel";
 import type { KeyframeRefinementDialogProps } from "@/components/keyframe-refinement-dialog";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { Shot } from "@/lib/db/schema";
+import { TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 const api = vi.hoisted(() => ({ kling: vi.fn(), models: [] as Model[], jobs: [] as unknown[], concurrency: undefined as KlingConcurrencyStatus | undefined, runs: [] as Array<Record<string, unknown>>, showMaterialLibrary: false }));
 const batch = vi.hoisted(() => ({ props: null as ComponentProps<typeof BatchMotionPanel> | null }));
@@ -41,7 +42,7 @@ vi.mock("@/app/project/[id]/assets/_components/local-material-library", async (i
   const actual = await importOriginal<typeof import("@/app/project/[id]/assets/_components/local-material-library")>();
   return { LocalMaterialLibrary: (props: ComponentProps<typeof actual.LocalMaterialLibrary>) => api.showMaterialLibrary ? <actual.LocalMaterialLibrary {...props} /> : null };
 });
-vi.mock("@/components/storyboard-film-panel", () => ({ StoryboardFilmPanel: ({ open, initialRunId, initialTaskId, onOpenChange }: { open: boolean; initialRunId?: string; initialTaskId?: string; onOpenChange(open: boolean): void }) => open ? <div aria-label="film-panel" data-run-id={initialRunId} data-task-id={initialTaskId}>{initialRunId ?? initialTaskId}<button aria-label="close-film-panel" onClick={() => onOpenChange(false)} /></div> : null }));
+vi.mock("@/components/storyboard-film-panel", () => ({ StoryboardFilmPanel: ({ open, initialTaskId, onOpenChange }: { open: boolean; initialTaskId?: string; onOpenChange(open: boolean): void }) => open ? <div aria-label="film-panel" data-task-id={initialTaskId}>{initialTaskId}<button aria-label="close-film-panel" onClick={() => onOpenChange(false)} /></div> : null }));
 vi.mock("@/components/batch-motion-panel", () => ({ BatchMotionPanel: (props: ComponentProps<typeof BatchMotionPanel>) => {
   batch.props = props;
   return props.open ? <div aria-label="batch-motion-panel"><button aria-label="close-batch-motion-panel" onClick={() => props.onOpenChange(false)} />{props.shots.map(({ asset, draft, disabledReason }) => <button key={asset.shotId} aria-label={`batch-submit-${asset.shotId}`} disabled={!draft || !!disabledReason} onClick={async () => { await draft!.generate(); props.onSubmitted(asset.shotId); }}>镜头 {asset.shotId}</button>)}</div> : null;
@@ -455,7 +456,7 @@ describe("keyframe refinement entry points", () => {
 });
 
 const tideweScriptHash = "a".repeat(64);
-function configureTideweAssets({ productVisible = true, savedFrame = false, projectOverrides = {} }: { productVisible?: boolean; savedFrame?: boolean; projectOverrides?: Record<string, unknown> } = {}) {
+function configureTideweAssets({ productVisible = true, savedFrame = false, projectOverrides = {}, pacingVersion }: { productVisible?: boolean; savedFrame?: boolean; projectOverrides?: Record<string, unknown>; pacingVersion?: string } = {}) {
   api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
   useSettingsStore.setState({ defaultImageModel: "fixture-image", uiMode: "pro" });
   const planned: Shot = {
@@ -466,7 +467,7 @@ function configureTideweAssets({ productVisible = true, savedFrame = false, proj
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     if (url === "/api/project/project") return Promise.resolve(Response.json({ name: "TIDEWE jacket", productImages: ["/api/files/product.jpg"], creativeProfile: createTideweOutdoorProfile(), creativeConfigRevision: 7, productionWorkflow: [{ id: "motion", enabled: false }], ...projectOverrides }));
-    if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots: [planned] }]));
+    if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots: [planned], ...(pacingVersion ? { copyDocument: { pacingVersion } } : {}) }]));
     if (url.endsWith("/assets")) return Promise.resolve(Response.json(init?.method === "POST" ? { filePath: "/api/files/tidewe-saved.png" } : savedFrame ? [{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", filePath: "/api/files/frame.jpg" }] : []));
     if (url === "/api/ai/image") return Promise.resolve(Response.json({ imageUrls: ["https://example.test/tidewe-generated.png"] }));
     return normal(url, init);
@@ -552,6 +553,18 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(previewRequests()[0]).toMatchObject({ batch: batchMode, generateAudio: true, controlInputs: { supportsAudio: true } });
     expect(submissions()).toHaveLength(1);
     expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ options: { duration: 6, audioEnabled: true, voiceover: planned.voiceover, audioPrompt: serverAudioPrompt } });
+  });
+  it.each([false, true])("uses the complete line's generation budget only for the new pacing version, paced=%s", async (paced) => {
+    const { planned } = configureTideweAssets({ savedFrame: true, pacingVersion: paced ? TIDEWE_PACING_VERSION : undefined });
+    planned.duration = 2;
+    planned.voiceover = Array.from({ length: 5 }, () => "The trail begins here.").join(" ");
+    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    await mount(ark);
+    await click("btnConvertMotion");
+    await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await click("确认生成此镜头");
+    expect(submissions()).toHaveLength(1);
+    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ options: { duration: paced ? 6 : 4, audioEnabled: true, voiceover: planned.voiceover } });
   });
   it.each([false, true])("generates TIDEWE visuals with post narration for a silent model, batch=%s", async (batchMode) => {
     configureTideweAssets({ savedFrame: true });
@@ -1637,26 +1650,26 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it("opens and switches task-center film links on the mounted assets page", async () => {
+  it("opens and switches original Seedance task links on the mounted assets page", async () => {
     await mount(kling.selectionKey);
     const scriptReads = fetchMock.mock.calls.filter(([url]) => url.endsWith("/scripts")).length;
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
 
-    await navigate("/project/project/assets?klingFilm=film-a");
-    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("film-a");
-    await navigate("/project/project/assets?klingFilm=film-b");
-    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("film-b");
+    await navigate("/project/project/assets?film=film-a");
+    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-task-id")).toBe("film-a");
+    await navigate("/project/project/assets?film=film-b");
+    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-task-id")).toBe("film-b");
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/scripts"))).toHaveLength(scriptReads);
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
-  it.each([ark, kling.selectionKey])("ignores the retired Kling film creation link with default model %s", async (videoModel) => {
+  it.each([ark, kling.selectionKey])("ignores every retired Kling film link with default model %s", async (videoModel) => {
     await navigate("/project/project/assets?klingFilm=1");
     await mount(videoModel);
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
 
     await navigate("/project/project/assets?klingFilm=existing-film");
-    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("existing-film");
+    expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
     await navigate("/project/project/assets?klingFilm=1");
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([, init]) => init?.method === "POST")).toBe(false);
@@ -1664,15 +1677,15 @@ describe("assets uses the configured provider through one motion entry", () => {
 
   it("clears film links when closing and can reopen the same task without refreshing", async () => {
     await mount(kling.selectionKey);
-    await navigate("/project/project/assets?presenter=host&klingFilm=film-a&film=old-link#shot-5");
+    await navigate("/project/project/assets?presenter=host&film=film-a#shot-5");
     await act(async () => (container.querySelector('[aria-label="close-film-panel"]') as HTMLButtonElement).click());
 
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
     expect(navigation.router.replace).toHaveBeenLastCalledWith("/project/project/assets?presenter=host#shot-5", { scroll: false });
     expect(window.location.search).toBe("?presenter=host");
     expect(window.location.hash).toBe("#shot-5");
-    await navigate("/project/project/assets?presenter=host&klingFilm=film-a#shot-5");
-    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("film-a");
+    await navigate("/project/project/assets?presenter=host&film=film-a#shot-5");
+    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-task-id")).toBe("film-a");
     expect(submissions()).toHaveLength(0);
   });
 
@@ -1683,28 +1696,27 @@ describe("assets uses the configured provider through one motion entry", () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? new Promise<Response>((resolve) => { finishScripts = resolve; })
       : normal(url, init));
-    await navigate("/project/project/assets?klingFilm=direct-film");
+    await navigate("/project/project/assets?film=direct-film");
     await mount(kling.selectionKey);
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
 
     await act(async () => finishScripts(scripts));
-    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("direct-film");
+    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-task-id")).toBe("direct-film");
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
-  it.each(["legacy-film", "1"])("supports the legacy film query %s without submitting generation", async (film) => {
+  it.each(["original-film", "1"])("supports the Seedance film query %s without submitting generation", async (film) => {
     await navigate(`/project/project/assets?film=${film}`);
     await mount(kling.selectionKey);
     const panel = container.querySelector('[aria-label="film-panel"]');
     expect(panel).not.toBeNull();
-    expect(panel?.getAttribute("data-run-id")).toBe(film === "1" ? null : film);
-    expect(panel?.hasAttribute("data-task-id")).toBe(false);
+    expect(panel?.getAttribute("data-task-id")).toBe(film === "1" ? null : film);
     expect([...fetchMock.mock.calls, ...api.kling.mock.calls].some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
   it("switches between film and shot task links and clears the shot link on close", async () => {
     await mount(kling.selectionKey);
-    await navigate("/project/project/assets?klingFilm=film-a");
+    await navigate("/project/project/assets?film=film-a");
     expect(container.querySelector('[aria-label="film-panel"]')).not.toBeNull();
     await navigate("/project/project/assets?klingJob=job-a&view=shots#shot-1");
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
@@ -1717,13 +1729,13 @@ describe("assets uses the configured provider through one motion entry", () => {
 
     await navigate("/project/project/assets?klingJob=job-b");
     expect(container.querySelector('[aria-label="job-detail"]')?.textContent).toBe("job-b");
-    await navigate("/project/project/assets?klingFilm=film-b");
+    await navigate("/project/project/assets?film=film-b");
     expect(container.querySelector('[aria-label="job-detail"]')).toBeNull();
-    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-run-id")).toBe("film-b");
+    expect(container.querySelector('[aria-label="film-panel"]')?.getAttribute("data-task-id")).toBe("film-b");
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each(["klingFilm=film-a", "klingJob=job-a"])("closes a task on history navigation away from %s and opens only batch motion from the header", async (query) => {
+  it.each(["film=film-a", "klingJob=job-a"])("closes a task on history navigation away from %s and opens only batch motion from the header", async (query) => {
     await mount(kling.selectionKey);
     await navigate(`/project/project/assets?${query}`);
     expect(container.querySelector('[aria-label="film-panel"], [aria-label="job-detail"]')).not.toBeNull();

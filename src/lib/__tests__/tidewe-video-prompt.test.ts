@@ -106,9 +106,50 @@ describe("compact English TIDEWE image-to-video template", () => {
     expect(output.prompt).toMatch(/visible presenter.*exact US English line.*once/i);
     expect(output.prompt).toMatch(/synchronized lips/i);
     expect(output.prompt).toMatch(/mouth visible/i);
-    expect(output.prompt).toMatch(/entire line inside this clip/i);
+    expect(output.prompt).toMatch(/finish the entire line by [\d.]+ seconds from the clip start/i);
     expect(output.negativePrompt).not.toMatch(/visible speaking(?:,|$)|lip synchronization(?:,|$)/i);
     expect(output.negativePrompt).toMatch(/lip.sync mismatch/i);
+  });
+
+  it.each(["native", "post"] as const)("keeps the ten-word delivery window fixed when %s video generation lasts longer", (audioMode) => {
+    const line = "Check the fit before you choose the gear for tomorrow.";
+    const short = compileTideweVideoPrompt({ ...shot, voiceover: line, duration: 4 }, "on_camera", undefined, audioMode, direction);
+    const longer = compileTideweVideoPrompt({ ...shot, voiceover: line, duration: 10 }, "on_camera", undefined, audioMode, direction);
+    for (const output of [short, longer]) {
+      expect(validateVideoPrompt(output.prompt)).toEqual([]);
+      expect(output.prompt).toContain("215 words per minute (210-220)");
+      expect(output.prompt).toContain("Start within 0.15 seconds");
+      expect(output.prompt).toContain("Finish the entire line by 2.94 seconds from the clip start");
+      expect(output.prompt).toContain("Do not slow the line or add pauses to fill a longer generated clip");
+      expect(output.prompt).toContain("Speech cadence does not speed up the approved physical actions");
+      expect(output.prompt).not.toMatch(/brief pauses at both ends|conversational pace/i);
+      expect(output.prompt.split(JSON.stringify(line))).toHaveLength(2);
+    }
+    expect(short.prompt).toEqual(longer.prompt);
+  });
+
+  it("gives native off-camera narration the same brisk speech window without adding visible speech", () => {
+    const line = "Check the fit before you choose the gear for tomorrow.";
+    const output = compileTideweVideoPrompt({ ...shot, voiceover: line, duration: 5, tidewe: { ...shot.tidewe!, speechDelivery: "off_camera" } }, "on_camera", undefined, "native", direction);
+    expect(validateVideoPrompt(output.prompt)).toEqual([]);
+    expect(output.prompt).toContain("215 words per minute (210-220)");
+    expect(output.prompt).toContain("Finish the entire line by 2.94 seconds from the clip start");
+    expect(output.prompt).toMatch(/off-camera narration.*no speaking or lip synchronization/i);
+    expect(output.prompt).not.toMatch(/mouth visible/i);
+  });
+
+  it.each(["native", "post"] as const)("preserves a historical line whose planned %s clip is too short instead of imposing an impossible deadline", (audioMode) => {
+    const bound = { ...shot, voiceover: "Check the fit before you choose the gear for tomorrow.", duration: 1.5 };
+    const before = structuredClone(bound);
+    const output = compileTideweVideoPrompt(bound, "on_camera", undefined, audioMode, direction);
+    expect(validateVideoPrompt(output.prompt)).toEqual([]);
+    expect(output.prompt).toContain("The planned 1.5 seconds is too short");
+    expect(output.prompt).toContain("needs at least 3.09 seconds at this cadence");
+    expect(output.prompt).toContain("Preserve the complete line; extend its timing budget");
+    expect(output.prompt).toContain("rather than omit words, truncate the sentence or force a faster delivery");
+    expect(output.prompt).not.toMatch(/Finish the entire line by|entire line inside this clip/i);
+    expect(output.prompt.split(JSON.stringify(bound.voiceover))).toHaveLength(2);
+    expect(bound).toEqual(before);
   });
 
   it.each([true, false])("keeps native off-camera narration exact while preserving person visibility=%s", (personVisible) => {
@@ -142,6 +183,7 @@ describe("compact English TIDEWE image-to-video template", () => {
     expect(output.prompt).toMatch(/no audio track, visible speaking or lip synchronization/i);
     expect(output.prompt).not.toContain(shot.voiceover);
     expect(output.prompt).not.toContain("Exact line:");
+    expect(output.prompt).not.toContain("words per minute");
     expect(output.prompt).not.toMatch(/silently articulates/i);
     expect(output.negativePrompt).toMatch(/visible speaking, lip synchronization/i);
   });

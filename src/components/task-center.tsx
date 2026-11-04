@@ -51,8 +51,6 @@ export function TaskCenter({ collapsed = false, taskFeed }: { collapsed?: boolea
         return t("taskKindPaid", { model: row.model ?? "" });
       case "paid_unknown":
         return t("taskKindPaidUnknown");
-      case "kling_film":
-        return `Kling · ${locale === "en" ? "Film history" : "历史整片"} ${row.ready ?? 0}/${row.total ?? 0} · ${row.stage || (locale === "en" ? "View record" : "查看记录")}`;
       case "kling":
         return `Kling · 镜头 ${row.shotId ?? ""} · ${row.submissionState === "submission_unknown" ? "提交结果待核对" : row.importState === "failed" || row.importState === "partial" ? "视频保存待恢复" : row.blockedReason ? "需要处理" : row.remoteState === "completed" ? "等待保存" : row.remoteState === "processing" ? "生成中" : row.submissionState === "prepared" ? "待提交" : row.label ?? row.model ?? "单镜头视频任务"}`;
       case "batch":

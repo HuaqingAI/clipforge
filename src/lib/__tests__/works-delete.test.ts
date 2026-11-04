@@ -31,7 +31,6 @@ vi.mock("@/lib/video-composer/frame-extract", () => ({ extractFirstFrame: vi.fn(
 
 import { getDb } from "@/lib/db";
 import { assets, batchJobItems, batchJobs, compositions, mediaEdits, mediaSources, pipelineRuns, projects } from "@/lib/db/schema";
-import { klingFilmRuns, klingFilmShots, type KlingFilmData, type KlingFilmRun } from "@/lib/kling/film-schema";
 import { assertWorkDeleteOrigin, deleteWork } from "@/lib/delete-work";
 import { DELETE } from "@/app/api/works/[id]/route";
 import { GET } from "@/app/api/works/route";
@@ -50,19 +49,12 @@ function edit(status: "done" | "queued" | "rendering" = "done") {
   getDb().insert(mediaSources).values({ id: "source-1", projectId: "project-1", originalName: "original.mp4", filePath: file("uploads/project-1/original.mp4"), mimeType: "video/mp4" }).run();
   getDb().insert(mediaEdits).values({ id: "edit-1", projectId: "project-1", sourceId: "source-1", compositionId: "work-1", status, plan: {} as never, keepRanges: [] }).run();
 }
-function film(status: KlingFilmRun["status"], linked = true) {
-  const data = { compositionId: linked ? "work-1" : undefined, videoUrl: linked ? "/api/output/project-1/final_work-1.mp4" : undefined,
-    thumbnailUrl: "/api/output/project-1/final_work-1.mp4.thumb.jpg", quality: { width: 1280, height: 720, hasAudio: true, duration: 5 },
-    expiresAt: Date.now() + 60_000, stage: "completed", authorizationEpoch: 1, scriptSnapshot: { shots: [] }, warnings: [] } as unknown as KlingFilmData;
-  return getDb().insert(klingFilmRuns).values({ id: "film-1", projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: "principal", status,
-    data, createdAt: Date.now(), updatedAt: Date.now() }).returning().get()!;
-}
 
 beforeAll(() => { state.root = mkdtempSync(join(tmpdir(), "clipforge-works-delete-")); });
 beforeEach(() => {
   state.unlinkFailure = false;
   state.directory = join(state.root, randomUUID()); mkdirSync(join(state.directory, "output", "project-1"), { recursive: true });
-  state.sqlite!.exec("DROP TRIGGER IF EXISTS reject_work_delete; DELETE FROM media_edits; DELETE FROM media_sources; DELETE FROM pipeline_runs; DELETE FROM batch_job_items; DELETE FROM batch_jobs; DELETE FROM kling_film_shots; DELETE FROM kling_film_runs; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM compositions; DELETE FROM assets; DELETE FROM projects;");
+  state.sqlite!.exec("DROP TRIGGER IF EXISTS reject_work_delete; DELETE FROM media_edits; DELETE FROM media_sources; DELETE FROM pipeline_runs; DELETE FROM batch_job_items; DELETE FROM batch_jobs; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM compositions; DELETE FROM assets; DELETE FROM projects;");
   getDb().insert(projects).values({ id: "project-1", name: "Fixture project" }).run();
 });
 afterAll(() => { state.sqlite?.close(); if (state.root && resolve(state.root).startsWith(resolve(tmpdir()))) rmSync(state.root, { recursive: true, force: true }); });
@@ -76,7 +68,7 @@ describe("completed work deletion", () => {
     const independent = file("output/project-1/final_work-1-extra.mp4");
     const music = file("uploads/project-1/bgm.mp3"); getDb().update(compositions).set({ bgmPath: music }).where(eq(compositions.id, "work-1")).run();
     const asset = file("uploads/project-1/shot.mp4"); getDb().insert(assets).values({ id: "asset-1", projectId: "project-1", shotId: 1, type: "user_upload", filePath: asset, status: "done" }).run();
-    edit(); const run = film("completed");
+    edit();
     getDb().insert(pipelineRuns).values({ id: "pipeline-1", projectId: "project-1", compositionId: "work-1", status: "done" }).run();
     getDb().insert(batchJobs).values({ id: "batch-1", total: 1, status: "done" }).run();
     getDb().insert(batchJobItems).values({ id: "item-1", jobId: "batch-1", productId: "product-1", productName: "Product", compositionId: "work-1", status: "done" }).run();
@@ -89,9 +81,6 @@ describe("completed work deletion", () => {
     expect(getDb().select().from(mediaEdits).get()?.compositionId).toBeNull();
     expect(getDb().select().from(pipelineRuns).get()?.compositionId).toBeNull();
     expect(getDb().select().from(batchJobItems).get()?.compositionId).toBeNull();
-    expect(getDb().select().from(klingFilmRuns).get()).toMatchObject({ status: "completed", data: { stage: "成片已删除", scriptSnapshot: run.data.scriptSnapshot } });
-    expect(getDb().select().from(klingFilmRuns).get()?.data.compositionId).toBeUndefined();
-    expect(getDb().select().from(klingFilmRuns).get()?.data.videoUrl).toBeUndefined();
     expect(state.sqlite!.pragma("foreign_key_check")).toEqual([]);
     const feed = await GET(); expect(await feed.json()).toMatchObject({ works: [{ id: "work-2" }] });
     expect(() => deleteWork("work-1")).toThrowError("已删除");
@@ -107,19 +96,6 @@ describe("completed work deletion", () => {
   });
   it.each(["queued", "rendering"] as const)("protects a %s transcript render", (status) => {
     work(); edit(status); expect(() => deleteWork("work-1")).toThrowError("剪辑任务");
-  });
-  it.each(["running", "paused", "needs_attention", "composing"] as const)("protects a %s linked film", (status) => {
-    work(); film(status); expect(() => deleteWork("work-1")).toThrowError("整片任务尚未结束");
-  });
-  it("protects a completed film until its live lease releases", () => {
-    work(); film("completed"); getDb().update(klingFilmRuns).set({ leaseOwner: "worker", leaseExpiresAt: Date.now() + 60_000 }).run();
-    expect(() => deleteWork("work-1")).toThrowError("尚未结束");
-  });
-  it("protects a video used as a shot by a valid draft film", () => {
-    const row = work(); film("draft", false);
-    getDb().insert(klingFilmShots).values({ id: "film-shot", runId: "film-1", shotId: 1, ordinal: 0, status: "ready", updatedAt: Date.now(),
-      data: { videoUrl: "/api/output/project-1/final_work-1.mp4", sourceFilePath: row.outputPath, inputs: [], shot: {} } as never }).run();
-    expect(() => deleteWork("work-1")).toThrowError("有效整片计划");
   });
   it("protects an active production or batch reference", () => {
     work(); getDb().insert(pipelineRuns).values({ id: "pipeline-1", projectId: "project-1", compositionId: "work-1", status: "running" }).run();
@@ -158,13 +134,12 @@ describe("completed work deletion", () => {
     expect(existsSync(row.thumbnailPath!)).toBe(false); expect(getDb().select().from(compositions).all()).toEqual([]);
   });
   it("rolls staged files and historical pointers back when the DB delete fails", () => {
-    const row = work(); film("completed"); edit();
+    const row = work(); edit();
     state.sqlite!.exec("CREATE TRIGGER reject_work_delete BEFORE DELETE ON compositions BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;");
     expect(() => deleteWork("work-1")).toThrowError("作品与文件已保留");
     expect(readFileSync(row.outputPath!, "utf8")).toContain("final_work-1"); expect(existsSync(row.thumbnailPath!)).toBe(true);
     expect(getDb().select().from(compositions).all()).toHaveLength(1);
     expect(getDb().select().from(mediaEdits).get()?.compositionId).toBe("work-1");
-    expect(getDb().select().from(klingFilmRuns).get()?.data.compositionId).toBe("work-1");
   });
   it("reports success after commit even if a hidden staged-file cleanup is temporarily locked", () => {
     const row = work(); state.unlinkFailure = true;

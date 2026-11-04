@@ -54,14 +54,6 @@ function addJob(overrides: Partial<typeof schema.klingJobs.$inferInsert> = {}) {
   }).returning().get()!;
 }
 
-function addFilm(overrides: Partial<typeof schema.klingFilmRuns.$inferInsert> = {}) {
-  return db.insert(schema.klingFilmRuns).values({
-    id: "film-1", projectId, scriptId, profileId: "profile-1", principalKey: "principal", status: "completed",
-    data: { scriptSnapshot: { shots: [shot] }, expiresAt: Date.now() + 60_000 } as never,
-    createdAt: Date.now(), updatedAt: Date.now(), ...overrides,
-  }).returning().get()!;
-}
-
 beforeEach(() => {
   sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
@@ -158,23 +150,16 @@ describe("DELETE project script", () => {
       data: { url: "https://example.invalid/video.mp4", urlObtainedAt: Date.now(), providerWorkId: "work-1" },
       createdAt: Date.now(), updatedAt: Date.now(),
     }).run();
-    addFilm();
-    db.insert(schema.klingFilmShots).values({
-      id: "film-shot-1", runId: "film-1", shotId: 1, ordinal: 0, status: "ready", assetId: "asset-1",
-      data: { shot } as never, updatedAt: Date.now(),
-    }).run();
     const before = {
       assets: db.select().from(schema.assets).all(), clips: db.select().from(schema.videoClips).all(),
       compositions: db.select().from(schema.compositions).all(), aiTasks: db.select().from(schema.aiTasks).all(),
       jobs: db.select().from(schema.klingJobs).all(), outputs: db.select().from(schema.klingJobOutputs).all(),
-      films: db.select().from(schema.klingFilmRuns).all(), filmShots: db.select().from(schema.klingFilmShots).all(),
     };
     expect((await remove()).status).toBe(200);
     expect({
       assets: db.select().from(schema.assets).all(), clips: db.select().from(schema.videoClips).all(),
       compositions: db.select().from(schema.compositions).all(), aiTasks: db.select().from(schema.aiTasks).all(),
       jobs: db.select().from(schema.klingJobs).all(), outputs: db.select().from(schema.klingJobOutputs).all(),
-      films: db.select().from(schema.klingFilmRuns).all(), filmShots: db.select().from(schema.klingFilmShots).all(),
     }).toEqual(before);
   });
 
@@ -269,18 +254,12 @@ describe("script deletion protects unfinished work", () => {
     await expectConflict();
   });
 
-  it.each(["running", "paused", "needs_attention", "composing"] as const)("protects a %s Kling film", async (status) => {
-    addFilm({ status });
-    await expectConflict();
-  });
-
   it("allows deleting a script while unrelated scripts and projects have running work", async () => {
     db.insert(schema.pipelineRuns).values({ projectId, scriptId: "archived-script", status: "running" }).run();
     db.insert(schema.assets).values({ projectId, sourceScriptId: "archived-script", shotId: 1, type: "ai_generated", status: "generating" }).run();
     db.insert(schema.compositions).values({ projectId: "other-project", status: "composing" }).run();
     db.insert(schema.aiTasks).values({ projectId: "other-project", provider: "test", model: "test", taskId: "remote-1", status: "processing" }).run();
     addJob({ scriptId: "archived-script", remoteState: "processing", importState: "not_ready" });
-    addFilm({ scriptId: "archived-script", status: "running" });
     expect((await remove()).status).toBe(200);
   });
 
@@ -288,7 +267,6 @@ describe("script deletion protects unfinished work", () => {
     db.insert(schema.pipelineRuns).values({ projectId, scriptId, status: "done" }).run();
     addJob({ remoteState: "failed", importState: "failed" });
     addJob({ id: "dismissed-job", clientRequestId: "dismissed-request", remoteState: "processing", importState: "pending", data: { deletedAt: Date.now() } as never });
-    addFilm({ status: "cancelled" });
     expect((await remove()).status).toBe(200);
     expect(db.select().from(schema.klingJobs).all()).toHaveLength(2);
     expect(db.select().from(schema.pipelineRuns).where(eq(schema.pipelineRuns.scriptId, scriptId)).get()).toBeDefined();

@@ -6,10 +6,11 @@ import { apiError, errText } from "@/lib/api-error";
 import { scriptRevision } from "@/lib/asset-context";
 import { checkCreativeProfileContext, isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { parseJudgeResponse } from "@/lib/script-judge";
-import { actionableJudgeFeedback, buildJudgeApplyPrompt, parseJudgeApplyResponse } from "@/lib/script-judge-apply";
-import { completeWithJsonRetry, reasoningParams } from "@/lib/script-engine/generator";
+import { actionableJudgeFeedback, buildJudgeApplyPrompt, parseJudgeApplyResponse, TideweJudgePacingError } from "@/lib/script-judge-apply";
+import { completeOnce, completeWithJsonRetry, reasoningParams } from "@/lib/script-engine/generator";
 import { createLLMClient, jsonModeParams, llmErrorPair } from "@/lib/llm-error";
 import { assertTideweScript } from "@/lib/tidewe/validation";
+import { TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 /** Apply reviewed suggestions atomically to the same saved alternative. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -45,7 +46,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "没有需要应用的修改意见，品味建议仍保留供参考", "No actionable feedback; taste suggestions remain for review", 400);
     }
     const config = { baseUrl: typeof llmConfig.baseUrl === "string" ? llmConfig.baseUrl : "", apiKey: typeof llmConfig.apiKey === "string" ? llmConfig.apiKey : "", model: llmConfig.model };
-    const update = await completeWithJsonRetry(createLLMClient(config), {
+    // A failed new pacing budget must surface once, without paying for an
+    // automatic model repair. Historical and imported-copy behavior is retained.
+    const complete = script.copyDocument?.pacingVersion === TIDEWE_PACING_VERSION && script.copyDocument.source === "ai_generated"
+      ? completeOnce : completeWithJsonRetry;
+    const update = await complete(createLLMClient(config), {
       model: config.model,
       messages: [{ role: "user", content: buildJudgeApplyPrompt(script, report) }],
       temperature: 0.3,
@@ -68,6 +73,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ success: true, script: { ...updated, scriptHash: scriptRevision(updated) } });
     }, { behavior: "immediate" });
   } catch (error) {
+    if (error instanceof TideweJudgePacingError) {
+      return NextResponse.json({ error: errText(req, error.message, error.englishMessage), code: error.code }, { status: 422 });
+    }
     const { zh, en } = llmErrorPair(error);
     return NextResponse.json({ error: errText(req, zh || "按建议修改失败，请重试", en || "Could not apply the judge suggestions; please retry") }, { status: 502 });
   }

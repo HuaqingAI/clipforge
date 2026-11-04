@@ -85,6 +85,20 @@ afterEach(async () => {
 });
 
 describe("applying judge feedback", () => {
+  it("shows an actionable 422 pacing rejection while retaining the original copy and review", async () => {
+    await mount();
+    const message = "修改后的口播计划超出 190–200 WPM；此次修改未保存，请修改全文后重新规划分镜。";
+    fetchMock.mockResolvedValueOnce(Response.json({ error: message, code: "TIDEWE_PACING_INVALID" }, { status: 422 }));
+    await click("judgeApplyAdvice");
+    expect(container.textContent).toContain(message);
+    expect(container.textContent).toContain(copy.text);
+    expect(container.textContent).toContain(copy.translation);
+    expect(container.textContent).toContain(feedback.summary);
+    expect(container.textContent).not.toContain("judgeAppliedTip");
+    expect(button("judgeApplyAdvice")?.disabled).toBe(false);
+    expect(fetchMock.mock.calls.filter(([url]) => url === applyUrl)).toHaveLength(1);
+  });
+
   it("updates canonical TIDEWE copy, Chinese translation and shots directly while retaining the report", async () => {
     await mount();
     await click("editCopy");

@@ -7,10 +7,7 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { klingFilmRuns, klingFilmShots, type KlingFilmRun } from "@/lib/kling/film-schema";
-import * as klingRepository from "@/lib/kling/repository";
 import type { KlingJob } from "@/lib/kling/job-schema";
-import { deleteKlingFilm } from "@/lib/kling/delete-film";
 
 const state = vi.hoisted(() => ({ db: null as unknown, active: new Set<string>(), start: vi.fn().mockResolvedValue("resumed"), remove: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("fs/promises", async (original) => ({ ...await original<typeof import("fs/promises")>(), rm: (...args: unknown[]) => state.remove(...args) }));
@@ -30,8 +27,6 @@ beforeAll(() => { state.db = db; migrate(db, { migrationsFolder: join(process.cw
 beforeEach(() => {
   db.delete(schema.generationItems).run();
   db.delete(schema.generationRuns).run();
-  db.delete(klingFilmShots).run();
-  db.delete(klingFilmRuns).run();
   db.delete(schema.klingJobOutputs).run();
   db.delete(schema.klingJobs).run();
   db.delete(schema.klingProfiles).run();
@@ -49,18 +44,6 @@ function run(values: Partial<typeof schema.pipelineRuns.$inferInsert> & { id: st
   db.insert(schema.pipelineRuns).values({ projectId: "project-a", createdAt: sameTime, ...values }).run();
 }
 async function feed() { return parseTaskFeed(await (await GET()).json()); }
-function film(status: KlingFilmRun["status"], shotStatuses = ["ready", "generating"] as const) {
-  const now = Date.now();
-  db.insert(klingFilmRuns).values({ id: "film-run", projectId: "project-a", scriptId: "script-a", profileId: "profile-a", principalKey: "account-a", status,
-    data: { scriptRevision: "revision", scriptSnapshot: { shots: [] }, model: { displayName: "Kling video" } as KlingFilmRun["data"]["model"],
-      output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: "native", voice: "zh-CN-XiaoxiaoNeural", subtitles: true }, planHash: "plan",
-      expiresAt: now + 60000, reuseExistingVideos: true, warnings: [], stage: status === "composing" ? "正在合成" : "生成镜头", authorizationEpoch: 1, compositionId: "film-composition" },
-    createdAt: now, updatedAt: now }).run();
-  for (const [ordinal, shotStatus] of shotStatuses.entries()) db.insert(klingFilmShots).values({ id: `film-shot-${ordinal}`, runId: "film-run", shotId: ordinal + 1, ordinal,
-    status: shotStatus, jobId: ordinal === 1 ? "child-job" : null,
-    data: { shot: { shotId: ordinal + 1, type: "demo", camera: "static", description: "Product", duration: 5, visualSource: "ai_generate", transition: "direct_concat", voiceover: "" },
-      source: "generate", prompt: "Product", options: {}, missingKeyframe: false, inputs: [], baselineAssetId: null, attempt: 1 }, updatedAt: now }).run();
-}
 function job(overrides: Partial<Pick<KlingJob, "remoteState" | "importState" | "submissionState">> = {}) {
   const now = Date.now();
   db.insert(schema.klingProfiles).values({ id: "profile-a", data: {} as typeof schema.klingProfiles.$inferInsert["data"] }).run();
@@ -210,69 +193,6 @@ describe("任务发现和恢复状态", () => {
       projectId,
       origin: "http://localhost",
     }));
-  });
-
-  it("shows a Kling film parent with ready progress and hides its child and duplicate composition", async () => {
-    film("composing");
-    db.insert(schema.compositions).values({ id: "film-composition", projectId: "project-a", status: "composing" }).run();
-    const jobs = vi.spyOn(klingRepository, "listKlingJobs").mockReturnValue([{ id: "child-job", projectId: "project-a", scriptId: "script-a", shotId: 2,
-      submissionState: "acknowledged", remoteState: "processing", importState: "not_ready", createdAt: Date.now(), data: { model: { displayName: "Kling" } } } as KlingJob]);
-    try {
-      const result = await feed();
-      expect(result.active).toMatchObject([{ kind: "kling_film", id: "film-run", ready: 1, total: 2, stage: "正在合成", status: "composing" }]);
-      expect(result.active).toHaveLength(1);
-      expect(taskHref(result.active[0])).toBe("/project/project-a/assets?klingFilm=film-run");
-    } finally { jobs.mockRestore(); }
-  });
-
-  it.each(["paused", "needs_attention"] as const)("keeps a %s Kling film in the attention list", async (status) => {
-    film(status);
-    const result = await feed(); expect(result.active).toEqual([]);
-    expect(result.attention).toMatchObject([{ kind: "kling_film", status, ready: 1, total: 2 }]);
-  });
-
-  it("shows completed film history once and ignores draft and cancelled plans", async () => {
-    film("completed");
-    db.insert(schema.compositions).values({ id: "film-composition", projectId: "project-a", status: "done" }).run();
-    const result = await feed(); expect(result.recent).toHaveLength(1); expect(result.recent[0].kind).toBe("kling_film");
-    for (const status of ["draft", "cancelled"] as const) {
-      db.update(klingFilmRuns).set({ status }).run();
-      const hidden = await feed(); expect(hidden.active).toEqual([]); expect(hidden.attention).toEqual([]); expect(hidden.recent).toEqual([]);
-    }
-  });
-
-  it("removes deleted film history while keeping the finished work and child task accessible", async () => {
-    film("completed");
-    db.insert(schema.compositions).values({ id: "film-composition", projectId: "project-a", status: "done" }).run();
-    job();
-    db.update(schema.klingJobs).set({ id: "child-job", data: { ...klingRepository.getKlingJob("job-run").data, filmRunId: "film-run", filmShotId: "film-shot-1" } }).run();
-    expect((await feed()).recent).toMatchObject([{ kind: "kling_film", id: "film-run" }]);
-    deleteKlingFilm("film-run");
-    const result = await feed();
-    expect([...result.active, ...result.attention, ...result.recent].some((row) => row.kind === "kling_film")).toBe(false);
-    expect(result.recent).toMatchObject([{ kind: "done", id: "film-composition" }]);
-    expect(result.active).toMatchObject([{ kind: "kling", id: "child-job" }]);
-    expect(klingRepository.getKlingJob("child-job")).toMatchObject({ remoteState: "processing", data: { filmRunId: "film-run" } });
-  });
-
-  it.each(["running", "composing", "paused", "needs_attention"] as const)("blocks project deletion while a Kling film is %s", async (status) => {
-    film(status);
-    const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE" }), { params: Promise.resolve({ id: "project-a" }) });
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      error: "项目仍有未完成或待恢复的生成任务，请先处理原任务，避免丢失结果",
-      code: "PROJECT_HAS_UNRESOLVED_KLING_TASKS",
-      blockingTasks: [{ kind: "kling_film", id: "film-run", href: "/project/project-a/assets?klingFilm=film-run" }],
-    });
-    expect(db.select().from(schema.projects).all()).toHaveLength(2);
-    expect(state.remove).not.toHaveBeenCalled();
-  });
-
-  it.each(["draft", "completed", "cancelled"] as const)("allows project deletion when the only Kling film is %s", async (status) => {
-    film(status);
-    const response = await deleteProject(new NextRequest("http://localhost/api/project/project-a", { method: "DELETE" }), { params: Promise.resolve({ id: "project-a" }) });
-    expect(response.status).toBe(200); expect(state.remove).toHaveBeenCalledTimes(2);
-    expect(db.select().from(schema.projects).all()).toMatchObject([{ id: "project-b" }]);
   });
 
   it("links a completed Kling job whose local import failed without removing the project or its files", async () => {

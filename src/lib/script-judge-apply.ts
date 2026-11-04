@@ -3,6 +3,15 @@ import { extractJSON } from "@/lib/script-engine/generator";
 import { preservesFactTokens, type JudgeReport } from "@/lib/script-judge";
 import { assertTideweCopyClaims, assertTideweScript, englishWordCount } from "@/lib/tidewe/validation";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
+import { TIDEWE_PACING, TIDEWE_PACING_VERSION, estimateTideweDuration } from "@/lib/tidewe/pacing";
+
+export class TideweJudgePacingError extends Error {
+  readonly code = "TIDEWE_PACING_INVALID";
+  constructor(message: string, readonly englishMessage: string) {
+    super(message);
+    this.name = "TideweJudgePacingError";
+  }
+}
 
 export interface JudgeEditableScript {
   styleType: string;
@@ -27,6 +36,9 @@ export function buildJudgeApplyPrompt(script: JudgeEditableScript, report: Judge
     ...(script.copyDocument ? [
       "This is TIDEWE US-English narration with Chinese visual directions and review translations. Current product facts are the sole claim source. Keep one coherent outdoor angle and the existing brand rules. Do not add CTAs or suspense requirements.",
       "For each changed English voiceover also provide its complete Chinese translation. Do not translate Chinese visual directions into narration. Do not return a separate full copy; the server rebuilds it from the shot patches.",
+      ...(script.copyDocument.pacingVersion === TIDEWE_PACING_VERSION && script.copyDocument.source === "ai_generated" ? [
+        `This copy follows ${TIDEWE_PACING_VERSION}: keep the complete narration at ${TIDEWE_PACING.minFinalWpm}-${TIDEWE_PACING.maxFinalWpm} final WPM, targeting ${TIDEWE_PACING.targetFinalWpm}. Estimate final WPM as all English words * 60 / all shot durations, including silent shots. During speech use natural ${TIDEWE_PACING.minSpeechWpm}-${TIDEWE_PACING.maxSpeechWpm} WPM delivery; do not confuse this with the final average. Keep durations unchanged and fit any explicit wording correction within this budget, without adding filler or changing healthy lines.`,
+      ] : []),
       `CURRENT_PRODUCT_FACTS: ${JSON.stringify(script.copyDocument.factsSnapshot)}`,
       `FINAL_COPY: ${JSON.stringify(script.copyDocument.text)}`,
     ] : []),
@@ -141,7 +153,8 @@ export function parseJudgeApplyResponse(content: string, script: JudgeEditableSc
       text,
       translation: shots.map((shot) => shot.tidewe!.translation).filter(Boolean).join("\n"),
       wordCount,
-      estimatedDuration: Math.round(wordCount / 2.3 * 10) / 10,
+      estimatedDuration: originalCopy.pacingVersion === TIDEWE_PACING_VERSION
+        ? estimateTideweDuration(wordCount) : Math.round(wordCount / 2.3 * 10) / 10,
     };
     if (text !== originalCopy.text) delete copyDocument.visualBeats;
     if (originalCopy.source === "user_provided") {
@@ -153,5 +166,16 @@ export function parseJudgeApplyResponse(content: string, script: JudgeEditableSc
     }
   }
   assertTideweScript({ shots, copyDocument });
+  if (narrationChanged && copyDocument.pacingVersion === TIDEWE_PACING_VERSION && copyDocument.source === "ai_generated") {
+    const seconds = shots.reduce((sum, shot) => sum + shot.duration, 0);
+    const words = englishWordCount(copyDocument.text);
+    const wpm = words * 60 / seconds;
+    if (wpm < TIDEWE_PACING.minFinalWpm - 1e-6 || wpm > TIDEWE_PACING.maxFinalWpm + 1e-6) {
+      throw new TideweJudgePacingError(
+        `修改后的口播计划为 ${wpm.toFixed(1)} WPM（${words} 词 / ${seconds.toFixed(1)} 秒），超出 ${TIDEWE_PACING.minFinalWpm}–${TIDEWE_PACING.maxFinalWpm} WPM；按 ${TIDEWE_PACING.targetFinalWpm} WPM 预计需 ${estimateTideweDuration(words).toFixed(1)} 秒。此次修改未保存，请保留现有时长修改措辞，或修改全文后重新规划分镜。`,
+        `The edited narration plans ${wpm.toFixed(1)} WPM (${words} words / ${seconds.toFixed(1)}s), outside ${TIDEWE_PACING.minFinalWpm}-${TIDEWE_PACING.maxFinalWpm} WPM; ${TIDEWE_PACING.targetFinalWpm} WPM needs about ${estimateTideweDuration(words).toFixed(1)}s. No changes were saved. Revise the wording for the current timing or edit the full copy and replan its shots.`,
+      );
+    }
+  }
   return { shots, copyDocument };
 }

@@ -3,6 +3,7 @@ import type { Shot } from "@/lib/db/schema";
 import { claimableFacts, normalizeProductFacts } from "./facts";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_INTERACTION_FIELDS, getTideweShotCount, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "./types";
 import { isValidTidewePresenterInput, tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
+export { englishWordCount } from "./pacing";
 
 export class TideweValidationError extends Error {
   readonly code = "TIDEWE_VALIDATION_FAILED";
@@ -64,9 +65,6 @@ export function productFactsHash(facts: ProductFacts): string {
 export function canonicalizeTideweCopy(text: string): string {
   return text.replace(/```(?:\w+)?|```/g, "").replace(/\*\*|__/g, "")
     .replace(/^\s*(?:[-*#]+|\d+[.)])\s+/gm, "").replace(/\s+/g, " ").trim();
-}
-export function englishWordCount(text: string): number {
-  return text.match(/[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*/g)?.length ?? 0;
 }
 
 /** Validate before vision/annotation calls; keep punctuation, paragraphs and repeated prose intact. */

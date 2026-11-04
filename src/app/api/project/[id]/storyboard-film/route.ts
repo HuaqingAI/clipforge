@@ -28,7 +28,6 @@ import { probeMedia } from "@/lib/media-probe";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { apiError, errText } from "@/lib/api-error";
 import { filterAssetsForScript } from "@/lib/asset-context";
-import { isKlingVideoSelection } from "@/lib/assets-view";
 import { checkCreativeProfileContext, isTideweOutdoorProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
@@ -77,9 +76,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
-    if (body.provider === "kling-cli" || isKlingVideoSelection(body.model) || isKlingVideoSelection(body.selectionKey)) {
-      return NextResponse.json({ error: { code: "KLING_FILM_REMOVED", message: "Kling 整片生成功能已移除，请使用单镜头生成后合成。历史整片任务仍可查看、暂停、取消或删除。", retryable: false } }, { status: 410, headers: { "Cache-Control": "no-store" } });
-    }
     if (body.action === "recover") {
       const [project] = await getDb().select().from(projects).where(eq(projects.id, id));
       if (!project) return apiError(req, "Project not found", "Project not found", 404);

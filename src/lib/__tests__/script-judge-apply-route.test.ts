@@ -11,11 +11,12 @@ import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTide
 import { scriptRevision } from "@/lib/asset-context";
 import { assertTideweScript, englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
+import { TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
-const calls = vi.hoisted(() => ({ complete: vi.fn() }));
+const calls = vi.hoisted(() => ({ complete: vi.fn(), once: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
 vi.mock("@/lib/script-engine/generator", () => ({
-  completeWithJsonRetry: calls.complete, reasoningParams: () => ({}), extractJSON: (text: string) => text,
+  completeOnce: calls.once, completeWithJsonRetry: calls.complete, reasoningParams: () => ({}), extractJSON: (text: string) => text,
 }));
 import { POST } from "@/app/api/project/[id]/script-judge/apply/route";
 
@@ -67,10 +68,57 @@ beforeEach(() => {
   }).returning().get()!;
   result = { patches: [{ shotId: 2, voiceover: "I'd try these on with my hunting socks.", translation: "我会配上狩猎袜试穿这双靴子。" }] };
   calls.complete.mockReset().mockImplementation(async (_client, _params, _config, parse) => parse(JSON.stringify(result)));
+  calls.once.mockReset().mockImplementation(async (_client, _params, _config, parse) => parse(JSON.stringify(result)));
 });
 afterEach(() => { sqlite.close(); vi.clearAllMocks(); });
 
 describe("apply judge feedback", () => {
+  function markPaced() {
+    const words = source.copyDocument!.wordCount;
+    const seconds = words * 60 / 195;
+    db.update(schema.scripts).set({
+      copyDocument: { ...source.copyDocument!, source: "ai_generated", pacingVersion: TIDEWE_PACING_VERSION },
+      shots: source.shots!.map(shot => ({ ...shot, duration: seconds / source.shots!.length })),
+    }).where(eq(schema.scripts.id, source.id)).run();
+    source = saved();
+  }
+
+  it("uses one call and returns the actionable pacing rejection as 422 while leaving the script intact", async () => {
+    markPaced();
+    result = { patches: [{ shotId: 2, voiceover: "Check fit.", translation: "检查合脚程度。" }] };
+    const response = await POST(request(), params());
+    expect(response.status).toBe(422);
+    const payload = await response.json();
+    expect(payload.code).toBe("TIDEWE_PACING_INVALID");
+    expect(payload.error).toMatch(/190.200 WPM/);
+    expect(saved()).toEqual(source);
+    expect(calls.once).toHaveBeenCalledTimes(1);
+    expect(calls.complete).not.toHaveBeenCalled();
+  });
+
+  it("saves a valid pacing-tagged wording edit with the shared estimate", async () => {
+    markPaced();
+    result = { patches: [{ shotId: 2, voiceover: "I'd check the fit with these hunting socks, too.", translation: "我也会配上这些狩猎袜检查合脚程度。" }] };
+    const response = await POST(request(), params());
+    expect(response.status).toBe(200);
+    const updated = saved();
+    expect(updated.copyDocument).toMatchObject({ pacingVersion: TIDEWE_PACING_VERSION, estimatedDuration: 5.5 });
+    expect(updated.shots!.map(shot => shot.duration)).toEqual(source.shots!.map(shot => shot.duration));
+    expect(calls.once).toHaveBeenCalledTimes(1);
+    expect(calls.complete).not.toHaveBeenCalled();
+  });
+
+  it("keeps a tagged imported copy on its existing apply path without the new AI timing gate", async () => {
+    db.update(schema.scripts).set({ copyDocument: { ...source.copyDocument!, source: "user_provided", pacingVersion: TIDEWE_PACING_VERSION } }).where(eq(schema.scripts.id, source.id)).run();
+    source = saved();
+    const response = await POST(request(), params());
+    expect(response.status).toBe(200);
+    expect(saved().copyDocument).toMatchObject({ source: "user_provided", pacingVersion: TIDEWE_PACING_VERSION, estimatedDuration: 5.2 });
+    expect(saved().shots!.map(shot => shot.duration)).toEqual([6, 6]);
+    expect(calls.complete).toHaveBeenCalledTimes(1);
+    expect(calls.once).not.toHaveBeenCalled();
+  });
+
   it("saves corrected TIDEWE copy, translation and spans atomically while preserving timing and identities", async () => {
     const response = await POST(request(), params());
     expect(response.status).toBe(200);
@@ -84,6 +132,8 @@ describe("apply judge feedback", () => {
     expect(updated.copyDocument!.translation).toContain("我会配上狩猎袜试穿这双靴子。");
     expect(updated.copyDocument!.factsSnapshot).toEqual(source.copyDocument!.factsSnapshot);
     expect(updated.copyDocument!.wordCount).toBe(englishWordCount(updated.copyDocument!.text));
+    expect(updated.copyDocument!.estimatedDuration).toBe(7.4);
+    expect(updated.copyDocument).not.toHaveProperty("pacingVersion");
     expect(updated.copyDocument!.visualBeats).toBeUndefined();
     expect(updated.shots![1].tidewe?.visualPlan).toEqual(source.shots![1].tidewe?.visualPlan);
     expect((await response.json()).script.scriptHash).toBe(scriptRevision(updated));

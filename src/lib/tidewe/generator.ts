@@ -3,7 +3,8 @@ import type { Shot } from "@/lib/db/schema";
 import { assertSupportedTideweProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { stripThinkBlocks } from "@/lib/llm-clean";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, TIDEWE_INTERACTION_FIELDS, type TideweCopyDocument, type TideweInteractionPlan, type TideweVisualPlan } from "./types";
-import { assertTideweImportedCopy, assertTideweScriptIntegrity, englishWordCount, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
+import { assertTideweImportedCopy, assertTideweScriptIntegrity, mapTideweCopySpans, productFactsHash, TideweValidationError } from "./validation";
+import { TIDEWE_PACING, TIDEWE_PACING_VERSION, englishWordCount, estimateTideweDuration } from "./pacing";
 import { buildTideweScriptPrompt, buildTideweScriptSystemPrompt, selectTideweExamples, tideweFactsForInput, tideweProfileForInput } from "./prompts";
 import { tidewePresenterAnchor, TIDEWE_PRESENTER_PLACEHOLDER } from "./presenter";
 
@@ -44,7 +45,8 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
         angle: requireText(raw.angle, "narrative angle"), hookType: requireText(raw.hookType, "hook type"),
         claimedFactIds, factsSnapshot: facts, factsHash: productFactsHash(facts),
         corpusVersion: TIDEWE_CORPUS_VERSION, compilerVersion: TIDEWE_COMPILER_VERSION,
-        exampleIds: imported !== undefined ? [] : examples.map(e => `${e.product}-${e.source.sheet}-${e.source.row}`), wordCount, estimatedDuration: Math.round(wordCount / 2.3 * 10) / 10,
+        exampleIds: imported !== undefined ? [] : examples.map(e => `${e.product}-${e.source.sheet}-${e.source.row}`), wordCount, estimatedDuration: estimateTideweDuration(wordCount),
+        pacingVersion: TIDEWE_PACING_VERSION,
         productName: input.productName,
         visualObservations: input.productAnalysis ?? "",
       };
@@ -101,6 +103,17 @@ export async function generateTideweScripts(input: ScriptInput, complete: Tidewe
       });
       const script: GeneratedScript = { ...copy, styleType: "tidewe_outdoor", totalDuration: Math.round(shots.reduce((sum, s) => sum + s.duration, 0)), shots };
       assertTideweScriptIntegrity(script, profile.presenter ?? null);
+      // Only new AI copy owns this planning constraint. Imported prose and saved
+      // historical scripts remain intact; no creative-quality gate or retry runs.
+      if (copy.copyDocument.source === "ai_generated" && copy.copyDocument.wordCount > 0) {
+        const seconds = shots.reduce((sum, shot) => sum + shot.duration, 0);
+        const wpm = copy.copyDocument.wordCount * 60 / seconds;
+        if (wpm < TIDEWE_PACING.minFinalWpm - 1e-6 || wpm > TIDEWE_PACING.maxFinalWpm + 1e-6) {
+          const minSeconds = copy.copyDocument.wordCount * 60 / TIDEWE_PACING.maxFinalWpm;
+          const maxSeconds = copy.copyDocument.wordCount * 60 / TIDEWE_PACING.minFinalWpm;
+          throw new TideweValidationError(`TIDEWE 新脚本的计划节奏为 ${wpm.toFixed(1)} WPM（${copy.copyDocument.wordCount} 词 / ${seconds.toFixed(1)} 秒），应为 ${TIDEWE_PACING.minFinalWpm}–${TIDEWE_PACING.maxFinalWpm} WPM；完整原文适合约 ${minSeconds.toFixed(1)}–${maxSeconds.toFixed(1)} 秒，${TIDEWE_PACING.targetFinalWpm} WPM 建议 ${estimateTideweDuration(copy.copyDocument.wordCount).toFixed(1)} 秒。请调整分镜时长或重新生成；本次未改写原文，也未自动重试。`);
+        }
+      }
       return script;
     });
   });

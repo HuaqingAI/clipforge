@@ -5,7 +5,6 @@ import { eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, batchJobItems, compositions, mediaSources, pipelineRuns, projects, scripts, settings, videoClips } from "@/lib/db/schema";
 import { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
-import { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
 import { getDataDir, getOutputDir, getUploadsDir } from "@/lib/paths";
 import type { DeleteLocalShotVideoResult, LocalShotVideo } from "@/lib/shot-library-types";
 
@@ -68,7 +67,6 @@ function snapshot() {
     projects: db.select().from(projects).all(), scripts: db.select().from(scripts).all(),
     assets: db.select().from(assets).all(), clips: db.select().from(videoClips).all(),
     jobs: db.select().from(klingJobs).all(), outputs: db.select().from(klingJobOutputs).all(),
-    films: db.select().from(klingFilmRuns).all(), filmShots: db.select().from(klingFilmShots).all(),
   };
 }
 type Snapshot = ReturnType<typeof snapshot>;
@@ -93,7 +91,6 @@ function collectLibrary(state: Snapshot): LibraryEntry[] {
   const scriptMap = new Map(state.scripts.map((row) => [row.id, row]));
   const jobMap = new Map(state.jobs.map((row) => [row.id, row]));
   const assetMap = new Map(state.assets.map((row) => [row.id, row]));
-  const filmMap = new Map(state.films.map((row) => [row.id, row]));
   const candidates: Candidate[] = [];
   const validFile = (value: string | null | undefined) => {
     const file = storedPath(value);
@@ -115,10 +112,7 @@ function collectLibrary(state: Snapshot): LibraryEntry[] {
     const output = outputFor(asset.id, localPath(asset.filePath));
     const job = output && jobMap.get(output.jobId);
     if (job && job.projectId === asset.projectId) return job.scriptId;
-    const linked = state.filmShots.filter((row) => row.assetId === asset.id || sameFile(row.data.videoUrl, localPath(asset.filePath) ?? ""))
-      .map((row) => filmMap.get(row.runId)).filter((run) => run?.projectId === asset.projectId);
-    const ids = new Set(linked.map((run) => run!.scriptId));
-    return ids.size === 1 ? [...ids][0] : null;
+    return null;
   }
   for (const asset of state.assets) {
     const file = asset.type === "ai_generated" && asset.status === "done" ? validFile(asset.filePath) : undefined;
@@ -151,17 +145,6 @@ function collectLibrary(state: Snapshot): LibraryEntry[] {
     candidates.push({ file, projectId: clip.projectId, scriptId, shotId: clip.shotId, createdAt: timestamp(clip.createdAt),
       thumbnail: asset?.thumbnailPath ?? asset?.sourceKeyframeUrl, duration: clip.duration, selected: asset?.selected ?? false,
       provider: clip.provider, model: clip.model, priority: scriptId ? 20 : 5 });
-  }
-  for (const filmShot of state.filmShots) {
-    const run = filmMap.get(filmShot.runId);
-    if (!run || filmShot.data.source !== "generate" || filmShot.status !== "ready") continue;
-    const file = validFile(filmShot.data.videoUrl) ?? validFile(filmShot.data.sourceFilePath);
-    if (!file) continue;
-    const asset = filmShot.assetId ? assetMap.get(filmShot.assetId) : undefined;
-    candidates.push({ file, projectId: run.projectId, scriptId: run.scriptId, shotId: filmShot.shotId,
-      description: filmShot.data.shot.description, createdAt: run.createdAt,
-      thumbnail: filmShot.data.keyframeUrl, duration: filmShot.data.generationDuration ? filmShot.data.generationDuration * 1000 : undefined,
-      selected: Boolean(asset?.selected), provider: "kling-cli", model: run.data.model?.remoteModelId, priority: 40 });
   }
   const groups = new Map<string, Candidate[]>();
   for (const candidate of candidates) {
@@ -255,12 +238,6 @@ export function deleteLocalShotVideo(id: string): DeleteLocalShotVideoResult {
       if (state.jobs.some((row) => jobIds.has(row.id) && (leaseActive(row) || row.importState === "importing" ||
         ["prepared", "submitting", "submission_unknown"].includes(row.submissionState) || ["pending", "processing"].includes(row.remoteState))) ||
         outputs.some((row) => ["downloading", "validating"].includes(row.importState))) conflict("此镜头的任务仍在处理或保存，请等待任务结束后再删除。");
-      const matchesFilmShot = (row: Snapshot["filmShots"][number]) =>
-        (row.assetId && removedIds.has(row.assetId)) || (row.data.baselineAssetId && removedIds.has(row.data.baselineAssetId)) ||
-        sameFile(row.data.videoUrl, file) || sameFile(row.data.sourceFilePath, file) || (row.jobId && jobIds.has(row.jobId));
-      const linkedFilms = new Set(state.filmShots.filter(matchesFilmShot).map((row) => row.runId));
-      if (state.films.some((run) => linkedFilms.has(run.id) && (leaseActive(run) ||
-        (!["completed", "cancelled"].includes(run.status) && (run.status !== "draft" || run.data.expiresAt > Date.now()))))) conflict("此镜头正在被有效的整片计划或未完成的整片任务使用，请先完成或取消整片任务。");
       if (tx.select().from(compositions).all().some((row) => affectedProjects.has(row.projectId) && ["pending", "composing"].includes(row.status))) conflict("此项目正在合成视频，请等待合成结束后再删除镜头。");
       if (tx.select().from(pipelineRuns).all().some((row) => affectedProjects.has(row.projectId) && row.status === "running") ||
         tx.select().from(batchJobItems).all().some((row) => row.projectId && affectedProjects.has(row.projectId) && ["pending", "generating", "composing"].includes(row.status))) conflict("此项目仍有生产任务正在执行，请等待任务结束后再删除镜头。");
@@ -280,12 +257,6 @@ export function deleteLocalShotVideo(id: string): DeleteLocalShotVideoResult {
       for (const row of state.clips) if (!removedClipIds.has(row.id)) keep(row.filePath);
       for (const row of tx.select().from(mediaSources).all()) keep(row.filePath);
       for (const row of tx.select().from(compositions).all()) { keep(row.outputPath); keep(row.thumbnailPath); keep(row.bgmPath); }
-      for (const row of state.films) { keep(row.data.videoUrl); keep(row.data.thumbnailUrl); }
-      for (const row of state.filmShots) {
-        if (!matchesFilmShot(row)) { keep(row.data.videoUrl); keep(row.data.sourceFilePath); }
-        keep(row.data.keyframeUrl);
-        for (const input of row.data.inputs) { keep(input.path); keep(input.sourceUrl); }
-      }
       // A shared main file keeps its derived frames too. Only exact sidecars belong to this take.
       if (!kept.has(pathKey(file))) for (const candidate of [file, file + ".thumb.jpg", file + ".last.jpg"]) {
         if (!kept.has(pathKey(candidate)) && ownedFile(candidate)) {
@@ -304,16 +275,6 @@ export function deleteLocalShotVideo(id: string): DeleteLocalShotVideoResult {
         const data = { ...row.data, deletedAt: Date.now() };
         delete data.localPath; delete data.filePath; delete data.thumbnailUrl; delete data.selectionOutcome;
         tx.update(klingJobOutputs).set({ assetId: null, importState: "imported", data, updatedAt: Date.now() }).where(eq(klingJobOutputs.id, row.id)).run();
-      }
-      for (const row of state.filmShots.filter(matchesFilmShot)) {
-        const data = { ...row.data };
-        if (sameFile(data.videoUrl, file)) delete data.videoUrl;
-        if (sameFile(data.sourceFilePath, file)) { delete data.sourceFilePath; delete data.sourceFileHash; }
-        if (data.baselineAssetId && removedIds.has(data.baselineAssetId)) data.baselineAssetId = null;
-        const lostVideo = sameFile(row.data.videoUrl, file) || sameFile(row.data.sourceFilePath, file) || Boolean(row.assetId && removedIds.has(row.assetId));
-        if (lostVideo) data.error = "本地镜头已删除";
-        tx.update(klingFilmShots).set({ assetId: row.assetId && removedIds.has(row.assetId) ? null : row.assetId,
-          data, ...(lostVideo && { status: "needs_attention" as const }), updatedAt: Date.now() }).where(eq(klingFilmShots.id, row.id)).run();
       }
       if (staged.length) {
         const prior = tx.select().from(settings).where(eq(settings.key, CLEANUP_KEY)).get();

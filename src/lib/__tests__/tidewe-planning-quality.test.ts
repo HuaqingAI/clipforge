@@ -238,11 +238,12 @@ describe("new storyboard quality within the existing planner repair", () => {
   it.each([0, 1, 6, 10, 30, 7.5, NaN, Infinity])("rejects invalid generated-shot count %s with the affected copy", count => {
     expect(() => assertTideweGeneratedShotCount(count, 40, 2)).toThrow(/TIDEWE copy 3 must contain exactly 8 shots for the 40s target/);
   });
-  it("checks actual words plus a pause and names the shot that needs a timing repair", () => {
+  it("checks brisk delivery plus short lead and tail clearance and names the shot needing repair", () => {
     const voiceover = "Check the fit before you choose the gear for tomorrow.";
-    const minimum = 10 / 2.6 + 0.3;
-    expect(() => assertTidewePlanQuality([makeShot(8, {}, { voiceover, duration: 3 })])).toThrow(/Shot 8 needs at least 4.2s/);
+    const minimum = 10 * 60 / 215 + 0.15 + 0.15;
+    expect(() => assertTidewePlanQuality([makeShot(8, {}, { voiceover, duration: 2.8 })])).toThrow(/Shot 8 needs at least 3.1s/);
     expect(() => assertTidewePlanQuality([makeShot(8, {}, { voiceover, duration: minimum })])).not.toThrow();
+    expect(() => assertTidewePlanQuality([makeShot(8, {}, { voiceover, duration: 3.1 })])).not.toThrow();
     expect(() => assertTidewePlanQuality([makeShot(8, {}, { voiceover: "", duration: 1 })])).not.toThrow();
   });
   it("keeps historical quality review count-compatible while new generation rejects short or oversized plans", () => {

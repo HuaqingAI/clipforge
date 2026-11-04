@@ -34,7 +34,7 @@ interface WorkRow {
 
 interface ProjectDeleteIssue {
   message: string;
-  blockingTasks: Array<{ kind: "generation" | "kling_job" | "kling_film"; id: string; href: string }>;
+  blockingTasks: Array<{ kind: "generation" | "kling_job"; id: string; href: string }>;
 }
 
 function projectDeleteIssue(body: unknown, projectId: string, fallback: string): ProjectDeleteIssue {
@@ -46,13 +46,12 @@ function projectDeleteIssue(body: unknown, projectId: string, fallback: string):
     for (const value of payload.blockingTasks) {
       if (!value || typeof value !== "object") continue;
       const task = value as Record<string, unknown>;
-      if ((task.kind !== "generation" && task.kind !== "kling_job" && task.kind !== "kling_film") || typeof task.id !== "string" || !task.id) continue;
+      if ((task.kind !== "generation" && task.kind !== "kling_job") || typeof task.id !== "string" || !task.id) continue;
       const base = `/project/${encodeURIComponent(projectId)}`;
       const encodedTaskId = encodeURIComponent(task.id);
-      const query = task.kind === "kling_film" ? "klingFilm" : "klingJob";
       const hrefs = task.kind === "generation"
         ? ["script", "assets"].map((step) => `${base}/${step}?runId=${encodedTaskId}`)
-        : [`${base}/assets?${query}=${encodedTaskId}`];
+        : [`${base}/assets?klingJob=${encodedTaskId}`];
       const href = hrefs.find((candidate) => candidate === task.href);
       const key = `${task.kind}:${task.id}:${href}`;
       if (href && !seen.has(key)) { blockingTasks.push({ kind: task.kind, id: task.id, href }); seen.add(key); }
@@ -408,7 +407,7 @@ export default function ProjectsPage() {
                           <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
                             {deleteIssues[p.id].blockingTasks.map((task, index) => (
                               <Link key={`${task.kind}:${task.id}:${task.href}`} href={task.href} className="text-primary underline underline-offset-2">
-                                {t(task.kind === "generation" ? "deleteReviewGeneration" : task.kind === "kling_film" ? "deleteReviewFilm" : "deleteReviewJob")}
+                                {t(task.kind === "generation" ? "deleteReviewGeneration" : "deleteReviewJob")}
                                 {deleteIssues[p.id].blockingTasks.length > 1 ? ` ${index + 1}` : ""}
                               </Link>
                             ))}

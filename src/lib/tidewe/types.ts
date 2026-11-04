@@ -85,6 +85,8 @@ export interface TideweCopyDocument {
   exampleIds: string[];
   wordCount: number;
   estimatedDuration: number;
+  /** Opts new scripts into the shared pacing/edit policy; absent on historical copies. */
+  pacingVersion?: string;
   /** Appearance evidence remains separate from confirmed functional facts. */
   productName?: string;
   visualObservations?: string;

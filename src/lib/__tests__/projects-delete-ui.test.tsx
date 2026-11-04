@@ -165,7 +165,6 @@ describe("project deletion feedback", () => {
   });
 
   it.each([
-    { kind: "kling_film", id: "film-1", parameter: "klingFilm", label: "deleteReviewFilm" },
     { kind: "kling_job", id: "job-1", parameter: "klingJob", label: "deleteReviewJob" },
   ])("shows the server reason and the original $kind recovery link inside its project card", async ({ kind, id, parameter, label }) => {
     const href = `/project/project-1/assets?${parameter}=${id}`;

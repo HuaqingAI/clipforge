@@ -1,8 +1,9 @@
 import type { TideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { TidewePresenterSnapshot } from "./types";
 import { directEnglishVideoDirection, normalizeTideweVideoDirection, type TideweVideoDirection, type TideweVideoShot } from "./video-direction";
+import { englishWordCount, TIDEWE_PACING } from "./pacing";
 
-export const TIDEWE_VIDEO_PROMPT_VERSION = "tidewe-video-en-v3";
+export const TIDEWE_VIDEO_PROMPT_VERSION = "tidewe-video-en-v4";
 
 /** Video owns a short English style block; stills keep their separate capture policy. */
 export const TIDEWE_VIDEO_STYLE = "Image character: casual iPhone 8 native-camera footage using only existing natural ambient light. Preserve the first frame's environmental colors, real shadows, everyday exposure and material detail. No auxiliary or fill light, flash, reflectors, rim light, HDR, beauty retouching, sharpening, cinematic grading, artificial noise, global blur or artificial depth of field.";
@@ -17,6 +18,20 @@ const MOTION_TIMING = {
 
 function english(value: string): boolean {
   return !/[^\p{Script=Latin}\p{N}\p{P}\p{S}\p{Z}\s]/u.test(value);
+}
+
+/** The spoken window follows the words, even when a model rounds its clip up. */
+function deliveryTiming(line: string, duration?: number): string {
+  const finish = TIDEWE_PACING.headSec + englishWordCount(line) * 60 / TIDEWE_PACING.speechWpm;
+  const required = finish + TIDEWE_PACING.tailSec;
+  const cadence = `Delivery: brisk, fluent US English at about ${TIDEWE_PACING.speechWpm} words per minute (${TIDEWE_PACING.minSpeechWpm}-${TIDEWE_PACING.maxSpeechWpm}), with natural keyword emphasis and only short breath pauses. Start within ${TIDEWE_PACING.headSec} seconds.`;
+  // Historical/manual shots can have a budget too short for their frozen copy.
+  // Describe the needed extension instead of requesting an impossible deadline
+  // or inviting the model to cut words or rush them to fit.
+  const window = typeof duration === "number" && Number.isFinite(duration) && duration > 0 && duration + 0.001 < required
+    ? `The planned ${duration} seconds is too short: this exact line needs at least ${required.toFixed(2)} seconds at this cadence. Preserve the complete line; extend its timing budget rather than omit words, truncate the sentence or force a faster delivery.`
+    : `Finish the entire line by ${finish.toFixed(2)} seconds from the clip start, retaining about ${TIDEWE_PACING.tailSec} seconds of tail clearance.`;
+  return `${cadence} ${window} Do not slow the line or add pauses to fill a longer generated clip. Speech cadence does not speed up the approved physical actions.`;
 }
 
 /** A single compact shot: approved state, action, restrained camera, continuity, style, audio. */
@@ -46,16 +61,17 @@ export function compileTideweVideoPrompt(
   let audio: string;
   if (visibleSpeech) {
     audio = audioMode === "native"
-      ? "Audio: the visible presenter says the exact US English line below once, with synchronized lips and the same natural conversational voice across shots. Keep the mouth visible within the approved framing. Finish the entire line inside this clip with brief pauses at both ends. Keep natural location sounds underneath; no music, extra dialogue or other voices."
-      : "Audio: no audio track. The visible presenter silently articulates the exact US English line below once, with natural lip timing for later dubbing. Keep the mouth visible within the approved framing. Finish the entire line inside this clip with brief pauses at both ends. No music. No dialogue. No sound effects.";
+      ? "Audio: the visible presenter says the exact US English line below once, with synchronized lips and the same natural voice and accent across shots. Keep the mouth visible within the approved framing. Keep natural location sounds underneath; no music, extra dialogue or other voices."
+      : "Audio: no audio track. The visible presenter silently articulates the exact US English line below once, with natural lip timing for later dubbing. Keep the mouth visible within the approved framing. No music. No dialogue. No sound effects.";
   } else if (narrated && audioMode === "native") {
-    audio = "Audio: the same presenter delivers the exact US English line below once as off-camera narration, keeping a consistent voice, accent and conversational pace. Finish the entire line inside this clip with brief pauses at both ends. Any visible person works silently with no speaking or lip synchronization; do not add a face or change the framing. Natural location sounds only underneath; no music or extra dialogue.";
+    audio = "Audio: the same presenter delivers the exact US English line below once as off-camera narration, keeping a consistent voice and accent. Any visible person works silently with no speaking or lip synchronization; do not add a face or change the framing. Natural location sounds only underneath; no music or extra dialogue.";
   } else if (speechMode === "on_camera" && audioMode === "native") {
     audio = "Audio: natural location and object sounds only. No invented dialogue, visible speaking or lip synchronization. No music.";
   } else {
     audio = "Audio: silent footage for narration added in post; no audio track, visible speaking or lip synchronization. Preserve the approved framing without adding a face. No music or sound effects.";
   }
   if (visibleSpeech || (narrated && audioMode === "native")) {
+    audio += ` ${deliveryTiming(line, shot.duration)}`;
     if (/\bTIDEWE\b/i.test(line)) audio += " Pronounce TIDEWE as Tide-Wee.";
     audio += `\nExact line: ${JSON.stringify(line)}`;
   }

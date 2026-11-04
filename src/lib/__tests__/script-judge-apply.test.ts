@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Shot } from "@/lib/db/schema";
 import type { JudgeId, JudgeReport } from "@/lib/script-judge";
-import { parseJudgeApplyResponse, type JudgeEditableScript } from "@/lib/script-judge-apply";
+import { parseJudgeApplyResponse, TideweJudgePacingError, type JudgeEditableScript } from "@/lib/script-judge-apply";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts } from "@/lib/tidewe/types";
 import { assertTideweScript, englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
+import { TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 function shot(shotId: number, voiceover: string): Shot {
   return {
@@ -107,6 +108,40 @@ describe("apply judge feedback to existing shots", () => {
 });
 
 describe("apply TIDEWE feedback without desynchronizing frozen copy", () => {
+  function pacedScript() {
+    const script = tidewe(["Check the current fit.", "Look at the visible shape."]);
+    script.copyDocument!.pacingVersion = TIDEWE_PACING_VERSION;
+    const seconds = script.copyDocument!.wordCount * 60 / 195;
+    script.shots = script.shots!.map(shot => ({ ...shot, duration: seconds / 2 }));
+    return script;
+  }
+
+  it("keeps the new pacing marker and shared final-duration estimate after an explicit wording edit", () => {
+    const script = pacedScript();
+    const before = structuredClone(script);
+    const result = apply(script, [{ shotId: 1, voiceover: "Check how this fits.", translation: "检查实际合脚程度。" }]);
+    expect(result.copyDocument).toMatchObject({ pacingVersion: TIDEWE_PACING_VERSION, wordCount: 9, estimatedDuration: 2.8 });
+    expect(result.shots.map(shot => shot.duration)).toEqual(script.shots!.map(shot => shot.duration));
+    expect(script).toEqual(before);
+  });
+
+  it.each(["Check fit.", "Check the fit before the next walk."])("rejects new AI wording outside the final pace budget without mutating the source: %s", voiceover => {
+    const script = pacedScript();
+    const before = structuredClone(script);
+    const edit = () => apply(script, [{ shotId: 1, voiceover, translation: "检查合脚程度。" }]);
+    expect(edit).toThrow(TideweJudgePacingError);
+    expect(edit).toThrow(/190–200 WPM.*此次修改未保存/);
+    expect(script).toEqual(before);
+  });
+
+  it("does not force the new AI budget onto a pacing-tagged imported copy", () => {
+    const script = tidewe(["Wait.", "Go."], { imported: true });
+    script.copyDocument!.pacingVersion = TIDEWE_PACING_VERSION;
+    const result = apply(script, [{ shotId: 1, voiceover: "Take a moment.", translation: "稍等一会儿。" }]);
+    expect(result.copyDocument).toMatchObject({ source: "user_provided", pacingVersion: TIDEWE_PACING_VERSION, wordCount: 4, estimatedDuration: 1.2 });
+    expect(result.shots.map(shot => shot.duration)).toEqual([5, 5]);
+  });
+
   it.each(["description", "prompt", "visualIntent"] as const)("clears stale visualPlan only on the shot whose %s changes", (field) => {
     const script = tideweWithProductionMetadata();
     const description = "人物在林边穿着靴子向前走一步，鞋底稳定接触地面。";

@@ -4,13 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoryboardFilmPanel } from "@/components/storyboard-film-panel";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useCharacterStore } from "@/lib/stores/project-store";
-import type { KlingFilmView } from "@/lib/kling/film-types";
-import type { KlingVideoModelDescriptor } from "@/lib/kling/types";
 
-const api = vi.hoisted(() => ({ kling: vi.fn(), resolve: vi.fn() }));
-vi.mock("@/lib/kling/client", () => ({ klingFetch: api.kling, klingErrorMessage: (body: { error?: string }) => body.error ?? "Kling 操作失败" }));
+const api = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("@/lib/gen-params", async (original) => ({ ...await original<typeof import("@/lib/gen-params")>(), resolveDefaultModelTarget: api.resolve }));
-vi.mock("@/components/kling-job-detail", () => ({ KlingJobDetail: () => null }));
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? children : null,
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -19,8 +15,7 @@ vi.mock("@/components/ui/dialog", () => ({
 }));
 
 const arkModel = "doubao-seedance-2.5";
-const model: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","image_to_video","chosen-model"]', provider: "kling-cli", profileId: "profile", region: "global", tool: "image_to_video", remoteModelId: "chosen-model", displayName: "Chosen Kling Model", catalogRevision: "revision", available: true, parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5], default: 5 }], inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { image: true, tailFrame: false, multiImage: false, audio: false } };
-const originalRun: KlingFilmView = { runId: "original-film", projectId: "project", scriptId: "script", profileId: "profile", planHash: "original-plan-hash", expiresAt: "2099-01-01T00:00:00Z", status: "paused", stage: "paused", model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: "edge-tts", voice: "zh-CN-XiaoxiaoNeural", subtitles: true }, shots: [{ id: "shot-1", shotId: 1, status: "waiting", source: "generate", prompt: "Original prompt", duration: 5, generationDuration: 5, missingKeyframe: false, options: { duration: 5 }, attempt: 0 }], totalShots: 1, readyShots: 0, billableShotCount: 1, missingKeyframes: [], warnings: [], allowedActions: ["resume", "cancel"], createdAt: "2026-10-19T00:00:00Z", updatedAt: "2026-10-19T00:00:00Z" };
+const klingSelection = '["kling-cli","image_to_video","chosen-model"]';
 const filmPreview = { prompt: "Prepared visual prompt", model: arkModel, shotCount: 1, seconds: 5, scriptSeconds: 5, durationOverflow: false, modelMaxSeconds: 30, referenceImages: 1, referenceQuota: { ok: true, count: 1, limit: 9 }, dialogueWarnings: [], estimate: { unitUsd: 0.1, seconds: 5, minUsd: 0.5, maxUsd: 1, tierMultiplier: 2 } };
 const initialSettings = useSettingsStore.getInitialState();
 const initialCharacters = useCharacterStore.getInitialState();
@@ -33,7 +28,7 @@ const json = (value: unknown, status = 200) => Response.json(value, { status });
 function button(text: string): HTMLButtonElement | undefined { return [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(text)); }
 function checkbox(name: string) { return container.querySelector(`[aria-label="${name}"]`) as HTMLInputElement; }
 async function click(text: string) { await act(async () => button(text)!.click()); }
-async function mount(open = true, initialRunId?: string, initialTaskId?: string) { await act(async () => root.render(<StoryboardFilmPanel open={open} onOpenChange={() => undefined} projectId="project" scriptId="script" initialRunId={initialRunId} initialTaskId={initialTaskId} onAssetsChanged={assetsChanged} />)); }
+async function mount(open = true, initialTaskId?: string) { await act(async () => root.render(<StoryboardFilmPanel open={open} onOpenChange={() => undefined} projectId="project" scriptId="script" initialTaskId={initialTaskId} onAssetsChanged={assetsChanged} />)); }
 function generationCalls() { return fetchMock.mock.calls.filter(([url, init]) => /storyboard-grid|characters\/sheet/.test(url) || (url.endsWith("/storyboard-film") && !JSON.parse(init.body).dryRun && JSON.parse(init.body).action !== "recover")); }
 async function confirmAndGenerate() { await act(async () => checkbox("确认整片视频计费").click()); await click("确认生成整片"); }
 
@@ -50,13 +45,6 @@ beforeEach(() => {
     if (url.endsWith("/storyboard-film")) return JSON.parse(String(init?.body)).dryRun ? json(filmPreview) : filmResponse.clone();
     throw new Error("Unexpected request: " + url);
   });
-  api.kling.mockReset().mockImplementation(async (url: string) => {
-    if (url.includes("/status")) return json({ loggedIn: true, models: [model] });
-    if (url.includes("?projectId=")) return json({ runs: [originalRun] });
-    if (url.endsWith("/resume")) return json({ run: { ...originalRun, status: "running", allowedActions: ["pause", "cancel"] } });
-    if (url.endsWith("/original-film")) return json(originalRun);
-    throw new Error("Unexpected Kling request: " + url);
-  });
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initialSettings); useCharacterStore.setState(initialCharacters); vi.unstubAllGlobals(); });
@@ -66,7 +54,6 @@ describe("shared model-driven full-film interaction", () => {
     await mount();
     expect(container.querySelector("h2")?.textContent).toBe("整片自动编排");
     expect(container.textContent).toContain("一次生成整片");
-    expect(api.kling).not.toHaveBeenCalled();
     expect(generationCalls()).toHaveLength(0);
     await click("预览整片计划");
     expect(button("确认生成整片")!.disabled).toBe(true);
@@ -81,17 +68,15 @@ describe("shared model-driven full-film interaction", () => {
     await mount(); await click("预览整片计划");
     await act(async () => checkbox("确认整片视频计费").click());
     expect(button("确认生成整片")!.disabled).toBe(false);
-    await act(async () => useSettingsStore.getState().setDefaultVideoModel(model.selectionKey));
+    await act(async () => useSettingsStore.getState().setDefaultVideoModel(klingSelection));
     expect(button("确认生成整片")!.disabled).toBe(true);
     expect(checkbox("确认整片视频计费").checked).toBe(false);
     expect(container.textContent).toContain("一次生成整片");
     await act(async () => useSettingsStore.getState().setDefaultVideoModel(arkModel));
     expect(button("确认生成整片")!.disabled).toBe(true);
     expect(generationCalls()).toHaveLength(0);
-    await mount(false); await act(async () => useSettingsStore.getState().setDefaultVideoModel(model.selectionKey)); await mount();
-    expect(container.textContent).toBe("");
-    expect(button("预览整片计划")).toBeUndefined();
-    expect(api.kling).not.toHaveBeenCalled();
+    await mount(false); await act(async () => useSettingsStore.getState().setDefaultVideoModel(klingSelection)); await mount();
+    expect(button("预览整片计划")!.disabled).toBe(true);
   });
 
   it("does not replace an unavailable default with another configured model", async () => {
@@ -179,35 +164,19 @@ describe("shared model-driven full-film interaction", () => {
     expect(generationCalls().filter(([url]) => url.endsWith("/storyboard-film"))).toHaveLength(1);
   });
 
-  it("keeps an explicitly opened Kling run as history when the global model changes", async () => {
-    await mount(true, "original-film");
-    expect(container.querySelector("h2")?.textContent).toBe("Kling 历史整片记录");
-    expect(container.textContent).toContain("Chosen Kling Model");
-    expect(container.textContent).toContain("chosen-model");
-    expect(button("确认恢复并继续")).toBeUndefined();
-    expect(button("预览整片计划")).toBeUndefined();
-    await act(async () => useSettingsStore.getState().setDefaultVideoModel(model.selectionKey));
-    await act(async () => useSettingsStore.getState().setDefaultVideoModel(arkModel));
-    expect(container.querySelector("h2")?.textContent).toBe("Kling 历史整片记录");
-    expect(api.kling.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
-    expect(api.kling.mock.calls.some(([url]) => url.includes("/status"))).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it.each([model.selectionKey, '["kling-cli","image_to_video","missing-model"]'])("opens no new full-film surface and never falls back to Ark for Kling default %s", async (selection) => {
+  it.each([klingSelection, '["kling-cli","image_to_video","missing-model"]'])("keeps Seedance generation disabled for an incompatible default %s", async (selection) => {
     useSettingsStore.getState().setDefaultVideoModel(selection);
     await mount();
-    expect(container.textContent).toBe("");
-    expect(button("预览整片计划")).toBeUndefined();
-    expect(api.kling).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(button("预览整片计划")!.disabled).toBe(true);
+    expect(fetchMock.mock.calls.every(([url]) => url === "/api/project/project" || url.startsWith("/api/ai/tasks?"))).toBe(true);
     expect(api.resolve).not.toHaveBeenCalled();
+    expect(generationCalls()).toHaveLength(0);
     await act(async () => useSettingsStore.getState().setDefaultVideoModel(arkModel));
-    expect(container.textContent).toBe("");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(button("预览整片计划")!.disabled).toBe(false);
+    expect(generationCalls()).toHaveLength(0);
   });
 
-  it.each([arkModel, model.selectionKey])("recovers an explicitly opened Ark task using its original model when the current default is %s", async (defaultModel) => {
+  it.each([arkModel, klingSelection])("recovers an explicitly opened Ark task using its original model when the current default is %s", async (defaultModel) => {
     const originalModel = "doubao-seedance-2.0";
     useSettingsStore.getState().setDefaultVideoModel(defaultModel);
     savedTasks = [{ id: "saved-original", taskId: "remote-original", provider: "volcengine", model: originalModel, mode: "video-to-video", shotId: null }];
@@ -216,12 +185,11 @@ describe("shared model-driven full-film interaction", () => {
       if (url.endsWith("/storyboard-film") && JSON.parse(String(init?.body)).action === "recover") { savedTasks = []; return json({ url: "/api/files/recovered-film.mp4", model: originalModel }); }
       return normalFetch(url, init);
     });
-    await mount(true, undefined, "remote-original"); await click("查看 / 恢复原任务");
+    await mount(true, "remote-original"); await click("查看 / 恢复原任务");
     const recovery = fetchMock.mock.calls.find(([url]) => url.endsWith("/storyboard-film"))!;
     expect(JSON.parse(recovery[1].body)).toMatchObject({ action: "recover", taskId: "remote-original", provider: "volcengine", apiKey: "ark-key" });
     expect(JSON.parse(recovery[1].body).model).toBeUndefined();
     expect(api.resolve).not.toHaveBeenCalled();
-    expect(api.kling).not.toHaveBeenCalled();
     expect(generationCalls()).toHaveLength(0);
     expect(container.textContent).toContain(originalModel);
     expect(container.querySelector("video")?.getAttribute("src")).toBe("/api/files/recovered-film.mp4");

@@ -60,14 +60,6 @@ function addJob(overrides: Partial<typeof schema.klingJobs.$inferInsert> = {}) {
   }).returning().get()!;
 }
 
-function addFilm(overrides: Partial<typeof schema.klingFilmRuns.$inferInsert> = {}) {
-  return db.insert(schema.klingFilmRuns).values({
-    id: "film-1", projectId, scriptId: currentId, profileId: "profile-1", principalKey: "principal", status: "completed",
-    data: { scriptSnapshot: { shots: [shot] }, expiresAt: Date.now() + 60_000 } as never,
-    createdAt: Date.now(), updatedAt: Date.now(), ...overrides,
-  }).returning().get()!;
-}
-
 beforeEach(() => {
   sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
@@ -125,11 +117,10 @@ describe("PATCH historical script restoration", () => {
     db.insert(schema.compositions).values({ projectId, status: "done", outputPath: "/film.mp4" }).run();
     db.insert(schema.aiTasks).values({ projectId, provider: "test", model: "test", taskId: "remote-1", status: "completed" }).run();
     addJob();
-    addFilm();
     const snapshot = () => ({
       projects: db.select().from(schema.projects).all(), assets: db.select().from(schema.assets).all(),
       clips: db.select().from(schema.videoClips).all(), compositions: db.select().from(schema.compositions).all(),
-      tasks: db.select().from(schema.aiTasks).all(), jobs: db.select().from(schema.klingJobs).all(), films: db.select().from(schema.klingFilmRuns).all(),
+      tasks: db.select().from(schema.aiTasks).all(), jobs: db.select().from(schema.klingJobs).all(),
     });
     const before = snapshot();
     expect((await restore()).status).toBe(200);
@@ -257,18 +248,12 @@ describe("historical restoration protects unfinished work across the project", (
     await expectConflict();
   });
 
-  it.each(["running", "paused", "needs_attention", "composing"] as const)("blocks a %s Kling film belonging to the current generation", async (status) => {
-    addFilm({ status });
-    await expectConflict();
-  });
-
   it("ignores unfinished work belonging to another project", async () => {
     db.insert(schema.pipelineRuns).values({ projectId: "other-project", scriptId: currentId, status: "running" }).run();
     db.insert(schema.compositions).values({ projectId: "other-project", status: "composing" }).run();
     db.insert(schema.assets).values({ projectId: "other-project", sourceScriptId: currentId, shotId: 1, type: "ai_generated", status: "generating" }).run();
     db.insert(schema.aiTasks).values({ projectId: "other-project", provider: "test", model: "test", taskId: "remote-1", status: "processing" }).run();
     addJob({ projectId: "other-project", remoteState: "processing", importState: "not_ready" });
-    addFilm({ projectId: "other-project", status: "running" });
     expect((await restore()).status).toBe(200);
   });
 
@@ -279,7 +264,6 @@ describe("historical restoration protects unfinished work across the project", (
     db.insert(schema.aiTasks).values({ projectId, provider: "test", model: "test", taskId: "remote-1", status: "failed" }).run();
     addJob({ remoteState: "failed", importState: "failed" });
     addJob({ id: "dismissed-job", clientRequestId: "dismissed-request", remoteState: "processing", importState: "pending", data: { deletedAt: Date.now() } as never });
-    addFilm({ status: "cancelled" });
     expect((await restore()).status).toBe(200);
   });
 

@@ -30,6 +30,7 @@ import type { TideweCopyDocument, TideweShotFields } from "@/lib/tidewe/types";
 import { getTideweProductCoverageIssues, type TideweProductCoverageIssue } from "@/lib/tidewe/planning-quality";
 import { buildTideweCategoryGuidance } from "@/lib/tidewe/category-guidance";
 import { TIDEWE_NATIVE_CAMERA_STYLE } from "@/lib/tidewe/visual-policy";
+import { TIDEWE_PACING, TIDEWE_PACING_VERSION, englishWordCount, estimateTideweDuration } from "@/lib/tidewe/pacing";
 
 export const JUDGE_IDS = ["pace", "voice", "idea", "structure", "visual"] as const;
 export type JudgeId = (typeof JUDGE_IDS)[number];
@@ -137,6 +138,14 @@ const TIMING_REVIEW_RULES = [
 const TIDEWE_TIMING_REVIEW_RULES = [
   "时长依据：TIMING_CONTEXT 的 start/end/duration 是分镜安排的秒数；actualTotalDuration 是全部分镜（包括无旁白镜头）的合计，plannedTotalDuration 是创作计划目标，二者不是实测音频或成片时长。",
   "TIDEWE 美式英语口播以 2.3 词/秒为目标，2.6 词/秒为上限；每个有台词镜头另留至少 0.3 秒自然停顿。最低分镜时长估算为英文词数 / 2.6 + 0.3 秒，舒适时长估算为英文词数 / 2.3 + 0.3 秒；动作还会占时间。估算必须明确标为估算，不能声称已测配音时长或口型同步。过密时建议延长或按原文拆镜，不改写冻结文案。",
+  "null 表示未知：缺少或无效的分镜秒数会使总时长及后续时间点无法确定，不得补造秒数或断言超时；可以指出需要试听核对。",
+].join("\n");
+
+const TIDEWE_195_TIMING_REVIEW_RULES = [
+  "时长依据：TIMING_CONTEXT 的 start/end/duration 是分镜安排的秒数；actualTotalDuration 是全部分镜（包括无旁白镜头）的合计，plannedTotalDuration 是创作计划目标，二者不是实测音频或成片时长。",
+  `本稿使用 ${TIDEWE_PACING_VERSION}：成片平均目标 ${TIDEWE_PACING.targetFinalWpm} 英文词/分钟，计划允许范围 ${TIDEWE_PACING.minFinalWpm}–${TIDEWE_PACING.maxFinalWpm} WPM；按完整英文词数 × 60 / 全部分镜总秒数估算，包含停顿、静默插镜及结尾。不能只计算有台词镜头或把成片 ${TIDEWE_PACING.targetFinalWpm} WPM 当成开口语速。开口时以 ${TIDEWE_PACING.speechWpm} WPM（${TIDEWE_PACING.minSpeechWpm}–${TIDEWE_PACING.maxSpeechWpm}）自然短句连读为规划参考，语气重音和必要换气保留。`,
+  `每镜口播秒数估算为英文词数 × 60 / ${TIDEWE_PACING.speechWpm}；首词应在 ${TIDEWE_PACING.headSec} 秒内开始，短尾约 ${TIDEWE_PACING.tailSec} 秒，最后口播尾约 ${TIDEWE_PACING.finalTailSec} 秒。这些边界与自然停顿已包含在镜头和全片预算内，不能再叠加固定留白或要求人物动作加速。按语义分配词数和镜头时长，不机械均分。`,
+  "计划过慢时检查首尾留白、静默插镜及短句占据过长镜头；计划过快时检查分镜词数与话语窗口。保留冻结原文和动作，反馈合理的总时长与分配建议，不执行台词改写、截词或不自然抢读。所有结果必须标为计划估算，不能声称测得音频语速、实测成片时长或口型同步。",
   "null 表示未知：缺少或无效的分镜秒数会使总时长及后续时间点无法确定，不得补造秒数或断言超时；可以指出需要试听核对。",
 ].join("\n");
 
@@ -273,7 +282,10 @@ export function buildTideweJudgePrompt(copy: TideweCopyDocument, shots: JudgeSho
     `FINAL_COPY: ${JSON.stringify(copy.text)}`,
     `SHOTS: ${JSON.stringify(shots)}`,
     `TIMING_CONTEXT: ${JSON.stringify(buildJudgeTimingContext(opts.timelineShots ?? shots, opts))}`,
-    TIDEWE_TIMING_REVIEW_RULES,
+    ...(copy.pacingVersion === TIDEWE_PACING_VERSION ? [
+      `PACING_CONTEXT: ${JSON.stringify({ version: copy.pacingVersion, wordCount: englishWordCount(copy.text), estimatedFinalDurationSec: estimateTideweDuration(englishWordCount(copy.text)), targetFinalWpm: TIDEWE_PACING.targetFinalWpm, speechWpm: TIDEWE_PACING.speechWpm })}`,
+      TIDEWE_195_TIMING_REVIEW_RULES,
+    ] : [TIDEWE_TIMING_REVIEW_RULES]),
     'Return JSON only: {"verdicts":[{"judge":"pace","issues":[{"shotId":1,"issue":"quoted evidence and reason","tier":"default"}]},{"judge":"voice","issues":[]},{"judge":"idea","issues":[]},{"judge":"structure","issues":[]},{"judge":"visual","issues":[]}],"rewrites":[],"descriptionRewrites":[],"summary":"中文总评"}.',
     "Use invariant only for factual/structural defects, default for clear writing problems, taste for preferences. Never output rewritten narration.",
   ].join("\n");

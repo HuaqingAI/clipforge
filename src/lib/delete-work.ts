@@ -5,7 +5,6 @@ import { and, eq, ne } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, batchJobItems, compositions, mediaEdits, mediaSources, pipelineRuns, videoClips } from "@/lib/db/schema";
 import { getDataDir, getOutputDir, getUploadsDir } from "@/lib/paths";
-import { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
 import { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -64,15 +63,6 @@ export function deleteWork(id: string): { deleted: true; workId: string } {
       const directory = resolve(getOutputDir(), work.projectId);
       const output = storedPath(work.outputPath);
       const normalizedOutput = localFile(work.outputPath);
-      const films = tx.select().from(klingFilmRuns).all();
-      const shots = tx.select().from(klingFilmShots).all();
-      const linkedFilms = films.filter((run) => run.data.compositionId === id);
-      if (linkedFilms.some((run) => !["completed", "cancelled"].includes(run.status) ||
-        (run.leaseOwner && run.leaseExpiresAt && run.leaseExpiresAt > Date.now()))) conflict("此作品的整片任务尚未结束，请先完成或取消整片任务。");
-      const activeFilms = new Set(films.filter((run) => !["completed", "cancelled"].includes(run.status) &&
-        (run.status !== "draft" || run.data.expiresAt > Date.now())).map((run) => run.id));
-      if (normalizedOutput && shots.some((shot) => activeFilms.has(shot.runId) &&
-        [shot.data.videoUrl, shot.data.sourceFilePath].some((value) => localFile(value) === normalizedOutput))) conflict("此视频正在被有效整片计划使用，请先完成或取消该整片任务。");
 
       const kept = new Set<string>();
       const keep = (value: string | null | undefined) => { const file = localFile(value); if (file) kept.add(file); };
@@ -82,8 +72,6 @@ export function deleteWork(id: string): { deleted: true; workId: string } {
       for (const clip of tx.select().from(videoClips).all()) keep(clip.filePath);
       for (const row of tx.select().from(klingJobOutputs).all()) { keep(row.data.localPath); keep(row.data.filePath); keep(row.data.thumbnailUrl); keep(row.data.sourceKeyframeUrl); }
       for (const row of tx.select().from(klingJobs).all()) for (const input of row.data.inputs) { keep(input.path); keep(input.sourceUrl); }
-      for (const run of films) if (run.data.compositionId !== id) { keep(run.data.videoUrl); keep(run.data.thumbnailUrl); }
-      for (const shot of shots) { keep(shot.data.videoUrl); keep(shot.data.sourceFilePath); keep(shot.data.keyframeUrl); for (const input of shot.data.inputs) { keep(input.path); keep(input.sourceUrl); } }
       keep(work.bgmPath);
 
       const candidates = new Set<string>();
@@ -102,11 +90,6 @@ export function deleteWork(id: string): { deleted: true; workId: string } {
           (dirname(file) === join(directory, `stems_${id}`) && ownedFile(file, dirname(file), directory)))) {
         const temporary = file + ".delete-" + randomUUID();
         renameSync(file, temporary); staged.push({ original: file, temporary });
-      }
-      for (const run of linkedFilms) {
-        const { compositionId: _compositionId, videoUrl: _videoUrl, thumbnailUrl: _thumbnailUrl, quality: _quality, ...data } = run.data;
-        void _compositionId; void _videoUrl; void _thumbnailUrl; void _quality;
-        tx.update(klingFilmRuns).set({ data: { ...data, stage: "成片已删除" }, updatedAt: Date.now() }).where(eq(klingFilmRuns.id, run.id)).run();
       }
       tx.update(mediaEdits).set({ compositionId: null }).where(eq(mediaEdits.compositionId, id)).run();
       tx.update(pipelineRuns).set({ compositionId: null }).where(eq(pipelineRuns.compositionId, id)).run();

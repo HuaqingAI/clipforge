@@ -25,6 +25,7 @@ export interface AssetPageScript {
   shots?: Shot[] | null;
   title?: string | null;
   scriptHash?: string;
+  copyDocument?: { pacingVersion?: string } | null;
 }
 
 export interface AssetPageSnapshot {

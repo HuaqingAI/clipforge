@@ -194,14 +194,15 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("The complete copy must support exactly the requested shotCount semantic shots");
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("This applies on initial generation and regeneration");
     expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("visualBeats are meaning blocks, not the shot count");
-    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("wordCount / 2.6 + shotCount * 0.3 must fit targetDuration");
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("target 195 English words per minute over the WHOLE final edited video");
+    expect(TIDEWE_COPY_SYSTEM_PROMPT).toContain("30/40/60 seconds the center budgets are 98/130/195 words");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Every copy MUST have exactly the requested shotCount shots, fixed by targetDuration");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Never return fewer or more than that fixed count for any copy source on initial generation or regeneration");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Apply this count to each candidate independently");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("For short copy, keep exactly the requested shotCount distinct useful shots");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("do not add, delete or repeat narration");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("extend the total duration without changing that fixed shot count");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Do not add or remove shots, truncate the text, repeat narration or speed up speech");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("this may shorten or extend the selected targetDuration");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Do not add or remove shots, truncate the text, repeat narration or rewrite it to fit");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).not.toContain("fewer/more when meaning and duration require");
   });
 
@@ -271,8 +272,10 @@ describe("TIDEWE copy and planning prompt boundaries", () => {
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("at least three meaningful framing scales and at least two visual roles");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Static context does not require a person or fabricated product movement");
     expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Do not illustrate every clause literally");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Never squeeze long imported text into the target duration");
-    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("2.6 words per second with at least 0.3 seconds reserved");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Never squeeze long imported text into an incompatible selected duration");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("Budget the entire edited timeline at 195 WPM (190-200)");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).toContain("word count * 60 / 215");
+    expect(TIDEWE_PLAN_SYSTEM_PROMPT).not.toContain("2.6 words per second");
   });
 
   it.each(referenceCases.flatMap(example => [false, true].map(imported => ({ ...example, imported }))))("plans purposeful optional interactions for $category with imported copy=$imported", ({ category, name, imported }) => {

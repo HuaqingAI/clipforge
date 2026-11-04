@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listKlingJobs, isKlingJobUnresolved } from "@/lib/kling/repository";
-import { listKlingFilms, isKlingFilmUnresolved } from "@/lib/kling/film-repository";
 import { rm } from "fs/promises";
 import { join } from "path";
 import { getDb } from "@/lib/db";
@@ -398,10 +397,6 @@ export async function DELETE(
         ...tx.select().from(generationItems).where(and(eq(generationItems.projectId, id), inArray(generationItems.runId, visibleRuns), inArray(generationItems.status, ["queued", "running", "waiting", "importing", "needs_attention"]))).all().map((item) => ({
           kind: "generation" as const, id: item.runId,
           href: `/project/${encodeURIComponent(id)}/${item.kind === "script" ? "script" : "assets"}?runId=${encodeURIComponent(item.runId)}`,
-        })),
-        ...listKlingFilms(id).filter(isKlingFilmUnresolved).map((run) => ({
-          kind: "kling_film" as const, id: run.id,
-          href: `/project/${encodeURIComponent(id)}/assets?klingFilm=${encodeURIComponent(run.id)}`,
         })),
         ...listKlingJobs(id).filter(isKlingJobUnresolved).map((job) => ({
           kind: "kling_job" as const, id: job.id,

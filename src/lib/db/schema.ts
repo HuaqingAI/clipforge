@@ -23,7 +23,6 @@ import type {
 } from "@/lib/creative-profiles";
 export { klingProfiles, klingAuthSessions } from "@/lib/kling/profile-schema";
 export { klingJobs, klingJobOutputs } from "@/lib/kling/job-schema";
-export { klingFilmRuns, klingFilmShots } from "@/lib/kling/film-schema";
 export { generationRuns, generationItems } from "@/lib/generation-schema";
 
 // Projects table

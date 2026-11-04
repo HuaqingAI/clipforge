@@ -27,8 +27,6 @@ vi.mock("@/lib/kling/local-access", async (original) => ({ ...await original<typ
 import { getDb } from "@/lib/db";
 import { aiTasks, assets, compositions, scripts, videoClips } from "@/lib/db/schema";
 import { klingJobs, klingJobOutputs, type KlingJob, type KlingJobData } from "@/lib/kling/job-schema";
-import { klingFilmRuns, klingFilmShots, type KlingFilmRun } from "@/lib/kling/film-schema";
-import { klingFilmView } from "@/lib/kling/film-repository";
 import { cleanupDeletedKlingJobs, deleteKlingJob } from "@/lib/kling/delete-job";
 import { getKlingJob, listKlingJobs, patchKlingJob, klingJobView, withKlingJobLease, isKlingJobUnresolved, assertKlingJobLease } from "@/lib/kling/repository";
 import { klingJobHasUnknownSubmission, klingJobOccupiesGenerationSlot } from "@/lib/kling/concurrency";
@@ -57,14 +55,6 @@ function video(): { file: string; url: string; source: string } {
     createdAt: Date.now(), updatedAt: Date.now() }).run();
   return { file, url, source };
 }
-function film(status: KlingFilmRun["status"], expiresAt = Date.now() + 60_000) {
-  getDb().insert(klingFilmRuns).values({ id: "film-1", projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: "principal", status,
-    data: { scriptRevision: "revision-1", scriptSnapshot: { shots: [] }, model, output: { audioStrategy: "native", resolution: "720p", aspectRatio: "9:16", voice: "voice", subtitles: false },
-      expiresAt, planHash: "plan", reuseExistingVideos: true, warnings: [], stage: "stage", authorizationEpoch: 1, videoUrl: "/api/output/final.mp4" },
-    createdAt: Date.now(), updatedAt: Date.now() }).run();
-  getDb().insert(klingFilmShots).values({ id: "film-shot-1", runId: "film-1", shotId: 1, ordinal: 0, status: "ready", jobId: "job-1", assetId: "generated-asset",
-    data: { shot: { shotId: 1 } as never, source: "reuse", prompt: "prompt", options: {}, missingKeyframe: false, inputs: [], baselineAssetId: "generated-asset", attempt: 0 }, updatedAt: Date.now() }).run();
-}
 function scopeFixturesToScript() {
   getDb().update(scripts).set({ shots: [{ shotId: 1 } as never] }).where(eq(scripts.id, "script-1")).run();
   getDb().update(assets).set({ sourceScriptId: "script-1" }).run();
@@ -74,7 +64,7 @@ beforeAll(() => { state.root = mkdtempSync(join(tmpdir(), "clipforge-kling-delet
 beforeEach(() => {
   state.assertLocal.mockReset();
   state.directory = join(state.root, randomUUID()); mkdirSync(join(state.directory, "uploads"), { recursive: true }); mkdirSync(join(state.directory, "output"));
-  state.sqlite!.exec("DELETE FROM generation_reviews; DELETE FROM video_clips; DELETE FROM media_sources; DELETE FROM compositions; DELETE FROM kling_film_shots; DELETE FROM kling_film_runs; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
+  state.sqlite!.exec("DELETE FROM generation_reviews; DELETE FROM video_clips; DELETE FROM media_sources; DELETE FROM compositions; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
   state.sqlite!.prepare("INSERT INTO kling_profiles(id,data) VALUES (?,?)").run("profile-1", "{}");
   state.sqlite!.prepare("INSERT INTO projects(id,name) VALUES (?,?)").run("project-1", "Test");
   state.sqlite!.prepare("INSERT INTO scripts(id,project_id,style_type,shots,selected) VALUES (?,?,?,?,?)").run("script-1", "project-1", "scene", "[]", 1);
@@ -96,7 +86,6 @@ describe("deleting locally generated Kling videos", () => {
       .run("review-1", "project-1", "generated-asset", 1, "{}", "{}", "{}", "model", "accept");
     getDb().insert(aiTasks).values({ id: "task-1", provider: "kling-cli", model: "model", taskId: "remote-1", status: "completed", resultUrls: [url] }).run();
     patchKlingJob(row.id, {}, { aiTaskId: "task-1" });
-    film("completed");
     const final = join(state.directory, "output", "final.mp4"); writeFileSync(final, "completed film");
     getDb().insert(compositions).values({ projectId: "project-1", outputPath: final, status: "done" }).run();
 
@@ -258,27 +247,6 @@ describe("deleting locally generated Kling videos", () => {
     cleanupDeletedKlingJobs();
     expect(existsSync(file)).toBe(false);
     expect(getDb().select().from(klingJobs).get()?.data.deletePendingOutputIds).toEqual([]);
-  });
-  it.each(["draft", "running", "paused", "needs_attention", "composing"] as const)("protects a video referenced by a %s film", (status) => {
-    job(); const { file } = video(); film(status);
-    expect(() => deleteKlingJob("job-1")).toThrowError("整片");
-    expect(existsSync(file)).toBe(true);
-  });
-  it.each(["cancelled", "draft"] as const)("allows a cancelled or expired plan: %s", (status) => {
-    job(); video(); film(status, Date.now() - 1000);
-    expect(deleteKlingJob("job-1").deleted).toBe(true);
-  });
-  it.each([
-    ["cancelled", "deleted"], ["cancelled", "missing"], ["draft", "deleted"], ["draft", "missing"],
-  ] as const)("keeps historical %s film details readable when a failed child job is %s", (status, condition) => {
-    job({ remoteState: "failed", importState: "not_ready" }); film(status, Date.now() - 1000);
-    getDb().update(klingFilmShots).set({ status: "needs_attention" }).run();
-    if (condition === "deleted") deleteKlingJob("job-1");
-    else getDb().delete(klingJobs).where(eq(klingJobs.id, "job-1")).run();
-    const run = getDb().select().from(klingFilmRuns).get()!;
-    const view = klingFilmView(run);
-    expect(view).toMatchObject({ status, runId: "film-1", shots: [{ id: "film-shot-1", status: "needs_attention", allowedActions: [] }] });
-    expect(view.allowedActions).not.toContain("retry-shot");
   });
   it("protects an ordinary pending composition", () => {
     job(); video(); getDb().insert(compositions).values({ projectId: "project-1", status: "composing" }).run();

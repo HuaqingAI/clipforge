@@ -38,9 +38,7 @@ import { projects, scripts, assets, aiTasks, type Shot } from "@/lib/db/schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { klingJobs, klingJobOutputs, type KlingJob } from "@/lib/kling/job-schema";
 import { deleteKlingJob } from "@/lib/kling/delete-job";
-import { klingFilmRuns } from "@/lib/kling/film-schema";
-import { createKlingJob, dispatchKlingJob, queryKlingJob, retryKlingImport, runKlingJobTick, stopKlingJobRunner, klingJobAction, bindKlingJob, continueKlingJob,
-  createKlingFilmShotJob, dispatchKlingFilmShotJob, type KlingFilmShotContext } from "@/lib/kling/jobs";
+import { createKlingJob, dispatchKlingJob, queryKlingJob, retryKlingImport, runKlingJobTick, stopKlingJobRunner, klingJobAction, bindKlingJob, continueKlingJob } from "@/lib/kling/jobs";
 import { getKlingJob, getKlingOutputs, patchKlingJob, klingJobView, withKlingJobLease } from "@/lib/kling/repository";
 import { importKlingOutputs, selectKlingOutput } from "@/lib/kling/output-import";
 import { KlingError } from "@/lib/kling/errors";
@@ -98,7 +96,7 @@ beforeEach(() => {
   vi.stubEnv("CLIPFORGE_RUNTIME", ""); vi.stubEnv("CLIPFORGE_KLING_DISABLED", "");
   process.env.NEXT_PHASE = "phase-production-build";
   stopKlingJobRunner();
-  state.sqlite!.exec("DROP TRIGGER IF EXISTS reject_kling_insert; DROP TRIGGER IF EXISTS reject_kling_claim; DELETE FROM kling_film_shots; DELETE FROM kling_film_runs; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
+  state.sqlite!.exec("DROP TRIGGER IF EXISTS reject_kling_insert; DROP TRIGGER IF EXISTS reject_kling_claim; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
   vi.clearAllMocks();
   state.profiles = {};
   const now = Date.now();
@@ -1023,126 +1021,48 @@ describe("Kling output persistence and selection", () => {
   });
 });
 
-describe("Kling FilmRun child dispatch authorization", () => {
-  const context: KlingFilmShotContext = { filmRunId: "film-run-1", filmShotId: "film-shot-1", authorizationEpoch: 1, expectedInputHashes: [] };
-  beforeEach(() => {
-    const now = Date.now();
-    getDb().insert(klingFilmRuns).values({ id: context.filmRunId, projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: state.profile!.principalKey!, status: "running", createdAt: now, updatedAt: now,
-      data: { scriptRevision: "fixture", scriptSnapshot: { shots: [shot] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: "edge-tts", voice: "zh-CN-XiaoxiaoNeural", subtitles: true }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
-  });
-  it("rejects a child whose parent is absent or belongs to another project or principal", async () => {
-    getDb().update(klingFilmRuns).set({ projectId: "another-project" }).run();
-    await expect(createKlingFilmShotJob(request(), context)).rejects.toMatchObject({ code: "KLING_FILM_CONTEXT_INVALID" });
-    getDb().update(klingFilmRuns).set({ projectId: "project-1", principalKey: "another-user" }).run();
-    await expect(createKlingFilmShotJob(request(), context)).rejects.toMatchObject({ code: "KLING_FILM_CONTEXT_INVALID" });
-    getDb().delete(klingFilmRuns).run();
-    await expect(createKlingFilmShotJob(request(), context)).rejects.toMatchObject({ code: "KLING_FILM_CONTEXT_INVALID" });
-    expect(state.cli).not.toHaveBeenCalled(); expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
-  });
-  it("blocks ordinary jobs during active films while allowing unconfirmed drafts", async () => {
-    await expect(createKlingJob(request())).rejects.toMatchObject({ code: "KLING_FILM_CONFLICT" });
-    getDb().update(klingFilmRuns).set({ status: "draft" }).run();
-    expect((await createKlingJob(request())).submissionState).toBe("prepared"); expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("creates an idempotent linked child without dispatching it through the generic runner", async () => {
-    const job = await createKlingFilmShotJob(request(), context);
-    const duplicate = await createKlingFilmShotJob(request(), { ...context, authorizationEpoch: 2 });
-    expect(duplicate.id).toBe(job.id);
-    expect(job.data).toMatchObject({ filmRunId: "film-run-1", filmShotId: "film-shot-1", filmAuthorizationEpoch: 1 });
-    await tick(); expect(state.cli).not.toHaveBeenCalled();
-    expect(getKlingJob(job.id).submissionState).toBe("prepared");
-  });
-  it("does not accept FilmRun ownership or dispatch flags from browser requests", async () => {
-    await expect(createKlingJob({ ...request(), filmRunId: "film-run-1" })).rejects.toMatchObject({ code: "KLING_SCOPE_UNSUPPORTED" });
-    await expect(createKlingJob({ ...request(), executionScope: "film" })).rejects.toMatchObject({ code: "KLING_SCOPE_UNSUPPORTED" });
-    await expect(createKlingJob({ ...request(), suppressAutoDispatch: true })).rejects.toMatchObject({ code: "KLING_SCOPE_UNSUPPORTED" });
+describe("removed Kling one-click-film quarantine", () => {
+  it.each(["filmRunId", "filmShotId", "filmAuthorizationEpoch", "filmContext", "suppressAutoDispatch"])("rejects the removed %s request field", async (field) => {
+    await expect(createKlingJob({ ...request(), [field]: "legacy-film" })).rejects.toMatchObject({ code: "KLING_SCOPE_UNSUPPORTED" });
     expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
   });
-  it("prevents the ordinary create, dispatch and continue paths from taking over a film child", async () => {
-    const job = await createKlingFilmShotJob(request(), context);
-    await expect(createKlingJob(request())).rejects.toMatchObject({ code: "KLING_REQUEST_CONFLICT" });
+
+  it("rejects the removed execution scope", async () => {
+    await expect(createKlingJob({ ...request(), executionScope: "film" })).rejects.toMatchObject({ code: "KLING_SCOPE_UNSUPPORTED" });
+    expect(state.prepare).not.toHaveBeenCalled(); expect(state.cli).not.toHaveBeenCalled();
+  });
+
+  it("never dispatches or continues an old prepared film job through the single-shot paths", async () => {
+    const job = await createKlingJob(request());
+    patchKlingJob(job.id, {}, { filmRunId: "legacy-film" });
+    await tick();
     await expect(dispatchKlingJob(job.id)).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
+    await expect(continueKlingJob(job.id, { explicitConfirmation: true })).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
+    expect(getKlingJob(job.id).submissionState).toBe("prepared");
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+
+  it("keeps a restarted legacy film job quarantined and hides its continue action", async () => {
+    const job = await createKlingJob(request());
+    patchKlingJob(job.id, {}, { filmRunId: "legacy-film", authorizedBootId: "old-server-boot" });
+    await tick();
+    const recovered = getKlingJob(job.id);
+    expect(recovered.needsConfirmation).toBe(true);
+    expect(klingJobView(recovered).allowedActions).not.toContain("continue");
+    expect(klingJobView(recovered).allowedActions).toContain("cancel-prepared");
     await expect(continueKlingJob(job.id, { explicitConfirmation: true })).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
     expect(state.cli).not.toHaveBeenCalled();
   });
-  it("compares the copied inputs with the parent manifest before persisting a child", async () => {
-    state.prepare.mockResolvedValueOnce([{ role: "image", sourceUrl: "/api/files/input.png", path: "/fixture/input.png", hash: "a".repeat(64), size: 10 }]);
-    await expect(createKlingFilmShotJob(request(), context)).rejects.toMatchObject({ code: "KLING_INPUT_CHANGED" });
-    expect(getDb().select().from(klingJobs).all()).toHaveLength(0); expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("compares input roles and order rather than only the set of hashes", async () => {
-    const image = { role: "image", sourceUrl: "/api/files/a.png", path: "/fixture/a.png", hash: "a".repeat(64), size: 10 };
-    const tail = { role: "tailImage", sourceUrl: "/api/files/b.png", path: "/fixture/b.png", hash: "b".repeat(64), size: 10 };
-    state.prepare.mockResolvedValueOnce([tail, image]);
-    await expect(createKlingFilmShotJob(request(), { ...context, expectedInputHashes: [{ role: image.role, hash: image.hash }, { role: tail.role, hash: tail.hash }] })).rejects.toMatchObject({ code: "KLING_INPUT_CHANGED" });
-    expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("requires a synchronous parent guard and checks it both before preparation and in the dispatch claim", async () => {
-    const job = await createKlingFilmShotJob(request(), context); const guard = vi.fn();
-    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
-    expect(guard).toHaveBeenCalledTimes(2); expect(state.cli).toHaveBeenCalledTimes(1);
+
+  it("still queries an already acknowledged historical film job without generating again", async () => {
+    const job = await createKlingJob(request());
+    await acknowledge(job);
+    patchKlingJob(job.id, {}, { filmRunId: "legacy-film" });
+    state.cli.mockClear();
+    await queryKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(state.cli.mock.calls[0][1]).toEqual(["query_tasks", "remote-1"]);
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", remoteGenerationId: "remote-1" });
-    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
-    expect(state.cli).toHaveBeenCalledTimes(1);
-  });
-  it("does not submit when a FilmRun pauses during asynchronous account checking", async () => {
-    const job = await createKlingFilmShotJob(request(), context); let allowed = true;
-    state.refresh.mockImplementationOnce(async () => { allowed = false; return structuredClone(state.profile); });
-    const guard = () => { if (!allowed) throw new KlingError("KLING_FILM_PAUSED", "Parent is paused", 409); };
-    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
-    expect(state.cli).not.toHaveBeenCalled();
-    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_FILM_PAUSED" } } });
-  });
-  it("rejects an accidentally asynchronous parent guard before any paid dispatch", async () => {
-    const job = await createKlingFilmShotJob(request(), context);
-    await expect(dispatchKlingFilmShotJob(job.id, { ...context, async assertDispatchAllowed() {} })).rejects.toMatchObject({ code: "KLING_FILM_CONTEXT_INVALID" });
-    expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("requires renewed parent authorization after a restart before reauthorizing an old prepared child", async () => {
-    const job = await createKlingFilmShotJob(request(), context);
-    patchKlingJob(job.id, {}, { authorizedBootId: "old-server-boot" }); await tick();
-    expect(getKlingJob(job.id).needsConfirmation).toBe(true); expect(state.cli).not.toHaveBeenCalled();
-    await expect(dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed() { throw new KlingError("KLING_FILM_RECONFIRM_REQUIRED", "Restart needs batch consent", 409); } })).rejects.toMatchObject({ code: "KLING_FILM_RECONFIRM_REQUIRED" });
-    expect(state.cli).not.toHaveBeenCalled();
-    await dispatchKlingFilmShotJob(job.id, { ...context, authorizationEpoch: 2, assertDispatchAllowed() {} });
-    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", needsConfirmation: false, data: { filmAuthorizationEpoch: 2 } });
-    expect(state.cli).toHaveBeenCalledTimes(1);
-  });
-  it("rejects grants for another film shot, obsolete epochs, or a different input manifest", async () => {
-    const job = await createKlingFilmShotJob(request(), { ...context, authorizationEpoch: 2 });
-    await expect(dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed() {} })).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
-    await expect(dispatchKlingFilmShotJob(job.id, { ...context, authorizationEpoch: 2, filmShotId: "film-shot-other", assertDispatchAllowed() {} })).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
-    await expect(dispatchKlingFilmShotJob(job.id, { ...context, authorizationEpoch: 2, expectedInputHashes: [{ role: "image", hash: "a".repeat(64) }], assertDispatchAllowed() {} })).rejects.toMatchObject({ code: "KLING_INPUT_CHANGED" });
-    expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("keeps uncertain child submissions uncertain across parent resume without regenerating", async () => {
-    const job = await createKlingFilmShotJob(request(), context); state.cli.mockResolvedValueOnce({ ...cliResult(), exitCode: 1, timedOut: true });
-    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed() {} });
-    await dispatchKlingFilmShotJob(job.id, { ...context, authorizationEpoch: 2, assertDispatchAllowed() {} });
-    await tick();
-    expect(getKlingJob(job.id).submissionState).toBe("submission_unknown"); expect(state.cli).toHaveBeenCalledTimes(1);
-  });
-  it("keeps the same-shot unresolved job protection for film children", async () => {
-    await createKlingFilmShotJob(request(), context);
-    await expect(createKlingFilmShotJob(request({ clientRequestId: "request-2", billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: "request-2" } }), { ...context, filmShotId: "film-shot-2" })).rejects.toMatchObject({ code: "KLING_REQUEST_CONFLICT" });
-    expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("keeps legacy film child recovery free of the removed ten-shot cap", async () => {
-    useMultipleShots(11);
-    const parent = getDb().select().from(klingFilmRuns).where(eq(klingFilmRuns.id, context.filmRunId)).get()!;
-    const script = getDb().select().from(scripts).where(eq(scripts.id, "script-1")).get()!;
-    getDb().update(klingFilmRuns).set({ data: { ...parent.data, scriptSnapshot: { shots: structuredClone(script.shots!) } } }).where(eq(klingFilmRuns.id, parent.id)).run();
-    for (const shotId of Array.from({ length: 10 }, (_, index) => index + 1)) {
-      const job = await createKlingFilmShotJob(shotRequest(shotId), { ...context, filmShotId: `film-shot-${shotId}` });
-      expect(job.submissionState).toBe("prepared");
-    }
-    expect((await createKlingFilmShotJob(shotRequest(11), { ...context, filmShotId: "film-shot-11" })).submissionState).toBe("prepared");
-    expect(state.cli).not.toHaveBeenCalled();
-  });
-  it("rejects a current script shot absent from the confirmed film manifest", async () => {
-    useMultipleShots(2);
-    await expect(createKlingFilmShotJob(shotRequest(2), { ...context, filmShotId: "film-shot-2" })).rejects.toMatchObject({ code: "KLING_FILM_CONTEXT_INVALID" });
-    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
-    expect(state.cli).not.toHaveBeenCalled();
   });
 });

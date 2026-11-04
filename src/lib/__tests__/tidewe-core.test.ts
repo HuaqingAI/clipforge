@@ -9,6 +9,7 @@ import type { ScriptInput } from "@/lib/script-engine/generator";
 import corpus from "@/lib/tidewe/corpus.json";
 import { snapshotTidewePresenter, tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { getTideweShotCount } from "@/lib/tidewe/types";
+import { englishWordCount, TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 const facts = productFactsFromDescription("Fleece lining", "heated_apparel", "JTC001");
 const input: ScriptInput = { productName: "TIDEWE Jacket", category: "fashion", styleType: "tidewe_outdoor", creativeProfile: createTideweOutdoorProfile(), productFacts: facts, count: 1, llmConfig: { apiKey: "test", baseUrl: "https://example.test", model: "mock" } };
@@ -29,7 +30,12 @@ function completePlan(planned: Record<string, unknown>[], productCloseup = false
     { ...shot(""), duration: 2, personVisible: false, productVisible: false, description: "自然光下林缘小径的环境空镜，没有人物。", shotGoal: "建立林缘小径的空间关系", visualPlan: { framing: "wide", visualRole: "context", actionStart: "林缘小径与树木完整入画。", action: "静态观察小径的自然状态。", actionEnd: "保持林缘的稳定全景。" } },
     { ...shot(""), duration: 2, personVisible: !productCloseup, description: productCloseup ? "平放外套的衣领边缘清晰入画，没有人物。" : `${presenter}已穿好外套，扶住衣服下摆后自然松手。`, shotGoal: productCloseup ? "观察平放外套的衣领边缘" : "呈现外套穿着后的自然状态", visualPlan: { framing: productCloseup ? "close_up" : "medium", visualRole: productCloseup ? "detail" : "demonstration", productFocus: productCloseup ? "当前外套的衣领轮廓与可见缝边" : "穿在人物身上的外套下摆与完整轮廓", actionStart: productCloseup ? "外套衣领边缘已经清晰入画。" : "人物已穿好外套并扶住衣服下摆。", action: productCloseup ? "静态观察衣领的既有轮廓。" : "松开下摆并保持自然站姿。", actionEnd: productCloseup ? "保持衣领原有状态和构图。" : "双手自然放松，外套保持正常穿着。" } },
   ];
-  return [...planned, ...Array.from({ length: Math.max(0, 8 - planned.length) }, (_, index) => inserts[index % inserts.length])];
+  const result = [...planned, ...Array.from({ length: Math.max(0, 8 - planned.length) }, (_, index) => inserts[index % inserts.length])];
+  // These short contract fixtures exercise copy/identity rather than film length.
+  // Keep their relative shot timing while giving the complete stub a valid pace.
+  const seconds = result.reduce((sum, item) => sum + Number(item.duration), 0);
+  const words = result.reduce((sum, item) => sum + englishWordCount(String(item.scriptSegment ?? "")), 0);
+  return result.map(item => ({ ...item, duration: Number(item.duration) * words * 60 / 195 / seconds }));
 }
 
 async function generateSelectedPresenterScript() {
@@ -140,6 +146,8 @@ describe("TIDEWE core contracts", () => {
     expect(JSON.parse(calls.mock.calls[0][1]).speechMode).toBe("on_camera");
     expect(JSON.parse(calls.mock.calls[0][1]).outputFormat).toHaveProperty("copies");
     expect(script.copyDocument?.text).toBe(copy);
+    expect(script.copyDocument?.pacingVersion).toBe(TIDEWE_PACING_VERSION);
+    expect(script.copyDocument?.estimatedDuration).toBe(4);
     expect(script.copyDocument).not.toHaveProperty("visualBeats");
     expect(script.shots[0].tidewe?.visualPlan).toEqual(shot("").visualPlan);
     expect(script.shots[0].tidewe?.copySpan).toEqual({ start: 0, end: 46 });

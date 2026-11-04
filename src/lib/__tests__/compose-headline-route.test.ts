@@ -22,8 +22,8 @@ const sqlite = new Database(":memory:");
 const db = drizzle(sqlite, { schema });
 const llmConfig = { baseUrl: "https://text.invalid/v1", apiKey: "private-fixture-key", model: "text-model" };
 const shots: schema.Shot[] = [
-  { shotId: 1, type: "hook", duration: 3, description: "Opening", camera: "static", visualSource: "ai_generate", voiceover: "First spoken line." },
-  { shotId: 2, type: "demo", duration: 3, description: "Ending", camera: "static", visualSource: "ai_generate", voiceover: "The ending adds [pause] the complete benefit." },
+  { shotId: 1, type: "hook", duration: 3, description: "Opening", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "First spoken line." },
+  { shotId: 2, type: "demo", duration: 3, description: "Ending", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "The ending adds [pause] the complete benefit." },
 ];
 
 beforeAll(() => { state.db = db; migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") }); });

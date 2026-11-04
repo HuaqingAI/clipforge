@@ -36,9 +36,8 @@ import { getDb } from "@/lib/db";
 import { assets, projects, scripts, type Shot } from "@/lib/db/schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { klingJobs } from "@/lib/kling/job-schema";
-import { klingFilmRuns } from "@/lib/kling/film-schema";
 import { contentHash } from "@/lib/kling/inputs";
-import { createKlingJob, dispatchKlingJob, stopKlingJobRunner, createKlingFilmShotJob, dispatchKlingFilmShotJob } from "@/lib/kling/jobs";
+import { createKlingJob, dispatchKlingJob, stopKlingJobRunner } from "@/lib/kling/jobs";
 import { getKlingJob } from "@/lib/kling/repository";
 import { createCreativeProfileSnapshot, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { previewProjectVideoPrompt } from "@/lib/server/video-prompt";
@@ -47,9 +46,9 @@ import type { VideoPromptRequest } from "@/lib/video-prompt-request";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts, type TideweCopyDocument, type TidewePresenterSnapshot } from "@/lib/tidewe/types";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
-import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { assetScopeForShot } from "@/lib/asset-context";
 import { KLING_AUDIO_PARAMETER_NAMES, klingSupportsNativeAudio } from "@/lib/kling/model-options";
+import { TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 const profile = createTideweOutdoorProfile({ speechMode: "voiceover" });
 const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "hunting_chair", items: [] };
@@ -81,7 +80,7 @@ function productContext() {
 beforeAll(async () => { state.directory = await fs.mkdtemp(path.join(os.tmpdir(), "clipforge-tidewe-kling-")); });
 beforeEach(() => {
   vi.stubEnv("CLIPFORGE_RUNTIME", ""); vi.stubEnv("CLIPFORGE_KLING_DISABLED", ""); process.env.NEXT_PHASE = "phase-production-build"; stopKlingJobRunner();
-  state.sqlite!.exec("DELETE FROM kling_film_shots; DELETE FROM kling_film_runs; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
+  state.sqlite!.exec("DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
   vi.clearAllMocks(); const now = Date.now();
   state.profile = { id: "profile-1", label: "test", region: "global", cliPackage: "@klingai/cli-global", cliVersion: "0.2.0", adapterVersion: "1", nodePath: process.execPath, packagePath: "/fixture", cliEntry: "/fixture/dist/cli.js", homePath: path.join(state.directory, "home"), endpoint: "https://kling.ai/mcp", environmentState: "ready", authState: "authenticated", authRevision: 1, principalKey: '["global","user-1"]', accountSummary: { id: "user-1" }, catalogSnapshot: [structuredClone(model)], catalogRevision: "catalog-1", catalogCheckedAt: now, createdAt: now, updatedAt: now };
   getDb().insert(klingProfiles).values({ id: state.profile.id, data: state.profile }).run();
@@ -100,17 +99,12 @@ afterAll(async () => { stopKlingJobRunner(); state.sqlite?.close(); await fs.rm(
 
 describe("TIDEWE Kling policy before paid dispatch", () => {
   const presenter: TidewePresenterSnapshot = { id: "saved-host", name: "Sam", appearance: "短发户外主播", referenceImages: ["/api/files/project-1/presenter.png"] };
-  it("dispatches a person-free native-narration film child without a visible presenter reference or lip sync", async () => {
+  it("dispatches person-free native narration without a visible presenter reference or lip sync", async () => {
     const native = createTideweOutdoorProfile({ presenter });
     const detail: Shot = { ...shot, description: "清晨林地的环境细节，无人出镜。", tidewe: { ...shot.tidewe!, presenter, personVisible: false, speechDelivery: "off_camera" } };
     getDb().update(projects).set({ creativeProfile: native }).run();
     getDb().update(scripts).set({ shots: [detail], creativeProfileSnapshot: createCreativeProfileSnapshot(native, 1) }).run();
-    const context = { filmRunId: "off-camera-film", filmShotId: "off-camera-shot", authorizationEpoch: 1, expectedInputHashes: [] };
-    const now = Date.now();
-    getDb().insert(klingFilmRuns).values({ id: context.filmRunId, projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: state.profile!.principalKey!, status: "running", createdAt: now, updatedAt: now,
-      data: { scriptRevision: "fixture", scriptSnapshot: { shots: [detail] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: "native", voice: "en-US-GuyNeural", subtitles: false }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
-    const compiled = compileTideweVisualPrompt(detail, "video", "on_camera", presenter, "native", { direction: resolveTideweVideoDirection(detail) });
-    const job = await createKlingFilmShotJob(request({ prompt: compiled.prompt }), context);
+    const job = await createKlingJob(reviewedRequest({}, undefined, true));
     expect(state.prepare).toHaveBeenCalledWith(expect.any(String), expect.any(Object), []);
     expect(job.data.prompt).toContain(JSON.stringify(text));
     expect(job.data.prompt).toContain("off-camera narration");
@@ -118,9 +112,7 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     expect(job.data.prompt).not.toContain("嘴部清晰可见");
     expect(job.data.options.generate_audio).toBe(true);
     expect(job.data.options.negative_prompt).toContain("visible speaking, lip synchronization");
-    const guard = vi.fn();
-    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
-    expect(guard).toHaveBeenCalledTimes(2);
+    await dispatchKlingJob(job.id);
     expect(state.cli).toHaveBeenCalledOnce();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged" });
     expect(job.data.videoPromptAudit?.sourceShot).toEqual(detail);
@@ -182,6 +174,50 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     getDb().update(scripts).set({ creativeProfileSnapshot: createCreativeProfileSnapshot(native, 1) }).where(eq(scripts.id, "script-1")).run();
     state.profile!.catalogSnapshot[0].parameters.push({ name: "duration", type: "number", required: false, allowedValues: [5, 10], default: 5 });
   }
+  function useNativeCopy(line: string, pacingVersion?: string, duration = 5) {
+    useNativeSpeech();
+    const copyDocument = { ...copy, text: line, wordCount: englishWordCount(line), ...(pacingVersion ? { pacingVersion } : {}) };
+    const nativeShot = { ...shot, duration, voiceover: line, tidewe: { ...shot.tidewe!, copySpan: { start: 0, end: line.length } } };
+    getDb().update(scripts).set({ shots: [nativeShot], copyDocument }).where(eq(scripts.id, "script-1")).run();
+    return { copyDocument, shot: nativeShot };
+  }
+  const twentyWords = "Check the fit before you choose the gear for tomorrow. Keep the useful product details visible as you move naturally.";
+  it.each([
+    { label: "historical", pacingVersion: undefined, expected: 5 },
+    { label: "195-paced", pacingVersion: TIDEWE_PACING_VERSION, expected: 10 },
+  ])("keeps $label native generation and paid dispatch on the same speech budget", async ({ pacingVersion, expected }) => {
+    useNativeCopy(twentyWords, pacingVersion);
+    const job = await createKlingJob(reviewedRequest({ options: { duration: 5 } }, undefined, true));
+    expect(job.data.options.duration).toBe(expected);
+    expect(job.data.videoPromptAudit?.pacingVersion).toBe(pacingVersion);
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    const args = state.cli.mock.calls[0][1] as string[];
+    expect(args[args.indexOf("--duration") + 1]).toBe(String(expected));
+  });
+  it("keeps the reviewed pacing policy frozen when the same script's marker changes before payment", async () => {
+    const { copyDocument } = useNativeCopy(twentyWords, TIDEWE_PACING_VERSION);
+    const job = await createKlingJob(reviewedRequest({ options: { duration: 5 } }, undefined, true));
+    getDb().update(scripts).set({ copyDocument: { ...copyDocument, pacingVersion: undefined } }).where(eq(scripts.id, "script-1")).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+    expect(getKlingJob(job.id).data.options.duration).toBe(10);
+  });
+  it("rejects a paced line needing more than 15 seconds before preparing or paying for a job", async () => {
+    useNativeCopy(Array(54).fill("gear").join(" "), TIDEWE_PACING_VERSION);
+    await expect(createKlingJob(reviewedRequest({}, undefined, true))).rejects.toMatchObject({ code: "TIDEWE_SPEECH_BUDGET_EXCEEDED", status: 422 });
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(0);
+  });
+  it("refuses a recovered paced job whose stored generation parameters exceed 15 seconds", async () => {
+    useNativeCopy(twentyWords, TIDEWE_PACING_VERSION);
+    const job = await createKlingJob(reviewedRequest({}, undefined, true));
+    getDb().update(klingJobs).set({ data: { ...job.data, options: { ...job.data.options, duration: 20 } } }).where(eq(klingJobs.id, job.id)).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "TIDEWE_SPEECH_BUDGET_EXCEEDED" } } });
+  });
   it("raises a rounded-down duration to a declared tier covering the native spoken plan", async () => {
     useNativeSpeech();
     getDb().update(scripts).set({ shots: [{ ...shot, duration: 5.4 }] }).where(eq(scripts.id, "script-1")).run();
@@ -446,21 +482,5 @@ describe("TIDEWE Kling policy before paid dispatch", () => {
     await dispatchKlingJob(job.id);
     expect(state.cli).not.toHaveBeenCalled();
     expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "CREATIVE_POLICY_VIOLATION" } } });
-  });
-  it.each(["voiceover", "on_camera"] as const)("keeps a controlled %s film child's frozen prompt after same-script edits", async (speechMode) => {
-    if (speechMode === "on_camera") useNativeSpeech();
-    const context = { filmRunId: "film-run-1", filmShotId: "film-shot-1", authorizationEpoch: 1, expectedInputHashes: [] };
-    const now = Date.now();
-    getDb().insert(klingFilmRuns).values({ id: context.filmRunId, projectId: "project-1", scriptId: "script-1", profileId: "profile-1", principalKey: state.profile!.principalKey!, status: "running", createdAt: now, updatedAt: now,
-      data: { scriptRevision: "fixture", scriptSnapshot: { shots: [shot] }, model, output: { resolution: "720p", aspectRatio: "9:16", audioStrategy: speechMode === "on_camera" ? "native" : "edge-tts", voice: "en-US-GuyNeural", subtitles: false }, planHash: "fixture-plan", expiresAt: now + 120000, reuseExistingVideos: true, warnings: [], stage: "running", authorizationEpoch: 1 } }).run();
-    getDb().update(scripts).set({ version: 8, shots: [{ ...shot, camera: "中文慢速向左横移" }] }).where(eq(scripts.id, "script-1")).run();
-    getDb().update(projects).set({ creativeConfigRevision: 9 }).run();
-    const job = await createKlingFilmShotJob(request({ prompt: compileTideweVisualPrompt(shot, "video", speechMode, undefined, "native", { direction: resolveTideweVideoDirection(shot) }).prompt }), context);
-    expect(job.data.videoPromptAudit?.sourceShot).toEqual(shot);
-    await expect(dispatchKlingJob(job.id)).rejects.toMatchObject({ code: "KLING_FILM_MANAGED_JOB" });
-    const guard = vi.fn();
-    await dispatchKlingFilmShotJob(job.id, { ...context, assertDispatchAllowed: guard });
-    expect(guard).toHaveBeenCalledTimes(2); expect(state.cli).toHaveBeenCalledOnce();
-    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", data: { options: { generate_audio: speechMode === "on_camera" } } });
   });
 });

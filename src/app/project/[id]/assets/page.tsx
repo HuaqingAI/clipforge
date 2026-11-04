@@ -74,6 +74,7 @@ import {
 import { isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
+import { englishWordCount, getTideweGenerationDuration, TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 // shot type labels (label changed to i18n key in the assets namespace, resolved per locale)
 const shotTypeLabels: Record<Shot["type"], { key: string; color: string }> = {
@@ -154,8 +155,7 @@ function AssetsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedJob = searchParams.get("klingJob");
-  const requestedKlingFilm = searchParams.get("klingFilm");
-  const requestedFilm = requestedKlingFilm === "1" ? null : requestedKlingFilm || searchParams.get("film");
+  const requestedFilm = searchParams.get("film");
   const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, motionIntensity, setMotionIntensity, motionRealism, setMotionRealism, chainMode, visualLook, setVisualLook } = useSettingsStore();
   // beginner/director split: simple mode hides the director panel, the storyboard-grid button
   // and per-shot camera tooling — beginners see shots + generate, nothing else
@@ -223,8 +223,7 @@ function AssetsPageContent() {
     motionDraftDone.current = null;
     resolve?.();
   }, []);
-  const [klingFilmOpen, setKlingFilmOpen] = useState(false);
-  const [klingFilmRunId, setKlingFilmRunId] = useState<string | undefined>();
+  const [filmOpen, setFilmOpen] = useState(false);
   const [filmTaskId, setFilmTaskId] = useState<string | undefined>();
   const hadTaskQuery = useRef(false);
   // per-shot camera editing (preset picker + inline free text): edits persist into the
@@ -232,6 +231,7 @@ function AssetsPageContent() {
   const [scriptId, setScriptId] = useState<string>("");
   imageSubmissionContext.current = { projectId: id, scriptId };
   const [scriptHash, setScriptHash] = useState("");
+  const [scriptPacingVersion, setScriptPacingVersion] = useState<string>();
   const [creativeConfigRevision, setCreativeConfigRevision] = useState(0);
   const [scriptTitle, setScriptTitle] = useState("");
   const [editingCameraShot, setEditingCameraShot] = useState<number | null>(null);
@@ -281,7 +281,7 @@ function AssetsPageContent() {
   const isKlingDefault = videoModelTarget?.provider === "kling-cli" || isKlingVideoSelection(defaultVideoModel);
   const klingProfileId = providers["kling-cli"]?.profileId;
   const klingEnabled = providers["kling-cli"]?.enabled === true;
-  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, productSafe, productImages, presenterSheet, presenterLib: isTideweOutdoorProfile(projectCreativeProfile) ? undefined : presenterLib });
+  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, scriptPacingVersion, productSafe, productImages, presenterSheet, presenterLib: isTideweOutdoorProfile(projectCreativeProfile) ? undefined : presenterLib });
 
   const tidewe = isTideweOutdoorProfile(projectCreativeProfile);
   const tideweNative = isTideweNativeSpeech(projectCreativeProfile);
@@ -348,6 +348,7 @@ function AssetsPageContent() {
       setLoadError(null);
       setScriptId(typeof selected.id === "string" ? selected.id : "");
       setScriptHash(typeof selected.scriptHash === "string" ? selected.scriptHash : "");
+      setScriptPacingVersion(selected.copyDocument?.pacingVersion);
       setScriptTitle(typeof selected.title === "string" ? selected.title.trim() : "");
       const rows = buildAssetRows(selected.shots, savedAssets, imgs);
       lastFrameByShot.current.clear();
@@ -356,6 +357,7 @@ function AssetsPageContent() {
     } else {
       setScriptId("");
       setScriptHash("");
+      setScriptPacingVersion(undefined);
       setScriptTitle("");
       lastFrameByShot.current.clear();
       setAssets([]);
@@ -447,25 +449,22 @@ function AssetsPageContent() {
     hadTaskQuery.current = Boolean(requestedFilm || requestedJob);
     if (requestedFilm) {
       setKlingJobId(null);
-      setFilmTaskId(undefined);
-      setKlingFilmRunId(requestedFilm === "1" ? undefined : requestedFilm);
-      setKlingFilmOpen(true);
+      setFilmTaskId(requestedFilm === "1" ? undefined : requestedFilm);
+      setFilmOpen(true);
     } else if (requestedJob) {
-      setKlingFilmOpen(false);
+      setFilmOpen(false);
       setFilmTaskId(undefined);
-      setKlingFilmRunId(undefined);
       setKlingJobId(requestedJob);
     } else if (wasTaskLinked) {
-      setKlingFilmOpen(false);
+      setFilmOpen(false);
       setFilmTaskId(undefined);
-      setKlingFilmRunId(undefined);
       setKlingJobId(null);
     }
   }, [id, requestedFilm, requestedJob]);
 
   const clearTaskQuery = (kind: "film" | "job") => {
     const url = new URL(window.location.href);
-    const keys = kind === "film" ? ["klingFilm", "film"] : ["klingJob"];
+    const keys = kind === "film" ? ["film"] : ["klingJob"];
     if (!keys.some((key) => url.searchParams.has(key))) return;
     for (const key of keys) url.searchParams.delete(key);
     router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false });
@@ -701,7 +700,7 @@ function AssetsPageContent() {
   const resumeTask = useCallback(
     async (task: PendingAiTask) => {
       if (task.shotId == null && task.mode === "video-to-video") {
-        setFilmTaskId(task.taskId); setKlingFilmRunId(undefined); setKlingFilmOpen(true);
+        setFilmTaskId(task.taskId); setFilmOpen(true);
         return;
       }
       const prov = providers[task.provider];
@@ -859,7 +858,9 @@ function AssetsPageContent() {
         videoOptions.negativePrompt = preview.negativePrompt;
       }
       if (asset?.duration) {
-        videoOptions.duration = Math.min(15, Math.max(4, tideweNative ? Math.ceil(asset.duration) : Math.round(asset.duration)));
+        videoOptions.duration = Math.min(15, tideweNative && scriptPacingVersion === TIDEWE_PACING_VERSION
+          ? getTideweGenerationDuration(asset.duration, englishWordCount(asset.voiceover ?? ""))
+          : Math.max(4, tideweNative ? Math.ceil(asset.duration) : Math.round(asset.duration)));
       }
       if ((tidewe && controlPlan.audioMode !== "native") || (batch && !tideweNative)) {
         // Keep the browser-side confirmation honest. The route derives the same policy from the
@@ -949,7 +950,7 @@ function AssetsPageContent() {
             },
       };
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, scriptPacingVersion, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
   );
 
   const generateMotion = useCallback(async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom) => {
@@ -1269,9 +1270,9 @@ function AssetsPageContent() {
         onRefreshTasks={async () => { await Promise.all([reloadKlingJobs(), reloadPendingTasks()]); }}
       />}
       <KlingJobDetail jobId={klingJobId} open={klingJobId !== null} onOpenChange={(open) => { if (!open) { setKlingJobId(null); clearTaskQuery("job"); } }} onChanged={() => { void reloadKlingJobs(); void reloadAssets(); }} />
-      <StoryboardFilmPanel creativeProfile={projectCreativeProfile} open={klingFilmOpen && !!scriptId} onOpenChange={(open) => { setKlingFilmOpen(open); if (!open) { setFilmTaskId(undefined); setKlingFilmRunId(undefined); clearTaskQuery("film"); } }}
+      <StoryboardFilmPanel open={filmOpen && !!scriptId} onOpenChange={(open) => { setFilmOpen(open); if (!open) { setFilmTaskId(undefined); clearTaskQuery("film"); } }}
         projectId={id} scriptId={scriptId} presenterId={presenterId}
-        initialRunId={klingFilmRunId} initialTaskId={filmTaskId} onAssetsChanged={reloadAssets} />
+        initialTaskId={filmTaskId} onAssetsChanged={reloadAssets} />
 
       {/* single hidden input reused for every per-shot upload; target shot tracked in pendingUploadShot */}
       <input

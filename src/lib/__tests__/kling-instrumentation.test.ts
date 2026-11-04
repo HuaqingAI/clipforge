@@ -1,11 +1,10 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const runners = vi.hoisted(() => ({ jobsStart: vi.fn(), jobsWake: vi.fn(), filmsStart: vi.fn(), filmsWake: vi.fn() }));
+const runners = vi.hoisted(() => ({ jobsStart: vi.fn(), jobsWake: vi.fn() }));
 const generation = vi.hoisted(() => ({ start: vi.fn(), wake: vi.fn() }));
 vi.mock("@/lib/generation-runs", () => ({ startGenerationRunner: generation.start, wakeGenerationRunner: generation.wake }));
 vi.mock("@/lib/kling/jobs", () => ({ startKlingJobRunner: runners.jobsStart, wakeKlingJobRunner: runners.jobsWake }));
-vi.mock("@/lib/kling/films", () => ({ startKlingFilmRunner: runners.filmsStart, wakeKlingFilmRunner: runners.filmsWake }));
 import { register } from "@/instrumentation";
 
 beforeEach(() => {
@@ -17,12 +16,10 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("Kling startup instrumentation", () => {
-  it("starts shot recovery without restarting the removed film runner", async () => {
+  it("starts shot recovery and ordinary generation recovery", async () => {
     await register();
     expect(runners.jobsStart).toHaveBeenCalledOnce();
     expect(runners.jobsWake).toHaveBeenCalledOnce();
-    expect(runners.filmsStart).not.toHaveBeenCalled();
-    expect(runners.filmsWake).not.toHaveBeenCalled();
     expect(generation.start).toHaveBeenCalledOnce();
   });
   it.each([

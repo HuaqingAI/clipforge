@@ -6,6 +6,7 @@ import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
 import { buildTideweCategoryGuidance } from "@/lib/tidewe/category-guidance";
 import type { ProductFacts } from "@/lib/tidewe/types";
 import { generateScript, generateSingleScript, generateScriptStream, createScriptStream, type ScriptInput } from "@/lib/script-engine/generator";
+import { englishWordCount, TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
 
 const model = vi.hoisted(() => ({ create: vi.fn(), replies: [] as unknown[] }));
 vi.mock("@/lib/llm-error", async importOriginal => ({
@@ -90,8 +91,18 @@ function observedBootFixture() {
   })));
   return { bootInput, visualObservations, segments, frozenText, beats, frozenCopy, personOnly, repaired };
 }
-function reply(copyResponse: { copies: unknown[] } = copy, planResponse: { scripts: unknown[] } = plan) {
-  return { ...copyResponse, ...planResponse };
+function reply(copyResponse: { copies: unknown[] } = copy, planResponse: { scripts: unknown[] } = plan, fitTiming = true) {
+  // Most stubs test metadata/dispatch, not pacing. Scale their original relative
+  // durations; dedicated pace regressions pass fitTiming=false to test raw output.
+  if (!fitTiming) return { ...copyResponse, ...planResponse };
+  const scripts = planResponse.scripts.map(raw => {
+    const candidate = raw as { shots?: { scriptSegment?: string; duration: number }[] };
+    if (!candidate.shots?.length) return raw;
+    const seconds = candidate.shots.reduce((sum, shot) => sum + shot.duration, 0);
+    const words = candidate.shots.reduce((sum, shot) => sum + englishWordCount(shot.scriptSegment ?? ""), 0);
+    return { ...candidate, shots: candidate.shots.map(shot => ({ ...shot, duration: shot.duration * words * 60 / 195 / seconds })) };
+  });
+  return { ...copyResponse, scripts };
 }
 function payload() {
   return JSON.parse(model.create.mock.calls[0][0].messages[1].content);
@@ -375,13 +386,61 @@ describe("shared TIDEWE generator dispatch", () => {
     expect(model.create).toHaveBeenCalledTimes(1);
   });
 
-  it("applies a 14-word shot at five seconds without the previous 5.7-second rejection", async () => {
+  it.each([3, 5])("rejects a new AI plan of 14 words at %s seconds once, without rewriting or requesting a repair", async duration => {
     const rushed = structuredClone(plan);
-    rushed.scripts[0].shots = [{ ...rushed.scripts[0].shots[0], scriptSegment: text, duration: 5 }];
-    model.replies = [reply(copy, rushed)];
+    rushed.scripts[0].shots = [{ ...rushed.scripts[0].shots[0], scriptSegment: text, duration }];
+    model.replies = [reply(copy, rushed, false), reply()];
+    await expect(generateScript(input)).rejects.toThrow(/190–200 WPM.*195 WPM 建议 4.3 秒/);
+    expect(rushed.scripts[0].shots[0].scriptSegment).toBe(text);
+    expect(model.create).toHaveBeenCalledTimes(1);
+    expect(model.replies).toHaveLength(1);
+  });
+
+  it("preserves imported copy and plan timing while recording the new final-duration estimate", async () => {
+    const importedPlan = structuredClone(plan);
+    model.replies = [reply(copy, importedPlan, false)];
+    const [script] = await generateScript({ ...input, copyText: text });
+    expect(script.copyDocument).toMatchObject({ source: "user_provided", text, pacingVersion: TIDEWE_PACING_VERSION, wordCount: 14, estimatedDuration: 4.3 });
+    expect(payload().pacing).toMatchObject({ plannedFinalDurationSec: 4.3, frozenWordCount: 14 });
+    expect(payload().pacing).not.toHaveProperty("wordBudget");
+    expect(script.shots.map(shot => shot.duration)).toEqual(importedPlan.scripts[0].shots.map(shot => shot.duration));
+    expect(model.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([190, 195, 200])("accepts a %s WPM plan without changing its words or shot duration", async wpm => {
+    const duration = 14 * 60 / wpm;
+    const paced = { scripts: [{ copyIndex: 0, shots: [{ ...plan.scripts[0].shots[0], scriptSegment: text, duration }] }] };
+    model.replies = [reply(copy, paced, false)];
     const [script] = await generateScript(input);
-    expect(script.shots[0]).toMatchObject({ voiceover: text, duration: 5 });
-    expect(script.copyDocument?.wordCount).toBe(14);
+    expect(script.copyDocument).toMatchObject({ text, wordCount: 14, estimatedDuration: 4.3, pacingVersion: TIDEWE_PACING_VERSION });
+    expect(script.shots[0]).toMatchObject({ voiceover: text, duration });
+    expect(model.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes silent shots in the plan's final-WPM gate", async () => {
+    const paced = { scripts: [{ copyIndex: 0, shots: [
+      { ...plan.scripts[0].shots[0], scriptSegment: text, duration: 14 * 60 / 195 },
+      { ...plan.scripts[0].shots[0], scriptSegment: "", duration: 1 },
+    ] }] };
+    model.replies = [reply(copy, paced, false)];
+    await expect(generateScript(input)).rejects.toThrow(/14 词 \/ 5.3 秒/);
+    expect(model.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { seconds: 30, target: 98, min: 95, max: 100 },
+    { seconds: 40, target: 130, min: 127, max: 133 },
+    { seconds: 60, target: 195, min: 190, max: 200 },
+  ] as const)("carries the $seconds-second word budget into production generation and estimates final duration", async ({ seconds, target, min, max }) => {
+    const sourceWords = text.split(/\s+/);
+    const frozenText = Array.from({ length: target }, (_, index) => sourceWords[index % sourceWords.length]).join(" ");
+    const generatedCopy = { copies: [{ ...copy.copies[0], text: frozenText }] };
+    const shotCount = seconds === 30 ? 7 : seconds === 40 ? 8 : 9;
+    const shots = allocateShots(frozenText, plan.scripts[0].shots[0], shotCount).map(shot => ({ ...shot, duration: seconds / shotCount }));
+    model.replies = [reply(generatedCopy, { scripts: [{ copyIndex: 0, shots }] }, false)];
+    const [script] = await generateScript({ ...input, creativeProfile: createTideweOutdoorProfile({ targetDuration: seconds }) });
+    expect(payload().pacing).toMatchObject({ version: TIDEWE_PACING_VERSION, targetFinalWpm: 195, speechWpm: 215, plannedFinalDurationSec: seconds, wordBudget: { target, min, max } });
+    expect(script.copyDocument).toMatchObject({ text: frozenText, wordCount: target, estimatedDuration: seconds === 30 ? 30.2 : seconds, pacingVersion: TIDEWE_PACING_VERSION });
     expect(model.create).toHaveBeenCalledTimes(1);
   });
 

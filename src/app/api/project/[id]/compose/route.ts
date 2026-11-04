@@ -32,6 +32,8 @@ import { isTideweOutdoorProfile, isTideweNativeSpeech, sanitizeCreativeProfile, 
 import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { assertTideweMediaDuration } from "@/lib/tidewe/visual-policy";
+import { TIDEWE_PACING_VERSION, englishWordCount } from "@/lib/tidewe/pacing";
+import { planNativeSpeechEdits, nativeSpeechPacingReport, type NativeSpeechPlan } from "@/lib/tidewe/native-speech-edit";
 import { validateElevenLabsConfig } from "@/lib/elevenlabs/config";
 import { assertElevenLabsLocalRequest, elevenLabsRouteError } from "@/lib/elevenlabs/local-access";
 
@@ -242,6 +244,8 @@ export async function POST(
     const activeProfile = projectProfile ?? scriptSnapshotProfile ?? bodyProfile;
     const tidewe = isTideweOutdoorProfile(activeProfile);
     const tideweNative = isTideweNativeSpeech(activeProfile);
+    // Saved copy metadata is the rollout boundary; old scripts retain source-speed protection.
+    const tidewePacing = tideweNative && selected.copyDocument?.pacingVersion === TIDEWE_PACING_VERSION;
     if (tidewe) {
       if (body.voiceoverOverrides !== undefined || body.narration !== undefined || body.voiceover !== undefined
         || selected.shots.some((shot) => Boolean(shot.narration?.trim()))) {
@@ -286,6 +290,8 @@ export async function POST(
         return transition ? { ...shot, transition } : shot;
       });
     }
+    // Native phrases must not overlap in the measured pacing path, even when an older client sends fade overrides.
+    if (tidewePacing) shots = shots.map(shot => ({ ...shot, transition: "direct_concat" }));
     // Variant-matrix voiceover overrides for hook A/B: applied in memory
     // for this render only — the stored script stays untouched, so each variant compose can
     // carry a different hook copy without mutating the project.
@@ -659,7 +665,8 @@ export async function POST(
 
     // Align the exact speech source selected above, before BGM or native/voice mixing.
     // Old presets and clients cannot switch this path back to estimated word times.
-    if (subtitles) {
+    let nativeSpeechPlans: NativeSpeechPlan[] = [];
+    if (subtitles || tidewePacing) {
       const requests = rendered.flatMap((item) => {
         const text = stripPauseMarks(item.shot.voiceover ?? "").trim();
         if (!text) return [];
@@ -674,6 +681,26 @@ export async function POST(
         for (const item of rendered) {
           const job = aligned.jobs.find(job => job.id === String(item.shot.shotId));
           if (job) item.words = job.words;
+        }
+        if (tidewePacing) {
+          // Align the full unedited native source first. Caption times are then transformed
+          // by exactly the same source trim and speed used by FFmpeg, never re-estimated.
+          nativeSpeechPlans = planNativeSpeechEdits(rendered.flatMap(item => {
+            if (!item.shot.voiceover?.trim() || !item.clip.hasAudio || item.clip.audioPath || item.clip.type !== "video") return [];
+            const job = aligned.jobs.find(job => job.id === String(item.shot.shotId));
+            if (!job) throw new Error(`镜头 ${item.shot.shotId} 缺少完整原声词对齐，未裁切口播。`);
+            return [{ shotId: item.shot.shotId, text: stripPauseMarks(item.shot.voiceover).trim(),
+              sourceDuration: Math.min(item.clip.sourceDuration ?? job.durationSec, job.durationSec), words: job.words,
+              onCamera: item.shot.tidewe?.speechDelivery !== "off_camera" }];
+          }));
+          for (const plan of nativeSpeechPlans) {
+            const item = rendered.find(item => item.shot.shotId === plan.shotId)!;
+            item.clip.nativeSpeechEdit = plan.edit;
+            delete item.clip.preserveNativeSpeech;
+            item.duration = item.clip.duration = plan.duration;
+            item.words = plan.words;
+            item.voiceSec = plan.words.at(-1)!.endSec;
+          }
         }
       }
     }
@@ -779,6 +806,10 @@ export async function POST(
 
         // 执行合成（FFmpeg）
         const outputPath = await composeVideo(config);
+        const pacingReport = tidewePacing ? {
+          ...nativeSpeechPacingReport(nativeSpeechPlans, englishWordCount(selected.copyDocument!.text), await probeDuration(outputPath)),
+          uneditedSpokenShotIds: rendered.filter(item => item.shot.voiceover?.trim() && !item.clip.nativeSpeechEdit).map(item => item.shot.shotId),
+        } : undefined;
         // Splice-point sidecar (same pattern as the BGM credit sidecar): the composer's actual
         // fade-aware segment boundaries. The smart contact sheet reads this as the authoritative
         // cut list — per-frame scene detection cannot see gradual cross-fades. Best-effort only.
@@ -808,6 +839,7 @@ export async function POST(
           source: fileNameOf(r.clip.filePath),
           start: Number((starts[index] ?? 0).toFixed(3)),
           end: Number(((starts[index] ?? 0) + r.duration).toFixed(3)),
+          ...(r.clip.nativeSpeechEdit ? { sourceEdit: r.clip.nativeSpeechEdit } : {}),
         }] : []);
         const audioTracks = [
           ...(dialogueClips.length ? [{ id: "A1", role: "dialogue", clips: dialogueClips }] : []),
@@ -821,6 +853,7 @@ export async function POST(
             boundaries,
             total: timeline.total,
             audioTracks,
+            ...(pacingReport ? { pacing: pacingReport } : {}),
             ...(tideweNative ? { speechMode: "on_camera" } : {}),
             ...(subtitles ? { captionTiming: "audio-aligned", captionStyle: "komika-axis-current-word", alignmentModel: ENGLISH_ALIGNMENT_MODEL } : { captionTiming: "disabled" }),
             ...(exportAudioStems ? {
@@ -833,7 +866,7 @@ export async function POST(
             ...(composeWarnings.length > 0 ? { warnings: composeWarnings } : {}),
           }),
           "utf8"
-        ).catch(() => {});
+        ).catch((error) => { if (tidewePacing) throw error; });
         // 封面缩略图：抽首帧存成片旁（本地抽取永不过期），作品流/项目卡靠它凭画面找片；失败不阻断
         const thumbnailPath = await extractFirstFrame(outputPath);
         // 完成：更新合成记录与项目状态

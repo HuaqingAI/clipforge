@@ -172,6 +172,48 @@ const postNarrationPlan = {
 } as const;
 
 describe("TIDEWE native on-camera speech composition", () => {
+  function pacedProject() {
+    nativeProject();
+    const updated = db.update(schema.scripts).set({ copyDocument: { ...copyDocument, pacingVersion: "tidewe-195-v1" } }).returning().get()!;
+    db.update(schema.assets).set(assetScopeForShot(updated, updated.shots![0])).run();
+    // The report must probe a real output, not infer duration from the requested timeline.
+    state.render.mockResolvedValue(join(directory, "uploads", "tidewe-project", "ambient.mp4"));
+  }
+
+  it.each([false, true])("edits only a versioned copy after full-source alignment and reports probed density (captions %s)", async subtitles => {
+    pacedProject();
+    const shifted = alignedWords(text).map(word => ({ ...word, startSec: word.startSec + 1, endSec: word.endSec + 1 }));
+    state.align.mockResolvedValue({ jobs: [{ id: "1", durationSec: 5, words: shifted }] });
+    const response = await request({ subtitles, transitionOverrides: [{ shotId: 1, transition: "ffmpeg_fade" }] });
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("done");
+    expect(state.align).toHaveBeenCalledOnce();
+    expect(state.align.mock.calls[0][0][0].maxDurationSec).toBe(5);
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips[0].nativeSpeechEdit).toBeDefined();
+    expect(config.clips[0].preserveNativeSpeech).toBeUndefined();
+    expect(config.clips[0].transition).toBe("direct_concat");
+    expect(config.clips[0].duration).toBeLessThan(5);
+    const timeline = JSON.parse(await readFile(`${row.outputPath}.timeline.json`, "utf8"));
+    expect(timeline.captionTiming).toBe(subtitles ? "audio-aligned" : "disabled");
+    if (subtitles) {
+      const events = karaokeEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
+      const edit = config.clips[0].nativeSpeechEdit!;
+      events.forEach((event, index) => expect(assSeconds(event.start)).toBeCloseTo((shifted[index].startSec - edit.startSec) / edit.speed, 2));
+    }
+    expect(timeline.pacing).toMatchObject({ version: "tidewe-195-v1", actualDurationSec: 5,
+      averageWpm: englishWordCount(text) * 12, contentVerification: "not_performed" });
+    expect(timeline.audioTracks[0].clips[0].sourceEdit).toEqual(config.clips[0].nativeSpeechEdit);
+  });
+
+  it("does not render a versioned native source when alignment fails or has missing words", async () => {
+    pacedProject();
+    state.align.mockResolvedValue({ jobs: [{ id: "1", durationSec: 5, words: [] }] });
+    const response = await request({ subtitles: false });
+    expect((await completed((await response.json()).compositionId)).status).toBe("failed");
+    expect(state.render).not.toHaveBeenCalled();
+  });
+
   it.each([{}, { captionPreset: "karaoke" }, { captionPreset: "standard", subtitlePosition: "top" }, { karaoke: true }])("adds audio-aligned English word highlights while preserving the full native recording: %j", async options => {
     nativeProject({ duration: 2 });
     const response = await request(options);
