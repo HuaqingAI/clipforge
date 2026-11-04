@@ -4,7 +4,6 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { buildClipAudioFilters, type ClipInput } from "@/lib/video-composer/composer";
-import { roomToneSource } from "@/lib/video-composer/voice-ground";
 
 const execFileAsync = promisify(execFile);
 const FADE_DURATION = 0.5;
@@ -26,7 +25,6 @@ export interface RenderAudioStemsInput {
   bgmVolume?: number;
   totalDuration: number;
   outputDir: string;
-  voiceGround?: boolean;
 }
 
 export interface RenderAudioStemsResult {
@@ -61,7 +59,6 @@ function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): strin
       outputLabel: `v${index}`,
       ttsInput,
       nativeInput,
-      voiceGround: input.voiceGround === true && hasTtsTrack,
       preserveNativeSpeech: clip.preserveNativeSpeech,
     }));
   });
@@ -75,11 +72,6 @@ function buildVoiceArgs(input: RenderAudioStemsInput, outputPath: string): strin
       filters.push(`[${current}][v${i}]concat=n=2:v=0:a=1[${next}]`);
     }
     current = next;
-  }
-  if (input.voiceGround === true) {
-    filters.push(`${roomToneSource(hasTtsTrack ? undefined : 0.004)}[roomtone]`);
-    filters.push(`[${current}][roomtone]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[voice_grounded]`);
-    current = "voice_grounded";
   }
   args.push("-filter_complex", filters.join(";"), "-map", `[${current}]`, "-t", input.totalDuration.toFixed(3), "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2", outputPath);
   return args;

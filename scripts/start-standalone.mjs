@@ -46,6 +46,8 @@ try {
     // server.js changes cwd to standalone: keep existing web data and migrations at the project root.
     process.env.APP_DATA_DIR = resolve(root, process.env.APP_DATA_DIR || "data");
     process.env.APP_MIGRATIONS_DIR = resolve(root, process.env.APP_MIGRATIONS_DIR || "drizzle");
+    process.env.APP_RESOURCE_DIR = resolve(root, process.env.APP_RESOURCE_DIR || root);
+    process.env.APP_ALIGNMENT_RUNTIME_DIR = resolve(root, process.env.APP_ALIGNMENT_RUNTIME_DIR || ".clipforge/tools/english-align");
 
     // Next deliberately omits these from standalone; serve the same assets as next dev/start.
     for (const relative of [join(distDirName, "static"), "public"]) {

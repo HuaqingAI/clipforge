@@ -256,7 +256,7 @@ export async function composeKlingFilm(runId: string, hooks?: KlingFilmComposeHo
           ...(overlay && overlay.style !== "subtitle" ? { overlay: { text: overlay.text, style: overlay.style } } : {}) };
       }));
       const config: ComposeConfig = { projectId: run.projectId, clips: rendered.map((item) => item.clip),
-        output: { resolution: run.data.output.resolution, aspectRatio: run.data.output.aspectRatio, videoPreset: "medium", crf: 20, voiceGround: false },
+        output: { resolution: run.data.output.resolution, aspectRatio: run.data.output.aspectRatio, videoPreset: "medium", crf: 20 },
         ...(timeline.cues.length ? { subtitle: { texts: timeline.cues, position: "bottom" } } : {}),
         ...(timeline.overlays.length ? { overlays: timeline.overlays } : {}) };
       const audioRequired = rendered.some((item) => Boolean(item.clip.hasAudio || item.clip.audioPath));

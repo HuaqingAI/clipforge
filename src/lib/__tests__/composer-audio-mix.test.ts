@@ -8,15 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { renderAudioStems } from "@/lib/audio-stems";
 import { buildComposeInvocation, type ClipInput, type ComposeConfig } from "@/lib/video-composer/composer";
-import { VOICE_GROUND_CHAIN } from "@/lib/video-composer/voice-ground";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
 const clip: ClipInput = { type: "video", filePath: "/source.mp4", hasAudio: true, audioPath: "/tts.wav", duration: 1.4, transition: "direct_concat" };
-const config = (overrides: Partial<ClipInput> = {}, voiceGround = false): ComposeConfig => ({
+const config = (overrides: Partial<ClipInput> = {}): ComposeConfig => ({
   projectId: "audio-mix",
   clips: [{ ...clip, ...overrides }],
-  output: { resolution: "720p", aspectRatio: "16:9", voiceGround },
+  output: { resolution: "720p", aspectRatio: "16:9" },
 });
 
 afterEach(async () => {
@@ -29,11 +28,12 @@ describe("native audio with generated narration", () => {
     expect(replacement).toContain("[1:a]aresample");
     expect(replacement).not.toContain("[0:a]");
     expect(replacement).not.toContain("alimiter");
-    const mixed = buildComposeInvocation(config({ mixNativeAudio: true }, true)).filterComplex;
+    const mixed = buildComposeInvocation(config({ mixNativeAudio: true })).filterComplex;
     expect(mixed).toContain("[a0_tts][a0_native]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[a0]");
-    expect(mixed).toContain(`[1:a]aresample=44100,${VOICE_GROUND_CHAIN}`);
+    expect(mixed).toContain("[1:a]aresample=44100,apad,atrim=duration=1.4,asetpts=PTS-STARTPTS[a0_tts]");
     expect(mixed).toContain("[0:a]aresample=44100,apad,atrim=duration=1.4,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.02,afade=t=out:st=1.380:d=0.02[a0_native]");
-    expect(mixed.split(VOICE_GROUND_CHAIN)).toHaveLength(2);
+    expect(mixed).not.toContain("anoisesrc");
+    expect(mixed).not.toContain("aexciter");
   });
 
   it.each([
@@ -69,7 +69,7 @@ describe("native audio with generated narration", () => {
     }
     const mixed = await renderAudio(true);
     const replacement = await renderAudio(false);
-    const stems = await renderAudioStems({ clips: [{ ...clip, filePath: source, audioPath: tts, mixNativeAudio: true }], totalDuration: 1.4, outputDir: join(directory, "stems"), voiceGround: false });
+    const stems = await renderAudioStems({ clips: [{ ...clip, filePath: source, audioPath: tts, mixNativeAudio: true }], totalDuration: 1.4, outputDir: join(directory, "stems") });
     expect(stems.voicePath).toBeDefined();
 
     async function samples(path: string): Promise<Float32Array> {
@@ -108,7 +108,7 @@ describe("native audio with generated narration", () => {
     for (let i = 16000; i < 20800; i += 1) error += Math.abs(stemSamples[i] - nativeSamples[i] * channelGain);
     expect(error / 4800).toBeLessThan(0.002);
 
-    const nativeStems = await renderAudioStems({ clips: [{ ...clip, audioPath: undefined, filePath: source }], totalDuration: 1.4, outputDir: join(directory, "native-stem"), voiceGround: false });
+    const nativeStems = await renderAudioStems({ clips: [{ ...clip, audioPath: undefined, filePath: source }], totalDuration: 1.4, outputDir: join(directory, "native-stem") });
     expect(amplitude(await samples(nativeStems.voicePath!), 440)).toBeGreaterThan(0.6);
   }, 30_000);
 });

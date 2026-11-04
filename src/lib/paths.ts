@@ -12,6 +12,11 @@
 
 import { join } from "path";
 
+/** Read-only application resources; standalone changes cwd after the launcher starts. */
+export function getAppResourceDir(): string {
+  return process.env.APP_RESOURCE_DIR || process.cwd();
+}
+
 /** Writable data root directory (sqlite.db / uploads / output all live under here) */
 export function getDataDir(): string {
   return process.env.APP_DATA_DIR || join(process.cwd(), "data");

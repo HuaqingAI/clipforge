@@ -1,24 +1,25 @@
 import { resolveCurrentScript } from "@/lib/current-script";
 import { NextRequest, NextResponse } from "next/server";
-import { getDataDir, fileNameOf } from "@/lib/paths";
+import { getAppResourceDir, getDataDir, fileNameOf } from "@/lib/paths";
 import { ffprobeBin, ffmpegBin } from "@/lib/ffmpeg-path";
 import { join } from "path";
 import { existsSync } from "fs";
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "fs/promises";
 import { generateSpeech, estimateSpeechSeconds, type TTSConfig } from "@/lib/tts";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { shotEmotion, EMOTION_TTS } from "@/lib/emotion-acting";
 import { generateSpeechFreeDetailed, type TTSWord } from "@/lib/edge-tts";
 import { resolveRenderProfile, isRenderPreset } from "@/lib/compose-presets";
-import { isCaptionPreset, captionPresetOverrides, CAPTION_PRESETS } from "@/lib/caption-presets";
 import { getDb } from "@/lib/db";
 import { scripts as scriptsTable, assets as assetsTable, projects, compositions } from "@/lib/db/schema";
 import { filterAssetsForScript } from "@/lib/asset-context";
 import { eq } from "drizzle-orm";
-import { composeVideo, resolveChineseFontFamily, type ClipInput, type ComposeConfig } from "@/lib/video-composer/composer";
+import { composeVideo, type ClipInput, type ComposeConfig } from "@/lib/video-composer/composer";
 import { extractFirstFrame } from "@/lib/video-composer/frame-extract";
 import { buildSubtitleTimeline, padDurationsForFade, segmentBoundaries, type TimelineSegment } from "@/lib/video-composer/timeline";
-import { buildKaraokeAss } from "@/lib/video-composer/karaoke";
+import { alignEnglishAudio, ENGLISH_ALIGNMENT_MODEL } from "@/lib/english-alignment";
+import { ALIGNED_CAPTION_FONT_RELATIVE_PATH, buildAlignedCaptionsAss } from "@/lib/video-composer/aligned-captions";
 import { isAudibleFromVolumedetect } from "@/lib/video-composer/audio-probe";
 import { buildComplianceOverlays } from "@/lib/compliance-overlays";
 import { resolveBgmMix } from "@/lib/audio-mix";
@@ -45,6 +46,8 @@ type ComposeRequestBody = {
   voiceoverMode?: "auto" | "replace" | "mix";
   renderPreset?: unknown;
   captionPreset?: unknown;
+  headlineEnabled?: unknown;
+  headlineText?: unknown;
   subtitles?: unknown;
   resolution?: "720p" | "1080p" | string;
   aspectRatio?: "9:16" | "16:9" | "1:1" | string;
@@ -55,7 +58,6 @@ type ComposeRequestBody = {
   bgmPath?: string;
   bgmVolume?: number;
   bgmDuck?: boolean;
-  voiceGround?: boolean;
   karaoke?: boolean;
   productCard?: boolean;
   /** Persisted profile when an older client cannot load the project record yet. */
@@ -169,6 +171,15 @@ export async function POST(
     if (body.subtitles !== undefined && typeof body.subtitles !== "boolean") {
       return NextResponse.json({ error: "字幕开关格式无效，请选择是否使用字幕" }, { status: 400 });
     }
+    if (body.headlineEnabled !== undefined && typeof body.headlineEnabled !== "boolean") {
+      return NextResponse.json({ error: "顶部标题开关格式无效" }, { status: 400 });
+    }
+    const headlineEnabled = body.headlineEnabled === true;
+    if (headlineEnabled && (typeof body.headlineText !== "string" || !body.headlineText.trim()
+      || body.headlineText.trim().length > 120 || /[\u0000-\u001f\u007f]/.test(body.headlineText))) {
+      return NextResponse.json({ error: "请先输入或手动生成顶部标题，标题须为不超过 120 个字符的单行文字。" }, { status: 400 });
+    }
+    const captionTitle = headlineEnabled ? (body.headlineText as string).trim() : undefined;
     const requestedSubtitles = body.subtitles !== false;
     const exportAudioStems = body.exportAudioStems === true;
     const db = getDb();
@@ -385,7 +396,8 @@ export async function POST(
       return NextResponse.json({ error: "TIDEWE 英文口播不能使用此非英语音色。", code: "TIDEWE_VOICE_INVALID" }, { status: 400 });
     }
     const freeRate = typeof freeTts?.rate === "string" ? freeTts.rate : undefined;
-    const ttsDir = join(getDataDir(), "uploads", id, "tts");
+    // A concurrent render must never replace audio after it has been aligned.
+    const ttsDir = join(getDataDir(), "uploads", id, "tts", randomUUID());
     if (ttsConfig || useFreeTts) await mkdir(ttsDir, { recursive: true });
 
     /** 探测视频文件是否带「可听见」的音轨（自带语音/音效）；仅静音/空轨不算，让免费 TTS 旁白照常生效 */
@@ -494,9 +506,6 @@ export async function POST(
     // 渲染质量预设（快速/标准/高清）→ 分辨率 + 编码参数；只有「合法」预设才顶替 body.resolution，
     // 否则非法预设字符串会静默把用户显式选的 720p 顶成 1080p。
     const validPreset = isRenderPreset(body.renderPreset) ? body.renderPreset : undefined;
-    // caption style preset (standard/bold/minimal/karaoke); invalid values fall back to the default look
-    const captionPresetRaw: unknown = body.captionPreset;
-    const captionPreset = isCaptionPreset(captionPresetRaw) ? captionPresetRaw : undefined;
     const profile = resolveRenderProfile(validPreset);
     const resolution: "720p" | "1080p" = validPreset
       ? profile.resolution
@@ -648,6 +657,27 @@ export async function POST(
 
     const clips = rendered.map((r) => r.clip);
 
+    // Align the exact speech source selected above, before BGM or native/voice mixing.
+    // Old presets and clients cannot switch this path back to estimated word times.
+    if (subtitles) {
+      const requests = rendered.flatMap((item) => {
+        const text = stripPauseMarks(item.shot.voiceover ?? "").trim();
+        if (!text) return [];
+        const sourcePath = item.clip.audioPath || (item.clip.hasAudio && item.clip.type === "video" ? item.clip.filePath : undefined);
+        if (!sourcePath) throw new Error(`镜头 ${item.shot.shotId} 没有可对齐的口播音轨，请启用配音、使用带口播的视频或关闭字幕。`);
+        return [{ id: String(item.shot.shotId), text, sourcePath, maxDurationSec: item.clip.duration }];
+      });
+      if (requests.length) {
+        const aligned = await alignEnglishAudio(requests, {
+          workDir: join(getDataDir(), "output", id, `alignment_${comp.id}`),
+        });
+        for (const item of rendered) {
+          const job = aligned.jobs.find(job => job.id === String(item.shot.shotId));
+          if (job) item.words = job.words;
+        }
+      }
+    }
+
     // Subtitle + overlay timeline (pure functions in timeline.ts): accumulates the rendered
     // segments' effective durations in lockstep with the composer's xfade timeline; caption
     // cards follow the actual speech window (not the padded tail) and cards spilling across
@@ -670,9 +700,10 @@ export async function POST(
         };
       })
     );
-    const subtitleTexts = timeline.cues;
-    const karaokeLines = timeline.karaokeLines;
-    const overlays: { text: string; style: "title" | "highlight" | "price" | "badge"; startTime: number; endTime: number }[] = [...timeline.overlays];
+    // Top titles are explicit user input. Composition never calls a text model
+    // or revives a saved script overlay when the title switch is disabled.
+    const overlays: { text: string; style: "title" | "highlight" | "price" | "badge"; startTime: number; endTime: number }[] =
+      timeline.overlays.filter(overlay => overlay.style !== "title");
 
     // 可选叠加：片头角标（默认关）+ 片尾购买 CTA，按 body 开关
     overlays.push(
@@ -697,28 +728,41 @@ export async function POST(
       output: {
         ...outputCfg,
         ...(bgmLocal && { bgmPath: bgmLocal, bgmVolume: bgmMix.volume, bgmDuck: bgmMix.duck }),
-        // Grounding is opt-in. TIDEWE source-only recordings retain their original
-        // sound; a generated voice is required before applying this option there.
-        voiceGround: body.voiceGround === true && (!tidewe || clips.some((clip) => Boolean(clip.audioPath))),
       },
-      subtitle:
-        subtitles && subtitleTexts.length > 0
-          ? { texts: subtitleTexts, position: "bottom", ...captionPresetOverrides(captionPreset) }
-          : undefined,
       overlays: overlays.length > 0 ? overlays : undefined,
     };
 
-    // karaoke per-character subtitles (opt-in via the karaoke flag or captionPreset=karaoke):
-    // whole-sentence ASS \k burn-in via libass, replacing the rapid short caption cards.
-    // Native recordings without word timestamps use text-weighted estimates; no ASR is needed.
-    const wantKaraoke = subtitles && (body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true));
-    if (wantKaraoke && karaokeLines.length > 0) {
-      const ass = buildKaraokeAss(karaokeLines, { fontName: resolveChineseFontFamily() });
+    // Use source-relative acoustic timings plus the same fade offsets as FFmpeg.
+    // Do not truncate an outgoing phrase at the next clip's silent opening.
+    if ((subtitles && rendered.some(item => item.shot.voiceover?.trim())) || captionTitle) {
+      const starts = [0, ...segmentBoundaries(clips)];
+      const lines = subtitles ? rendered.flatMap((item, index) => {
+        const text = stripPauseMarks(item.shot.voiceover ?? "").trim();
+        if (!text) return [];
+        if (!item.words?.length) throw new Error(`镜头 ${item.shot.shotId} 缺少真实词时间戳，未生成估算字幕。`);
+        return [{ text, startTime: starts[index], endTime: starts[index] + item.duration,
+          words: item.words.map(word => ({ ...word, startSec: word.startSec + starts[index], endSec: word.endSec + starts[index] })) }];
+      }) : [];
+      const dimensions = outputCfg.aspectRatio === "9:16"
+        ? (resolution === "720p" ? [720, 1280] : [1080, 1920])
+        : outputCfg.aspectRatio === "16:9"
+          ? (resolution === "720p" ? [1280, 720] : [1920, 1080])
+          : (resolution === "720p" ? [720, 720] : [1080, 1080]);
+      const fontFile = join(getAppResourceDir(), ALIGNED_CAPTION_FONT_RELATIVE_PATH);
+      if (!existsSync(fontFile)) throw new Error("Komika Axis 字体资源缺失，请恢复项目文件后重试。");
+      for (let index = 1; index < lines.length; index++) {
+        if (lines[index].words[0].startSec < lines[index - 1].words.at(-1)!.startSec) {
+          throw new Error("渐变过渡导致相邻镜头同时说话，无法依次显示逐词字幕。请将该处改为直接拼接后重试。");
+        }
+      }
+      const ass = buildAlignedCaptionsAss(lines, {
+        playResX: dimensions[0], playResY: dimensions[1], title: captionTitle, totalDurationSec: timeline.total,
+      });
       const assDir = join(getDataDir(), "output", id);
       await mkdir(assDir, { recursive: true });
       const assPath = join(assDir, `karaoke_${comp.id}.ass`);
       await writeFile(assPath, ass, "utf8");
-      config.subtitle = { texts: [], karaokeAssPath: assPath };
+      config.subtitle = { texts: [], karaokeAssPath: assPath, fontFile };
     }
 
     // 商品卡贴片（opt-in）：用商品图首图 + 商品名做左下角挂车卡
@@ -748,7 +792,6 @@ export async function POST(
               clips,
               bgmPath: bgmLocal,
               bgmVolume: bgmMix.volume,
-              voiceGround: config.output.voiceGround,
               totalDuration: timeline.total,
               outputDir: join(getDataDir(), "output", id, stemDirName),
             });
@@ -778,7 +821,8 @@ export async function POST(
             boundaries,
             total: timeline.total,
             audioTracks,
-            ...(tideweNative ? { speechMode: "on_camera", captionTiming: "segment-estimate" } : {}),
+            ...(tideweNative ? { speechMode: "on_camera" } : {}),
+            ...(subtitles ? { captionTiming: "audio-aligned", captionStyle: "komika-axis-current-word", alignmentModel: ENGLISH_ALIGNMENT_MODEL } : { captionTiming: "disabled" }),
             ...(exportAudioStems ? {
               audioStems: {
                 voiceUrl: renderedStems.voicePath ? `/api/output/${id}/${stemDirName}/voice.wav` : null,

@@ -48,6 +48,9 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "/**": Array.from(excludedDirectories, (directory) => `./${directory}/**`),
   },
+  outputFileTracingIncludes: {
+    "/api/project/*/compose": ["./scripts/alignment/*.py", "./scripts/alignment/runtime-spec.json", "./public/fonts/komika-axis/**/*"],
+  },
 };
 
 export default nextConfig;

@@ -10,7 +10,6 @@ import { safeEncodeParams } from "@/lib/compose-presets";
 import { createLimiter, type Limiter } from "@/lib/concurrency";
 import { buildAigcMetadataArgs, buildAigcMetadataArgv } from "@/lib/compliance-metadata";
 import { CAPTION_SAFE_BOTTOM_RATIO, CAPTION_SAFE_BOTTOM_RATIO_NOCARD } from "./safe-zone";
-import { VOICE_GROUND_CHAIN, roomToneSource } from "./voice-ground";
 
 /**
  * Detect an available Chinese font file path.
@@ -337,13 +336,6 @@ export interface ComposeConfig {
     videoPreset?: string;
     /** x264 -crf quality (default 18); clamped to a valid range */
     crf?: number;
-    /**
-     * Voice grounding (off by default; pass true to enable):
-     * de-broadcast chain on TTS narration + a room-tone bed under the whole timeline, so the
-     * voice-over sits in a real room instead of a digital vacuum. Native model audio
-     * (Seedance 2.x speaks with its own room tone) is never touched.
-     */
-    voiceGround?: boolean;
   };
   subtitle?: {
     texts: { text: string; startTime: number; endTime: number }[];
@@ -463,15 +455,13 @@ export function buildClipAudioFilters(input: {
   outputLabel: string;
   ttsInput?: string;
   nativeInput?: string;
-  voiceGround: boolean;
   preserveNativeSpeech?: boolean;
 }): string[] {
-  const { duration, outputLabel, ttsInput, nativeInput, voiceGround, preserveNativeSpeech } = input;
+  const { duration, outputLabel, ttsInput, nativeInput, preserveNativeSpeech } = input;
   const filters: string[] = [];
   if (ttsInput !== undefined) {
     const label = nativeInput !== undefined ? `${outputLabel}_tts` : outputLabel;
-    const ground = voiceGround ? `${VOICE_GROUND_CHAIN},` : "";
-    filters.push(`[${ttsInput}:a]aresample=44100,${ground}apad,atrim=duration=${duration},asetpts=PTS-STARTPTS[${label}]`);
+    filters.push(`[${ttsInput}:a]aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS[${label}]`);
   }
   if (nativeInput !== undefined) {
     const label = ttsInput !== undefined ? `${outputLabel}_native` : outputLabel;
@@ -571,11 +561,6 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
 
   // Audio defaults to TTS > native > silence; explicitly requested native/TTS mixes use both.
   const audioParts: string[] = [];
-  // Voice grounding is opt-in. Native model audio never passes through the TTS chain.
-  const hasTtsTrack = config.clips.some((c) => c.audioPath);
-  const voiceGround = config.output.voiceGround === true && hasTtsTrack;
-  // An explicitly enabled room-tone bed also covers native-audio timelines at a fainter level.
-  const roomTone = config.output.voiceGround === true && hasAnyAudio;
   if (hasAnyAudio) {
     config.clips.forEach((clip, i) => {
       let ttsInput: string | undefined;
@@ -586,7 +571,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
       const nativeInput = clip.hasAudio && clip.type === "video" && (!clip.audioPath || clip.mixNativeAudio)
         ? String(i)
         : undefined;
-      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, voiceGround, preserveNativeSpeech: clip.preserveNativeSpeech }));
+      audioParts.push(...buildClipAudioFilters({ duration: clip.duration, ttsInput, nativeInput, outputLabel: `a${i}`, preserveNativeSpeech: clip.preserveNativeSpeech }));
     });
   }
 
@@ -637,13 +622,6 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
       curA = next;
     }
     currentAudioStream = curA;
-    // room-tone bed under the whole timeline: inter-sentence gaps must never fall to digital
-    // zero (the loudest TTS tell). amix duration=first bounds the infinite lavfi source.
-    if (roomTone) {
-      filterParts.push(`${roomToneSource(hasTtsTrack ? undefined : 0.004)}[roomtone]`);
-      filterParts.push(`[${currentAudioStream}][roomtone]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[voice_grounded]`);
-      currentAudioStream = "voice_grounded";
-    }
   }
 
   // BGM mixing: layered on top of clip audio

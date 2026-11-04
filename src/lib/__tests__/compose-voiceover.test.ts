@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
@@ -20,7 +20,7 @@ import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { buildComposeInvocation, FADE_DURATION, type ComposeConfig } from "@/lib/video-composer/composer";
 import { createElevenLabsLocalSession } from "@/lib/elevenlabs/local-access";
 
-const state = vi.hoisted(() => ({ db: null as unknown, render: vi.fn(), freeTts: vi.fn(), paidTts: vi.fn() }));
+const state = vi.hoisted(() => ({ db: null as unknown, render: vi.fn(), freeTts: vi.fn(), paidTts: vi.fn(), align: vi.fn(), headline: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
 vi.mock("@/lib/video-composer/composer", async (original) => ({
   ...await original<typeof import("@/lib/video-composer/composer")>(), composeVideo: state.render,
@@ -30,6 +30,12 @@ vi.mock("@/lib/edge-tts", async (original) => ({
 }));
 vi.mock("@/lib/tts", async (original) => ({
   ...await original<typeof import("@/lib/tts")>(), generateSpeech: state.paidTts,
+}));
+vi.mock("@/lib/english-alignment", async original => ({
+  ...await original<typeof import("@/lib/english-alignment")>(), alignEnglishAudio: state.align,
+}));
+vi.mock("@/lib/server/compose-headline", async original => ({
+  ...await original<typeof import("@/lib/server/compose-headline")>(), generateComposeHeadline: state.headline,
 }));
 vi.mock("@/lib/video-composer/frame-extract", () => ({ extractFirstFrame: vi.fn().mockResolvedValue(undefined) }));
 import { GET, POST } from "@/app/api/project/[id]/compose/route";
@@ -87,6 +93,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.freeTts.mockResolvedValue({ audio: shortNarration, words: [] });
   state.paidTts.mockResolvedValue(shortNarration);
+  state.headline.mockResolvedValue("Keep Your Hunt Moving");
+  state.align.mockImplementation(async (jobs: Array<{ id: string; text: string; maxDurationSec: number }>) => ({
+    jobs: jobs.map(job => ({ id: job.id, durationSec: job.maxDurationSec,
+      words: job.text.trim().split(/\s+/).map((text, index) => ({ text, startSec: 0.05 + index * 0.12, endSec: 0.13 + index * 0.12, score: 0.96 })),
+    })), model: "facebook/wav2vec2-base-960h", device: "cpu", asrUsed: false,
+  }));
   state.render.mockImplementation(async (config: ComposeConfig) => {
     const output = join(directory, "output", config.projectId, "final.mp4");
     await mkdir(join(directory, "output", config.projectId), { recursive: true });
@@ -135,6 +147,14 @@ async function compose(body: Record<string, unknown> = {}, headers: Record<strin
   return { config, timeline };
 }
 
+function bodyAssEvents(ass: string) {
+  const seconds = (time: string) => time.split(":").map(Number).reduce((total, value) => total * 60 + value, 0);
+  return ass.split(/\r?\n/).filter(line => line.startsWith("Dialogue:")).map(line => {
+    const fields = line.slice("Dialogue:".length).trim().split(",");
+    return { style: fields[3], start: seconds(fields[1]), end: seconds(fields[2]) };
+  }).filter(event => event.style !== "Title");
+}
+
 describe("composition shot take selection", () => {
   it("refuses to compose historical scripts after the current selection is removed", async () => {
     setShots([{ source: "audible" }]);
@@ -157,7 +177,7 @@ describe("composition shot take selection", () => {
     const originalAssets = db.select().from(schema.assets).all();
     db.insert(schema.assets).values({ id: "alternate-take", projectId, shotId: 1, type: "ai_generated", selected: false,
       status: "done", filePath: `/api/files/${projectId}/silent.mp4` }).run();
-    const { config } = await compose({ scriptId: script.id, shotAssetSelections: [
+    const { config } = await compose({ freeTts: { enabled: true }, scriptId: script.id, shotAssetSelections: [
       { shotId: 1, assetId: "alternate-take" },
       { shotId: 2, assetId: originalAssets.find((asset) => asset.shotId === 2)!.id },
     ] });
@@ -173,7 +193,7 @@ describe("composition shot take selection", () => {
     setShots([{ source: "audible" }]);
     await writeFile(join(directory, "uploads", projectId, "product.png"), "image fixture");
     db.update(schema.projects).set({ productImages: [`/api/files/${projectId}/product.png`] }).where(eq(schema.projects.id, projectId)).run();
-    const { config } = await compose({ shotAssetSelections: [{ shotId: 1, assetId: null }] });
+    const { config } = await compose({ freeTts: { enabled: true }, shotAssetSelections: [{ shotId: 1, assetId: null }] });
     expect(config.clips).toHaveLength(1);
     expect(config.clips[0]).toMatchObject({ type: "image", filePath: join(directory, "uploads", projectId, "product.png") });
   });
@@ -251,9 +271,9 @@ describe("composition transition overrides", () => {
     expect(timeline.audioTracks[0].clips.map(({ start, end }) => ({ start, end }))).toEqual([
       { start: 0, end: baseDuration + FADE_DURATION }, { start: baseDuration, end: baseDuration * 2 },
     ]);
-    const cues = config.subtitle!.texts;
-    expect(cues.some((cue) => cue.startTime === baseDuration)).toBe(true);
-    expect(cues.filter((cue) => cue.startTime < baseDuration).every((cue) => cue.endTime <= baseDuration)).toBe(true);
+    const events = bodyAssEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
+    expect(events.some(event => event.start === baseDuration + 0.05)).toBe(true);
+    expect(events.filter(event => event.start < baseDuration).every(event => event.end <= baseDuration + 0.05)).toBe(true);
     const invocation = buildComposeInvocation(config);
     expect(invocation.filterComplex).toContain("xfade=");
     expect(invocation.filterComplex).toContain("acrossfade=");
@@ -388,12 +408,28 @@ describe("composition explicit background music", () => {
 });
 
 describe("composition subtitles", () => {
+  it("keeps each composition's narration immutable for alignment and rendering", async () => {
+    setShots([{ source: "audible" }]);
+    const options = { voiceoverMode: "replace", freeTts: { enabled: true } };
+    const first = await compose(options);
+    const firstAudio = first.config.clips[0].audioPath!;
+    state.freeTts.mockResolvedValue({ audio: longNarration, words: [] });
+    const second = await compose(options);
+    const secondAudio = second.config.clips[0].audioPath!;
+    expect(secondAudio).not.toBe(firstAudio);
+    expect(await readFile(firstAudio)).toEqual(shortNarration);
+    expect(await readFile(secondAudio)).toEqual(longNarration);
+    expect(state.align.mock.calls.map(([jobs]) => jobs[0].sourcePath)).toEqual([firstAudio, secondAudio]);
+  });
+
   it.each([undefined, true])("keeps subtitles enabled when the option is %j", async (subtitles) => {
     setShots([{ source: "audible" }]);
     const { config, timeline } = await compose(subtitles === undefined ? {} : { subtitles });
-    expect(config.subtitle?.texts).toEqual([{
-      text: baseShot.voiceover, startTime: 0, endTime: sourceSeconds,
-    }]);
+    expect(config.subtitle?.texts).toEqual([]);
+    expect(config.subtitle?.karaokeAssPath).toMatch(/\.ass$/);
+    const events = bodyAssEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
+    expect(events).toHaveLength(2);
+    expect(events[0].start).toBe(0.05);
     expect(config.clips[0]).toMatchObject({ hasAudio: true, duration: sourceSeconds });
     expect(timeline.audioTracks.map((track) => track.role)).toEqual(["native"]);
     expect(state.freeTts).not.toHaveBeenCalled();
@@ -417,24 +453,28 @@ describe("composition subtitles", () => {
     const body = { ...options, freeTts: { enabled: true }, voiceoverMode: "mix", ctaText: "Buy now", productCard: true };
     const enabled = await compose(body);
     expect(enabled.config.subtitle).toBeDefined();
-    if ("karaoke" in options || options.captionPreset === "karaoke") {
-      expect(enabled.config.subtitle?.karaokeAssPath).toMatch(/\.ass$/);
-    } else {
-      expect(enabled.config.subtitle?.texts.length).toBeGreaterThan(0);
-    }
+    expect(enabled.config.subtitle?.karaokeAssPath).toMatch(/\.ass$/);
+    expect(enabled.config.subtitle?.texts).toEqual([]);
     const assFiles = (await readdir(join(directory, "output", projectId))).filter((file) => file.endsWith(".ass")).sort();
     state.freeTts.mockClear();
+    state.align.mockClear();
     const disabled = await compose({ ...body, subtitles: false });
     expect(disabled.config.subtitle).toBeUndefined();
     expect((await readdir(join(directory, "output", projectId))).filter((file) => file.endsWith(".ass")).sort()).toEqual(assFiles);
     expect(state.freeTts).toHaveBeenCalledTimes(2);
-    expect(disabled.config.clips).toEqual(enabled.config.clips);
+    expect(state.align).not.toHaveBeenCalled();
+    const audioNames = (config: ComposeConfig) => config.clips.map(clip => ({
+      ...clip, ...(clip.audioPath && { audioPath: basename(clip.audioPath) }),
+    }));
+    expect(audioNames(disabled.config)).toEqual(audioNames(enabled.config));
     expect(disabled.config.clips[0]).toMatchObject({ hasAudio: true, mixNativeAudio: true, audioPath: expect.stringMatching(/\.mp3$/) });
     expect(disabled.config.overlays).toEqual(enabled.config.overlays);
     expect(disabled.config.overlays?.map((overlay) => overlay.text)).toEqual(["Product highlight", "Price details", "Buy now"]);
     expect(disabled.config.productCard).toEqual(enabled.config.productCard);
     expect(disabled.config.productCard?.imagePath).toBe(productPath);
-    expect(disabled.timeline).toEqual(enabled.timeline);
+    expect(disabled.timeline).toMatchObject({ captionTiming: "disabled" });
+    expect({ ...disabled.timeline, captionTiming: "audio-aligned", captionStyle: "komika-axis-current-word",
+      alignmentModel: "facebook/wav2vec2-base-960h" }).toEqual(enabled.timeline);
     expect(disabled.timeline.audioTracks.map((track) => track.role)).toEqual(["dialogue", "native"]);
     expect(buildComposeInvocation(disabled.config).filterComplex).not.toContain("subtitles=");
   });
@@ -450,6 +490,35 @@ describe("composition subtitles", () => {
     expect(state.render).not.toHaveBeenCalled();
     expect(db.select().from(schema.compositions).all()).toHaveLength(0);
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()).toEqual(projectBefore);
+  });
+});
+
+describe("explicit top titles", () => {
+  it.each([false, true])("ignores saved title overlays with the title switch=%s", async headlineEnabled => {
+    setShots([{ source: "audible" }, { source: "audible" }]);
+    const script = db.select().from(schema.scripts).get()!;
+    db.update(schema.scripts).set({ shots: script.shots!.map((shot, index) => ({ ...shot,
+      textOverlay: { text: index ? "Product details" : "Old fixed title", style: index ? "highlight" as const : "title" as const },
+    })) }).where(eq(schema.scripts.id, script.id)).run();
+    const { config } = await compose({ subtitles: false, headlineEnabled, headlineText: "User Title", voiceGround: true });
+    expect(config.overlays?.map(item => item.text)).toEqual(["Product details"]);
+    expect(config.output).not.toHaveProperty("voiceGround");
+    expect(state.headline).not.toHaveBeenCalled();
+    expect(state.align).not.toHaveBeenCalled();
+    if (headlineEnabled) {
+      const ass = await readFile(config.subtitle!.karaokeAssPath!, "utf8");
+      expect(ass).toContain("User Title");
+      expect(ass).not.toContain("Old fixed title");
+      expect(bodyAssEvents(ass)).toHaveLength(0);
+    } else expect(config.subtitle).toBeUndefined();
+  });
+
+  it("rejects a non-boolean title switch without starting work", async () => {
+    setShots([{ source: "audible" }]);
+    const response = await requestCompose({ headlineEnabled: "true", headlineText: "User Title" });
+    expect(response.status).toBe(400);
+    expect(state.render).not.toHaveBeenCalled();
+    expect(db.select().from(schema.compositions).all()).toHaveLength(0);
   });
 });
 

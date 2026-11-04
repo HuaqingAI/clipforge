@@ -11,7 +11,7 @@ import { buildComposeCommand, composeVideo, type ClipInput, type ComposeConfig }
 const clip: ClipInput = { type: "video", filePath: "/tmp/native.mp4", duration: 5, sourceDuration: 5,
   transition: "direct_concat", hasAudio: true, strictSourceDuration: true, preserveNativeSpeech: true };
 function config(clips: ClipInput[] = [clip]): ComposeConfig {
-  return { projectId: "native-speech", clips, output: { resolution: "720p", aspectRatio: "9:16", voiceGround: false } };
+  return { projectId: "native-speech", clips, output: { resolution: "720p", aspectRatio: "9:16" } };
 }
 
 describe("native speech renderer guards", () => {

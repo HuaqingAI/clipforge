@@ -19,9 +19,15 @@ import { readCompositionError } from "@/lib/composition-error";
 import { buildComposeInvocation, type ComposeConfig } from "@/lib/video-composer/composer";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 
-const state = vi.hoisted(() => ({ db: null as unknown, tts: vi.fn(), render: vi.fn() }));
+const state = vi.hoisted(() => ({ db: null as unknown, tts: vi.fn(), render: vi.fn(), align: vi.fn(), headline: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getDb: () => state.db }));
 vi.mock("@/lib/edge-tts", () => ({ generateSpeechFreeDetailed: state.tts }));
+vi.mock("@/lib/english-alignment", async original => ({
+  ...await original<typeof import("@/lib/english-alignment")>(), alignEnglishAudio: state.align,
+}));
+vi.mock("@/lib/server/compose-headline", async original => ({
+  ...await original<typeof import("@/lib/server/compose-headline")>(), generateComposeHeadline: state.headline,
+}));
 vi.mock("@/lib/video-composer/frame-extract", () => ({ extractFirstFrame: async () => undefined }));
 vi.mock("@/lib/video-composer/composer", async original => ({ ...await original<typeof import("@/lib/video-composer/composer")>(), composeVideo: state.render }));
 import { POST } from "@/app/api/project/[id]/compose/route";
@@ -62,6 +68,11 @@ beforeEach(() => {
   const script = db.insert(schema.scripts).values({ id: "tidewe-script", projectId: "tidewe-project", selected: true, styleType: "tidewe_outdoor", copyDocument, shots: [shot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).returning().get()!;
   db.insert(schema.assets).values({ id: "tidewe-video", projectId: "tidewe-project", shotId: 1, selected: true, status: "done", type: "ai_generated", filePath: "/api/files/tidewe-project/ambient.mp4", ...assetScopeForShot(script, shot) }).run();
   state.tts.mockReset().mockResolvedValue({ audio, words: [] });
+  state.headline.mockReset().mockResolvedValue("Keep Your Hunt Moving");
+  state.align.mockReset().mockImplementation(async (jobs: AlignmentJob[]) => ({
+    jobs: jobs.map(job => ({ id: job.id, durationSec: job.maxDurationSec, words: alignedWords(job.text) })),
+    model: "facebook/wav2vec2-base-960h", device: "cpu", asrUsed: false,
+  }));
   state.render.mockReset().mockResolvedValue(join(directory, "final.mp4"));
 });
 afterAll(async () => { vi.unstubAllEnvs(); sqlite.close(); await rm(directory, { recursive: true, force: true }); });
@@ -72,13 +83,26 @@ async function completed(id: string) {
   await vi.waitFor(() => expect(db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()?.status).not.toBe("composing"), { timeout: 10_000 });
   return db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()!;
 }
+type AlignmentJob = { id: string; text: string; sourcePath: string; maxDurationSec: number };
+function alignedWords(narration: string) {
+  const words = narration.trim().split(/\s+/);
+  return words.map((word, index) => ({ text: word,
+    startSec: 0.15 + index * 1.35 / words.length + (index >= Math.floor(words.length / 2) ? 0.14 : 0),
+    endSec: 0.15 + index * 1.35 / words.length + (index >= Math.floor(words.length / 2) ? 0.14 : 0) + 0.65 / words.length,
+    score: 0.97,
+  }));
+}
 function karaokeEvents(ass: string) {
   return ass.split(/\r?\n/).filter(line => line.startsWith("Dialogue: ")).map(line => {
     const fields = line.slice("Dialogue: ".length).split(",");
     const body = fields.slice(9).join(",");
-    return { start: fields[1], end: fields[2], text: body.replace(/\{[^}]*\}/g, ""),
-      durations: Array.from(body.matchAll(/\\k(\d+)/g), match => Number(match[1])) };
-  });
+    return { start: fields[1], end: fields[2], style: fields[3], text: body.replace(/\{[^}]*\}/g, ""),
+      highlightedWord: body.match(/\\1c&H0DF9FA&\}([^{}]+)/i)?.[1].trim(), body };
+  }).filter(event => event.style !== "Title");
+}
+function assSeconds(value: string) {
+  const [hours, minutes, seconds] = value.split(":").map(Number);
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 describe("TIDEWE composition enforces frozen English narration", () => {
@@ -93,7 +117,11 @@ describe("TIDEWE composition enforces frozen English narration", () => {
     expect(config.clips[0].audioPath).toBeTruthy();
     expect(config.clips[0].duration).toBeGreaterThan(2);
     expect(config.clips[0].duration).toBeLessThan(5);
-    expect(config.output.voiceGround).toBe(false);
+    expect(config.output).not.toHaveProperty("voiceGround");
+    expect(state.align).toHaveBeenCalledOnce();
+    expect(state.align.mock.calls[0][0]).toEqual([{ id: expect.any(String), text,
+      sourcePath: config.clips[0].audioPath, maxDurationSec: expect.any(Number) }]);
+    expect(state.align.mock.calls[0][0][0].sourcePath).not.toBe(config.clips[0].filePath);
   });
   it("fails the specific short video instead of trimming narration or freezing a tail", async () => {
     state.tts.mockResolvedValue({ audio: longAudio, words: [] });
@@ -144,7 +172,7 @@ const postNarrationPlan = {
 } as const;
 
 describe("TIDEWE native on-camera speech composition", () => {
-  it.each([{ captionPreset: "karaoke" }, { karaoke: true }])("adds estimated English word highlights while preserving the full native recording: %j", async options => {
+  it.each([{}, { captionPreset: "karaoke" }, { captionPreset: "standard", subtitlePosition: "top" }, { karaoke: true }])("adds audio-aligned English word highlights while preserving the full native recording: %j", async options => {
     nativeProject({ duration: 2 });
     const response = await request(options);
     expect(response.status).toBe(202);
@@ -155,25 +183,33 @@ describe("TIDEWE native on-camera speech composition", () => {
     expect(config.clips[0]).toMatchObject({ hasAudio: true, strictSourceDuration: true, preserveNativeSpeech: true,
       duration: 5, sourceDuration: 5, transition: "direct_concat" });
     expect(config.clips[0].audioPath).toBeUndefined();
-    expect(config.output.voiceGround).toBe(false);
+    expect(config.output).not.toHaveProperty("voiceGround");
     expect(config.subtitle?.texts).toEqual([]);
     expect(config.subtitle?.karaokeAssPath).toBe(join(directory, "output", "tidewe-project", `karaoke_${row.id}.ass`));
-    const events = karaokeEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ start: "0:00:00.00", end: "0:00:05.00", text });
-    expect(events[0].durations).toHaveLength(text.split(/\s+/).length);
-    expect(events[0].durations.every(duration => duration > 0)).toBe(true);
-    expect(events[0].durations.reduce((sum, duration) => sum + duration, 0)).toBe(500);
+    expect(config.subtitle?.fontFile).toMatch(/KOMIKAX_\.ttf$/i);
+    const ass = await readFile(config.subtitle!.karaokeAssPath!, "utf8");
+    const events = karaokeEvents(ass);
+    expect(events).toHaveLength(text.split(/\s+/).length);
+    expect(events[0]).toMatchObject({ start: "0:00:00.15", highlightedWord: "THE" });
+    expect(events.map(event => event.highlightedWord)).toEqual(text.toUpperCase().split(/\s+/));
+    expect(ass).toContain("Komika Axis");
+    expect(ass).toContain("\\pos(540,1365)");
+    expect(ass).not.toMatch(/\\k(?:f|o)?\d/);
+    expect(state.align).toHaveBeenCalledOnce();
+    expect(state.align.mock.calls[0][0]).toEqual([{ id: expect.any(String), text,
+      sourcePath: config.clips[0].filePath, maxDurationSec: 5 }]);
+    events.forEach((event, index) => expect(Math.abs(assSeconds(event.start) - alignedWords(text)[index].startSec)).toBeLessThanOrEqual(0.00500001));
     const invocation = buildComposeInvocation(config);
     expect(invocation.filterComplex).toContain("subtitles='");
     expect(invocation.filterComplex).toContain(`karaoke_${row.id}.ass`);
     expect(invocation.filterComplex).not.toContain("drawtext=");
     const timeline = JSON.parse(await readFile(join(directory, "final.mp4.timeline.json"), "utf8"));
-    expect(timeline).toMatchObject({ speechMode: "on_camera", captionTiming: "segment-estimate", total: 5,
+    expect(timeline).toMatchObject({ speechMode: "on_camera", captionTiming: "audio-aligned", captionStyle: "komika-axis-current-word",
+      alignmentModel: "facebook/wav2vec2-base-960h", total: 5,
       audioTracks: [{ id: "A2", role: "native" }] });
   });
 
-  it("finishes estimated word highlights before the following native shot fades in", async () => {
+  it("maps real word onsets through the following native shot's fade offset", async () => {
     const nativeProfile = createTideweOutdoorProfile({ speechMode: "on_camera" });
     const split = text.indexOf("Have");
     const shots: schema.Shot[] = [
@@ -192,10 +228,13 @@ describe("TIDEWE native on-camera speech composition", () => {
     const config = state.render.mock.calls[0][0] as ComposeConfig;
     expect(config.clips.map(clip => clip.duration)).toEqual([5, 5]);
     const events = karaokeEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
-    expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ start: "0:00:00.00", end: "0:00:04.50", text: shots[0].voiceover });
-    expect(events[1]).toMatchObject({ start: "0:00:04.50", end: "0:00:09.50", text: shots[1].voiceover });
-    expect(events.map(event => event.durations.reduce((sum, duration) => sum + duration, 0))).toEqual([450, 500]);
+    expect(events).toHaveLength(text.split(/\s+/).length);
+    const splitWord = shots[0].voiceover!.split(/\s+/).length;
+    expect(events[0]).toMatchObject({ start: "0:00:00.15", highlightedWord: "THE" });
+    expect(events[splitWord]).toMatchObject({ start: "0:00:04.65", highlightedWord: "HAVE" });
+    expect(events.slice(0, splitWord).every(event => assSeconds(event.end) <= 4.65)).toBe(true);
+    expect(events.slice(splitWord).every(event => assSeconds(event.start) >= 4.65)).toBe(true);
+    expect(state.headline).not.toHaveBeenCalled();
     expect(buildComposeInvocation(config).filterComplex).toContain("xfade=");
   });
 
@@ -206,10 +245,121 @@ describe("TIDEWE native on-camera speech composition", () => {
     const row = await completed((await response.json()).compositionId);
     expect(row).toMatchObject({ status: "done", ttsEnabled: false });
     expect(state.tts).not.toHaveBeenCalled();
+    expect(state.align).not.toHaveBeenCalled();
+    expect(state.headline).not.toHaveBeenCalled();
     const config = state.render.mock.calls[0][0] as ComposeConfig;
     expect(config.subtitle).toBeUndefined();
     expect(buildComposeInvocation(config).filterComplex).not.toContain("subtitles=");
     await expect(readFile(join(directory, "output", "tidewe-project", `karaoke_${row.id}.ass`))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails alignment visibly instead of composing estimated captions", async () => {
+    nativeProject();
+    state.align.mockRejectedValue(new Error("WhisperX audio alignment unavailable"));
+    const response = await request();
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("failed");
+    expect(await readCompositionError("tidewe-project", row.id)).toContain("WhisperX audio alignment unavailable");
+    expect(state.align).toHaveBeenCalledOnce();
+    expect(state.render).not.toHaveBeenCalled();
+    await expect(readFile(join(directory, "output", "tidewe-project", `karaoke_${row.id}.ass`))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails captions for silent footage without narration instead of inventing timings", async () => {
+    nativeProject();
+    db.update(schema.assets).set({ filePath: "/api/files/tidewe-project/silent.mp4" }).run();
+    const response = await request({ ttsEnabled: false });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("failed");
+    expect(await readCompositionError("tidewe-project", row.id)).toMatch(/音轨|音频|配音|声音/);
+    expect(state.align).not.toHaveBeenCalled();
+    expect(state.tts).not.toHaveBeenCalled();
+    expect(state.render).not.toHaveBeenCalled();
+  });
+
+  it("does not estimate a word missing from the alignment output", async () => {
+    nativeProject();
+    state.align.mockImplementationOnce(async (jobs: AlignmentJob[]) => ({
+      jobs: jobs.map(job => ({ id: job.id, durationSec: job.maxDurationSec, words: alignedWords(job.text).slice(1) })),
+      model: "facebook/wav2vec2-base-960h", device: "cpu", asrUsed: false,
+    }));
+    const response = await request();
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("failed");
+    expect(state.render).not.toHaveBeenCalled();
+    expect(await readCompositionError("tidewe-project", row.id)).toBeTruthy();
+  });
+
+  it.each(["replace", "mix"] as const)("aligns the generated narration rather than original video in %s mode", async voiceoverMode => {
+    nativeProject();
+    const response = await request({ ttsEnabled: true, voiceoverMode });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("done");
+    const clip = (state.render.mock.calls[0][0] as ComposeConfig).clips[0];
+    expect(state.align).toHaveBeenCalledOnce();
+    expect(state.align.mock.calls[0][0][0].sourcePath).toBe(clip.audioPath);
+    expect(state.align.mock.calls[0][0][0].sourcePath).not.toBe(clip.filePath);
+    expect(clip.hasAudio).toBe(voiceoverMode === "mix");
+  });
+
+  it("applies only the explicitly supplied title without calling a text model", async () => {
+    nativeProject();
+    const savedTitle = "Don't Let A Creek End Your Hunt";
+    db.update(schema.scripts).set({ title: savedTitle }).run();
+    const response = await request({ headlineEnabled: true, headlineText: "  Wet Crossings  ",
+      llmConfig: { model: "ignored-model" } });
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("done");
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    const ass = await readFile(config.subtitle!.karaokeAssPath!, "utf8");
+    const titleEvents = ass.split(/\r?\n/).filter(line => line.startsWith("Dialogue:") && line.includes(",Title,"));
+    expect(titleEvents).toHaveLength(1);
+    expect(titleEvents[0]).toContain("\\pos(540,178)");
+    expect(titleEvents[0]).toContain("Wet Crossings");
+    expect(titleEvents[0]).not.toContain(savedTitle);
+    expect(state.headline).not.toHaveBeenCalled();
+    expect(config.overlays?.filter(overlay => overlay.style === "title") ?? []).toHaveLength(0);
+  });
+
+  it.each([{}, { headlineEnabled: false }, { headlineText: "Ignored saved input" }])("keeps the top title disabled by default: %j", async body => {
+    nativeProject();
+    db.update(schema.scripts).set({ title: "从浅溪走向湿林地" }).run();
+    state.headline.mockRejectedValue(new Error("Headline provider unavailable"));
+    const response = await request(body);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("done");
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    const ass = await readFile(config.subtitle!.karaokeAssPath!, "utf8");
+    expect(ass.split(/\r?\n/).filter(line => line.startsWith("Dialogue:") && line.includes(",Title,"))).toHaveLength(0);
+    expect(state.headline).not.toHaveBeenCalled();
+  });
+
+  it("renders a supplied top title with body subtitles disabled and skips audio alignment", async () => {
+    nativeProject();
+    const response = await request({ subtitles: false, headlineEnabled: true, headlineText: "Keep Moving" });
+    expect(response.status).toBe(202);
+    expect((await completed((await response.json()).compositionId)).status).toBe("done");
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    const ass = await readFile(config.subtitle!.karaokeAssPath!, "utf8");
+    const events = ass.split(/\r?\n/).filter(line => line.startsWith("Dialogue:"));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toContain(",Title,");
+    expect(events[0]).toContain("Keep Moving");
+    expect(ass).toContain("Komika Axis");
+    expect(state.align).not.toHaveBeenCalled();
+    expect(state.headline).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "", "   ", "a".repeat(121), "One\nTwo", 42])("rejects enabled invalid title text before starting composition: %j", async headlineText => {
+    const response = await request({ headlineEnabled: true, headlineText });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("顶部标题");
+    expect(db.select().from(schema.compositions).all()).toHaveLength(0);
+    expect(state.render).not.toHaveBeenCalled();
+    expect(state.headline).not.toHaveBeenCalled();
   });
 
   it.each(["silent.mp4", "muted.mp4"])("automatically narrates %s when the enable switch is omitted", async fileName => {
@@ -405,7 +555,7 @@ describe.each(["on_camera", "voiceover"] as const)("TIDEWE %s narration controls
 
   it.each(["ambient.mp4", "silent.mp4"])("honors disabled TTS with %s despite enabled provider options", async fileName => {
     db.update(schema.assets).set({ filePath: `/api/files/tidewe-project/${fileName}`, generationPlan: { ...postNarrationPlan, referenceRoles: ["keyframe"], warnings: [] } }).run();
-    const response = await request({ ttsEnabled: false, voiceoverMode: "replace", freeTts: { enabled: true, voice: "en-US-AriaNeural" },
+    const response = await request({ subtitles: false, ttsEnabled: false, voiceoverMode: "replace", freeTts: { enabled: true, voice: "en-US-AriaNeural" },
       ttsConfig: { baseUrl: "https://example.invalid", apiKey: "fixture", model: "tts-1", voice: "alloy" }, voiceGround: true });
     expect(response.status).toBe(202);
     expect(await completed((await response.json()).compositionId)).toMatchObject({ status: "done", ttsEnabled: false });
@@ -413,7 +563,7 @@ describe.each(["on_camera", "voiceover"] as const)("TIDEWE %s narration controls
     const config = state.render.mock.calls[0][0] as ComposeConfig;
     expect(config.clips[0]).toMatchObject({ hasAudio: fileName === "ambient.mp4", sourceDuration: 5, duration: 5 });
     expect(config.clips[0].audioPath).toBeUndefined();
-    expect(config.output.voiceGround).toBe(false);
+    expect(config.output).not.toHaveProperty("voiceGround");
   });
 
   it("generates the frozen English copy with the selected English voice", async () => {
@@ -424,12 +574,12 @@ describe.each(["on_camera", "voiceover"] as const)("TIDEWE %s narration controls
     expect(state.tts).toHaveBeenCalledExactlyOnceWith(text, { voice: "en-US-AriaNeural", rate: undefined });
   });
 
-  it.each([false, true])("honors voice grounding=%s when TTS is mixed with native audio", async voiceGround => {
+  it.each([false, true])("ignores removed voice grounding=%s when TTS is mixed with native audio", async voiceGround => {
     const response = await request({ ttsEnabled: true, voiceoverMode: "mix", voiceGround });
     expect(response.status).toBe(202);
     expect((await completed((await response.json()).compositionId)).status).toBe("done");
     const config = state.render.mock.calls[0][0] as ComposeConfig;
-    expect(config.output.voiceGround).toBe(voiceGround);
+    expect(config.output).not.toHaveProperty("voiceGround");
     expect(config.clips[0]).toMatchObject({ hasAudio: true, mixNativeAudio: true, duration: 5, sourceDuration: 5 });
     expect(config.clips[0].audioPath).toBeTruthy();
     expect(config.clips[0].preserveNativeSpeech).toBeUndefined();

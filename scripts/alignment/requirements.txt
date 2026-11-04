@@ -1,0 +1,7 @@
+# Alignment-only dependencies. WhisperX is installed separately with --no-deps
+# so its ASR / diarization / CUDA stacks are never downloaded.
+numpy==2.5.4
+pandas==2.3.3
+nltk==3.10.4
+transformers==4.57.6
+safetensors==0.8.0

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "english-alignment-v1",
+  "runtimeRelativePath": ".clipforge/tools/english-align",
+  "model": "facebook/wav2vec2-base-960h",
+  "modelRevision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156",
+  "device": "cpu",
+  "packages": {
+    "whisperx": "3.8.6",
+    "torch": "2.8.0+cpu",
+    "torchaudio": "2.8.0+cpu",
+    "transformers": "4.57.6"
+  },
+  "modelFiles": [
+    { "name": "config.json", "size": 1596, "sha256": "d3ec255c063d9f95057b553b19c20135b259875834a4fe9deb218a6be25b4cf3" },
+    { "name": "model.safetensors", "size": 377607901, "sha256": "8aa76ab2243c81747a1f832954586bc566090c83a0ac167df6f31f0fa917d74a" },
+    { "name": "preprocessor_config.json", "size": 159, "sha256": "b225d617c025463b9e157e06afea8b90dc7078fc70b013c533328423e0486b4a" },
+    { "name": "special_tokens_map.json", "size": 85, "sha256": "bb7068de1150661a10b55f9e4b12a0e77af8bf91f5e45e1b58afaf1d0e17f675" },
+    { "name": "tokenizer_config.json", "size": 163, "sha256": "dc790594f5bc351a4311c6624f40acd95850d4aaf2a5cb3c656c9b610720b608" },
+    { "name": "vocab.json", "size": 291, "sha256": "19727f8944fe6459fc3f240ae2c198395b740f6a029bd23e06656266b83bcf64" }
+  ]
+}

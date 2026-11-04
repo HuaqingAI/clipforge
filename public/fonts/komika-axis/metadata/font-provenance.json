@@ -1,0 +1,156 @@
+{
+  "retrievedAtUTC": "2026-11-04T06:36:23.801338+00:00",
+  "distributionPage": "https://www.dafont.com/komika-axis.font",
+  "downloadURL": "https://dl.dafont.com/dl/?f=komika_axis",
+  "fontFile": "KOMIKAX_.ttf",
+  "requestedFamily": "Komika Axis",
+  "files": [
+    {
+      "name": "Komika.txt",
+      "sizeBytes": 8551,
+      "sha256": "77df4f33090807fca4e44e83525a57cc371b120ae73074a8b34f876fabe63769"
+    },
+    {
+      "name": "komika_axis.zip",
+      "sizeBytes": 27614,
+      "sha256": "6113ee217efd4f7c7b32e901ac3f60eec8c41070258d70e44efa6764e6b59b23"
+    },
+    {
+      "name": "KOMIKAX_.ttf",
+      "sizeBytes": 53996,
+      "sha256": "d2c790c5ce96e4453ab7ea2d17f8c71db06cec3d3ab4f7f98db02955e63ab353"
+    }
+  ],
+  "nameRecords": [
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 0,
+      "value": "© 1999-2001, WolfBainX & Apostrophic Labs. All rights reserved. Visit www.apsotrophiclab.com or email info@apostrophiclab.com for more info."
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 1,
+      "value": "Komika Axis"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 2,
+      "value": "Regular"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 3,
+      "value": "Komika Axis: 2001"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 4,
+      "value": "Komika Axis"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 5,
+      "value": "2.0"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 6,
+      "value": "KomikaAxis"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 9,
+      "value": "WolfBainX & Apostrophe"
+    },
+    {
+      "platform": 1,
+      "encoding": 0,
+      "language": 0,
+      "name_id": 11,
+      "value": "www.@apostrophiclab.com"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 0,
+      "value": "© 1999-2001, WolfBainX & Apostrophic Labs. All rights reserved. Visit www.apsotrophiclab.com or email info@apostrophiclab.com for more info."
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 1,
+      "value": "Komika Axis"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 2,
+      "value": "Regular"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 3,
+      "value": "Komika Axis: 2001"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 4,
+      "value": "Komika Axis"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 5,
+      "value": "2.0"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 6,
+      "value": "KomikaAxis"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 9,
+      "value": "WolfBainX & Apostrophe"
+    },
+    {
+      "platform": 3,
+      "encoding": 1,
+      "language": 1033,
+      "name_id": 11,
+      "value": "www.@apostrophiclab.com"
+    }
+  ],
+  "licenseFile": "Komika.txt",
+  "installScope": "No global installation; fontsdir only",
+  "licenseSummary": "Archive includes Komika.txt, describing the family as freeware; permits use in good health and asks users who profit from commercial projects to donate a small fraction to a favorite charity. No separate formal license file supplied in this distribution.",
+  "licenseRelevantExcerpt": "I hope you use them in good health. Please let me know at apostrophe@apostrophiclab.com if, where and how you use them. If you do use them in commercial projects in which you make some profit, please take the time to give a small fraction of that to your favourite charity."
+}
