@@ -397,7 +397,7 @@ export interface ClipInput {
   sourceDuration?: number;
   /** Controlled narration paths must not hide a short source behind a frozen last frame. */
   strictSourceDuration?: boolean;
-  /** Keep recorded speech and visible lips at their original speed and complete length. */
+  /** Keep recorded speech and lips at source speed and length; explicit transitions may overlap them. */
   preserveNativeSpeech?: boolean;
 }
 
@@ -514,9 +514,8 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
   config.clips.forEach((clip, i) => {
     if (clip.preserveNativeSpeech && (clip.type !== "video" || !clip.hasAudio || clip.audioPath || clip.mixNativeAudio
       || !Number.isFinite(clip.sourceDuration) || (clip.sourceDuration ?? 0) <= 0
-      || Math.abs(clip.duration - (clip.sourceDuration ?? 0)) > 0.01 || clip.transition === "ffmpeg_fade"
-      || config.clips[i + 1]?.transition === "ffmpeg_fade")) {
-      throw new Error(`片段 ${i + 1} 的原生口播必须保留完整视频、原声音轨与原始速度，不能重配音、裁短或交叉淡化。`);
+      || Math.abs(clip.duration - (clip.sourceDuration ?? 0)) > 0.01)) {
+      throw new Error(`片段 ${i + 1} 的原生口播必须保留完整视频、原声音轨与原始速度，不能重配音或改变片段时长。`);
     }
     if (clip.type === "video" && clip.strictSourceDuration && (!Number.isFinite(clip.sourceDuration)
       || (clip.sourceDuration ?? 0) <= 0 || clip.duration > (clip.sourceDuration ?? 0) + 0.01)) {

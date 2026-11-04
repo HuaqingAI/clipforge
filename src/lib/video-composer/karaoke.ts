@@ -226,7 +226,7 @@ export function buildKaraokeAss(lines: KaraokeLine[], opts: KaraokeStyleOpts = {
     "ScriptType: v4.00+",
     `PlayResX: ${o.playResX}`,
     `PlayResY: ${o.playResY}`,
-    "WrapStyle: 2",
+    "WrapStyle: 0",
     "ScaledBorderAndShadow: yes",
     "",
     "[V4+ Styles]",
@@ -249,7 +249,9 @@ export function buildKaraokeAss(lines: KaraokeLine[], opts: KaraokeStyleOpts = {
       // Real word timestamps first (exact speech rhythm); fall back to the proportional estimate
       // spread over the SPEECH window only — never the padded display window, whose tail silence
       // used to make the highlight crawl on after the voice had finished.
-      const speechDur = Math.max(0.2, (l.speechEndTime ?? l.endTime) - l.startTime);
+      // A following cross-fade can shorten the display window after speechEndTime was set.
+      // Keep estimated highlights inside that window so the last words still light up.
+      const speechDur = Math.max(0.2, Math.min(l.speechEndTime ?? l.endTime, l.endTime) - l.startTime);
       const body = buildKaraokeLineTextFromWords(l, cfg) || buildKaraokeLineText(l.text, speechDur, cfg);
       return `Dialogue: 0,${toAssTime(l.startTime)},${toAssTime(l.endTime)},K,,0,0,0,,${body}`;
     });

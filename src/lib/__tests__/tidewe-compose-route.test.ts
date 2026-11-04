@@ -16,7 +16,7 @@ import { assetScopeForShot } from "@/lib/asset-context";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { readCompositionError } from "@/lib/composition-error";
-import type { ComposeConfig } from "@/lib/video-composer/composer";
+import { buildComposeInvocation, type ComposeConfig } from "@/lib/video-composer/composer";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 
 const state = vi.hoisted(() => ({ db: null as unknown, tts: vi.fn(), render: vi.fn() }));
@@ -71,6 +71,14 @@ async function request(body: Record<string, unknown> = {}) {
 async function completed(id: string) {
   await vi.waitFor(() => expect(db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()?.status).not.toBe("composing"), { timeout: 10_000 });
   return db.select().from(schema.compositions).where(eq(schema.compositions.id, id)).get()!;
+}
+function karaokeEvents(ass: string) {
+  return ass.split(/\r?\n/).filter(line => line.startsWith("Dialogue: ")).map(line => {
+    const fields = line.slice("Dialogue: ".length).split(",");
+    const body = fields.slice(9).join(",");
+    return { start: fields[1], end: fields[2], text: body.replace(/\{[^}]*\}/g, ""),
+      durations: Array.from(body.matchAll(/\\k(\d+)/g), match => Number(match[1])) };
+  });
 }
 
 describe("TIDEWE composition enforces frozen English narration", () => {
@@ -136,9 +144,9 @@ const postNarrationPlan = {
 } as const;
 
 describe("TIDEWE native on-camera speech composition", () => {
-  it("preserves the full source recording and lips without generating a second voice", async () => {
-    nativeProject({ duration: 2, transition: "ffmpeg_fade" });
-    const response = await request({ karaoke: true, captionPreset: "karaoke" });
+  it.each([{ captionPreset: "karaoke" }, { karaoke: true }])("adds estimated English word highlights while preserving the full native recording: %j", async options => {
+    nativeProject({ duration: 2 });
+    const response = await request(options);
     expect(response.status).toBe(202);
     const row = await completed((await response.json()).compositionId);
     expect(row).toMatchObject({ status: "done", ttsEnabled: false });
@@ -148,11 +156,60 @@ describe("TIDEWE native on-camera speech composition", () => {
       duration: 5, sourceDuration: 5, transition: "direct_concat" });
     expect(config.clips[0].audioPath).toBeUndefined();
     expect(config.output.voiceGround).toBe(false);
-    expect(config.subtitle?.texts.length).toBeGreaterThan(0);
-    expect(config.subtitle?.karaokeAssPath).toBeUndefined();
+    expect(config.subtitle?.texts).toEqual([]);
+    expect(config.subtitle?.karaokeAssPath).toBe(join(directory, "output", "tidewe-project", `karaoke_${row.id}.ass`));
+    const events = karaokeEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ start: "0:00:00.00", end: "0:00:05.00", text });
+    expect(events[0].durations).toHaveLength(text.split(/\s+/).length);
+    expect(events[0].durations.every(duration => duration > 0)).toBe(true);
+    expect(events[0].durations.reduce((sum, duration) => sum + duration, 0)).toBe(500);
+    const invocation = buildComposeInvocation(config);
+    expect(invocation.filterComplex).toContain("subtitles='");
+    expect(invocation.filterComplex).toContain(`karaoke_${row.id}.ass`);
+    expect(invocation.filterComplex).not.toContain("drawtext=");
     const timeline = JSON.parse(await readFile(join(directory, "final.mp4.timeline.json"), "utf8"));
     expect(timeline).toMatchObject({ speechMode: "on_camera", captionTiming: "segment-estimate", total: 5,
       audioTracks: [{ id: "A2", role: "native" }] });
+  });
+
+  it("finishes estimated word highlights before the following native shot fades in", async () => {
+    const nativeProfile = createTideweOutdoorProfile({ speechMode: "on_camera" });
+    const split = text.indexOf("Have");
+    const shots: schema.Shot[] = [
+      { ...shot, voiceover: text.slice(0, split).trim(), tidewe: { ...shot.tidewe!, copySpan: { start: 0, end: split } } },
+      { ...shot, shotId: 2, voiceover: text.slice(split).trim(), tidewe: { ...shot.tidewe!, copySpan: { start: split, end: text.length } } },
+    ];
+    db.update(schema.projects).set({ creativeProfile: nativeProfile }).run();
+    const updated = db.update(schema.scripts).set({ shots, creativeProfileSnapshot: createCreativeProfileSnapshot(nativeProfile, 1) }).returning().get()!;
+    db.update(schema.assets).set(assetScopeForShot(updated, shots[0])).run();
+    db.insert(schema.assets).values({ id: "second-native-take", projectId: "tidewe-project", shotId: 2, selected: true,
+      status: "done", type: "ai_generated", filePath: "/api/files/tidewe-project/ambient.mp4", ...assetScopeForShot(updated, shots[1]) }).run();
+    const response = await request({ captionPreset: "karaoke", transitionOverrides: [{ shotId: 2, transition: "ffmpeg_fade" }] });
+    expect(response.status).toBe(202);
+    expect(await completed((await response.json()).compositionId)).toMatchObject({ status: "done", ttsEnabled: false });
+    expect(state.tts).not.toHaveBeenCalled();
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips.map(clip => clip.duration)).toEqual([5, 5]);
+    const events = karaokeEvents(await readFile(config.subtitle!.karaokeAssPath!, "utf8"));
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ start: "0:00:00.00", end: "0:00:04.50", text: shots[0].voiceover });
+    expect(events[1]).toMatchObject({ start: "0:00:04.50", end: "0:00:09.50", text: shots[1].voiceover });
+    expect(events.map(event => event.durations.reduce((sum, duration) => sum + duration, 0))).toEqual([450, 500]);
+    expect(buildComposeInvocation(config).filterComplex).toContain("xfade=");
+  });
+
+  it("omits karaoke captions when subtitles are disabled", async () => {
+    nativeProject();
+    const response = await request({ subtitles: false, karaoke: true, captionPreset: "karaoke" });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row).toMatchObject({ status: "done", ttsEnabled: false });
+    expect(state.tts).not.toHaveBeenCalled();
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.subtitle).toBeUndefined();
+    expect(buildComposeInvocation(config).filterComplex).not.toContain("subtitles=");
+    await expect(readFile(join(directory, "output", "tidewe-project", `karaoke_${row.id}.ass`))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each(["silent.mp4", "muted.mp4"])("automatically narrates %s when the enable switch is omitted", async fileName => {
@@ -257,6 +314,64 @@ describe("TIDEWE native on-camera speech composition", () => {
     expect(config.clips[1]).toMatchObject({ hasAudio: false, sourceDuration: 5 });
     expect(config.clips[1].audioPath).toBeTruthy();
     expect(config.clips[1].preserveNativeSpeech).toBeUndefined();
+  });
+});
+
+describe.each(["on_camera", "voiceover"] as const)("TIDEWE %s transition selections", speechMode => {
+  it.each(["auto", "replace", "mix"] as const)("honors mixed fade and direct selections with %s audio", async mode => {
+    const selectedProfile = createTideweOutdoorProfile({ speechMode });
+    const offsets = [0, text.indexOf("is only"), text.indexOf("Have"), text.length];
+    const shots: schema.Shot[] = offsets.slice(0, -1).map((start, index) => ({
+      ...shot,
+      shotId: index + 1,
+      transition: index === 2 ? "ffmpeg_fade" : "direct_concat",
+      voiceover: text.slice(start, offsets[index + 1]).trim(),
+      tidewe: { ...shot.tidewe!, copySpan: { start, end: offsets[index + 1] } },
+    }));
+    db.update(schema.projects).set({ creativeProfile: selectedProfile }).run();
+    const script = db.update(schema.scripts).set({ shots, creativeProfileSnapshot: createCreativeProfileSnapshot(selectedProfile, 1) }).returning().get()!;
+    db.delete(schema.assets).run();
+    for (const item of shots) {
+      db.insert(schema.assets).values({ id: `transition-take-${item.shotId}`, projectId: "tidewe-project", shotId: item.shotId,
+        selected: true, status: "done", type: "ai_generated", filePath: "/api/files/tidewe-project/ambient.mp4",
+        ...assetScopeForShot(script, item) }).run();
+    }
+
+    const transitions = ["direct_concat", "ffmpeg_fade", "direct_concat"] as const;
+    const response = await request({ ttsEnabled: true, voiceoverMode: mode,
+      transitionOverrides: shots.map((item, index) => ({ shotId: item.shotId, transition: transitions[index] })) });
+    expect(response.status).toBe(202);
+    const row = await completed((await response.json()).compositionId);
+    expect(row.status).toBe("done");
+    const config = state.render.mock.calls[0][0] as ComposeConfig;
+    expect(config.clips.map(item => item.transition)).toEqual(transitions);
+    for (const item of config.clips) {
+      expect(item.duration).toBeLessThanOrEqual(item.sourceDuration!);
+      expect(item.hasAudio).toBe(mode !== "replace");
+      if (mode === "auto" && speechMode === "on_camera") expect(item.preserveNativeSpeech).toBe(true);
+    }
+    if (mode === "replace") {
+      expect(config.clips[0].duration).toBeCloseTo(2.95, 2);
+      expect(config.clips[1].duration).toBeCloseTo(2.45, 2);
+    } else {
+      expect(config.clips.map(item => item.duration)).toEqual([5, 5, 5]);
+    }
+
+    // Exercise the real renderer guards, not only the mocked render entry point.
+    const invocation = buildComposeInvocation(config);
+    expect(invocation.filterComplex.match(/\bxfade=/g)).toHaveLength(1);
+    expect(invocation.filterComplex.match(/\bacrossfade=/g)).toHaveLength(1);
+    expect(invocation.filterComplex).toContain("[xfade1][v2]concat=n=2:v=1:a=0");
+    const timeline = JSON.parse(await readFile(join(directory, "final.mp4.timeline.json"), "utf8"));
+    expect(timeline.boundaries).toHaveLength(2);
+    expect(timeline.boundaries[0]).toBeCloseTo(mode === "replace" ? 2.45 : 4.5, 2);
+    expect(timeline.boundaries[1]).toBeCloseTo(mode === "replace" ? 4.9 : 9.5, 2);
+    expect(timeline.total).toBeCloseTo(mode === "replace" ? 7.35 : 14.5, 2);
+    const durationIndex = invocation.outputArgs.indexOf("-t");
+    expect(Number(invocation.outputArgs[durationIndex + 1])).toBeCloseTo(timeline.total, 3);
+    // Per-render choices must not rewrite the saved script's defaults.
+    expect(db.select().from(schema.scripts).get()!.shots?.map(item => item.transition))
+      .toEqual(["direct_concat", "direct_concat", "ffmpeg_fade"]);
   });
 });
 

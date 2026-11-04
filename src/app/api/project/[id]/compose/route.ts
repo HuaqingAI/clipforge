@@ -275,9 +275,6 @@ export async function POST(
         return transition ? { ...shot, transition } : shot;
       });
     }
-    // Native dialogue has no verified silent handles for a cross-fade. Hard cuts
-    // preserve every recorded word and keep the original lips and audio together.
-    if (tideweNative) shots = shots.map((shot) => ({ ...shot, transition: "direct_concat" }));
     // Variant-matrix voiceover overrides for hook A/B: applied in memory
     // for this render only — the stored script stays untouched, so each variant compose can
     // carry a different hook copy without mutating the project.
@@ -630,9 +627,9 @@ export async function POST(
 
     if (rendered.length === 0) throw new Error("没有可用素材");
 
-    // acrossfade for ffmpeg_fade transitions consumes the previous clip's last FADE_DURATION:
-    // pad voiced clips followed by a fade so the cross-fade only ever eats tail silence,
-    // never the last words of narration (nor lets the next voice ride over them)
+    // Add a silent tail for voiced clips followed by a fade where source footage permits.
+    // Full-length native recordings overlap at the explicitly selected transition;
+    // do not extend strict-source clips with frozen frames just to add a fade handle.
     const paddedDurations = padDurationsForFade(
       rendered.map((r) => ({
         duration: r.duration,
@@ -641,8 +638,11 @@ export async function POST(
       }))
     );
     rendered.forEach((r, i) => {
-      r.duration = paddedDurations[i];
-      r.clip.duration = paddedDurations[i];
+      const duration = r.clip.strictSourceDuration
+        ? Math.min(paddedDurations[i], r.clip.sourceDuration ?? r.duration)
+        : paddedDurations[i];
+      r.duration = duration;
+      r.clip.duration = duration;
       if (tidewe && r.clip.type === "video") assertTideweMediaDuration(r.shot.shotId, r.clip.duration, r.clip.sourceDuration ?? 0);
     });
 
@@ -709,8 +709,9 @@ export async function POST(
     };
 
     // karaoke per-character subtitles (opt-in via the karaoke flag or captionPreset=karaoke):
-    // whole-sentence ASS \k burn-in via libass, replacing the rapid short caption cards
-    const wantKaraoke = !tideweNative && subtitles && (body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true));
+    // whole-sentence ASS \k burn-in via libass, replacing the rapid short caption cards.
+    // Native recordings without word timestamps use text-weighted estimates; no ASR is needed.
+    const wantKaraoke = subtitles && (body.karaoke === true || (captionPreset && CAPTION_PRESETS[captionPreset].karaoke === true));
     if (wantKaraoke && karaokeLines.length > 0) {
       const ass = buildKaraokeAss(karaokeLines, { fontName: resolveChineseFontFamily() });
       const assDir = join(getDataDir(), "output", id);

@@ -1104,7 +1104,7 @@ export default function VideoPage() {
                       </button>
                     ))}
                   </div>
-                  <p className="text-[11px] text-muted-foreground">{t(`captionPresetDesc_${config.captionPreset}`)}</p>
+                  <p className="text-[11px] text-muted-foreground">{t(tideweNativeSpeech && config.captionPreset === "karaoke" ? "captionPresetDesc_karaoke_native" : `captionPresetDesc_${config.captionPreset}`)}</p>
                 </div>
               </CardContent>
             </Card>

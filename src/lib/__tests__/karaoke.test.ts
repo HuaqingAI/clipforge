@@ -160,6 +160,14 @@ describe("buildKaraokeLineTextFromWords（真实词时间驱动 \\k）", () => {
 });
 
 describe("buildKaraokeAss speechEndTime（估算路径只铺语音窗，不再爬过呼吸间隙）", () => {
+  it("英文估算高亮在渐变截短的展示窗内完成", () => {
+    const ass = buildKaraokeAss([{ text: "These boots keep your feet dry", startTime: 10, endTime: 14.5, speechEndTime: 15 }]);
+    const ks = [...ass.matchAll(/\\k(\d+)/g)].map((m) => Number(m[1]));
+    expect(ks).toHaveLength(6);
+    expect(ks.reduce((a, b) => a + b, 0)).toBe(450);
+    expect(ass).toContain("0:00:10.00,0:00:14.50");
+  });
+
   it("有 speechEndTime 时 \\k 总时长≈语音窗而非展示窗", async () => {
     const { buildKaraokeAss } = await import("@/lib/video-composer/karaoke");
     // 展示窗 4s，语音只有 2s
