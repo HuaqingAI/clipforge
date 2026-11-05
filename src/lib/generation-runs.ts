@@ -7,6 +7,8 @@ import { resolveCurrentScript } from "@/lib/current-script";
 import { generationRuns, generationItems } from "@/lib/generation-schema";
 import { klingProfiles } from "@/lib/kling/profile-schema";
 import { klingJobs, klingJobOutputs, type KlingJob } from "@/lib/kling/job-schema";
+import { isKlingPreparedAuthorized } from "@/lib/kling/jobs";
+import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation-secrets";
 import { captureGenerationInputs } from "@/lib/generation-inputs";
 import type { GenerationKind, GenerationPayload } from "@/lib/generation-types";
@@ -121,6 +123,7 @@ function releasableKlingJob(item: Item, tx: GenerationStore): KlingJob | null {
     payload = decryptGenerationValue<GenerationPayload>(item.payload);
     checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
   } catch { return null; }
+  if (!payload?.request || !checkpoint || typeof checkpoint !== "object") return null;
   if (payload.request.provider !== "kling-cli" || checkpoint.remoteTaskId || checkpoint.taskId || checkpoint.completedResult) return null;
   const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
   if (jobs.length !== 1) return null;
@@ -142,6 +145,7 @@ function unbindContext(item: Item, tx: GenerationStore): { checkpoint: Record<st
     checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
     payload = decryptGenerationValue<GenerationPayload>(item.payload);
   } catch { return null; }
+  if (!payload?.request || !checkpoint || typeof checkpoint !== "object") return null;
   const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
   if (!jobs.length) return checkpoint.childJobId || item.result?.childJobId ? null : { checkpoint, job: null };
   if (jobs.length !== 1 || item.kind !== "video" || payload.request.provider !== "kling-cli") return null;
@@ -174,26 +178,88 @@ function individuallyDeletable(items: Item[], tx: GenerationStore): boolean {
     : ["completed", "failed", "cancelled"].includes(item.status) && item.leaseOwner === null && item.leaseExpiresAt === null);
 }
 
-/** The child may finish saving after its parent stopped observing it. Reconcile local records only. */
+/** Observe an existing child only. Reads never authorize, submit, query, or import cloud work. */
 function reconcileKlingItems(items: Item[], tx: GenerationStore): Item[] {
   return items.map((item) => {
-    if (item.kind !== "video" || item.leaseOwner || ["completed", "cancelled"].includes(item.status)) return item;
+    if (item.kind !== "video" || !item.scriptId || item.shotId == null || item.leaseOwner || item.leaseExpiresAt !== null
+      || ["completed", "cancelled"].includes(item.status)) return item;
+    let checkpoint: Record<string, unknown>, payload: GenerationPayload;
+    try {
+      checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {};
+      payload = decryptGenerationValue<GenerationPayload>(item.payload);
+    } catch { return item; }
+    if (!payload || typeof payload !== "object" || !payload.request || typeof payload.request !== "object"
+      || !checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) return item;
+    const request = payload.request;
+    if (request.provider !== "kling-cli" || typeof request.profileId !== "string"
+      || request.projectId !== item.projectId || request.scriptId !== item.scriptId || request.shotId !== item.shotId
+      || checkpoint.blockingReleasedAt || item.stage === "released") return item;
+    const run = tx.select().from(generationRuns).where(eq(generationRuns.id, item.runId)).get();
+    const script = tx.select().from(scripts).where(eq(scripts.id, item.scriptId)).get();
+    if (!run || run.deletedAt !== null || run.projectId !== item.projectId || script?.projectId !== item.projectId) return item;
     const jobs = tx.select().from(klingJobs).where(and(eq(klingJobs.clientRequestId, item.id), eq(klingJobs.projectId, item.projectId))).all();
     if (jobs.length !== 1) return item;
     const job = jobs[0];
-    if (job.data.deletedAt || job.scriptId !== item.scriptId || job.shotId !== item.shotId || job.remoteState !== "completed") return item;
-    const outputs = tx.select().from(klingJobOutputs).where(eq(klingJobOutputs.jobId, job.id)).all().filter((output) => !output.data.deletedAt);
-    if (!outputs.length || outputs.some((output) => output.importState !== "imported" || !output.assetId || !output.data.filePath)) return item;
-    const savedAssets = tx.select().from(assets).where(inArray(assets.id, outputs.map((output) => output.assetId!))).all();
-    if (outputs.some((output) => !savedAssets.some((asset) => asset.id === output.assetId && asset.projectId === item.projectId && asset.shotId === item.shotId && asset.filePath === output.data.filePath))) return item;
-    let checkpoint: Record<string, unknown>;
-    try { checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {}; }
-    catch { return item; }
-    if (typeof checkpoint.childJobId === "string" && checkpoint.childJobId !== job.id) return item;
-    const result = { childJobId: job.id, assetIds: outputs.map((output) => output.assetId!), videoUrls: outputs.map((output) => output.data.filePath!) };
-    return tx.update(generationItems).set({ status: "completed", stage: "ready", result, error: null, errorCode: null,
-      checkpoint: encryptGenerationValue({ ...checkpoint, childJobId: job.id, completedResult: result, stage: "ready" }), updatedAt: Date.now() })
-      .where(and(eq(generationItems.id, item.id), eq(generationItems.status, item.status), eq(generationItems.updatedAt, item.updatedAt), isNull(generationItems.leaseOwner))).returning().get() ?? item;
+    const frozenKling = payload.snapshot?.kling;
+    if (job.data.deletedAt || job.data.blockingReleasedAt || job.data.filmRunId || job.leaseOwner || job.leaseExpiresAt !== null
+      || job.profileId !== request.profileId || job.scriptId !== item.scriptId || job.shotId !== item.shotId
+      || job.data.generationItemId !== item.id
+      || (checkpoint.childJobId != null && checkpoint.childJobId !== job.id)
+      || (item.result?.childJobId != null && item.result.childJobId !== job.id)
+      || (checkpoint.completedResult && typeof checkpoint.completedResult === "object"
+        && "childJobId" in checkpoint.completedResult && checkpoint.completedResult.childJobId !== job.id)
+      || (checkpoint.remoteTaskId != null && checkpoint.remoteTaskId !== job.remoteGenerationId)
+      || (checkpoint.taskId != null && checkpoint.taskId !== job.remoteGenerationId)
+      || (frozenKling && (frozenKling.profileId !== job.profileId || frozenKling.principalKey !== job.principalKey || frozenKling.region !== job.region))
+      || (job.data.generationProjectSignature && (!payload.snapshot?.project || job.data.generationProjectSignature !== projectGenerationSignature(payload.snapshot.project)))) return item;
+
+    const update = (status: string, stage: string, result: Record<string, unknown> = { ...item.result, childJobId: job.id }, error: string | null = null, errorCode: string | null = null) => {
+      // ACTIVE rows can be claimed by the worker. This durable marker forbids creating a replacement child.
+      const nextCheckpoint: Record<string, unknown> = { ...checkpoint, childJobId: job.id, klingObserveOnly: true, stage,
+        submissionState: job.submissionState, ...(job.remoteGenerationId ? { remoteTaskId: job.remoteGenerationId } : {}),
+        ...(status === "completed" ? { completedResult: result } : {}) };
+      if (status !== "completed") delete nextCheckpoint.completedResult;
+      if (item.status === status && item.stage === stage && item.error === error && item.errorCode === errorCode
+        && canonical(item.result) === canonical(result) && canonical(checkpoint) === canonical(nextCheckpoint)) return item;
+      return tx.update(generationItems).set({ status, stage, result, error, errorCode,
+        checkpoint: encryptGenerationValue(nextCheckpoint), nextRunAt: Date.now(), updatedAt: Date.now() })
+        .where(and(eq(generationItems.id, item.id), eq(generationItems.status, item.status), eq(generationItems.updatedAt, item.updatedAt),
+          isNull(generationItems.leaseOwner), isNull(generationItems.leaseExpiresAt))).returning().get() ?? item;
+    };
+    const attention = (message = job.data.error?.message ?? job.data.blockedReason ?? "原 Kling 任务需要手动确认，请在原任务中继续。", code = "GENERATION_NEEDS_ATTENTION") =>
+      update("needs_attention", "needs_attention", undefined, redactError(new Error(message), payload), code);
+
+    const allOutputs = job.remoteState === "completed" ? tx.select().from(klingJobOutputs).where(eq(klingJobOutputs.jobId, job.id)).all() : [];
+    const outputs = allOutputs.filter((output) => !output.data.deletedAt);
+    if (allOutputs.length && !outputs.length) return item;
+    // Already saved local media needs no account authorization or resumed cloud observation.
+    if (job.remoteState === "completed" && outputs.length && outputs.every((output) => output.importState === "imported")) {
+      if (outputs.some((output) => !output.assetId || !output.data.filePath)) return attention("Kling 已保存结果的素材记录不完整，请核对原任务。", "GENERATION_IMPORT_FAILED");
+      const savedAssets = tx.select().from(assets).where(inArray(assets.id, outputs.map((output) => output.assetId!))).all();
+      if (outputs.some((output) => !savedAssets.some((asset) => asset.id === output.assetId && asset.projectId === item.projectId
+        && asset.shotId === item.shotId && asset.sourceScriptId === item.scriptId && asset.provider === "kling-cli" && asset.status === "done"
+        && asset.filePath === output.data.filePath))) return attention("Kling 已保存结果的素材绑定不一致，请核对原任务。", "GENERATION_IMPORT_FAILED");
+      return update("completed", "ready", { childJobId: job.id, assetIds: outputs.map((output) => output.assetId!), videoUrls: outputs.map((output) => output.data.filePath!) });
+    }
+
+    if (job.submissionState === "submission_unknown" || job.submissionState === "not_submitted" || job.needsConfirmation || job.autoQueryPaused
+      || job.data.blockedReason || job.remoteState === "unknown") return attention();
+    if (job.submissionState === "prepared") {
+      if (job.remoteGenerationId || job.data.dispatchStartedAt || job.remoteState !== "not_started" || !isKlingPreparedAuthorized(job)) return attention();
+      return update("queued", "queued_submission");
+    }
+    if (job.submissionState === "submitting") return job.remoteGenerationId ? attention() : update("running", "submitting");
+    if (job.submissionState !== "acknowledged" || !job.remoteGenerationId) return attention();
+    if (job.remoteState === "failed") return update("failed", "failed", undefined,
+      redactError(new Error(job.data.error?.message ?? "Kling 生成失败"), payload), "GENERATION_PROVIDER_FAILED");
+    if (job.remoteState === "cancelled") return update("cancelled", "cancelled");
+    if (["pending", "processing"].includes(job.remoteState)) return update("waiting", "cloud_running");
+    if (job.remoteState !== "completed") return attention();
+
+    if (job.importState === "failed" || job.importState === "partial" || outputs.some((output) => output.importState === "failed")) {
+      return attention(job.data.error?.message ?? outputs.find((output) => output.data.error)?.data.error?.message ?? "Kling 素材保存失败，请在原任务中重试保存。", "GENERATION_IMPORT_FAILED");
+    }
+    return update("importing", "importing");
   });
 }
 
@@ -213,7 +279,7 @@ function reconciledItems(tx: GenerationStore, items: Item[]) {
 }
 
 export function getGenerationRun(id: string) {
-  // Reads can reconcile completed local child jobs. Serialize that work with
+  // Reads can reconcile existing local child jobs. Serialize that work with
   // deletion and recovery, and check the tombstone before touching any item.
   return getDb().transaction((tx) => {
     const run = liveRun(tx, id);

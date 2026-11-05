@@ -322,4 +322,50 @@ describe("generation executor recovery", () => {
     await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION" });
     expect(state.createKling).toHaveBeenCalledOnce(); expect(input.checkpoint?.childJobId).toBe("child");
   });
+
+  it.each([
+    ["prepared", "not_started", "queued_submission"],
+    ["submitting", "not_started", "submitting"],
+    ["acknowledged", "processing", "cloud_running"],
+  ])("observes a resumed %s Kling child without submitting it again", async (submissionState, remoteState, stage) => {
+    const input = item();
+    input.payload.request = { ...input.payload.request, provider: "kling-cli", profileId: "profile-A" };
+    input.checkpoint = { childJobId: "original-child", klingObserveOnly: true };
+    state.getKling.mockReturnValue({ id: "original-child", clientRequestId: input.id, profileId: "profile-A",
+      projectId: input.projectId, scriptId: input.scriptId, shotId: input.shotId, submissionState, remoteState,
+      data: { generationItemId: input.id } } as KlingJob);
+    expect(await run(input)).toMatchObject({ pending: true, stage });
+    expect(input.checkpoint).toMatchObject({ klingObserveOnly: true, childJobId: "original-child", stage });
+    expect(state.createKling).not.toHaveBeenCalled(); expect(state.retryKling).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing_binding", "missing_child", "project", "script", "shot", "profile", "request", "item", "missing_item", "remote", "task", "account", "region", "released", "deleted", "stale_result"])("never recreates or adopts a resumed child with %s", async (reason) => {
+    const input = item();
+    input.payload.request = { ...input.payload.request, provider: "kling-cli", profileId: "profile-A" };
+    input.checkpoint = { childJobId: "original-child", klingObserveOnly: true };
+    const job = { id: "original-child", clientRequestId: input.id, profileId: "profile-A", projectId: input.projectId,
+      scriptId: input.scriptId, shotId: input.shotId, submissionState: "acknowledged", remoteState: "processing",
+      remoteGenerationId: "original-remote", principalKey: "account-A", region: "global", data: { generationItemId: input.id } } as KlingJob;
+    if (reason === "missing_binding") delete input.checkpoint.childJobId;
+    if (reason === "missing_child") state.getKling.mockImplementation(() => { throw new Error("not found"); });
+    else {
+      if (reason === "project") job.projectId = "B";
+      if (reason === "stale_result") { job.projectId = "B"; input.checkpoint.completedResult = { assetIds: ["stale-asset"] }; }
+      if (reason === "script") job.scriptId = "other-script";
+      if (reason === "shot") job.shotId = 2;
+      if (reason === "profile") job.profileId = "other-profile";
+      if (reason === "request") job.clientRequestId = "other-item";
+      if (reason === "item") job.data.generationItemId = "other-item";
+      if (reason === "missing_item") delete job.data.generationItemId;
+      if (reason === "remote") input.checkpoint.remoteTaskId = "different-remote";
+      if (reason === "task") input.checkpoint.taskId = "different-remote";
+      if (reason === "account" || reason === "region") input.payload.snapshot!.kling = { profileId: "profile-A",
+        principalKey: reason === "account" ? "other-account" : "account-A", region: reason === "region" ? "other-region" : "global", model: {} as never };
+      if (reason === "released") job.data.blockingReleasedAt = Date.now();
+      if (reason === "deleted") job.data.deletedAt = Date.now();
+      state.getKling.mockReturnValue(job);
+    }
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION" });
+    expect(state.createKling).not.toHaveBeenCalled(); expect(state.retryKling).not.toHaveBeenCalled();
+  });
 });

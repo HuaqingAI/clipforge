@@ -12,6 +12,13 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 
+const generationStages: Record<string, [string, string]> = {
+  starting: ["准备生成", "Preparing"], queued_submission: ["等待提交", "Waiting to submit"],
+  waiting_for_profile: ["等待账号空闲", "Waiting for account"], submitting: ["提交平台", "Submitting"],
+  cloud_running: ["平台生成中", "Generating"], importing: ["保存素材", "Saving"],
+  recovering: ["同步原任务", "Syncing original task"], retry_wait: ["等待重试", "Waiting to retry"],
+};
+
 /** 跨项目任务状态与恢复入口。 */
 export function TaskCenter({ collapsed = false, taskFeed }: { collapsed?: boolean; taskFeed: ReturnType<typeof useTaskFeed> }) {
   const t = useT("common");
@@ -30,7 +37,9 @@ export function TaskCenter({ collapsed = false, taskFeed }: { collapsed?: boolea
           : row.generationKind === "image" ? (locale === "en" ? "Image" : "图片") : (locale === "en" ? "Shot videos" : "镜头视频");
         const state = row.status === "completed" ? (locale === "en" ? "Completed" : "已完成")
           : ["failed", "needs_attention"].includes(row.status ?? "") ? (locale === "en" ? "Needs attention" : "需要处理")
-          : row.status === "queued" ? (locale === "en" ? "Queued" : "排队中") : row.stage || (locale === "en" ? "Processing" : "处理中");
+          : row.status === "cancelled" ? (locale === "en" ? "Cancelled" : "已取消")
+          : row.status === "queued" ? (locale === "en" ? "Queued" : "排队中")
+          : generationStages[row.stage ?? ""]?.[locale === "en" ? 1 : 0] || (locale === "en" ? "Processing" : "处理中");
         return `${title} · ${row.done ?? 0}/${row.total ?? 0} · ${state}`;
       }
       case "transcript":

@@ -20,6 +20,8 @@ export interface KlingJobData {
   /** Trusted durable-worker provenance; never populated from browser JSON. */
   generationItemId?: string;
   generationProjectSignature?: string;
+  /** Issued only by the durable video-batch worker, bound to its immutable paid inputs. */
+  batchAuthorization?: { runId: string; runRequestHash: string; itemPayloadHash: string; jobPayloadHash: string; continuationEpoch?: number };
   scriptRevision: string;
   shotKey: string;
   expectedSelectedAssetId: string | null;

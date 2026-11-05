@@ -189,7 +189,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
       <DialogHeader><DialogTitle>批量转动态</DialogTitle></DialogHeader>
       <p className="text-sm text-muted-foreground">勾选要转动态的分镜，使用各自的当前关键帧生成视频。</p>
-      <p className="text-xs text-muted-foreground">确认后整批进入后台队列，可收起窗口或切换项目。平台忙时自动等待。</p>
+      <p className="text-xs text-muted-foreground">确认后，所选分镜的提示词、参考图和参数会进入后台队列依次提交，正常排队自动继续。可收起窗口或切换项目；账号、素材变化或提交结果不明时会暂停核对。</p>
       <p className="break-all text-xs text-muted-foreground">视频模型：{modelLabel}</p>
       {loading && <p role="status" className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" />正在读取当前账号可用模型…</p>}
       {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}

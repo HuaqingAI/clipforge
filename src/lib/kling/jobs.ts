@@ -1,6 +1,6 @@
 import { resolveCurrentScript } from "@/lib/current-script";
 import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
-import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync } from "node:fs";
+import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -39,6 +39,7 @@ import { generationContextItemId, generationContextSnapshot } from "@/lib/genera
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { resolveTideweVideoDirection, TideweVideoDirectionError } from "@/lib/server/tidewe-video-direction";
 import { englishWordCount, getTideweGenerationDuration, TIDEWE_PACING_VERSION } from "@/lib/tidewe/pacing";
+import { assertKlingBatchAuthorization, continueKlingBatchAuthorization, createKlingBatchAuthorization, isKlingBatchQueueError, KLING_SUBMISSION_AUTHORIZATION_MS } from "./batch-authorization";
 
 interface JobRuntime { bootId: string; busy: boolean; timer?: ReturnType<typeof setInterval>; bindingSecret: string; }
 const globalState = globalThis as unknown as { __clipforgeKlingJobs?: JobRuntime };
@@ -335,7 +336,7 @@ export async function createKlingJob(raw: unknown): Promise<KlingJob> {
     ...(generationPlan ? { generationPlan } : {}),
     ...(request.promptContext ? { promptContext: structuredClone(request.promptContext) } : {}),
     cliVersion: profile.cliVersion, adapterVersion: KLING_ADAPTER_VERSION,
-    authorizedBootId: runtime.bootId, authorizedUntil: now + 120_000, authorizationEpoch: 1, billingAcknowledgedAt: now, queryAttempts: 0,
+    authorizedBootId: runtime.bootId, authorizedUntil: now + KLING_SUBMISSION_AUTHORIZATION_MS, authorizationEpoch: 1, billingAcknowledgedAt: now, queryAttempts: 0,
   };
   const created = db.transaction((tx) => {
     const retry = tx.select().from(klingJobs).where(and(eq(klingJobs.profileId, request.profileId), eq(klingJobs.clientRequestId, request.clientRequestId))).get();
@@ -356,6 +357,9 @@ export async function createKlingJob(raw: unknown): Promise<KlingJob> {
     if (!latestScript || latestScript.id !== script.id || !latestScript.shots?.some((item) => item.shotId === request.shotId)) throw new KlingError("KLING_CONTEXT_CHANGED", "准备期间所选脚本或镜头已变化，请重新确认", 409);
     if (!latestProject) throw new KlingError("KLING_PROJECT_NOT_FOUND", "项目不存在", 404);
     assertCreativeProfileContext(latestProject, latestScript);
+    const batchAuthorization = createKlingBatchAuthorization({ id, profileId: profile.id, principalKey: profile.principalKey!, region: profile.region,
+      clientRequestId: request.clientRequestId, projectId: request.projectId, scriptId: script.id, shotId: request.shotId, data }, request, requestPayload, tx);
+    if (batchAuthorization) data.batchAuthorization = batchAuthorization;
     tx.insert(klingJobs).values({
       id, profileId: profile.id, principalKey: profile.principalKey!, region: profile.region, clientRequestId: request.clientRequestId,
       projectId: request.projectId, scriptId: script.id, shotId: request.shotId, submissionState: "prepared", data, createdAt: now, updatedAt: now,
@@ -415,6 +419,38 @@ function assertSingleShotJob(job: KlingJob): void {
   if (job.data.filmRunId) throw new KlingError("KLING_FILM_MANAGED_JOB", "Kling 一键整片功能已移除，历史整片镜头不能继续付费提交。请重新确认单镜头任务。", 409);
 }
 
+/** Status reconciliation can recognize an explicitly confirmed prepared job without mutating it. */
+export function isKlingPreparedAuthorized(job: KlingJob): boolean {
+  const prepared = job.submissionState === "prepared" && !job.needsConfirmation && !job.autoQueryPaused && !job.remoteGenerationId
+    && !job.data.deletedAt && !job.data.blockingReleasedAt && !job.data.blockedReason && !job.data.filmRunId && !job.data.dispatchStartedAt
+    && job.data.authorizedBootId === runtime.bootId && isKlingBatchQueueError(job.data.error);
+  if (!prepared) return false;
+  if (!job.data.batchAuthorization) {
+    try { assertKlingBatchAuthorization(job); return job.data.authorizedUntil > Date.now(); } catch { return false; }
+  }
+  // Parent polling can beat the independent job tick; normal expiry must not create attention.
+  try { assertBatchQueueUnchanged(job, getDb()); return true; } catch { return false; }
+}
+
+function assertBatchQueueUnchanged(job: KlingJob, tx: Pick<ReturnType<typeof getDb>, "select">): void {
+  assertKlingBatchAuthorization(job, tx);
+  assertNoUnknownSubmission(tx.select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
+  assertCurrentContext(job);
+  for (const input of job.data.inputs) if (contentHash(readFileSync(input.path)) !== input.hash) throw new KlingError("KLING_INPUT_CHANGED", "本次输入快照已变化，已阻止生成", 409);
+}
+
+/** Normal batch queueing keeps its original consent; restart or attention never grants new consent. */
+function renewExpiredBatchAuthorization(job: KlingJob, tx: Pick<ReturnType<typeof getDb>, "select" | "update">): KlingJob {
+  if (!job.data.batchAuthorization || job.data.authorizedUntil > Date.now() || job.submissionState !== "prepared"
+    || job.needsConfirmation || job.autoQueryPaused || job.remoteGenerationId || job.data.dispatchStartedAt || job.data.deletedAt
+    || job.data.blockingReleasedAt || job.data.blockedReason || job.data.filmRunId || job.data.authorizedBootId !== runtime.bootId
+    || !isKlingBatchQueueError(job.data.error)) return job;
+  assertBatchQueueUnchanged(job, tx);
+  return tx.update(klingJobs).set({ data: { ...job.data, authorizedUntil: Date.now() + KLING_SUBMISSION_AUTHORIZATION_MS },
+    revision: job.revision + 1, updatedAt: Date.now() }).where(and(eq(klingJobs.id, job.id), eq(klingJobs.revision, job.revision),
+      eq(klingJobs.submissionState, "prepared"), eq(klingJobs.needsConfirmation, false))).returning().get() ?? getKlingJob(job.id);
+}
+
 function assertCurrentContext(job: KlingJob): void {
   assertSingleShotJob(job);
   const db = getDb();
@@ -469,11 +505,13 @@ export async function dispatchKlingJob(jobId: string): Promise<void> {
     assertSingleShotJob(job);
     if (job.data.blockingReleasedAt) return;
     if (job.submissionState !== "prepared" || job.needsConfirmation) return;
-    if (job.data.authorizedBootId !== runtime.bootId || job.data.authorizedUntil <= Date.now()) {
-      patchKlingJob(jobId, { needsConfirmation: true }); return;
-    }
     const attemptStartedAt = Date.now();
     try {
+      job = getDb().transaction((tx) => renewExpiredBatchAuthorization(getKlingJob(jobId), tx), { behavior: "immediate" });
+      if (job.data.authorizedBootId !== runtime.bootId || job.data.authorizedUntil <= Date.now()) {
+        patchKlingJob(jobId, { needsConfirmation: true }); return;
+      }
+      assertKlingBatchAuthorization(job);
       // Also protect previously prepared jobs, whose stored text may predate current validation.
       assertValidKlingPrompt(job.data.prompt);
       assertNoUnknownSubmission(getDb().select().from(klingJobs).where(and(eq(klingJobs.principalKey, job.principalKey), eq(klingJobs.region, job.region))).all());
@@ -493,6 +531,10 @@ export async function dispatchKlingJob(jobId: string): Promise<void> {
           // A profile edit between the earlier preflight and this point invalidates the prepared job.
           assertCurrentContext(job);
           assertSingleShotJob(getKlingJob(jobId));
+          const current = getKlingJob(jobId);
+          if (current.revision !== job.revision) return undefined;
+          job = renewExpiredBatchAuthorization(current, tx);
+          assertKlingBatchAuthorization(job, tx);
           return tx.update(klingJobs).set({
           submissionState: "submitting", data: { ...job.data, dispatchStartedAt: Date.now() }, revision: job.revision + 1, updatedAt: Date.now(),
         }).where(and(eq(klingJobs.id, jobId), eq(klingJobs.submissionState, "prepared"), eq(klingJobs.needsConfirmation, false), eq(klingJobs.revision, job.revision),
@@ -522,7 +564,7 @@ export async function dispatchKlingJob(jobId: string): Promise<void> {
         };
         try {
           const result = await runKling(profile, job.data.args, { lease, timeoutMs: 180_000, allowFailure: true,
-            beforeSpawn: () => { assertKlingJobLease(jobId); beforeSpawnReached = true; }, onGenerationId(id) {
+            beforeSpawn: () => { assertKlingJobLease(jobId); assertKlingBatchAuthorization(getKlingJob(jobId)); beforeSpawnReached = true; }, onGenerationId(id) {
             capturedId = id; writeReceipt(job, id);
           } });
           completedResult = result;
@@ -655,14 +697,17 @@ async function continueUnderLease(jobId: string, raw: unknown): Promise<void> {
   const model = profile.catalogSnapshot.find((item) => item.selectionKey === job.data.model.selectionKey);
   if (!model || contentHash({ ...model, catalogRevision: "" }) !== contentHash({ ...job.data.model, catalogRevision: "" })) throw new KlingError("KLING_MODEL_CHANGED", "模型目录已变化，请新建并确认正确参数；原任务尚未提交", 409);
   assertCurrentContext(job);
+  assertKlingBatchAuthorization(job, getDb(), true);
   for (const input of job.data.inputs) if (contentHash(await readFile(input.path)) !== input.hash) throw new KlingError("KLING_INPUT_CHANGED", "原始输入快照已变化，不能继续提交。", 409);
   getDb().transaction((tx) => {
     assertKlingJobLease(jobId);
     const row = tx.select().from(klingJobs).where(eq(klingJobs.id, jobId)).get()!;
     assertSingleShotJob(row);
     if (row.submissionState !== "prepared" || row.data.dispatchStartedAt) throw new KlingError("KLING_ALREADY_DISPATCHED", "此任务已开始提交", 409);
+    const batchAuthorization = continueKlingBatchAuthorization(row, tx);
     tx.update(klingJobs).set({
-      needsConfirmation: false, data: { ...row.data, model, authorizedBootId: runtime.bootId, authorizedUntil: Date.now() + 120_000,
+      needsConfirmation: false, data: { ...row.data, model, authorizedBootId: runtime.bootId, authorizedUntil: Date.now() + KLING_SUBMISSION_AUTHORIZATION_MS,
+        ...(batchAuthorization ? { batchAuthorization } : {}),
         authorizationEpoch: row.data.authorizationEpoch + 1, billingAcknowledgedAt: Date.now(), error: undefined, blockedReason: undefined },
       revision: row.revision + 1, updatedAt: Date.now(),
     }).where(eq(klingJobs.id, jobId)).run();
@@ -737,7 +782,12 @@ export async function selectKlingJobOutput(jobId: string, outputId: string, body
 }
 
 async function reconcileKlingJobs(): Promise<void> {
-  for (const row of listKlingJobs()) {
+  for (let row of listKlingJobs()) {
+    try { row = getDb().transaction((tx) => renewExpiredBatchAuthorization(getKlingJob(row.id), tx), { behavior: "immediate" }); }
+    catch (error) {
+      const detail = failure(error);
+      if (row.submissionState === "prepared") patchKlingJob(row.id, { needsConfirmation: true }, { error: detail });
+    }
     if (!row.data.blockingReleasedAt && row.submissionState === "prepared" && (row.data.authorizedBootId !== runtime.bootId || row.data.authorizedUntil <= Date.now()) && !row.needsConfirmation) patchKlingJob(row.id, { needsConfirmation: true });
     if (!["submitting", "submission_unknown"].includes(row.submissionState) || row.remoteGenerationId || (row.leaseExpiresAt && row.leaseExpiresAt > Date.now())) continue;
     await withKlingJobLease(row.id, async () => { try {

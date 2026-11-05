@@ -54,7 +54,7 @@ export async function executeGenerationItem(item: GenerationExecutionItem, save:
       else assertGenerationInputs(item.payload.snapshot?.referenceInputs);
     },
     save: (value) => { save(value); checkpoint = value; } }, async () => {
-    if (checkpoint.completedResult) return record(checkpoint.completedResult);
+    if (checkpoint.completedResult && checkpoint.klingObserveOnly !== true) return record(checkpoint.completedResult);
     const request: RecordValue = { ...item.payload.request, projectId: item.projectId,
       ...(item.scriptId && { scriptId: item.scriptId }), ...(item.shotId !== null && { shotId: item.shotId }) };
     if (item.kind === "script" || item.kind === "storyboard_grid") return executeDocument(item, request, () => checkpoint);
@@ -259,8 +259,27 @@ async function executeDocument(item: GenerationExecutionItem, request: RecordVal
 
 async function executeKling(item: GenerationExecutionItem, request: RecordValue, checkpoint: () => RecordValue): Promise<RecordValue> {
   // Lookup precedes creation even when the item checkpoint never landed after child creation.
-  let job = string(checkpoint().childJobId) ? getKlingJob(String(checkpoint().childJobId)) : getDb().select().from(klingJobs).where(and(eq(klingJobs.profileId, String(request.profileId)), eq(klingJobs.clientRequestId, item.id))).get();
+  const observeOnly = checkpoint().klingObserveOnly === true;
+  const childJobId = string(checkpoint().childJobId);
+  if (observeOnly && !childJobId) throw attention("缺少原 Kling 任务绑定，已停止自动恢复，请核对原任务。");
+  let job;
+  try {
+    job = childJobId ? getKlingJob(childJobId) : getDb().select().from(klingJobs).where(and(eq(klingJobs.profileId, String(request.profileId)), eq(klingJobs.clientRequestId, item.id))).get();
+  } catch (error) {
+    if (observeOnly) throw attention("原 Kling 任务无法读取，已停止自动恢复，请核对原任务。");
+    throw error;
+  }
+  const frozenKling = item.payload.snapshot?.kling;
+  if (observeOnly && (!job || job.clientRequestId !== item.id || job.projectId !== item.projectId
+    || job.scriptId !== item.scriptId || job.shotId !== item.shotId || job.profileId !== request.profileId
+    || job.data.generationItemId !== item.id
+    || (checkpoint().remoteTaskId && checkpoint().remoteTaskId !== job.remoteGenerationId)
+    || (checkpoint().taskId && checkpoint().taskId !== job.remoteGenerationId)
+    || (frozenKling && (frozenKling.profileId !== job.profileId || frozenKling.principalKey !== job.principalKey || frozenKling.region !== job.region)))) {
+    throw attention("原 Kling 任务绑定已变化，已停止自动恢复，请核对原任务。");
+  }
   if (job?.data.deletedAt) throw attention("原 Kling 任务已删除，已阻止重新提交。");
+  if (job?.data.blockingReleasedAt) throw attention("原 Kling 任务已解除绑定，已停止自动恢复。");
   if (!job) {
     assertSourceCurrent(item);
     try {
@@ -272,13 +291,15 @@ async function executeKling(item: GenerationExecutionItem, request: RecordValue,
       throw error;
     }
   }
-  generationCheckpoint({ childJobId: job.id, stage: "cloud_running", ...(job.remoteGenerationId && { remoteTaskId: job.remoteGenerationId }) });
+  const stage = job.submissionState === "prepared" ? "queued_submission"
+    : job.submissionState === "submitting" ? "submitting" : job.remoteState === "completed" ? "importing" : "cloud_running";
+  generationCheckpoint({ childJobId: job.id, stage, ...(job.remoteGenerationId && { remoteTaskId: job.remoteGenerationId }) });
   startKlingJobRunner();
   let outputs = job.remoteState === "completed" ? getKlingOutputs(job.id).filter((output) => !output.data.deletedAt) : [];
   const alreadyImported = outputs.length > 0 && outputs.every((output) => output.importState === "imported");
-  if (!alreadyImported && (job.submissionState === "submission_unknown" || job.needsConfirmation || job.autoQueryPaused || job.submissionState === "not_submitted")) throw attention(job.data.error?.message ?? job.data.blockedReason ?? "原 Kling 任务需要手动确认，请在原任务中继续。");
+  if (!alreadyImported && (job.submissionState === "submission_unknown" || job.needsConfirmation || job.autoQueryPaused || job.data.blockedReason || job.submissionState === "not_submitted")) throw attention(job.data.error?.message ?? job.data.blockedReason ?? "原 Kling 任务需要手动确认，请在原任务中继续。");
   if (job.remoteState === "failed" || job.remoteState === "cancelled") throw new GenerationExecutionError(job.data.error?.message ?? "Kling 生成失败", "GENERATION_PROVIDER_FAILED");
-  if (job.remoteState !== "completed") return pending();
+  if (job.remoteState !== "completed") return pending(stage);
   if (outputs.some((output) => output.importState !== "imported")) {
     try { await retryKlingImport(job.id); }
     catch (error) {

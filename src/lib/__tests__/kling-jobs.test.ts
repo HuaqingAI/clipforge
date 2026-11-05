@@ -47,6 +47,13 @@ import { previewProjectVideoPrompt } from "@/lib/server/video-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { VideoPromptRequest } from "@/lib/video-prompt-request";
 import { withGenerationContext } from "@/lib/generation-context";
+import { generationItems, generationRuns } from "@/lib/generation-schema";
+import { encryptGenerationValue, decryptGenerationValue } from "@/lib/generation-secrets";
+import type { GenerationPayload } from "@/lib/generation-types";
+import { captureGenerationInputs } from "@/lib/generation-inputs";
+import { KLING_SUBMISSION_AUTHORIZATION_MS } from "@/lib/kling/batch-authorization";
+import { isKlingPreparedAuthorized } from "@/lib/kling/jobs";
+import { getGenerationRun } from "@/lib/generation-runs";
 
 const shot: Shot = { shotId: 1, type: "demo", duration: 5, description: "Product on table", camera: "static", visualSource: "ai_generate", transition: "direct_concat", voiceover: "Product demo" };
 const model: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","text_to_video","model-1"]', provider: "kling-cli", profileId: "profile-1", region: "global", tool: "text_to_video", remoteModelId: "model-1", displayName: "Model 1", catalogRevision: "catalog-1", available: true, parameters: [], inputSlots: [], capabilities: { image: false, tailFrame: false, multiImage: false, audio: false } };
@@ -91,12 +98,34 @@ async function tick() {
   try { await runKlingJobTick(); } finally { process.env.NEXT_PHASE = "phase-production-build"; }
 }
 
+async function batchJob(shotId = 1, overrides: Partial<KlingSubmitRequest> = {}): Promise<KlingJob> {
+  const now = Date.now(), itemId = `batch-item-${shotId}`, runId = "batch-run";
+  const raw = shotRequest(shotId, { ...overrides, clientRequestId: itemId, billingAcknowledgement: { policyRevision: "credits-v1", acceptedForRequestId: itemId } });
+  const payload: GenerationPayload = { request: { ...raw }, snapshot: {
+    project: getDb().select().from(projects).where(eq(projects.id, raw.projectId)).get()! as unknown as Record<string, unknown>,
+    script: getDb().select().from(scripts).where(eq(scripts.id, raw.scriptId)).get()! as unknown as Record<string, unknown>,
+    kling: { profileId: raw.profileId, principalKey: state.profile!.principalKey!, region: state.profile!.region, model: structuredClone(state.profile!.catalogSnapshot.find((model) => model.selectionKey === raw.selectionKey)!) },
+    referenceInputs: captureGenerationInputs(raw as unknown as Record<string, unknown>),
+  } };
+  payload.snapshot = JSON.parse(JSON.stringify(payload.snapshot));
+  if (!getDb().select().from(generationRuns).where(eq(generationRuns.id, runId)).get()) getDb().insert(generationRuns).values({
+    id: runId, projectId: raw.projectId, clientRequestId: runId, kind: "video_batch", requestHash: "accepted-batch", createdAt: now, updatedAt: now,
+  }).run();
+  getDb().insert(generationItems).values({ id: itemId, runId, projectId: raw.projectId, scriptId: raw.scriptId, shotId,
+    kind: "video", status: "running", payload: encryptGenerationValue(payload), leaseOwner: `${process.pid}:batch-worker`, leaseExpiresAt: now + 90_000,
+    nextRunAt: now, createdAt: now, updatedAt: now }).run();
+  const job = await withGenerationContext({ itemId, checkpoint: null, save: vi.fn(), snapshot: payload.snapshot }, () => createKlingJob(raw));
+  getDb().update(generationItems).set({ status: "waiting", leaseOwner: null, leaseExpiresAt: null,
+    checkpoint: encryptGenerationValue({ childJobId: job.id }), result: { childJobId: job.id } }).where(eq(generationItems.id, itemId)).run();
+  return job;
+}
+
 beforeAll(async () => { state.directory = await fs.mkdtemp(path.join(os.tmpdir(), "clipforge-kling-jobs-")); });
 beforeEach(() => {
   vi.stubEnv("CLIPFORGE_RUNTIME", ""); vi.stubEnv("CLIPFORGE_KLING_DISABLED", "");
   process.env.NEXT_PHASE = "phase-production-build";
   stopKlingJobRunner();
-  state.sqlite!.exec("DROP TRIGGER IF EXISTS reject_kling_insert; DROP TRIGGER IF EXISTS reject_kling_claim; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
+  state.sqlite!.exec("DROP TRIGGER IF EXISTS reject_kling_insert; DROP TRIGGER IF EXISTS reject_kling_claim; DELETE FROM generation_items; DELETE FROM generation_runs; DELETE FROM kling_job_outputs; DELETE FROM kling_jobs; DELETE FROM ai_tasks; DELETE FROM assets; DELETE FROM scripts; DELETE FROM projects; DELETE FROM kling_profiles;");
   vi.clearAllMocks();
   state.profiles = {};
   const now = Date.now();
@@ -602,7 +631,10 @@ describe("Kling durable submission and recovery", () => {
 
   it("does not claim a job whose authorization expired during identity checking", async () => {
     const job = await createKlingJob(request()); const now = Date.now(); const clock = vi.spyOn(Date, "now");
-    state.refresh.mockImplementationOnce(async () => { clock.mockReturnValue(now + 130000); return structuredClone(state.profile); });
+    state.refresh.mockImplementationOnce(async () => {
+      getDb().update(klingJobs).set({ leaseExpiresAt: now + KLING_SUBMISSION_AUTHORIZATION_MS + 240_000 }).where(eq(klingJobs.id, job.id)).run();
+      clock.mockReturnValue(now + KLING_SUBMISSION_AUTHORIZATION_MS + 1); return structuredClone(state.profile);
+    });
     try { await dispatchKlingJob(job.id); expect(state.cli).not.toHaveBeenCalled(); expect(getKlingJob(job.id).submissionState).toBe("prepared"); }
     finally { clock.mockRestore(); }
   });
@@ -1018,6 +1050,234 @@ describe("Kling output persistence and selection", () => {
     getDb().insert(scripts).values({ ...previous, id: "other-alternative", selected: true }).run();
     expect(() => selectKlingOutput(job.id, output.id, true)).toThrow(/其他脚本方案/);
     expect(getDb().select().from(assets).all()).toHaveLength(1);
+  });
+});
+
+describe("Kling batch submission authorization", () => {
+  it("gives first submission and explicit continuation a 600-second deadline", async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const job = await createKlingJob(request());
+      expect(KLING_SUBMISSION_AUTHORIZATION_MS).toBe(600_000);
+      expect(job.data.authorizedUntil).toBe(now + 600_000);
+      patchKlingJob(job.id, { needsConfirmation: true });
+      clock.mockReturnValue(now + 700_000);
+      await continueKlingJob(job.id, { explicitConfirmation: true });
+      expect(getKlingJob(job.id)).toMatchObject({ needsConfirmation: false, data: { authorizedUntil: now + 1_300_000, authorizationEpoch: 2 } });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("keeps an expired active batch queued when parent GET precedes the renewal tick", async () => {
+    const job = await batchJob(), clock = vi.spyOn(Date, "now").mockReturnValue(job.data.authorizedUntil + 1);
+    try {
+      expect(job.data.batchAuthorization).toMatchObject({ runId: "batch-run" });
+      expect(isKlingPreparedAuthorized(getKlingJob(job.id))).toBe(true);
+      expect(getGenerationRun("batch-run").items[0]).toMatchObject({ status: "queued", stage: "queued_submission", error: null });
+      expect(getKlingJob(job.id).data.authorizedUntil).toBe(job.data.authorizedUntil);
+      await tick();
+      expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", needsConfirmation: false,
+        data: { authorizedUntil: job.data.authorizedUntil + 600_001, authorizationEpoch: 1, billingAcknowledgedAt: job.data.billingAcknowledgedAt } });
+      expect(state.cli).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
+  });
+
+  it("renews a later batch shot after a slow first submission consumes the whole deadline", async () => {
+    useMultipleShots(2);
+    const first = await batchJob(1), clock = vi.spyOn(Date, "now").mockReturnValue(first.createdAt + 1);
+    try {
+      const second = await batchJob(2);
+      let calls = 0;
+      state.cli.mockImplementation(async (_profile: KlingProfile, _args: string[], options: KlingRunOptions) => {
+        const id = `accepted-${++calls}`;
+        if (calls === 1) {
+          getDb().update(klingJobs).set({ leaseExpiresAt: second.data.authorizedUntil + 240_000 }).where(eq(klingJobs.id, first.id)).run();
+          clock.mockReturnValue(second.data.authorizedUntil + 1);
+        }
+        options.onGenerationId?.(id); return cliResult(id);
+      });
+      await tick();
+      expect(state.cli).toHaveBeenCalledTimes(2);
+      expect(getKlingJob(first.id).submissionState).toBe("acknowledged");
+      expect(getKlingJob(second.id)).toMatchObject({ submissionState: "acknowledged", needsConfirmation: false, data: { authorizationEpoch: 1 } });
+      expect(getKlingJob(second.id).data.authorizedUntil).toBeGreaterThan(second.data.authorizedUntil);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("renews an eligible batch whose deadline expires inside asynchronous identity checking", async () => {
+    const job = await batchJob(), clock = vi.spyOn(Date, "now");
+    try {
+      state.refresh.mockImplementationOnce(async () => {
+        getDb().update(klingJobs).set({ leaseExpiresAt: job.data.authorizedUntil + 240_000 }).where(eq(klingJobs.id, job.id)).run();
+        clock.mockReturnValue(job.data.authorizedUntil + 1); return structuredClone(state.profile);
+      });
+      await dispatchKlingJob(job.id);
+      expect(getKlingJob(job.id).submissionState).toBe("acknowledged");
+      expect(state.cli).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each([false, true])("explicitly continues the same attention child immediately, including revision-only catalog drift=%s", async (catalogDrift) => {
+    const job = await batchJob();
+    patchKlingJob(job.id, { needsConfirmation: true });
+    getDb().update(generationItems).set({ status: "needs_attention", stage: "needs_attention", error: "Confirmation expired", errorCode: "GENERATION_NEEDS_ATTENTION" }).run();
+    if (catalogDrift) {
+      state.profile!.catalogRevision = "new-catalog-revision";
+      state.profile!.catalogSnapshot[0].catalogRevision = "new-catalog-revision";
+    }
+    await continueKlingJob(job.id, { explicitConfirmation: true });
+    expect(getDb().select().from(generationItems).get()).toMatchObject({ status: "queued", stage: "queued_submission", error: null });
+    expect(getKlingJob(job.id).data.batchAuthorization?.continuationEpoch).toBe(2);
+    // Dispatch does not depend on a status GET to repair the parent first.
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", needsConfirmation: false });
+    expect(getDb().select().from(klingJobs).all()).toHaveLength(1);
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+
+  it("recognizes a parent's late attention write after explicit confirmation without renewing other attention jobs", async () => {
+    const job = await batchJob();
+    patchKlingJob(job.id, { needsConfirmation: true });
+    getDb().update(generationItems).set({ status: "needs_attention" }).run();
+    await continueKlingJob(job.id, { explicitConfirmation: true });
+    getDb().update(generationItems).set({ status: "needs_attention", error: "stale parent observation" }).run();
+    expect(isKlingPreparedAuthorized(getKlingJob(job.id))).toBe(true);
+    expect(getGenerationRun("batch-run").items[0].status).toBe("queued");
+    await dispatchKlingJob(job.id);
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+
+  it("renews explicit consent after a stale parent attention write and another full queue deadline", async () => {
+    const job = await batchJob();
+    patchKlingJob(job.id, { needsConfirmation: true });
+    getDb().update(generationItems).set({ status: "needs_attention" }).run();
+    await continueKlingJob(job.id, { explicitConfirmation: true });
+    getDb().update(generationItems).set({ status: "needs_attention", error: "late stale observation" }).run();
+    const deadline = getKlingJob(job.id).data.authorizedUntil;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(deadline + 1);
+    try {
+      await tick();
+      expect(getKlingJob(job.id)).toMatchObject({ submissionState: "acknowledged", needsConfirmation: false, data: { authorizationEpoch: 2 } });
+      expect(state.cli).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not revive a cancelled batch through explicit continuation", async () => {
+    const job = await batchJob();
+    patchKlingJob(job.id, { needsConfirmation: true });
+    getDb().update(generationItems).set({ status: "needs_attention" }).run();
+    getDb().update(generationRuns).set({ cancelRequested: true }).run();
+    await expect(continueKlingJob(job.id, { explicitConfirmation: true })).rejects.toMatchObject({ code: "KLING_BATCH_AUTHORIZATION_INVALID" });
+    expect(getKlingJob(job.id).data.authorizationEpoch).toBe(1);
+    expect(state.cli).not.toHaveBeenCalled();
+  });
+
+  it("keeps the parent cancellation veto for legacy worker children without renewable batch consent", async () => {
+    const job = await batchJob();
+    patchKlingJob(job.id, {}, { batchAuthorization: undefined });
+    getDb().update(generationRuns).set({ cancelRequested: true }).run();
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "KLING_BATCH_AUTHORIZATION_INVALID" } } });
+  });
+
+  it("continues a legacy attention child immediately without issuing automatic batch renewal", async () => {
+    const job = await batchJob();
+    patchKlingJob(job.id, { needsConfirmation: true }, { batchAuthorization: undefined });
+    getDb().update(generationItems).set({ status: "needs_attention" }).run();
+    await continueKlingJob(job.id, { explicitConfirmation: true });
+    expect(getKlingJob(job.id).data.batchAuthorization).toBeUndefined();
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).submissionState).toBe("acknowledged");
+    expect(state.cli).toHaveBeenCalledOnce();
+  });
+
+  it.each(["single", "browser-marker"])("does not auto-renew %s requests without a worker-issued batch binding", async (kind) => {
+    const job = await createKlingJob({ ...request(), ...(kind === "browser-marker" ? { generationItemId: "batch-item-1", batchAuthorization: { runId: "batch-run" } } : {}) });
+    expect(job.data.batchAuthorization).toBeUndefined();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(job.data.authorizedUntil + 1);
+    try { await tick(); expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true }); expect(state.cli).not.toHaveBeenCalled(); }
+    finally { clock.mockRestore(); }
+  });
+
+  it.each(["cancelled", "deleted", "item-cancelled", "payload", "request-hash", "project", "script", "account", "model", "job-options"])("does not renew a batch after %s changes", async (change) => {
+    const job = await batchJob();
+    if (change === "cancelled") getDb().update(generationRuns).set({ cancelRequested: true }).run();
+    if (change === "deleted") getDb().update(generationRuns).set({ deletedAt: Date.now() }).run();
+    if (change === "item-cancelled") getDb().update(generationItems).set({ status: "cancelled" }).run();
+    if (change === "payload") {
+      const item = getDb().select().from(generationItems).get()!;
+      const payload = decryptGenerationValue<GenerationPayload>(item.payload);
+      payload.request.prompt = "Changed accepted copy";
+      getDb().update(generationItems).set({ payload: encryptGenerationValue(payload) }).run();
+    }
+    if (change === "request-hash") getDb().update(generationRuns).set({ requestHash: "changed-batch" }).run();
+    if (change === "project") getDb().update(projects).set({ topic: "new subject" }).run();
+    if (change === "script") getDb().update(scripts).set({ shots: [{ ...shot, camera: "new instruction" }] }).run();
+    if (change === "account") state.profile!.principalKey = "another-account";
+    if (change === "model") state.profile!.catalogSnapshot[0].parameters = [{ name: "duration", type: "number", required: false, default: 10 }];
+    if (change === "job-options") patchKlingJob(job.id, {}, { options: { changed: true } });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(job.data.authorizedUntil + 1);
+    try {
+      expect(isKlingPreparedAuthorized(getKlingJob(job.id))).toBe(false);
+      await tick();
+      expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { authorizedUntil: job.data.authorizedUntil } });
+      expect(state.cli).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each(["cancel-before-expiry", "cancel-during-check", "cancel-before-spawn"])("blocks batch cancellation at %s without another paid request", async (when) => {
+    const job = await batchJob();
+    const cancel = () => getDb().update(generationRuns).set({ cancelRequested: true }).run();
+    if (when === "cancel-before-expiry") cancel();
+    if (when === "cancel-during-check") state.refresh.mockImplementationOnce(async () => { cancel(); return structuredClone(state.profile); });
+    if (when === "cancel-before-spawn") state.cli.mockImplementationOnce(async (_profile: KlingProfile, _args: string[], options: KlingRunOptions) => {
+      cancel(); options.beforeSpawn?.(); throw new Error("must not submit");
+    });
+    await dispatchKlingJob(job.id);
+    expect(getKlingJob(job.id).remoteGenerationId).toBeNull();
+    if (when === "cancel-before-spawn") expect(getKlingJob(job.id).submissionState).toBe("not_submitted");
+    else expect(state.cli).not.toHaveBeenCalled();
+  });
+
+  it("blocks changed source-frame bytes even when the private input snapshot remains intact", async () => {
+    const source = path.join(state.directory, "uploads", "project-1", "batch-source.png");
+    const copy = path.join(state.directory, "frozen-batch.png");
+    await fs.mkdir(path.dirname(source), { recursive: true });
+    await fs.writeFile(source, "accepted-frame"); await fs.writeFile(copy, "accepted-frame");
+    const imageModel: KlingVideoModelDescriptor = { ...model, tool: "image_to_video", inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { ...model.capabilities, image: true } };
+    state.profile!.catalogSnapshot = [imageModel];
+    state.prepare.mockResolvedValueOnce([{ role: "image", sourceUrl: "/api/files/project-1/batch-source.png", path: copy, hash: createHash("sha256").update("accepted-frame").digest("hex"), size: 14 }]);
+    const job = await batchJob(1, { imageUrl: "/api/files/project-1/batch-source.png", mode: "image-to-video" });
+    await fs.writeFile(source, "changed-frame");
+    await dispatchKlingJob(job.id);
+    expect(state.cli).not.toHaveBeenCalled();
+    expect(getKlingJob(job.id)).toMatchObject({ submissionState: "prepared", needsConfirmation: true, data: { error: { code: "GENERATION_REFERENCE_CHANGED" } } });
+  });
+
+  it.each(["crossboot", "needs-confirmation", "paused", "released", "not_submitted", "submission_unknown", "submitting", "acknowledged", "substantive-error"])("never renews or resubmits a %s batch job", async (stateName) => {
+    const job = await batchJob();
+    if (stateName === "crossboot") patchKlingJob(job.id, {}, { authorizedBootId: "old-boot" });
+    if (stateName === "needs-confirmation") patchKlingJob(job.id, { needsConfirmation: true });
+    if (stateName === "paused") patchKlingJob(job.id, { autoQueryPaused: true });
+    if (stateName === "released") patchKlingJob(job.id, {}, { blockingReleasedAt: Date.now() });
+    if (["not_submitted", "submission_unknown", "submitting", "acknowledged"].includes(stateName)) patchKlingJob(job.id, { submissionState: stateName as KlingJob["submissionState"], nextQueryAt: null });
+    if (stateName === "substantive-error") patchKlingJob(job.id, {}, { error: { code: "KLING_CONTEXT_CHANGED", message: "Source changed", retryable: true } });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(job.data.authorizedUntil + 1);
+    try {
+      expect(isKlingPreparedAuthorized(getKlingJob(job.id))).toBe(false);
+      await tick();
+      expect(getKlingJob(job.id).data.authorizedUntil).toBe(job.data.authorizedUntil);
+      expect(state.cli).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it("never renews behind an unknown submission from the same account", async () => {
+    useMultipleShots(2);
+    const job = await batchJob(1), unknown = await createKlingJob(shotRequest(2));
+    patchKlingJob(unknown.id, { submissionState: "submission_unknown", remoteState: "unknown" });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(job.data.authorizedUntil + 1);
+    try { await tick(); expect(getKlingJob(job.id).data.authorizedUntil).toBe(job.data.authorizedUntil); expect(state.cli).not.toHaveBeenCalled(); }
+    finally { clock.mockRestore(); }
   });
 });
 

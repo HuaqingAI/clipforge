@@ -7,12 +7,13 @@ import { klingErrorMessage, klingFetch } from "@/lib/kling/client";
 import type { KlingJobView } from "@/lib/kling/job-types";
 import { klingJobBlockingReleased } from "@/lib/kling/concurrency";
 
-const SUBMISSION: Record<string, string> = { prepared: "待确认首次提交", submitting: "正在上传并提交", acknowledged: "云端已受理", not_submitted: "未提交", submission_unknown: "提交结果不明，请先核对" };
+const SUBMISSION: Record<string, string> = { prepared: "等待提交", submitting: "正在上传并提交", acknowledged: "云端已受理", not_submitted: "未提交", submission_unknown: "提交结果不明，请先核对" };
 const REMOTE: Record<string, string> = { not_started: "尚未受理", pending: "排队中", processing: "生成中", completed: "生成完成", failed: "生成失败", cancelled: "已取消", unknown: "状态待核对" };
 const IMPORT: Record<string, string> = { not_ready: "等待云端结果", pending: "等待保存", importing: "保存中", completed: "已保存到本地", partial: "部分作品未保存", failed: "本地保存失败" };
 
 export function klingJobStatus(job: KlingJobView): string {
   if (job.blockingReleasedAt) return "已解除占用";
+  if (job.submissionState === "prepared" && job.needsConfirmation) return "需要重新确认提交";
   if (job.submissionState === "submission_unknown" || job.submissionState === "prepared" || job.submissionState === "submitting" || job.submissionState === "not_submitted") return SUBMISSION[job.submissionState];
   if (job.blockedReason) return "需要处理";
   if (job.remoteState === "completed") return IMPORT[job.importState] ?? job.importState;
@@ -80,7 +81,7 @@ export function KlingJobDetail({ jobId, open, onOpenChange, onChanged }: { jobId
           <p className="break-all text-xs text-muted-foreground">本地作业：{job.jobId}</p>
           <p className="break-all text-xs text-muted-foreground">云端任务：{job.remoteGenerationId ?? "尚未取得任务 ID"}</p>
           <p className="text-xs text-muted-foreground">账号：{job.accountLabel ?? job.profileId} · {job.modelId} · {job.tool === "image_to_video" ? "图生视频" : "文生视频"}</p>
-          <p className="text-xs text-muted-foreground">提交：{SUBMISSION[job.submissionState]} · 云端：{REMOTE[job.remoteState]} · 本地：{IMPORT[job.importState]}</p>
+          <p className="text-xs text-muted-foreground">提交：{job.submissionState === "prepared" && job.needsConfirmation ? "需要重新确认提交" : SUBMISSION[job.submissionState]} · 云端：{REMOTE[job.remoteState]} · 本地：{IMPORT[job.importState]}</p>
           {job.lastCheckedAt && <p className="text-xs text-muted-foreground">最后核对：{new Date(job.lastCheckedAt).toLocaleString()}</p>}
         </div>
         {(job.blockedReason || job.lastError) && <p role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{job.lastError?.message ?? job.blockedReason}{job.lastError?.code && <span className="ml-2 text-xs">({job.lastError.code})</span>}</p>}

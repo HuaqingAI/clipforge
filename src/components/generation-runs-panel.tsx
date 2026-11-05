@@ -10,7 +10,7 @@ import { generationRunActive, generationRunCleanable, generationRunDeletable, re
 
 const statusLabels: Record<GenerationStatus, string> = { queued: "排队中", running: "生成中", waiting: "等待平台", importing: "保存中", completed: "已完成", failed: "失败", needs_attention: "需要处理", cancelled: "已取消" };
 const kindLabels = { video_batch: "批量转动态", video: "镜头视频", image: "镜头图片", storyboard_grid: "九宫格分镜", script: "脚本文案", keyframe_refine: "关键帧精修", keyframe_refine_batch: "批量关键帧精修" };
-const stageLabels: Record<string, string> = { starting: "准备生成", submitting: "提交平台", cloud_running: "平台生成中", importing: "保存素材", queued: "等待开始", waiting: "等待平台", completed: "已完成" };
+const stageLabels: Record<string, string> = { starting: "准备生成", queued_submission: "等待提交", waiting_for_profile: "等待账号空闲", submitting: "提交平台", cloud_running: "平台生成中", importing: "保存素材", recovering: "同步原任务", retry_wait: "等待重试", queued: "等待开始", waiting: "等待平台", completed: "已完成" };
 
 function refinementCandidatePath(value: unknown): string | null {
   if (typeof value !== "string" || !value.startsWith("/api/files/")) return null;
