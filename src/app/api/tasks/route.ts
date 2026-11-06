@@ -1,11 +1,11 @@
-import { listGenerationRuns } from "@/lib/generation-runs";
+import { listGenerationTaskSummaries } from "@/lib/generation-task-summary";
 import { NextResponse } from "next/server";
 import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { reconcileTranscriptRenders } from "@/lib/transcript-render-runner";
 import { getDb } from "@/lib/db";
 import { batchJobItems, batchJobs, compositions, mediaEdits, pipelineRuns, projects } from "@/lib/db/schema";
 import { isPipelineRunActive } from "@/lib/pipeline-runner";
-import { listActiveAiTasksAllProjects } from "@/lib/ai-tasks";
+import { listActiveAiTaskSummaries } from "@/lib/ai-tasks";
 import { listLatestPipelineRuns } from "@/lib/pipeline-history";
 import { listKlingJobs, isKlingJobUnresolved } from "@/lib/kling/repository";
 
@@ -25,11 +25,11 @@ export async function GET() {
     const active: Array<Record<string, unknown>> = [];
     const attention: Array<Record<string, unknown>> = [];
     const recentGenerations: Array<Record<string, unknown>> = [];
-    for (const run of listGenerationRuns()) {
+    for (const run of listGenerationTaskSummaries()) {
       const row = { kind: "generation", id: run.id, projectId: run.projectId,
         projectName: projectName.get(run.projectId) ?? "", generationKind: run.kind,
         status: run.status, done: run.done, total: run.total, failed: run.failed,
-        stage: run.items.find((item) => ["running", "waiting", "importing"].includes(item.status))?.stage,
+        stage: run.stage ?? undefined,
         createdAt: run.updatedAt };
       if (["queued", "running", "waiting", "importing"].includes(run.status)) active.push(row);
       else if (["failed", "needs_attention"].includes(run.status)) attention.push(row);
@@ -73,7 +73,10 @@ export async function GET() {
       }
     }
 
-    const transcriptRows = await db.select().from(mediaEdits).where(inArray(mediaEdits.status, ["queued", "rendering", "failed"])).orderBy(desc(mediaEdits.createdAt));
+    const transcriptRows = await db.select({ id: mediaEdits.id, projectId: mediaEdits.projectId,
+      compositionId: mediaEdits.compositionId, sourceId: mediaEdits.sourceId, revision: mediaEdits.revision,
+      progress: mediaEdits.progress, status: mediaEdits.status, createdAt: mediaEdits.createdAt,
+    }).from(mediaEdits).where(inArray(mediaEdits.status, ["queued", "rendering", "failed"])).orderBy(desc(mediaEdits.createdAt));
     const transcriptComposeIds = new Set(transcriptRows.map((edit) => edit.compositionId));
     for (const edit of transcriptRows) {
       (edit.status === "failed" ? attention : active).push({ kind: edit.status === "failed" ? "transcript_failed" : "transcript", id: edit.id, projectId: edit.projectId, projectName: projectName.get(edit.projectId) ?? "", sourceId: edit.sourceId, revision: edit.revision, progress: edit.progress, status: edit.status, createdAt: edit.createdAt });
@@ -94,9 +97,8 @@ export async function GET() {
     }
 
     // 云端任务状态未知时提供恢复入口；提交状态不代表已结算扣费。
-    const paid = await listActiveAiTasksAllProjects();
+    const paid = await listActiveAiTaskSummaries();
     for (const tsk of paid) {
-      if (tsk.provider === "kling-cli") continue; // Its durable local job is the authoritative row.
       (tsk.status === "unknown" ? attention : active).push({
         kind: tsk.status === "unknown" ? "paid_unknown" : "paid",
         id: tsk.id,

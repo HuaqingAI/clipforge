@@ -2,6 +2,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import path from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { eq } from "drizzle-orm";
 import type { GenerationExecutionItem } from "@/lib/generation-types";
 import type { KlingJob } from "@/lib/kling/job-schema";
@@ -54,6 +56,44 @@ beforeEach(() => {
 afterAll(() => state.sqlite?.close());
 
 describe("generation executor recovery", () => {
+  it("recovers an image after media storage failed without submitting or querying its paid generation again", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "clipforge-paid-image-retry-"));
+    vi.stubEnv("APP_DATA_DIR", directory);
+    const input = { ...item(), kind: "image" as const };
+    const paidBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lxkAAAAASUVORK5CYII=", "base64");
+    const image = `data:image/png;base64,${paidBytes.toString("base64")}`;
+    writeFileSync(path.join(directory, "uploads"), "blocks media writes");
+    state.submit.mockImplementationOnce(async () => {
+      beforeGenerationSubmission();
+      generationCheckpoint({ taskId: "paid-image", submissionState: "acknowledged", imageUrls: [image] });
+      return Response.json({ taskId: "paid-image", imageUrls: [image] });
+    });
+    try {
+      await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+      expect(input.checkpoint).toMatchObject({ taskId: "paid-image", imageUrls: [image], submissionState: "acknowledged" });
+      rmSync(path.join(directory, "uploads"));
+      mkdirSync(path.join(directory, "uploads"));
+      expect(await run(input)).toHaveProperty("assetId");
+      expect(state.submit).toHaveBeenCalledOnce(); expect(state.query).not.toHaveBeenCalled();
+      const url = state.download.mock.calls[0][1] as string;
+      expect(url).toMatch(/^\/api\/files\/A\/generation-result-[a-f0-9]{64}\.png$/);
+      expect(readFileSync(path.join(directory, "uploads", "A", url.split("/").pop()!))).toEqual(paidBytes);
+    } finally { vi.unstubAllEnvs(); rmSync(directory, { recursive: true, force: true }); }
+  });
+  it("rejects corrupt checkpoint image files while retaining the paid bytes and avoiding another provider call", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "clipforge-invalid-paid-image-"));
+    vi.stubEnv("APP_DATA_DIR", directory);
+    const input = { ...item(), kind: "image" as const, checkpoint: { taskId: "paid-invalid-image", submissionState: "acknowledged", imageUrls: [`data:image/png;base64,${Buffer.from("not a real image").toString("base64")}`] } };
+    try {
+      await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+      expect(getDb().select().from(assets).all()).toEqual([]);
+      expect(state.submit).not.toHaveBeenCalled(); expect(state.query).not.toHaveBeenCalled();
+      const url = input.checkpoint!.imageUrls![0] as string;
+      expect(readFileSync(path.join(directory, "uploads", "A", url.split("/").pop()!)).toString()).toBe("not a real image");
+      await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+      expect(state.submit).not.toHaveBeenCalled(); expect(state.query).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); rmSync(directory, { recursive: true, force: true }); }
+  });
   it("blocks a stale worker before billing when its parent task was deleted", async () => {
     const input = item();
     getDb().insert(generationRuns).values({ id: input.runId, projectId: input.projectId, clientRequestId: "deleted-request", requestHash: "test",

@@ -11,9 +11,10 @@
 
 import { getDb } from "@/lib/db";
 import { aiTasks } from "@/lib/db/schema";
-import { and, eq, inArray, isNotNull, ne, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { generationItems, generationRuns } from "@/lib/generation-schema";
 import { decryptGenerationValue } from "@/lib/generation-secrets";
+import { persistGenerationMediaUrls } from "@/lib/generation-checkpoint-media";
 import { sanitizeGenerationControlSummary, type GenerationControlSummary } from "@/lib/video-repair-plan";
 
 export type AiTaskStatus = "submitted" | "processing" | "completed" | "failed" | "unknown";
@@ -68,11 +69,22 @@ export async function updateAiTask(
   if (!rowId) return;
   try {
     const db = getDb();
+    let resultUrls = patch.resultUrls;
+    if (resultUrls?.some((url) => /^data:image\//i.test(url))) {
+      const projectId = db.select({ projectId: aiTasks.projectId }).from(aiTasks).where(eq(aiTasks.id, rowId)).get()?.projectId;
+      if (projectId) {
+        try { resultUrls = persistGenerationMediaUrls(projectId, resultUrls); }
+        catch (error) {
+          // Keep the acknowledged result durable even if file persistence fails.
+          console.warn("图片结果文件保存失败，保留原始任务结果以便恢复:", error);
+        }
+      }
+    }
     await db
       .update(aiTasks)
       .set({
         ...(patch.status && { status: patch.status }),
-        ...(patch.resultUrls && { resultUrls: patch.resultUrls }),
+        ...(resultUrls && { resultUrls }),
         ...(patch.error !== undefined && { error: patch.error }),
         ...(patch.assetId !== undefined && { assetId: patch.assetId }),
         ...(patch.importState !== undefined && { importState: patch.importState }),
@@ -92,6 +104,14 @@ export async function updateAiTaskByProviderTaskId(
 ): Promise<void> {
   try {
     const db = getDb();
+    if (patch.resultUrls?.some((url) => /^data:image\//i.test(url))) {
+      const rows = db.select({ id: aiTasks.id }).from(aiTasks)
+        .where(and(eq(aiTasks.provider, provider), eq(aiTasks.taskId, taskId))).all();
+      // Legacy duplicates may belong to different projects; persist each result
+      // in its own project directory and retain each row's current import state.
+      for (const row of rows) await updateAiTask(row.id, patch);
+      return;
+    }
     await db
       .update(aiTasks)
       .set({
@@ -125,8 +145,34 @@ export async function listActiveAiTasksAllProjects() {
   return withoutReleasedGenerationTasks(rows);
 }
 
+/** Lightweight global-feed projection; execution results belong to task details. */
+export async function listActiveAiTaskSummaries() {
+  const rows = getDb().select({
+    id: aiTasks.id, projectId: aiTasks.projectId, provider: aiTasks.provider,
+    model: aiTasks.model, mediaType: aiTasks.mediaType, status: aiTasks.status,
+    createdAt: aiTasks.createdAt, taskId: aiTasks.taskId,
+  }).from(aiTasks).where(and(ne(aiTasks.provider, "kling-cli"), isNull(aiTasks.generationReleasedAt),
+    or(inArray(aiTasks.status, ACTIVE_AI_TASK_STATUSES),
+      and(eq(aiTasks.status, "completed"), ne(aiTasks.importState, "imported"))))).all();
+  return rows;
+}
+
+/** Mark only the paid identities explicitly released inside the generation transaction. */
+export function markGenerationAiTasksReleased(
+  store: Pick<ReturnType<typeof getDb>, "update">,
+  projectId: string,
+  provider: string,
+  taskIds: readonly string[],
+  releasedAt = new Date(),
+): void {
+  const identities = [...new Set(taskIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (!identities.length) return;
+  store.update(aiTasks).set({ generationReleasedAt: releasedAt })
+    .where(and(eq(aiTasks.projectId, projectId), eq(aiTasks.provider, provider), inArray(aiTasks.taskId, identities), isNull(aiTasks.generationReleasedAt))).run();
+}
+
 /** A released background task retains its recovery history without occupying its shot. */
-function withoutReleasedGenerationTasks(rows: Array<typeof aiTasks.$inferSelect>) {
+function withoutReleasedGenerationTasks<T extends { projectId: string | null; provider: string; taskId: string }>(rows: T[]): T[] {
   const projectIds = [...new Set(rows.flatMap((row) => row.projectId ? [row.projectId] : []))];
   if (!projectIds.length) return rows;
   const released = getDb().select({ projectId: generationItems.projectId, payload: generationItems.payload, checkpoint: generationItems.checkpoint })

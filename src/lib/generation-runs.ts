@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { assets, characters, projects, scripts } from "@/lib/db/schema";
 import { assetMatchesScript } from "@/lib/asset-context";
@@ -13,6 +13,8 @@ import { decryptGenerationValue, encryptGenerationValue } from "@/lib/generation
 import { captureGenerationInputs } from "@/lib/generation-inputs";
 import type { GenerationKind, GenerationPayload } from "@/lib/generation-types";
 import { executeGenerationItem } from "@/lib/generation-executor";
+import { compactCompletedGenerationCheckpoint } from "@/lib/generation-checkpoint-media";
+import { markGenerationAiTasksReleased } from "@/lib/ai-tasks";
 import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-context";
 import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { tidewePresenterReference } from "@/lib/tidewe/presenter";
@@ -162,6 +164,7 @@ function unbindItem(item: Item, tx: GenerationStore) {
   const context = unbindContext(item, tx);
   if (!context) throw new GenerationRunError("此任务状态已变化或仍在执行，不能解除绑定。请刷新并核对原任务。", 409, "GENERATION_UNBIND_CONFLICT");
   const { checkpoint, job } = context, now = Date.now();
+  markItemAiTaskReleased(item, tx, checkpoint);
   if (job) tx.update(klingJobs).set({ autoQueryPaused: true, needsConfirmation: false, nextQueryAt: null,
     leaseOwner: null, leaseExpiresAt: null, revision: job.revision + 1, updatedAt: now,
     data: { ...job.data, blockingReleasedAt: job.data.blockingReleasedAt ?? now, authorizedUntil: 0 },
@@ -176,6 +179,19 @@ function unbindItem(item: Item, tx: GenerationStore) {
 function individuallyDeletable(items: Item[], tx: GenerationStore): boolean {
   return items.length > 0 && items.every((item) => item.status === "needs_attention" ? Boolean(unbindContext(item, tx))
     : ["completed", "failed", "cancelled"].includes(item.status) && item.leaseOwner === null && item.leaseExpiresAt === null);
+}
+
+/** Persist the exact paid identity once, so task discovery never decrypts historical snapshots. */
+function markItemAiTaskReleased(item: Item, tx: GenerationStore, checkpoint?: Record<string, unknown>): void {
+  let provider: unknown;
+  let saved: Record<string, unknown>;
+  try {
+    const payload = decryptGenerationValue<GenerationPayload>(item.payload);
+    saved = checkpoint ?? (item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : {});
+    provider = payload.request?.provider;
+  } catch { return; /* Unreadable associations must not hide unrelated recoverable paid work. */ }
+  if (typeof provider === "string") markGenerationAiTasksReleased(tx, item.projectId, provider,
+    [saved.taskId, saved.remoteTaskId].filter((id): id is string => typeof id === "string"));
 }
 
 /** Observe an existing child only. Reads never authorize, submit, query, or import cloud work. */
@@ -320,6 +336,7 @@ export function deleteGenerationRuns(projectId: unknown, id?: string) {
     if (id !== undefined && runs[0].deletedAt === null && !eligible.length) throw new GenerationRunError("只能删除已停止的任务记录；仍在执行的任务请等待结束。", 409, "GENERATION_RUN_NOT_DELETABLE");
     for (const run of eligible) for (const item of runItems(tx, run.id)) if (item.status === "needs_attention") unbindItem(item, tx);
     const deletedIds = eligible.map((run) => run.id);
+    for (const id of deletedIds) for (const item of runItems(tx, id)) markItemAiTaskReleased(item, tx);
     if (deletedIds.length) tx.update(generationRuns).set({ deletedAt: Date.now() }).where(and(eq(generationRuns.projectId, scope), isNull(generationRuns.deletedAt), inArray(generationRuns.id, deletedIds))).run();
     return { deletedIds, deletedCount: deletedIds.length };
   }, { behavior: "immediate" });
@@ -486,7 +503,7 @@ export function generationRunAction(id: string, action: string, options: { itemI
   return result;
 }
 
-interface RunnerState { timer?: ReturnType<typeof setInterval>; ticking: boolean; active: Set<string> }
+interface RunnerState { timer?: ReturnType<typeof setInterval>; ticking: boolean; active: Set<string>; lastReconciledAt?: number }
 const globalRunner = globalThis as typeof globalThis & { __clipforgeGenerationRunner?: RunnerState };
 function runnerState(): RunnerState { return globalRunner.__clipforgeGenerationRunner ??= { ticking: false, active: new Set() }; }
 function processAlive(owner: string) {
@@ -501,9 +518,10 @@ function claimNextItem(): Item | null {
     const now = Date.now();
     const visibleRuns = tx.select({ id: generationRuns.id }).from(generationRuns).where(isNull(generationRuns.deletedAt));
     const candidates = tx.select().from(generationItems).where(and(inArray(generationItems.runId, visibleRuns), inArray(generationItems.status, ACTIVE), lte(generationItems.nextRunAt, now))).all();
+    if (!candidates.length) return null;
     const busyProjects = new Map<string, number>();
     const projectDispatch = new Map<string, number>();
-    for (const item of tx.select().from(generationItems).where(inArray(generationItems.runId, visibleRuns)).all()) {
+    for (const item of tx.select({ projectId: generationItems.projectId, lastDispatchedAt: generationItems.lastDispatchedAt, leaseOwner: generationItems.leaseOwner }).from(generationItems).where(inArray(generationItems.runId, visibleRuns)).all()) {
       projectDispatch.set(item.projectId, Math.max(projectDispatch.get(item.projectId) ?? 0, item.lastDispatchedAt));
       if (item.leaseOwner && processAlive(item.leaseOwner)) busyProjects.set(item.projectId, (busyProjects.get(item.projectId) ?? 0) + 1);
     }
@@ -547,12 +565,14 @@ async function executeClaimedItem(item: Item) {
     inArray(generationItems.runId, db.select({ id: generationRuns.id }).from(generationRuns).where(isNull(generationRuns.deletedAt))));
   let lost = false;
   let payload: GenerationPayload | undefined;
+  let latestCheckpoint: Record<string, unknown> | null = null;
   const save = (checkpoint: Record<string, unknown>) => {
     if (lost || db.update(generationItems).set({ checkpoint: encryptGenerationValue(checkpoint),
       stage: String(checkpoint.stage ?? checkpoint.submissionState ?? "running"),
       status: checkpoint.stage === "importing" ? "importing" : "running",
       ...(typeof checkpoint.childJobId === "string" ? { result: { ...item.result, childJobId: checkpoint.childJobId } } : {}),
       updatedAt: Date.now() }).where(fence).run().changes !== 1) throw new Error("后台任务执行锁已失效。");
+    latestCheckpoint = checkpoint;
   };
   const heartbeat = setInterval(() => {
     try { if (db.update(generationItems).set({ leaseExpiresAt: Date.now() + 90_000 }).where(fence).run().changes !== 1) lost = true; } catch { lost = true; }
@@ -561,11 +581,14 @@ async function executeClaimedItem(item: Item) {
   try {
     payload = decryptGenerationValue<GenerationPayload>(item.payload);
     const checkpoint = item.checkpoint ? decryptGenerationValue<Record<string, unknown>>(item.checkpoint) : null;
+    latestCheckpoint = checkpoint;
     const result = await executeGenerationItem({ id: item.id, runId: item.runId, projectId: item.projectId, kind: item.kind as GenerationKind, scriptId: item.scriptId, shotId: item.shotId, payload, checkpoint }, save);
     if (lost) return;
     const pending = result.pending === true;
     const progress = pending ? { ...db.select({ result: generationItems.result }).from(generationItems).where(eq(generationItems.id, item.id)).get()?.result, ...result } : result;
+    const completedCheckpoint = !pending && latestCheckpoint ? compactCompletedGenerationCheckpoint(item.projectId, latestCheckpoint, result) : null;
     db.update(generationItems).set({ status: pending ? "waiting" : "completed", stage: pending ? String(result.stage ?? "cloud_running") : "ready",
+      ...(completedCheckpoint && completedCheckpoint !== latestCheckpoint ? { checkpoint: encryptGenerationValue(completedCheckpoint) } : {}),
       result: progress, error: null, errorCode: null, nextRunAt: Date.now() + Math.max(1000, Math.min(300_000, Number(result.retryAfterMs) || 5000)), updatedAt: Date.now() }).where(fence).run();
   } catch (error) {
     const coded = error as Error & { code?: string; retryable?: boolean };
@@ -592,6 +615,10 @@ export async function runGenerationTick(): Promise<void> {
   if (state.ticking || process.env.NEXT_PHASE === "phase-production-build") return;
   state.ticking = true;
   try {
+    if (state.lastReconciledAt === undefined || Date.now() - state.lastReconciledAt >= 15_000) {
+      reconcileStoppedGenerationItems();
+      state.lastReconciledAt = Date.now();
+    }
     while (state.active.size < 4) {
       const item = claimNextItem();
       if (!item) break;
@@ -599,6 +626,23 @@ export async function runGenerationTick(): Promise<void> {
       void executeClaimedItem(item).catch((error) => console.error("后台任务执行失败", error)).finally(() => { state.active.delete(item.id); });
     }
   } finally { state.ticking = false; }
+}
+
+/** Local child observation belongs to the runner, independent of whether anyone opens a task list. */
+function reconcileStoppedGenerationItems(): void {
+  const db = getDb();
+  const visibleRuns = db.select({ id: generationRuns.id }).from(generationRuns).where(isNull(generationRuns.deletedAt));
+  const candidates = db.select({ id: generationItems.id }).from(generationItems).where(and(
+    inArray(generationItems.runId, visibleRuns), isNull(generationItems.leaseOwner), isNull(generationItems.leaseExpiresAt),
+    or(and(eq(generationItems.kind, "video"), inArray(generationItems.status, ["needs_attention", "failed"])),
+      and(eq(generationItems.kind, "script"), eq(generationItems.status, "needs_attention"), eq(generationItems.errorCode, "GENERATION_NEEDS_ATTENTION"))),
+  )).all();
+  if (!candidates.length) return;
+  db.transaction((tx) => {
+    const items = tx.select().from(generationItems).where(and(inArray(generationItems.id, candidates.map((item) => item.id)),
+      isNull(generationItems.leaseOwner), isNull(generationItems.leaseExpiresAt), inArray(generationItems.status, ["needs_attention", "failed"]))).all();
+    reconciledItems(tx, items);
+  }, { behavior: "immediate" });
 }
 
 export function startGenerationRunner() {
@@ -609,4 +653,4 @@ export function startGenerationRunner() {
   state.timer.unref();
 }
 export function wakeGenerationRunner() { startGenerationRunner(); void runGenerationTick().catch((error) => console.error("后台队列启动失败", error)); }
-export function stopGenerationRunner() { const state = runnerState(); if (state.timer) clearInterval(state.timer); state.timer = undefined; }
+export function stopGenerationRunner() { const state = runnerState(); if (state.timer) clearInterval(state.timer); state.timer = undefined; state.lastReconciledAt = undefined; }

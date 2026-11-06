@@ -28,6 +28,7 @@ import { fitKeyframeRefinementOutput } from "@/lib/keyframe-refinement-output";
 import { buildKeyframeFocusMask, validKeyframeFocusRegion } from "@/lib/keyframe-focus-mask";
 import { assertKeyframeFocusPatchPrepared, composeKeyframeFocusPatch, prepareKeyframeFocusPatch, type PreparedKeyframeFocusPatch } from "@/lib/keyframe-focus-patch";
 import { beforeGenerationSubmission, generationCheckpoint, generationContextCheckpoint, generationContextItemId, generationContextSnapshot, GenerationTaskPending } from "@/lib/generation-context";
+import { generationResultFilePath } from "@/lib/generation-checkpoint-media";
 
 export const runtime = "nodejs";
 
@@ -131,7 +132,8 @@ async function importWorkerRefinements(projectId: string, shotId: number, plan: 
   const compositeHashes = { ...(checkpoint.compositeHashes as Record<string, string> | undefined) };
   generationCheckpoint({ stage: "importing" });
   for (const [index, output] of outputs.entries()) {
-    if (!/^(?:https?:\/\/|data:image\/)/i.test(output)) fail("KEYFRAME_OUTPUT_INVALID", "生图服务未返回可保存的新图片", "The image provider did not return a new image that can be saved.", 502);
+    const localOutput = generationResultFilePath(projectId, output);
+    if (!/^(?:https?:\/\/|data:image\/)/i.test(output) && !(localOutput && (await stat(localOutput).catch(() => null))?.isFile())) fail("KEYFRAME_OUTPUT_INVALID", "生图服务未返回可保存的新图片", "The image provider did not return a new image that can be saved.", 502);
     const idempotencyKey = `${itemId}:${index}`;
     const existing = getDb().select().from(assets).where(eq(assets.id, generationAssetId(projectId, idempotencyKey))).get();
     let filePath = existing?.filePath ?? localPaths[String(index)];

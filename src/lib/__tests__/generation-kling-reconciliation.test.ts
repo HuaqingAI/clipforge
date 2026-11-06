@@ -64,9 +64,18 @@ beforeEach(() => {
   }
   db.insert(klingProfiles).values({ id: "profile-A", data: {} as never }).run();
 });
-afterEach(() => { vi.unstubAllEnvs(); });
+afterEach(() => { stopGenerationRunner(); vi.unstubAllEnvs(); });
 
 describe("Kling child completion reconciliation", () => {
+  it("settles an already saved Kling child from the runner without opening its details or task feed", async () => {
+    const links = seed(3), db = getDb();
+    vi.stubEnv("NEXT_PHASE", "");
+    await runGenerationTick();
+    const items = db.select().from(generationItems).all();
+    expect(items).toHaveLength(3);
+    for (const link of links) expect(items.find((item) => item.id === link.itemId)).toMatchObject({ status: "completed", stage: "ready", error: null, errorCode: null });
+    expect(state.execute).not.toHaveBeenCalled(); expect(state.createKling).not.toHaveBeenCalled();
+  });
   it.each(["get", "list"])("%s repairs all five stale failures using already saved assets and is idempotent", (method) => {
     const links = seed(5);
     const read = () => method === "get" ? getGenerationRun("run-A") : listGenerationRuns("A")[0];

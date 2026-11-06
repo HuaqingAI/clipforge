@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 import type {
   CreativeIntent,
   ProductionSnapshot,
@@ -199,10 +199,12 @@ export const aiTasks = sqliteTable("ai_tasks", {
   resultUrls: text("result_urls", { mode: "json" }).$type<string[]>(),
   assetId: text("asset_id"),
   importState: text("import_state", { enum: ["pending", "imported", "failed"] }).notNull().default("pending"),
+  // A released generation keeps its paid-task recovery identity without occupying the global feed.
+  generationReleasedAt: integer("generation_released_at", { mode: "timestamp" }),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
-});
+}, (t) => [index("ai_tasks_status_import").on(t.status, t.importState)]);
 
 // Compositions table
 export const compositions = sqliteTable("compositions", {

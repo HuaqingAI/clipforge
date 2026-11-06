@@ -22,6 +22,7 @@ import { reusableStoryboardGrid, saveStoryboardGridManifest, storyboardGridSigna
 import { filterAssetsForScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
 import { generationContextSnapshot, generationContextCheckpoint, generationContextItemId, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
 import { generationAssetId } from "@/lib/asset-persistence";
+import { generationResultFilePath } from "@/lib/generation-checkpoint-media";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { checkCreativeProfileContext, isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
@@ -119,6 +120,8 @@ async function usableSelectedMedia(asset: typeof assets.$inferSelect): Promise<b
 
 /** Download or decode the generated grid image into the project uploads dir; returns the physical path + public path. */
 async function persistGridImage(projectId: string, sourceUrl: string): Promise<{ absPath: string; publicPath: string }> {
+  const local = generationResultFilePath(projectId, sourceUrl);
+  if (local && (await stat(local).catch(() => null))?.isFile()) return { absPath: local, publicPath: sourceUrl };
   const dir = join(getDataDir(), "uploads", projectId);
   await mkdir(dir, { recursive: true });
   let buf: Buffer;
@@ -386,6 +389,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       gridUrl = result.imageUrls?.[0];
       if (!gridUrl) throw new Error("生图未返回图片");
       generationCheckpoint({ imageUrls: [gridUrl], stage: "importing", submissionState: "acknowledged" });
+      const savedImageUrls = generationContextCheckpoint()?.imageUrls;
+      if (Array.isArray(savedImageUrls) && typeof savedImageUrls[0] === "string") gridUrl = savedImageUrls[0];
     }
     if (!gridUrl) throw new Error("生图未返回图片");
 

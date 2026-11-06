@@ -21,7 +21,7 @@ vi.mock("@/lib/db", async () => {
 });
 vi.mock("@/lib/generation-executor", () => ({ executeGenerationItem: (...args: unknown[]) => state.execute(...args) }));
 import { getDb } from "@/lib/db";
-import { assets, characters, projects, scripts } from "@/lib/db/schema";
+import { aiTasks, assets, characters, projects, scripts } from "@/lib/db/schema";
 import { assetScopeForShot } from "@/lib/asset-context";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { generationItems, generationRuns } from "@/lib/generation-schema";
@@ -68,7 +68,7 @@ beforeAll(() => { state.directory = mkdtempSync(path.join(tmpdir(), "clipforge-g
 afterAll(() => { stopGenerationRunner(); state.sqlite?.close(); rmSync(state.directory, { recursive: true, force: true }); });
 beforeEach(() => {
   vi.stubEnv("NEXT_PHASE", "phase-production-build"); state.execute.mockReset();
-  const db = getDb(); db.delete(generationItems).run(); db.delete(generationRuns).run(); db.delete(klingProfiles).run(); db.delete(assets).run(); db.delete(characters).run(); db.delete(scripts).run(); db.delete(projects).run();
+  const db = getDb(); db.delete(aiTasks).run(); db.delete(generationItems).run(); db.delete(generationRuns).run(); db.delete(klingProfiles).run(); db.delete(assets).run(); db.delete(characters).run(); db.delete(scripts).run(); db.delete(projects).run();
   db.insert(klingProfiles).values({ id: "profile-1", data: klingProfile() }).run();
   for (const id of ["A", "B"]) {
     db.insert(projects).values({ id, name: `Project ${id}`, productName: `Product ${id}` }).run();
@@ -79,6 +79,20 @@ beforeEach(() => {
 afterEach(() => { stopGenerationRunner(); vi.unstubAllEnvs(); });
 
 describe("finished generation record deletion", () => {
+  it("marks only the deleted run's exact paid identities as released", () => {
+    const run = enqueueGenerationRun(input()), db = getDb();
+    const item = db.select().from(generationItems).get()!;
+    db.update(generationItems).set({ status: "completed", checkpoint: encryptGenerationValue({ taskId: "paid-task", remoteTaskId: "remote-task" }) }).where(eq(generationItems.id, item.id)).run();
+    db.insert(aiTasks).values([
+      { id: "exact", projectId: "A", provider: "mock", model: "image", taskId: "paid-task" },
+      { id: "remote", projectId: "A", provider: "mock", model: "image", taskId: "remote-task" },
+      { id: "other-project", projectId: "B", provider: "mock", model: "image", taskId: "paid-task" },
+      { id: "other-provider", projectId: "A", provider: "other", model: "image", taskId: "paid-task" },
+    ]).run();
+    deleteGenerationRuns("A", run.id);
+    const rows = db.select({ id: aiTasks.id, released: aiTasks.generationReleasedAt }).from(aiTasks).all();
+    expect(rows.filter((row) => row.released).map((row) => row.id).sort()).toEqual(["exact", "remote"]);
+  });
   function finish(id: string, statuses: string[]) {
     const db = getDb();
     const items = db.select().from(generationItems).where(eq(generationItems.runId, id)).all();
@@ -255,6 +269,13 @@ describe("stopped generation task unbinding", () => {
     expect(db.select().from(assets).all()).toEqual(assetsBefore);
     expect(db.select().from(scripts).all()).toEqual(scriptsBefore);
   });
+  it("marks a stopped task's paid identity during unbinding", () => {
+    const { run, item, checkpoint } = stalledGrid(), db = getDb();
+    db.update(generationItems).set({ checkpoint: encryptGenerationValue({ ...checkpoint, taskId: "paid-grid" }) }).where(eq(generationItems.id, item.id)).run();
+    db.insert(aiTasks).values({ id: "grid-payment", projectId: "A", provider: "mock", model: "grid", taskId: "paid-grid", status: "completed", importState: "pending" }).run();
+    generationRunAction(run.id, "unbind", { projectId: "A", itemId: item.id, acknowledgePossibleCharge: true });
+    expect(db.select().from(aiTasks).get()?.generationReleasedAt).toBeInstanceOf(Date);
+  });
   it("recovers an accepted synchronous image result without resubmitting it", () => {
     const { run, item, checkpoint } = stalledGrid();
     expect(generationRunAction(run.id, "retry_import")).toMatchObject({ status: "waiting", items: [{ stage: "recovering" }] });
@@ -320,6 +341,33 @@ describe("stopped generation task unbinding", () => {
 });
 
 describe("durable cross-project generation", () => {
+  it("does not load completed history blobs while the background queue is idle", async () => {
+    const run = enqueueGenerationRun(input()), db = getDb();
+    db.update(generationItems).set({ status: "completed", checkpoint: "large historical image snapshot" }).where(eq(generationItems.runId, run.id)).run();
+    const prepare = vi.spyOn(state.sqlite!, "prepare");
+    vi.stubEnv("NEXT_PHASE", "");
+    try {
+      await runGenerationTick();
+      const reads = prepare.mock.calls.map(([query]) => query).filter((query) => /^select /i.test(query) && query.includes('from "generation_items"'));
+      expect(reads.length).toBeGreaterThan(0);
+      for (const query of reads.filter((query) => query.includes('"checkpoint"'))) expect(query).toContain('"generation_items"."status" in');
+      expect(state.execute).not.toHaveBeenCalled();
+    } finally { prepare.mockRestore(); }
+  });
+  it("compacts the completed checkpoint only after its imported file is present", async () => {
+    const run = enqueueGenerationRun(input()), db = getDb();
+    const directory = path.join(state.directory, "uploads", "A"); mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "paid-output.png"), "local imported image");
+    const result = { assetId: "paid-asset", imageUrls: ["/api/files/A/paid-output.png"] };
+    state.execute.mockImplementation(async (_item: GenerationExecutionItem, save: (checkpoint: Record<string, unknown>) => void) => {
+      save({ taskId: "paid-id", submissionState: "acknowledged", resultUrls: ["original-provider-result"], generationResult: { raw: "redundant" }, completedResult: result });
+      return result;
+    });
+    vi.stubEnv("NEXT_PHASE", ""); await runGenerationTick(); await settled(run.id);
+    const stored = db.select().from(generationItems).get()!;
+    expect(stored.status).toBe("completed");
+    expect(decryptGenerationValue(stored.checkpoint!)).toEqual({ taskId: "paid-id", submissionState: "acknowledged", completedResult: result });
+  });
   it.each([undefined, "720p", "1080p"])("freezes the selected refinement resolution and defaults omission to 720p (%s)", (resolution) => {
     const request = refinementInput();
     if (resolution === undefined) delete request.items[0].request.resolution;

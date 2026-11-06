@@ -5,6 +5,7 @@ import path from "path";
 import fs from "fs";
 import * as schema from "./schema";
 import { getDataDir, getMigrationsDir } from "@/lib/paths";
+import { backfillGenerationTaskReleases } from "./backfill-task-release";
 
 // Database file path: writable data directory (injected by the main process as APP_DATA_DIR=userData/data when packaged with Electron)
 const DB_DIR = getDataDir();
@@ -73,6 +74,16 @@ if (realDb && process.env.NEXT_PHASE !== "phase-production-build") {
   } catch (err) {
     dbMigrationError = err instanceof Error ? err.message : String(err);
     console.error("Database migration failed:", err);
+  }
+
+  if (!dbMigrationError) {
+    try {
+      const backfill = backfillGenerationTaskReleases(sqlite!);
+      if (backfill.unreadable) console.warn(`Task release backfill deferred: ${backfill.unreadable} unreadable historical task(s); paid tasks remain visible.`);
+    } catch {
+      // Preserve the conservative visible state and retry on the next startup.
+      console.warn("Task release backfill deferred; paid tasks remain visible.");
+    }
   }
 
   // Crash-recovery sweep: compose jobs run as in-memory fire-and-forget tasks, so if the

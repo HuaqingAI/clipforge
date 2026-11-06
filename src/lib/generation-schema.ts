@@ -36,4 +36,9 @@ export const generationItems = sqliteTable("generation_items", {
   lastDispatchedAt: integer("last_dispatched_at").notNull().default(0),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
-}, (t) => [index("generation_items_queue").on(t.status, t.nextRunAt), index("generation_items_project").on(t.projectId, t.runId)]);
+}, (t) => [
+  index("generation_items_queue").on(t.status, t.nextRunAt),
+  index("generation_items_project").on(t.projectId, t.runId),
+  // Task-center counts and the first active stage must never read image checkpoints.
+  index("generation_items_task_summary").on(t.runId, t.createdAt, t.id, t.status, t.stage, t.updatedAt),
+]);

@@ -16,6 +16,10 @@ import { createKlingJob, retryKlingImport, startKlingJobRunner } from "@/lib/kli
 import { getKlingJob, getKlingOutputs } from "@/lib/kling/repository";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
 import { generationRuns } from "@/lib/generation-schema";
+import { generationResultFilePath } from "@/lib/generation-checkpoint-media";
+import { validateMediaFile } from "@/lib/media-validate";
+import { stat } from "node:fs/promises";
+import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -38,7 +42,7 @@ function scriptValidationFailure(item: GenerationExecutionItem, checkpoint: Reco
 /** No provider call is retried after an ambiguous submission. Recovery only observes known work. */
 export async function executeGenerationItem(item: GenerationExecutionItem, save: GenerationCheckpoint): Promise<RecordValue> {
   let checkpoint: RecordValue = { ...item.checkpoint };
-  return withGenerationContext({ itemId: item.id, checkpoint, snapshot: item.payload.snapshot,
+  return withGenerationContext({ itemId: item.id, projectId: item.projectId, checkpoint, snapshot: item.payload.snapshot,
     deferPolling: item.kind === "video" || item.kind === "image" || item.kind === "keyframe_refine",
     beforeSubmission: () => {
       const parent = getDb().select({ cancelRequested: generationRuns.cancelRequested, deletedAt: generationRuns.deletedAt }).from(generationRuns).where(eq(generationRuns.id, item.runId)).get();
@@ -101,8 +105,8 @@ export async function executeGenerationItem(item: GenerationExecutionItem, save:
       if (!urls().length && string(checkpoint.taskId)) return pending();
       if (!urls().length) throw attention("平台没有返回可恢复的任务编号或素材地址，请核对本次提交。");
     }
+    generationCheckpoint({ resultUrls: urls(), stage: "importing" });
     const resultUrls = urls();
-    generationCheckpoint({ resultUrls, stage: "importing" });
     const imported: RecordValue[] = [];
     for (const [index, url] of resultUrls.entries()) imported.push(await importMedia(item, request, checkpoint, url, index));
     const first = imported[0];
@@ -334,6 +338,13 @@ async function importMedia(item: GenerationExecutionItem, request: RecordValue, 
       if (!source || !shot) throw attention("缺少原镜头快照，已保留生成结果，请核对后恢复。");
       const localPath = string(record(checkpoint.localPaths)[String(outputIndex)]) ?? (outputIndex === 0 ? string(checkpoint.localPath) : undefined)
         ?? await persistAssetSource(item.projectId, url, item.shotId!, "generation");
+      // Checkpoint files preserve paid bytes before import. They still need the same image
+      // validation as a freshly downloaded data URI, without deleting recovery evidence.
+      const checkpointImage = item.kind === "image" && /^\/api\/files\/[^/]+\/generation-result-/.test(url) ? generationResultFilePath(item.projectId, url) : undefined;
+      if (checkpointImage) {
+        if ((await stat(checkpointImage)).size > MAX_DOWNLOAD_BYTES) throw new Error(`素材体积超过上限 ${MAX_DOWNLOAD_BYTES}`);
+        if (!(await validateMediaFile(checkpointImage, "image"))) throw new Error("已生成图片文件校验失败，已保留原始付费结果供核对。");
+      }
       generationCheckpoint({ localPaths: { ...record(checkpoint.localPaths), [outputIndex]: localPath }, ...(outputIndex === 0 && { localPath }), stage: "importing" });
       const input = item.payload.asset ?? {};
       const sourceProject = item.payload.snapshot?.project;
