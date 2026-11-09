@@ -350,7 +350,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     const target = frozenPlan?.target ?? (cropComposite ? { width: focusPatch!.geometry.width, height: focusPatch!.geometry.height } : dimensions(sourceDimensions.width, sourceDimensions.height));
     const outputTarget = frozenPlan?.outputTarget ?? (hdResolution ? dimensions(target.width, target.height) : undefined);
     const providerTarget = frozenPlan?.providerTarget ?? (cropComposite ? dimensions(focusPatch!.geometry.context.width, focusPatch!.geometry.context.height) : target);
-    const options = frozenPlan?.providerOptions ?? (cropComposite ? { ...providerOptions(focusPatch!.geometry.context.width, focusPatch!.geometry.context.height), quality: /gpt-image-2\.5-(?:sunburst|flare)(?:-|$)/.test(editModel.modelId) ? "xhigh" : "high", outputFormat: "png" }
+    const options = frozenPlan?.providerOptions ?? (cropComposite ? { ...providerOptions(focusPatch!.geometry.context.width, focusPatch!.geometry.context.height), quality: /gpt-image-2\.[56]-(?:sunburst|flare)(?:-|$)/.test(editModel.modelId) ? "xhigh" : "high", outputFormat: "png" }
       : providerOptions(target.width, target.height));
     if (frozenPlan && (frozenPlan.provider !== providerName || frozenPlan.model !== editModel.modelId || frozenPlan.resolution !== resolution
       || frozenPlan.sourceKeyframeUrl !== source.filePath || JSON.stringify(frozenPlan.focusRegion) !== JSON.stringify(focusRegion)

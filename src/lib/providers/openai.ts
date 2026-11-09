@@ -1,6 +1,6 @@
 /**
  * OpenAI 官方 Provider 实现
- * 支持图片生成（文生图 + 图生图编辑）：GPT Image 系列（2.5 Flare / Sunburst、2、1.5 等），兼容 DALL·E 3/2。
+ * 支持图片生成（文生图 + 图生图编辑）：GPT Image 系列（2.6 / 2.5 Flare / Sunburst、2、1.5 等），兼容 DALL·E 3/2。
  * 文档参考: https://platform.openai.com/docs/api-reference/images
  *
  * 说明：
@@ -10,7 +10,7 @@
  * - gpt-image-* 系列只返回 base64（b64_json），不支持 response_format；
  *   DALL·E 2/3 支持 response_format=url。本实现统一把 base64 包成 data URI 返回，
  *   下游落库（persistSource）已支持 data: 协议。
- * - gpt-image-2 / 2.5 支持任意分辨率（宽高被 16 整除、比例 1:3~3:1），竖屏带货可直接出 9:16。
+ * - gpt-image-2 / 2.5 / 2.6 支持任意分辨率（宽高被 16 整除、比例 1:3~3:1），竖屏带货可直接出 9:16。
  * - 视频（Sora）下载需鉴权（GET /v1/videos/{id}/content 带 Bearer），
  *   而本应用素材落库走的是无鉴权直链下载，故暂不接入 OpenAI 视频，generateVideo 直接报错。
  */
@@ -41,6 +41,7 @@ interface OpenAIImageResponse {
 }
 
 const MASK_IMAGE_MODELS = new Set(OPENAI_MASK_IMAGE_MODELS)
+const DEFAULT_HIGH_QUALITY_IMAGE_MODELS = new Set(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])
 
 /** Header/chunk validation needs neither a filesystem nor an image decoder. */
 function pngInfo(bytes: Buffer): { width: number; height: number; alpha: boolean } | undefined {
@@ -118,6 +119,22 @@ export class OpenAIProvider extends BaseProvider {
 
     const models: Model[] = [
       {
+        id: 'gpt-image-2.6-flare',
+        name: 'GPT Image 2.6 Flare',
+        description: '快速、高质量的图片生成，支持文生图与多参考图编辑，默认高质量输出',
+        modes: ['text-to-image', 'image-to-image'],
+        mediaType: 'image',
+        provider: this.name,
+      },
+      {
+        id: 'gpt-image-2.6-sunburst',
+        name: 'GPT Image 2.6 Sunburst',
+        description: '注重细节、复杂构图与编辑精度，支持多参考图编辑，默认高质量输出',
+        modes: ['text-to-image', 'image-to-image'],
+        mediaType: 'image',
+        provider: this.name,
+      },
+      {
         id: 'gpt-image-2.5-flare',
         name: 'GPT Image 2.5 Flare',
         description: '快速、高质量的日常生图，支持文生图与参考图编辑',
@@ -171,6 +188,7 @@ export class OpenAIProvider extends BaseProvider {
       size: this.pickSize(model, options.width, options.height, options.imageResolution),
       // 仅 DALL·E 系列支持 response_format；gpt-image-* 恒返回 b64_json，不能传该字段
       ...(isGptImage ? {} : { response_format: 'url' }),
+      ...(DEFAULT_HIGH_QUALITY_IMAGE_MODELS.has(model) ? { quality: 'high' } : {}),
       ...options.extra,
       ...imageControls,
     }
@@ -227,6 +245,7 @@ export class OpenAIProvider extends BaseProvider {
     form.append('prompt', options.prompt)
     form.append('n', String(isDalle2 ? 1 : (options.count ?? 1)))
     form.append('size', this.pickSize(model, options.width, options.height, options.imageResolution))
+    if (DEFAULT_HIGH_QUALITY_IMAGE_MODELS.has(model) && imageControls.quality === undefined) form.append('quality', 'high')
     for (const [field, value] of Object.entries(imageControls)) form.append(field, value)
     // gpt-image-* 用数组字段 image[]；dall-e-2 用单字段 image
     for (const { blob, filename } of images) {
@@ -248,8 +267,8 @@ export class OpenAIProvider extends BaseProvider {
       if (!['auto', 'low', 'medium', 'high', 'xhigh'].includes(options.quality)) {
         throw this.rejectedBeforeSubmission('图片质量选项无效', 'BAD_IMAGE_QUALITY')
       }
-      if (options.quality === 'xhigh' && !/^gpt-image-2\.5-(?:sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?$/.test(options.modelId)) {
-        throw this.rejectedBeforeSubmission('xhigh 图片质量仅支持 GPT Image 2.5 Sunburst / Flare', 'IMAGE_QUALITY_UNSUPPORTED')
+      if (options.quality === 'xhigh' && !/^gpt-image-2\.[56]-(?:sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?$/.test(options.modelId)) {
+        throw this.rejectedBeforeSubmission('xhigh 图片质量仅支持 GPT Image 2.5 / 2.6 Sunburst / Flare', 'IMAGE_QUALITY_UNSUPPORTED')
       }
       fields.quality = options.quality
     }
@@ -403,7 +422,7 @@ export class OpenAIProvider extends BaseProvider {
     }
     // DALL·E 2 仅方图
     if (model.startsWith('dall-e-2')) return '1024x1024'
-    // gpt-image-2 / 2.5（含日期版本）：支持任意分辨率，按真实比例就近取（带货可直接出 9:16）
+    // gpt-image-2 / 2.5 / 2.6（含日期版本）：支持任意分辨率，按真实比例就近取（带货可直接出 9:16）
     if (model.startsWith('gpt-image-2')) {
       if (imageResolution === '2k' || imageResolution === '4k') {
         return this.fitHighResolutionSize(w, h, imageResolution === '4k' ? 3840 : 2048)
@@ -440,7 +459,7 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   /**
-   * Explicit high-resolution canvases follow GPT Image 2/2.5's documented limits:
+   * Explicit high-resolution canvases follow GPT Image 2/2.5/2.6's documented limits:
    * /16 sides, at most 3840 per edge, 1:3..3:1, and 655,360..8,294,400 pixels.
    * Preserve exact common ratios so a portrait grid divides into portrait cells.
    * https://developers.openai.com/api/docs/guides/image-generation

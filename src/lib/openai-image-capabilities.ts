@@ -1,5 +1,7 @@
 /** Pure capability data shared by browser controls and server adapters. */
 export const OPENAI_FOCUS_MASK_MODELS: readonly string[] = [
+  "gpt-image-2.6-flare",
+  "gpt-image-2.6-sunburst",
   "gpt-image-2",
   "gpt-image-2-2026-04-21",
   "gpt-image-2.5-sunburst",

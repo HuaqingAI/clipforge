@@ -6,7 +6,8 @@ import { OpenAIProvider } from "@/lib/providers/openai";
 const baseUrl = "https://images.example.com/v1";
 const presenter = `data:image/png;base64,${Buffer.from("presenter").toString("base64")}`;
 const product = `data:image/jpeg;base64,${Buffer.from("product").toString("base64")}`;
-const imageModels = ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"];
+const image26Models = ["gpt-image-2.6-flare", "gpt-image-2.6-sunburst"];
+const imageModels = ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", ...image26Models];
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -54,10 +55,59 @@ function pngFixture(width = 2, height = 2, alpha = true): Buffer {
 const pngUrl = (bytes: Buffer) => `data:image/png;base64,${bytes.toString("base64")}`;
 
 describe("OpenAI explicit image output controls", () => {
-  it.each(["text-to-image", "image-to-image"] as const)("sends explicit Sunburst quality and format in %s without allowing extra to override them", async mode => {
+  it("offers both GPT Image 2.6 models for generation and reference editing", async () => {
+    const models = await provider().listModels("image");
+    for (const modelId of image26Models) {
+      expect(models.find(model => model.id === modelId)).toMatchObject({
+        provider: "openai", mediaType: "image", modes: ["text-to-image", "image-to-image"],
+      });
+    }
+    expect(await provider().listModels("video")).toEqual([]);
+  });
+
+  it.each(image26Models.flatMap(modelId => (["text-to-image", "image-to-image"] as const).map(mode => ({ modelId, mode }))))(
+    "defaults $modelId to high quality in $mode while preserving its portrait 4K canvas", async ({ modelId, mode }) => {
+      const fetchMock = mockImageResponse();
+      await provider().generateImage({
+        modelId, mode, prompt: "A portrait cityscape", width: 2160, height: 3840, imageResolution: "4k",
+        ...(mode === "image-to-image" && { referenceImageUrls: [presenter] }),
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, request] = fetchMock.mock.calls[0];
+      expect(url).toBe(`${baseUrl}/images/${mode === "image-to-image" ? "edits" : "generations"}`);
+      if (mode === "image-to-image") {
+        const form = request.body as FormData;
+        expect(form.get("model")).toBe(modelId);
+        expect(form.getAll("quality")).toEqual(["high"]);
+        expect(form.get("size")).toBe("2160x3840");
+      } else {
+        expect(JSON.parse(request.body)).toMatchObject({ model: modelId, quality: "high", size: "2160x3840" });
+      }
+    }
+  );
+
+  it.each([
+    { modelId: "gpt-image-2.6-flare", quality: "low" as const },
+    { modelId: "gpt-image-2.6-sunburst", quality: "auto" as const },
+  ].flatMap(options => (["text-to-image", "image-to-image"] as const).map(mode => ({ ...options, mode }))))(
+    "preserves explicit $quality quality for $modelId in $mode", async ({ modelId, quality, mode }) => {
+      const fetchMock = mockImageResponse();
+      await provider().generateImage({ modelId, mode, prompt: "A portrait cityscape", quality, ...(mode === "image-to-image" && { referenceImageUrls: [presenter] }) });
+      const body = fetchMock.mock.calls[0][1].body;
+      expect(mode === "image-to-image" ? (body as FormData).getAll("quality") : [JSON.parse(body).quality]).toEqual([quality]);
+    }
+  );
+
+  it.each(image26Models)("retains the advanced JSON quality override for %s", async modelId => {
+    const fetchMock = mockImageResponse();
+    await provider().generateImage({ modelId, mode: "text-to-image", prompt: "A portrait cityscape", extra: { quality: "medium" } });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).quality).toBe("medium");
+  });
+
+  it.each(["gpt-image-2.5-sunburst", ...image26Models].flatMap(modelId => (["text-to-image", "image-to-image"] as const).map(mode => ({ modelId, mode }))))("sends explicit $modelId quality and format in $mode without allowing extra to override them", async ({ modelId, mode }) => {
     const fetchMock = mockImageResponse();
     await provider().generateImage({
-      modelId: "gpt-image-2.5-sunburst", mode, prompt: "Resolve the existing grass", quality: "xhigh", outputFormat: "png",
+      modelId, mode, prompt: "Resolve the existing grass", quality: "xhigh", outputFormat: "png",
       ...(mode === "image-to-image" && { referenceImageUrls: [presenter] }),
       extra: { quality: "low", output_format: "jpeg" },
     });
@@ -138,7 +188,7 @@ describe("OpenAI explicit edit masks", () => {
   const mask = pngFixture();
   const edit = { modelId: "gpt-image-2.5-sunburst", mode: "image-to-image" as const, prompt: "Repair the selected foreground", referenceImageUrls: [pngUrl(source), product], maskImageUrl: pngUrl(mask) };
 
-  it.each(["gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2026-09-08", "gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08", "chatgpt-image-latest"])("uploads an explicit alpha PNG mask for supported %s edits", async (modelId) => {
+  it.each(["gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2026-09-08", "gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08", ...image26Models, "chatgpt-image-latest"])("uploads an explicit alpha PNG mask for supported %s edits", async (modelId) => {
     const fetchMock = mockImageResponse();
     await provider().generateImage({ ...edit, modelId, extra: { mask: "untrusted-mask", image: "untrusted-source", prompt: "untrusted-prompt" } });
     expect(fetchMock).toHaveBeenCalledOnce();

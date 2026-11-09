@@ -493,10 +493,16 @@ describe("single-frame refinement edit contract", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("sends only the immutable context crop and composites an unselected candidate at original dimensions", async () => {
+  it.each([
+    { model: "gpt-image-2", quality: "high" },
+    { model: "gpt-image-2.5-flare", quality: "xhigh" },
+    { model: "gpt-image-2.5-sunburst", quality: "xhigh" },
+    { model: "gpt-image-2.6-flare", quality: "xhigh" },
+    { model: "gpt-image-2.6-sunburst", quality: "xhigh" },
+  ])("sends the immutable context crop at $quality quality with $model and composites an unselected candidate at original dimensions", async ({ model, quality }) => {
     tideweFixture();
     const focusRegion = { x: 0, y: 0.75, width: 1, height: 0.25 };
-    const response = await POST(request({ issues: ["integration"], focusRegion }), ctx());
+    const response = await POST(request({ model, issues: ["integration"], focusRegion }), ctx());
     expect(response.status).toBe(200);
     const { form, bytes } = await uploads();
     expect(bytes).toHaveLength(1);
@@ -509,7 +515,8 @@ describe("single-frame refinement edit contract", () => {
     expect(form.get("prompt")).not.toContain(TIDEWE_PHOTOGRAPHIC_POLICY);
     expect(form.get("prompt")).not.toContain(TIDEWE_IMAGE_FOCUS_TARGET);
     expect(form.get("n")).toBe("1");
-    expect(form.get("quality")).toBe("high");
+    expect(form.get("model")).toBe(model);
+    expect(form.get("quality")).toBe(quality);
     expect(form.get("output_format")).toBe("png");
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(allAssets()).toHaveLength(2);
