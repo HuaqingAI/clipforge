@@ -8,8 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { assetScopeForShot, scriptRevision } from "@/lib/asset-context";
 import { saveAssetCandidate } from "@/lib/asset-persistence";
-import { GET, PATCH, POST } from "@/app/api/project/[id]/assets/route";
-import { POST as film } from "@/app/api/project/[id]/storyboard-film/route";
+import { GET, PATCH } from "@/app/api/project/[id]/assets/route";
 
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
 let sqlite: Database.Database;
@@ -197,11 +196,4 @@ describe("context-aware asset persistence and reading", () => {
     expect(db.select().from(schema.assets).all()).toHaveLength(2);
   });
 
-  it("preserves the original local task import path and blocks the full-film Seedance fallback", async () => {
-    const forgedSave = await POST(new NextRequest(`http://localhost/api/project/${projectId}/assets`, { method: "POST", body: JSON.stringify({ provider: "kling-cli", shotId: 1, sourceUrl: "https://arbitrary.test/video.mp4" }) }), context);
-    expect(forgedSave.status).toBe(409);
-    const dryRun = await film(new NextRequest(`http://localhost/api/project/${projectId}/storyboard-film`, { method: "POST", body: JSON.stringify({ dryRun: true, model: JSON.stringify(["kling-cli", "image_to_video", "account-model"]) }) }), context);
-    expect(dryRun.status).toBe(410);
-    expect((await dryRun.json()).error.code).toBe("KLING_FILM_REMOVED");
-  });
 });

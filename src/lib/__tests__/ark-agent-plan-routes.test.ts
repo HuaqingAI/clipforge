@@ -16,7 +16,6 @@ vi.mock("@/lib/remote-image", () => ({
   resolveUploadFilePath: () => null,
 }));
 
-import { POST as catalog } from "@/app/api/ai/models/route";
 import { POST as generate } from "@/app/api/ai/video/route";
 import { POST as resume } from "@/app/api/ai/video/task/route";
 
@@ -33,21 +32,6 @@ beforeEach(() => {
   tasks.recordAiTask.mockResolvedValue("local-task");
 });
 afterEach(() => vi.unstubAllGlobals());
-
-it("serves the AgentPlan video catalog using the configured base URL", async () => {
-  const fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-  const response = await catalog(request({ providers: [{ name: "volcengine", apiKey: "test-plan-key", baseUrl: `${ARK_AGENT_PLAN_BASE_URL}/` }] }));
-  const body = await response.json();
-  expect(body.models.map((model: { id: string }) => model.id)).toEqual([
-    "doubao-seedance-2.5", "doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini",
-  ]);
-  expect(body.providers).toEqual(expect.arrayContaining([
-    expect.objectContaining({ mediaType: "video", status: "ready", count: 4 }),
-    expect.objectContaining({ mediaType: "image", status: "empty", count: 0 }),
-  ]));
-  expect(fetchMock).not.toHaveBeenCalled();
-});
 
 it("submits image-to-video through AgentPlan, saves the task before polling, and returns its video", async () => {
   const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {

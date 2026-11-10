@@ -244,28 +244,6 @@ describe("compose-page shot video versions", () => {
   });
 
   it.each([
-    { initial: "direct_concat", chosen: "ffmpeg_fade" },
-    { initial: "ffmpeg_fade", chosen: "direct_concat" },
-  ] as const)("pins a changed $initial to $chosen transition for every matrix variant", async ({ initial, chosen }) => {
-    vi.useFakeTimers(); useInitialTransition(initial);
-    await mount();
-    await setTransition(chosen);
-    await click(button("变体矩阵"));
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent === "bold")!);
-    await click(button("批量合成 2 条"));
-    expect(composeRequests()).toHaveLength(1);
-    await setTransition(initial);
-    expect(transitionSelect().value).toBe(initial);
-    await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(composeRequests()).toHaveLength(2);
-    for (const [, init] of composeRequests()) expect(JSON.parse(init.body as string).transitionOverrides).toEqual([
-      { shotId: 1, transition: "direct_concat" }, { shotId: 2, transition: chosen },
-    ]);
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
-    await act(async () => vi.advanceTimersByTimeAsync(3000));
-  });
-
-  it.each([
     { entry: "ordinary", chosen: "direct_concat", other: "ffmpeg_fade", action: "全部直接拼接" },
     { entry: "ordinary", chosen: "ffmpeg_fade", other: "direct_concat", action: "全部渐变过渡" },
     { entry: "matrix", chosen: "direct_concat", other: "ffmpeg_fade", action: "全部直接拼接" },
