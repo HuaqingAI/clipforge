@@ -1,24 +1,40 @@
 // This file is executed by the downloaded ordinary Node executable, not Electron.
 const childProcess = require("node:child_process");
 const { syncBuiltinESMExports } = require("node:module");
+const { promisify } = require("node:util");
 const path = require("node:path");
 const originalSpawn = childProcess.spawn;
 
 let stopping = false;
 const children = new Map();
 function notify(value) { if (process.connected) { try { process.send(value); } catch { /* parent already closed */ } } }
+function trackChild(child) {
+  if (child.pid && !children.has(child.pid)) {
+    children.set(child.pid, child);
+    notify({ type: "clipforge:child-start", pid: child.pid });
+    child.once("close", () => { children.delete(child.pid); notify({ type: "clipforge:child-end", pid: child.pid }); });
+  }
+  return child;
+}
 for (const method of ["spawn", "exec", "execFile"]) {
   const original = childProcess[method];
-  childProcess[method] = function (...args) {
+  const wrapped = function (...args) {
     if (stopping) throw new Error("ClipForge 正在退出，已停止启动新任务。");
-    const child = Reflect.apply(original, this, args);
-    if (child.pid) {
-      children.set(child.pid, child);
-      notify({ type: "clipforge:child-start", pid: child.pid });
-      child.once("close", () => { children.delete(child.pid); notify({ type: "clipforge:child-end", pid: child.pid }); });
-    }
-    return child;
+    return trackChild(Reflect.apply(original, this, args));
   };
+  if (typeof original[promisify.custom] === "function") {
+    // Node's exec helpers resolve { stdout, stderr } and expose promise.child.
+    // Their native custom implementation bypasses wrapped, so track that child too.
+    Object.defineProperty(wrapped, promisify.custom, {
+      value: function (...args) {
+        if (stopping) throw new Error("ClipForge 正在退出，已停止启动新任务。");
+        const promise = Reflect.apply(original[promisify.custom], this, args);
+        trackChild(promise.child);
+        return promise;
+      },
+    });
+  }
+  childProcess[method] = wrapped;
 }
 syncBuiltinESMExports();
 
