@@ -16,6 +16,8 @@
 # next.js
 /.next/
 /.next-local/
+/.next-desktop/
+/artifacts/
 /out/
 
 # production

@@ -1,5 +1,5 @@
 /**
- * OpenAI 官方 Provider 实现
+ * HTH OpenAI 兼容 Provider 实现
  * 支持图片生成（文生图 + 图生图编辑）：GPT Image 系列（2.6 / 2.5 Flare / Sunburst、2、1.5 等），兼容 DALL·E 3/2。
  * 文档参考: https://platform.openai.com/docs/api-reference/images
  *
@@ -66,7 +66,7 @@ function pngInfo(bytes: Buffer): { width: number; height: number; alpha: boolean
 
 export class OpenAIProvider extends BaseProvider {
   readonly name = 'openai'
-  readonly displayName = 'OpenAI'
+  readonly displayName = 'HTH'
 
   constructor(config: ProviderConfig) {
     super({
@@ -98,7 +98,7 @@ export class OpenAIProvider extends BaseProvider {
    */
   async generateVideo(): Promise<VideoResult> {
     throw this.rejectedBeforeSubmission(
-      'OpenAI 暂未接入视频生成（Sora），请改用 fal.ai / Replicate / 火山引擎 / 阿里百炼 等视频平台',
+      'HTH 当前图片接口暂未接入视频生成，请改用 Kling 官方 CLI、fal.ai 或 Replicate 等视频平台',
       'NOT_SUPPORTED',
     )
   }

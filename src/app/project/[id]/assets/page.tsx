@@ -11,7 +11,7 @@ import { StoryboardFilmPanel } from "@/components/storyboard-film-panel";
 import { BatchMotionPanel } from "@/components/batch-motion-panel";
 import { KeyframeRefinementDialog } from "@/components/keyframe-refinement-dialog";
 import type { BatchMotionDraft } from "@/lib/batch-motion";
-import { submitGenerationRun, useGenerationRuns, generationRunActive } from "@/lib/hooks/use-generation-runs";
+import { submitGenerationRun, useGenerationRuns, generationRunActive, GenerationRunSubmissionError } from "@/lib/hooks/use-generation-runs";
 import { GenerationRunsPanel } from "@/components/generation-runs-panel";
 import { klingFetch, klingErrorMessage } from "@/lib/kling/client";
 import type { KlingJobView } from "@/lib/kling/job-types";
@@ -269,9 +269,9 @@ function AssetsPageContent() {
   const enabledCatalogProviders = configuredCatalogProviders(providers);
   const catalog = useModelCatalog(enabledCatalogProviders);
   const [modelTarget, videoModelTarget] = useMemo((): [ImageModelTarget | null, ImageModelTarget | null] => {
-    const enabled = configuredCatalogProviders(providers);
-    const names = new Set(enabled.map((p) => p.name));
     const resolve = (type: "image" | "video", modelId: string) => {
+      const enabled = configuredCatalogProviders(providers, type);
+      const names = new Set(enabled.map((p) => p.name));
       const model = mergeCustomModels(catalog.models.filter((item) => item.mediaType === type), customModels, type, names).find((item) => item.id === modelId);
       const provider = model && enabled.find((item) => item.name === model.provider);
       return model && (model.provider === "kling-cli" || model.extra?.available !== false) && provider ? { provider: provider.name, model: modelId, apiKey: provider.apiKey ?? "", baseUrl: provider.baseUrl, supportsAudio: model.provider === "kling-cli" ? true : model.supportsAudio, profileId: provider.profileId } : null;
@@ -1246,7 +1246,16 @@ function AssetsPageContent() {
         onFramesChange={motionDraft?.refreshFrames}
         onGenerateRequest={async (request) => {
           if (!motionDraft) return;
-          await submitGenerationRun({ projectId: id, clientRequestId: String(request.clientRequestId || crypto.randomUUID()), kind: "video", label: `镜头 ${motionDraft.asset.shotId} 视频`, items: [{ kind: "video", scriptId: motionDraft.scriptId, shotId: motionDraft.asset.shotId, request, asset: motionDraft.assetPayload }] });
+          const shotId = motionDraft.asset.shotId;
+          try {
+            await submitGenerationRun({ projectId: id, clientRequestId: String(request.clientRequestId || crypto.randomUUID()), kind: "video", label: `镜头 ${shotId} 视频`, items: [{ kind: "video", scriptId: motionDraft.scriptId, shotId, request, asset: motionDraft.assetPayload }] });
+          } catch (error) {
+            if (!(error instanceof GenerationRunSubmissionError) || error.outcomeUnknown) {
+              setUnresolvedMotionShots((previous) => new Set(previous).add(shotId));
+            }
+            setAssets((previous) => previous.map((item) => item.shotId === shotId ? { ...item, error: error instanceof Error ? error.message : t("errorImageToVideoFailed") } : item));
+            throw error;
+          }
           finishMotionDraft();
         }}
         onRefreshTasks={reloadKlingJobs}

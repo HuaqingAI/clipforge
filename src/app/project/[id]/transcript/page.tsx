@@ -1,4 +1,5 @@
 "use client";
+import type { AsrRuntimeDescriptor } from "@/lib/local-asr";
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -167,6 +168,7 @@ export default function TranscriptPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [model, setModel] = useState<LocalAsrModel>(LOCAL_ASR_MODELS[0].id);
+  const [asrRuntime, setAsrRuntime] = useState<AsrRuntimeDescriptor | null>(null);
   const [language, setLanguage] = useState("auto");
   const [device, setDevice] = useState<LocalAsrDevice | null>(null);
   const [fallback, setFallback] = useState(false);
@@ -198,6 +200,16 @@ export default function TranscriptPage() {
     void loadSources();
     void fetch(`/api/project/${id}`).then((response) => response.ok ? response.json() : null).then((project) => setProjectName(project?.name || "")).catch(() => {});
   }, [id, loadSources]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/runtime", { signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error("转写运行环境检测失败");
+      const data = await response.json() as { asr: AsrRuntimeDescriptor };
+      setAsrRuntime(data.asr);
+    }).catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => () => {
     abortRef.current?.abort();
@@ -358,6 +370,12 @@ export default function TranscriptPage() {
     progressRef.current = 0;
     setBusy("decode");
     try {
+      const runtimeResponse = await fetch("/api/runtime");
+      if (!runtimeResponse.ok) throw new Error("无法检查本地转写资源，请重试");
+      const runtime = (await runtimeResponse.json() as { asr: AsrRuntimeDescriptor }).asr;
+      if (!runtime || !Array.isArray(runtime.models) || !runtime.models.includes(model) ||
+        (window.clipforge && runtime.mode !== "managed")) throw new Error("此转写模型尚未安装，请运行客户端安装程序准备资源");
+      setAsrRuntime(runtime);
       const started = await updateTranscriptState(selected.id, { action: "start", model, language, resume: true }) as { resumeCheckpoint?: TranscriptCheckpoint | null };
       taskStarted = true;
       let checkpoint = started.resumeCheckpoint ?? null;
@@ -403,6 +421,7 @@ export default function TranscriptPage() {
           sourceDuration,
           chunkIndex,
           totalChunks,
+          runtime,
         });
         const nextProcessed = Math.min(sourceDuration, startSeconds + durationSeconds);
         checkpoint = appendTranscriptChunk({ checkpoint, chunk, sourceDuration, processedSeconds: nextProcessed, model, language });
@@ -431,7 +450,7 @@ export default function TranscriptPage() {
   function transcribeAudioChunk(
     worker: Worker,
     pcm: Float32Array,
-    input: { model: LocalAsrModel; language: string; offsetSeconds: number; sourceDuration: number; chunkIndex: number; totalChunks: number },
+    input: { model: LocalAsrModel; language: string; offsetSeconds: number; sourceDuration: number; chunkIndex: number; totalChunks: number; runtime: AsrRuntimeDescriptor },
   ): Promise<TranscriptDocument> {
     return new Promise((resolve, reject) => {
       const base = input.chunkIndex / input.totalChunks * 99;
@@ -464,6 +483,7 @@ export default function TranscriptPage() {
         offsetSeconds: input.offsetSeconds,
         sourceDuration: input.sourceDuration,
         chunkIndex: input.chunkIndex,
+        runtime: input.runtime,
       }, [pcm.buffer]);
     });
   }
@@ -808,9 +828,9 @@ export default function TranscriptPage() {
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
               <label className="flex-1 text-xs font-medium text-muted-foreground">{t("model")}
                 <select value={model} disabled={busy === "decode" || busy === "transcribe"} onChange={(event) => setModel(event.target.value as LocalAsrModel)} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                  <option value={LOCAL_ASR_MODELS[0].id}>{t("modelTiny")}</option>
-                  <option value={LOCAL_ASR_MODELS[1].id}>{t("modelBase")}</option>
-                  <option value={LOCAL_ASR_MODELS[2].id}>{t("modelSmall")}</option>
+                  <option value={LOCAL_ASR_MODELS[0].id} disabled={asrRuntime?.mode === "managed" && !asrRuntime.models.includes(LOCAL_ASR_MODELS[0].id)}>{t("modelTiny")}{asrRuntime?.mode === "managed" && !asrRuntime.models.includes(LOCAL_ASR_MODELS[0].id) ? " · 未安装" : ""}</option>
+                  <option value={LOCAL_ASR_MODELS[1].id} disabled={asrRuntime?.mode === "managed" && !asrRuntime.models.includes(LOCAL_ASR_MODELS[1].id)}>{t("modelBase")}{asrRuntime?.mode === "managed" && !asrRuntime.models.includes(LOCAL_ASR_MODELS[1].id) ? " · 未安装" : ""}</option>
+                  <option value={LOCAL_ASR_MODELS[2].id} disabled={asrRuntime?.mode === "managed" && !asrRuntime.models.includes(LOCAL_ASR_MODELS[2].id)}>{t("modelSmall")}{asrRuntime?.mode === "managed" && !asrRuntime.models.includes(LOCAL_ASR_MODELS[2].id) ? " · 未安装" : ""}</option>
                 </select>
               </label>
               <label className="flex-1 text-xs font-medium text-muted-foreground">{t("language")}

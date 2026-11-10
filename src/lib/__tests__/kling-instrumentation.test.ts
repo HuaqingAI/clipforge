@@ -3,8 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runners = vi.hoisted(() => ({ jobsStart: vi.fn(), jobsWake: vi.fn() }));
 const generation = vi.hoisted(() => ({ start: vi.fn(), wake: vi.fn() }));
-vi.mock("@/lib/generation-runs", () => ({ startGenerationRunner: generation.start, wakeGenerationRunner: generation.wake }));
-vi.mock("@/lib/kling/jobs", () => ({ startKlingJobRunner: runners.jobsStart, wakeKlingJobRunner: runners.jobsWake }));
+const workspace = vi.hoisted(() => ({ lock: vi.fn() }));
+const recovery = vi.hoisted(() => ({ compositions: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({ attach: vi.fn() }));
+vi.mock("@/lib/workspace-lock", () => ({ acquireWorkspaceLock: workspace.lock }));
+vi.mock("@/lib/startup-recovery", () => ({ recoverInterruptedCompositions: recovery.compositions }));
+vi.mock("@/lib/server/desktop-lifecycle", () => ({ attachDesktopShutdown: lifecycle.attach }));
+vi.mock("@/lib/generation-runs", () => ({ startGenerationRunner: generation.start, wakeGenerationRunner: generation.wake, stopGenerationRunner: vi.fn() }));
+vi.mock("@/lib/kling/jobs", () => ({ startKlingJobRunner: runners.jobsStart, wakeKlingJobRunner: runners.jobsWake, stopKlingJobRunner: vi.fn() }));
 import { register } from "@/instrumentation";
 
 beforeEach(() => {
@@ -21,6 +27,18 @@ describe("Kling startup instrumentation", () => {
     expect(runners.jobsStart).toHaveBeenCalledOnce();
     expect(runners.jobsWake).toHaveBeenCalledOnce();
     expect(generation.start).toHaveBeenCalledOnce();
+    expect(lifecycle.attach).not.toHaveBeenCalled();
+    expect(workspace.lock.mock.invocationCallOrder[0]).toBeLessThan(recovery.compositions.mock.invocationCallOrder[0]);
+    expect(recovery.compositions.mock.invocationCallOrder[0]).toBeLessThan(generation.start.mock.invocationCallOrder[0]);
+  });
+  it("does not open the workspace or start any tasks in installation probe mode", async () => {
+    vi.stubEnv("CLIPFORGE_PROBE_MODE", "1");
+    await register();
+    expect(workspace.lock).not.toHaveBeenCalled();
+    expect(recovery.compositions).not.toHaveBeenCalled();
+    expect(generation.start).not.toHaveBeenCalled();
+    expect(generation.wake).not.toHaveBeenCalled();
+    expect(runners.jobsStart).not.toHaveBeenCalled();
   });
   it.each([
     ["CLIPFORGE_RUNTIME", "desktop"], ["CLIPFORGE_KLING_DISABLED", "1"],
@@ -34,5 +52,6 @@ describe("Kling startup instrumentation", () => {
     expect(generation.start).toHaveBeenCalledOnce();
     expect(generation.wake).toHaveBeenCalledOnce();
     expect(runners.jobsStart).not.toHaveBeenCalled();
+    expect(lifecycle.attach).toHaveBeenCalledOnce();
   });
 });

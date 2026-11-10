@@ -612,7 +612,7 @@ async function executeClaimedItem(item: Item) {
 
 export async function runGenerationTick(): Promise<void> {
   const state = runnerState();
-  if (state.ticking || process.env.NEXT_PHASE === "phase-production-build") return;
+  if (state.ticking || process.env.NEXT_PHASE === "phase-production-build" || process.env.CLIPFORGE_PROBE_MODE === "1") return;
   state.ticking = true;
   try {
     if (state.lastReconciledAt === undefined || Date.now() - state.lastReconciledAt >= 15_000) {
@@ -646,11 +646,11 @@ function reconcileStoppedGenerationItems(): void {
 }
 
 export function startGenerationRunner() {
-  if (process.env.NEXT_PHASE === "phase-production-build") return;
+  if (process.env.NEXT_PHASE === "phase-production-build" || process.env.CLIPFORGE_PROBE_MODE === "1") return;
   const state = runnerState();
   if (state.timer) return;
   state.timer = setInterval(() => { void runGenerationTick().catch((error) => console.error("后台队列扫描失败", error)); }, 2000);
   state.timer.unref();
 }
-export function wakeGenerationRunner() { startGenerationRunner(); void runGenerationTick().catch((error) => console.error("后台队列启动失败", error)); }
+export function wakeGenerationRunner() { if (process.env.CLIPFORGE_PROBE_MODE === "1") return; startGenerationRunner(); void runGenerationTick().catch((error) => console.error("后台队列启动失败", error)); }
 export function stopGenerationRunner() { const state = runnerState(); if (state.timer) clearInterval(state.timer); state.timer = undefined; state.lastReconciledAt = undefined; }

@@ -41,10 +41,10 @@ jobs:
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
 
-      - name: 配置 Node 22（启用 pnpm 缓存）
+      - name: 配置 Node 24（与桌面后端保持一致）
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.18.0
           cache: pnpm
 
       # ffmpeg-static 的 linux-x64 静态包（johnvansickle 构建）自 FFmpeg 7.x 起缺 harfbuzz、
@@ -60,6 +60,9 @@ jobs:
 
       - name: 单元测试
         run: pnpm test
+
+      - name: 在线安装资源管理回归
+        run: pnpm test:desktop-runtime
 
       - name: 生产构建
         run: pnpm build

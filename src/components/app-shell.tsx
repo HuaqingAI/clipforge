@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { appStorage } from "@/lib/browser-storage";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -103,7 +104,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     queueMicrotask(() => {
       if (cancelled) return;
       try {
-        if (localStorage.getItem(NAV_COLLAPSED_KEY) === "1") setCollapsed(true);
+        if (appStorage.getItem(NAV_COLLAPSED_KEY) === "1") setCollapsed(true);
       } catch { /* storage unavailable → stay expanded */ }
     });
     return () => { cancelled = true; };
@@ -111,7 +112,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const toggleCollapsed = () => {
     setCollapsed((v) => {
       const next = !v;
-      try { localStorage.setItem(NAV_COLLAPSED_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+      try { appStorage.setItem(NAV_COLLAPSED_KEY, next ? "1" : "0"); } catch { /* ignore */ }
       return next;
     });
   };

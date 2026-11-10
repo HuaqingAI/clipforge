@@ -1,5 +1,7 @@
-/** The API base shared by OpenAI image generation and its read-only connection probe. */
-export const OPENAI_BASE_URL = "https://api.openai.com/v1";
+import { HTH_BASE_URL } from "@/lib/hth-config";
+
+/** Keep the persisted OpenAI-compatible provider key while sharing HTH defaults. */
+export const OPENAI_BASE_URL = HTH_BASE_URL;
 
 export function normalizeOpenAIBaseUrl(baseUrl?: string): string {
   const base = baseUrl?.trim().replace(/\/+$/, "") || OPENAI_BASE_URL;

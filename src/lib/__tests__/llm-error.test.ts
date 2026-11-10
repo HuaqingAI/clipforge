@@ -314,8 +314,8 @@ describe("migrateSettings v2（老用户本地存着已停用的 Pollinations �
   });
 
   it("其他厂商配置不受影响，v1 的失效模型名清洗仍然生效", () => {
-    const untouched = migrateSettings(build({ baseUrl: "https://api.openai.com/v1", apiKey: "k", model: "gpt-5.4" }));
-    expect(untouched.llm.baseUrl).toBe("https://api.openai.com/v1");
+    const untouched = migrateSettings(build({ baseUrl: "https://custom.example/v1", apiKey: "k", model: "gpt-5.4" }));
+    expect(untouched.llm.baseUrl).toBe("https://custom.example/v1");
     const v1 = migrateSettings(build({ baseUrl: "https://api.deepseek.com", apiKey: "k", model: "deepseek-v3.2" }));
     expect(v1.llm.model).toBe("deepseek-v4-flash");
   });

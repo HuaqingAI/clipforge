@@ -3,6 +3,9 @@
 node_modules
 .next
 .next-local
+.next-desktop
+artifacts
+.clipforge
 data
 release
 .git

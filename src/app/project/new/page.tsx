@@ -1,4 +1,5 @@
 "use client";
+import { appStorage } from "@/lib/browser-storage";
 
 import { Suspense, useState, useRef, useCallback, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -710,7 +711,7 @@ export default function NewProjectPage() {
       if (adTemplate) {
         setVisualLook(adTemplate.look);
         try {
-          localStorage.setItem(adTemplateStorageKey(project.id), encodeStoredAdTemplate(adTemplate));
+          appStorage.setItem(adTemplateStorageKey(project.id), encodeStoredAdTemplate(adTemplate));
         } catch {
           // storage full/unavailable only loses the compose pre-fill, never the flow
         }

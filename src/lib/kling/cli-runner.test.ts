@@ -16,11 +16,11 @@ vi.mock("@/lib/db", async () => {
 });
 import { db } from "@/lib/db";
 import { klingProfiles, klingAuthSessions } from "./profile-schema";
-import { createProfile, detectProfile, getProfile, saveProfile } from "./profiles";
+import { createProfile, detectProfile, getProfile, saveProfile, updateProfile } from "./profiles";
 import { runKling, withKlingLease } from "./cli-runner";
 import { KlingError } from "./errors";
 import { refreshProfile, startLogin, cancelLogin, getAuthSession } from "./auth";
-import { buildControlledCliEnvironment, verifyInstallation } from "./environment";
+import { buildControlledCliEnvironment, effectiveKlingInstallation, verifyInstallation } from "./environment";
 import type { KlingProfile } from "./types";
 
 let profile: KlingProfile;
@@ -56,6 +56,26 @@ else {console.log(JSON.stringify({ok:true,body:{generationId:'accepted-ok',envir
     expect(result.json).toMatchObject({ body: { environment: { home: profile.homePath, noninteractive: "1" }, args: [...args, "--quiet"] } });
     expect(profile.homePath).not.toBe(path.join(os.homedir(), ".kling"));
     expect(result.spawnFailed).toBe(false);
+  });
+  it("uses the current managed installation for a legacy profile without rewriting its account identity", async () => {
+    const saved = getProfile(profile.id);
+    const legacy = saveProfile({ ...saved, nodePath: path.join(state.directory, "removed-runtime", "node.exe"), packagePath: path.join(state.directory, "removed-cli"), cliEntry: path.join(state.directory, "removed-cli", "dist/cli.js"), principalKey: "original-principal", accountSummary: { id: "original-account" }, authRevision: 17 });
+    vi.stubEnv("CLIPFORGE_RUNTIME", "desktop");
+    vi.stubEnv("CLIPFORGE_DESKTOP_LOCAL", "1");
+    vi.stubEnv("CLIPFORGE_KLING_PACKAGE_PATH", saved.packagePath);
+    try {
+      const verified = await verifyInstallation(legacy);
+      expect(verified).toMatchObject({ nodePath: await fs.realpath(process.execPath), packagePath: saved.packagePath, cliEntry: saved.cliEntry });
+      expect(effectiveKlingInstallation(legacy)).toMatchObject({ nodePath: process.execPath, packagePath: saved.packagePath });
+      const result = await runKling(legacy, ["query_tasks", "original-generation"]);
+      expect(result.json).toMatchObject({ body: { environment: { home: legacy.homePath, noninteractive: "1" }, args: ["query_tasks", "original-generation", "--quiet"] } });
+      expect(getProfile(profile.id)).toMatchObject(legacy);
+      const unchanged = updateProfile(profile.id, { nodePath: verified.nodePath, packagePath: verified.packagePath });
+      expect(unchanged).toMatchObject({ nodePath: legacy.nodePath, packagePath: legacy.packagePath, homePath: legacy.homePath, principalKey: legacy.principalKey, accountSummary: legacy.accountSummary, authRevision: 17 });
+    } finally { vi.unstubAllEnvs(); saveProfile(saved); }
+  });
+  it("keeps the Web path-change guard for previously checked installations", async () => {
+    await expect(runKling({ ...profile, cliEntry: path.join(state.directory, "old-cli.js") }, ["query_tasks", "original-generation"])).rejects.toMatchObject({ code: "KLING_ENVIRONMENT_CHANGED" });
   });
   it("preserves accepted task IDs and invokes receipt callbacks on nonzero exit", async () => {
     const seen: string[] = [];

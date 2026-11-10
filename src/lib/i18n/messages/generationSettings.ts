@@ -9,13 +9,13 @@ export const generationSettings: NamespaceMessages = {
     platformDefault: "平台默认",
 
     // 自定义模型接入点
-    customModelTitle: "自定义模型接入点",
+    customModelTitle: "自定义图片模型接入点",
     customModelDesc:
-      "在已有平台上挂任意 model id，添加后即可在上方「默认生图/生视频模型」里选用（平台 Key 复用「AI 平台」配置）。",
+      "添加图片 model id 后，可在上方「默认生图模型」中选用，沿用平台 Key。视频模型请在「视频生成」中从 Kling 账号目录选择。",
     fieldProvider: "归属平台",
     fieldType: "类型",
     fieldModelId: "model id",
-    modelIdPlaceholder: "如 fal-ai/flux-pro/v1.1",
+    modelIdPlaceholder: "如 gpt-image-2",
     fieldName: "显示名（选填）",
     namePlaceholder: "不填则用 model id",
     audioCheckbox: "该视频模型原生带音频（可省 TTS）",
@@ -52,13 +52,13 @@ export const generationSettings: NamespaceMessages = {
     platformDefault: "Platform default",
 
     // Custom model endpoints
-    customModelTitle: "Custom model endpoints",
+    customModelTitle: "Custom image model endpoints",
     customModelDesc:
-      "Attach any model id to an existing platform; once added it's selectable under \"Default image/video model\" above (the platform key is reused from \"AI platforms\").",
+      "Add an image model id to select it under \"Default image model\" using the platform key. Choose video models from your Kling account catalog under \"Video generation\".",
     fieldProvider: "Platform",
     fieldType: "Type",
     fieldModelId: "model id",
-    modelIdPlaceholder: "e.g. fal-ai/flux-pro/v1.1",
+    modelIdPlaceholder: "e.g. gpt-image-2",
     fieldName: "Display name (optional)",
     namePlaceholder: "Defaults to the model id",
     audioCheckbox: "This video model has native audio (skips TTS)",

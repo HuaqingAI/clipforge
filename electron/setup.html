@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ClipForge 安装准备</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#111318;color:#edf0f5}body{margin:0;padding:38px}h1{font-size:24px;margin:0 0 16px}.intro{color:#aeb6c6;line-height:1.7;font-size:14px}progress{width:100%;height:10px;margin:24px 0 12px;accent-color:#5f8bff}#message{font-size:15px;line-height:1.6;overflow-wrap:anywhere}#detail{color:#aeb6c6;font-size:13px;min-height:36px;line-height:1.6}#error{color:#ffb4ad;white-space:pre-wrap;font-size:13px;line-height:1.6;max-height:150px;overflow:auto}footer{display:flex;gap:12px;justify-content:flex-end;margin-top:24px}button{border:1px solid #384050;background:#202632;color:#edf0f5;border-radius:7px;padding:10px 18px;cursor:pointer}#retry{background:#426ce0;border-color:#426ce0}button:disabled{opacity:.5;cursor:default}
+  </style>
+</head>
+<body>
+  <h1 id="title">正在准备 ClipForge</h1>
+  <p class="intro">安装程序将联网下载所需工具和模型。全部下载并检查成功后即可使用，后续启动会复用已安装资源。</p>
+  <progress id="progress"></progress>
+  <p id="message">正在启动安装界面…</p>
+  <p id="detail"></p>
+  <p id="error" role="alert"></p>
+  <footer><button id="cancel">取消安装</button><button id="retry" hidden>重试</button></footer>
+  <script src="setup-renderer.js"></script>
+</body>
+</html>

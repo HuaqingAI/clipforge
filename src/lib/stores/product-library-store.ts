@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { appStorage } from "@/lib/browser-storage";
 
 // product entry
 export interface ProductItem {
@@ -59,7 +60,7 @@ export const useProductLibraryStore = create<ProductLibraryState>()(
       // JSON serialization converts Date to string; restore it when reading back
       storage: {
         getItem: (name) => {
-          const str = localStorage.getItem(name);
+          const str = appStorage.getItem(name);
           if (!str) return null;
           const parsed = JSON.parse(str);
           if (parsed?.state?.products) {
@@ -72,8 +73,8 @@ export const useProductLibraryStore = create<ProductLibraryState>()(
           }
           return parsed;
         },
-        setItem: (name, value) => localStorage.setItem(name, JSON.stringify(value)),
-        removeItem: (name) => localStorage.removeItem(name),
+        setItem: (name, value) => appStorage.setItem(name, JSON.stringify(value)),
+        removeItem: (name) => appStorage.removeItem(name),
       },
     }
   )

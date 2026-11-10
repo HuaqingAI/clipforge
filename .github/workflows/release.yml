@@ -1,5 +1,5 @@
-# 发版流水线：push 形如 vX.Y.Z 的 tag 时，在 mac + windows + linux runner 上分别打桌面安装包，
-# 并把 .dmg / .exe / .AppImage 上传到对应的 GitHub Release（即"别人一键下载即用"）；
+# Windows x64 online installer. Runtimes and models download directly from their
+# upstream publishers; this repository does not host runtime bundles.
 # 另出一份 clipforge-skill.zip（zip 根即 skill 文件夹，可直接上传 claude.ai 的 Skills 面板）。
 name: Release Desktop
 
@@ -16,12 +16,8 @@ concurrency:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false # 一个平台失败不影响另一个平台继续出包
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -29,47 +25,52 @@ jobs:
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
 
-      - name: 配置 Node 22（启用 pnpm 缓存）
+      - name: 配置与在线运行资源一致的 Node ABI
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.18.0
           cache: pnpm
 
       # 注意：这里【不】跳过 electron 二进制下载——打包需要它
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      - name: 打包桌面安装包（mac=.dmg / win=.exe / linux=.AppImage）
+      - name: 校验安装资源和桌面宿主
+        run: pnpm test:desktop-runtime
+
+      - name: 生成固定官方源清单及应用支持文件
+        run: pnpm desktop:runtime
+
+      - name: 校验官方源匿名下载地址
+        run: pnpm desktop:verify-downloads
+
+      - name: 打包轻量 Windows 在线安装器
         run: pnpm dist
+
+      - name: 实测在线资源安装及打包后的普通 Node 后端
+        run: pnpm desktop:smoke
 
       - name: 上传安装包到 Release（草稿，审核产物后再发布）
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/*.dmg
             release/*.exe
-            release/*.AppImage
-          fail_on_unmatched_files: false
+            artifacts/runtime/desktop-runtime-manifest.json
+          fail_on_unmatched_files: true
           draft: true
           # 双语发布说明（中文优先 + 英文），国际化友好；品牌统一为 ClipForge、数据目录与 build.productName 一致
           body: |
-            ClipForge 桌面版 —— 双击即用，内置 ffmpeg / sqlite，无需安装 Node。
+            ClipForge Windows x64 客户端 —— 下载 `.exe` 开始在线安装。
 
-            - **macOS (Apple Silicon)**：下载 `.dmg`。未签名，首次打开右键「打开」绕过 Gatekeeper。
-            - **Windows (x64)**：下载 `.exe` 安装。未签名，SmartScreen 提示时点「更多信息 → 仍要运行」。⚠️ 自动构建、未经实测，欢迎反馈。
-            - **Linux (x64)**：下载 `.AppImage`，`chmod +x` 后直接运行。⚠️ 自动构建、未经实测，欢迎反馈。
+            安装器自动下载并校验 Node、Kling CLI、ElevenLabs CLI、Python、音频对齐模型、本地 Tiny 转写模型及媒体工具，全部就绪后才完成安装。无需自行安装开发环境。模型不内置于安装包中，请保持网络连接并准备足够磁盘空间。
 
-            首次启动后数据存于系统用户目录（macOS：`~/Library/Application Support/ClipForge`）。
+            安装后在设置页登录自己的 Kling / ElevenLabs 账号。关闭窗口可在托盘继续处理；彻底退出将停止本机任务。文件菜单可打开旧版本完整工作目录，设置页支持配置导入导出。
+
+            安装资源直接来自 Node.js、Python、npm、PyPI、PyTorch、Hugging Face 等上游发行源，使用固定版本和 SHA256 校验；无需本仓库托管 CLI、Python 或模型包。macOS/Linux 在线运行资源待独立验收。
 
             ---
 
-            ClipForge Desktop — double-click to run. FFmpeg / SQLite bundled, no Node install required.
-
-            - **macOS (Apple Silicon)**: download the `.dmg`. Unsigned — on first launch, right-click → "Open" to bypass Gatekeeper.
-            - **Windows (x64)**: download the `.exe` installer. Unsigned — if SmartScreen appears, click "More info → Run anyway". ⚠️ Auto-built and untested — feedback welcome.
-            - **Linux (x64)**: download the `.AppImage`, `chmod +x` it and run. ⚠️ Auto-built and untested — feedback welcome.
-
-            On first launch, app data is stored under your user directory (macOS: `~/Library/Application Support/ClipForge`).
+            ClipForge Windows x64 online installer downloads pinned Node, CLI, Python, model and media resources directly from their upstream publishers and verifies SHA256 checksums. Large resources are not embedded in the installer or hosted by this repository. Sign in to your own cloud accounts after setup.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

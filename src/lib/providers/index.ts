@@ -6,8 +6,8 @@
 import type { AIProvider, ProviderConfig, ProviderRegistration } from './types'
 import { AtlasCloudProvider } from './atlas-cloud'
 import { FalAIProvider } from './fal-ai'
-import { VolcEngineProvider } from './volcengine'
 import { ReplicateProvider } from './replicate'
+import { VolcEngineProvider } from './volcengine'
 import { AlibabaProvider } from './alibaba'
 import { SiliconFlowProvider } from './siliconflow'
 import { OpenAIProvider } from './openai'
@@ -17,6 +17,14 @@ import { KlingCliProvider } from './kling-cli'
 
 /** 已注册的 Provider 列表 */
 const providerRegistry: Map<string, ProviderRegistration> = new Map()
+
+// Historical task receipts retain their original provider identity. Keep their
+// adapters available for recovery without advertising them for new selections.
+const legacyFactories: Record<string, (config: ProviderConfig) => AIProvider> = {
+  volcengine: (config) => new VolcEngineProvider(config),
+  alibaba: (config) => new AlibabaProvider(config),
+  siliconflow: (config) => new SiliconFlowProvider(config),
+}
 
 /**
  * 注册一个 Provider
@@ -42,27 +50,6 @@ registerProvider({
 })
 
 registerProvider({
-  name: 'volcengine',
-  displayName: '火山引擎',
-  description: '字节跳动火山引擎，支持可灵（Kling）和豆包 Seedance 等模型',
-  factory: (config) => new VolcEngineProvider(config),
-})
-
-registerProvider({
-  name: 'alibaba',
-  displayName: '阿里百炼',
-  description: '阿里云百炼大模型平台，支持万相（Wan）视频生成和通义千问图片生成',
-  factory: (config) => new AlibabaProvider(config),
-})
-
-registerProvider({
-  name: 'siliconflow',
-  displayName: '硅基流动',
-  description: '硅基流动推理平台，支持 FLUX、SD3.5、万相等多种开源模型',
-  factory: (config) => new SiliconFlowProvider(config),
-})
-
-registerProvider({
   name: 'replicate',
   displayName: 'Replicate',
   description: 'Replicate 模型聚合平台，支持 FLUX、Imagen、Kling、Seedance、Veo 等海量模型',
@@ -71,8 +58,8 @@ registerProvider({
 
 registerProvider({
   name: 'openai',
-  displayName: 'OpenAI',
-  description: 'OpenAI 及兼容图片 API，支持 GPT Image 2.5 Flare / Sunburst、GPT Image 2 / 1.5，可自定义兼容 API 地址',
+  displayName: 'HTH',
+  description: 'HTH 图片 API，支持 GPT Image 系列和兼容 API 地址',
   factory: (config) => new OpenAIProvider(config),
 })
 
@@ -110,6 +97,7 @@ export function createProvider(config: ProviderConfig): AIProvider {
   const registration = providerRegistry.get(config.name)
 
   if (!registration) {
+    if (Object.hasOwn(legacyFactories, config.name)) return legacyFactories[config.name](config)
     const available = Array.from(providerRegistry.keys()).join(', ')
     throw new Error(
       `未找到名为 "${config.name}" 的 Provider。可用的 Provider: ${available}`

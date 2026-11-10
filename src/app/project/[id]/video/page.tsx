@@ -1,4 +1,5 @@
 "use client";
+import { appStorage } from "@/lib/browser-storage";
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
@@ -267,7 +268,7 @@ export default function VideoPage() {
     };
     let customized = false;
     try {
-      const saved = JSON.parse(localStorage.getItem(`clipforge:project:${id}:voiceover`) ?? "null");
+      const saved = JSON.parse(appStorage.getItem(`clipforge:project:${id}:voiceover`) ?? "null");
       if (saved && typeof saved === "object") {
         if (["microsoft", "elevenlabs-cli"].includes(saved.voiceService)) {
           customized = true;
@@ -296,7 +297,7 @@ export default function VideoPage() {
   useEffect(() => {
     if (loadedVoiceProjectId !== id || customizedVoiceProjectId !== id) return;
     try {
-      localStorage.setItem(`clipforge:project:${id}:voiceover`, JSON.stringify({
+      appStorage.setItem(`clipforge:project:${id}:voiceover`, JSON.stringify({
         voiceService: config.voiceService, elevenLabsVoice: config.elevenLabsVoice, elevenLabsModel: config.elevenLabsModel,
       }));
     } catch { /* No credentials are stored in project preferences. */ }
@@ -445,12 +446,12 @@ export default function VideoPage() {
     if (loadedProfileProjectId !== id) return;
     try {
       if (tideweRef.current) {
-        localStorage.removeItem(adTemplateStorageKey(id));
-        localStorage.removeItem(adTemplateAppliedKey(id));
+        appStorage.removeItem(adTemplateStorageKey(id));
+        appStorage.removeItem(adTemplateAppliedKey(id));
         return;
       }
-      const stored = localStorage.getItem(adTemplateStorageKey(id));
-      if (!stored || localStorage.getItem(adTemplateAppliedKey(id))) return;
+      const stored = appStorage.getItem(adTemplateStorageKey(id));
+      if (!stored || appStorage.getItem(adTemplateAppliedKey(id))) return;
       // decodes both builtin ids and inline AI custom templates (custom:<json>)
       const tpl = decodeStoredAdTemplate(stored);
       if (!tpl) return;
@@ -459,7 +460,7 @@ export default function VideoPage() {
         name: locale === "zh" ? tpl.name.zh : tpl.name.en,
         compose: tpl.compose,
       });
-      localStorage.setItem(adTemplateAppliedKey(id), "1");
+      appStorage.setItem(adTemplateAppliedKey(id), "1");
     } catch {
       // localStorage unavailable — the pre-fill is a convenience, never a blocker
     }

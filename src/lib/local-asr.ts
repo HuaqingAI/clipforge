@@ -21,6 +21,13 @@ export const LOCAL_ASR_MODELS = [
 export type LocalAsrModel = (typeof LOCAL_ASR_MODELS)[number]["id"];
 export type LocalAsrDevice = "webgpu" | "wasm";
 
+export interface AsrRuntimeDescriptor {
+  mode: "web" | "managed";
+  models: LocalAsrModel[];
+  modelBaseUrl?: string;
+  wasmBaseUrl?: string;
+}
+
 export function isLocalAsrModel(value: unknown): value is LocalAsrModel {
   return LOCAL_ASR_MODELS.some((model) => model.id === value);
 }
@@ -33,6 +40,7 @@ export interface AsrWorkerRequest {
   offsetSeconds?: number;
   sourceDuration?: number;
   chunkIndex?: number;
+  runtime?: AsrRuntimeDescriptor;
 }
 
 export type AsrWorkerMessage =

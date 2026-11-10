@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { getDataDir } from "@/lib/paths";
+import { isLocalCliRuntimeEnabled } from "@/lib/runtime-capabilities";
 
 const COOKIE = "clipforge-elevenlabs-session";
 const MAX_AGE = 12 * 60 * 60;
@@ -17,10 +18,10 @@ function localHost(value: string): boolean {
   return value === "localhost" || value === "127.0.0.1" || value === "[::1]" || value === "::1";
 }
 
-/** Local web only. Forwarded headers never establish trust. */
+/** Local browser or managed desktop backend. Forwarded headers never establish trust. */
 export function assertLocalElevenLabsOrigin(req: NextRequest): void {
-  if (process.env.CLIPFORGE_ELEVENLABS_DISABLED === "1" || process.env.CLIPFORGE_RUNTIME === "desktop" || process.versions?.electron) {
-    throw new ElevenLabsAccessError("ElevenLabs CLI 当前仅支持本机运行的网页版", 503);
+  if (!isLocalCliRuntimeEnabled("elevenlabs")) {
+    throw new ElevenLabsAccessError("ElevenLabs CLI 需要本机运行的网页版，或已完成资源安装的客户端", 503);
   }
   const url = new URL(req.url);
   const host = req.headers.get("host");

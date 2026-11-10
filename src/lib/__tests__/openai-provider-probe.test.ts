@@ -24,6 +24,16 @@ async function probe(response: Response, baseUrl = "https://gateway.test/v1") {
 }
 
 describe("OpenAI read-only provider probe", () => {
+  it.each([undefined, "", "   "])("uses HTH for an unset API base %j", async (baseUrl) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{ id: "gpt-image-2" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(new NextRequest("http://localhost/api/ai/test-provider", {
+      method: "POST", body: JSON.stringify({ name: "openai", apiKey: "test-key", baseUrl }),
+    }));
+    expect((await response.json()).status).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("https://hth.huaqing.run/v1/models", expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer test-key" } }));
+  });
+
   it("does not treat an HTML homepage with HTTP 200 as a successful API connection", async () => {
     const { result } = await probe(new Response("<!doctype html><html>PRIVATE_UPSTREAM_PAGE</html>", {
       headers: { "Content-Type": "text/html" },

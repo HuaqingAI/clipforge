@@ -30,34 +30,31 @@ it("points AgentPlan users at the plan endpoint when the standard endpoint rejec
     .rejects.toMatchObject({ code: "ARK_AUTH_ERROR", statusCode: 401, message: expect.stringContaining("/api/plan/v3") });
 });
 
-it.each([200, 404, 500, 401, 403])("does not claim generation access from an Ark model-list probe (HTTP %s)", async (status) => {
-  const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status }));
+it.each([undefined, " https://ark.cn-beijing.volces.com/api/plan/v3/ ", "https://custom.example/api/v3"])("rejects retired Ark probes without a network request for %j", async (baseUrl) => {
+  const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   const response = await POST(new NextRequest("http://localhost/api/ai/test-provider", {
-    method: "POST", headers: { "Accept-Language": "en" }, body: JSON.stringify({ name: "volcengine", apiKey: "test-key" }),
+    method: "POST", headers: { "Accept-Language": "en" }, body: JSON.stringify({ name: "volcengine", apiKey: "test-key", baseUrl }),
   }));
   const body = await response.json();
-  expect(body.status).toBe(status === 401 || status === 403 ? "invalid" : "unknown");
-  expect(body.message).toMatch(/permissions|project/);
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(fetchMock.mock.calls[0][0]).toBe("https://ark.cn-beijing.volces.com/api/v3/models");
-  expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+  expect(response.status).toBe(400);
+  expect(body.status).toBe("unknown");
+  expect(body.message).toContain("disabled");
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
-it.each([200, 401, 403, 404, 500])("probes AgentPlan task listing without generating a video (HTTP %s)", async (status) => {
-  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ total: 0, items: [] }), { status }));
+it.each(["alibaba", "siliconflow"])("rejects the retired %s provider even when a custom base is supplied", async (name) => {
+  const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   const response = await POST(new NextRequest("http://localhost/api/ai/test-provider", {
     method: "POST",
-    body: JSON.stringify({ name: "volcengine", apiKey: "test-plan-key", baseUrl: " https://ark.cn-beijing.volces.com/api/plan/v3/ " }),
+    body: JSON.stringify({ name, apiKey: "test-key", baseUrl: "https://custom.example/v1" }),
   }));
   const body = await response.json();
-  expect(body.status).toBe(status === 200 ? "ok" : status === 401 || status === 403 ? "invalid" : "unknown");
-  expect(body.message).toContain("AgentPlan");
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(fetchMock.mock.calls[0][0]).toBe("https://ark.cn-beijing.volces.com/api/plan/v3/contents/generations/tasks?page_size=1");
-  expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", headers: { Authorization: "Bearer test-plan-key" } });
-  expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+  expect(response.status).toBe(400);
+  expect(body.status).toBe("unknown");
+  expect(body.message).toContain("已停用");
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 it("keeps an authenticated non-Ark provider probe successful", async () => {

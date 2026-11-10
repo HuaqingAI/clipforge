@@ -17,10 +17,15 @@ describe("account-owned Kling model selection", () => {
     };
     expect(configuredCatalogProviders(providers, "video")).toEqual([
       { name: "kling-cli", profileId: "profile-1" },
-      { name: "fal-ai", apiKey: "real-key", baseUrl: undefined },
     ]);
     expect(configuredCatalogProviders(providers, "image").map((provider) => provider.name)).toEqual(["fal-ai"]);
     expect(configuredCatalogProviders({ "kling-cli": { enabled: false, profileId: "profile-1" } })).toEqual([]);
+  });
+
+  it("excludes HTH and retired platform credentials from video requests", () => {
+    const providers = Object.fromEntries(["openai", "volcengine", "alibaba", "siliconflow"].map((name) => [name, { enabled: true, apiKey: "saved-key" }]));
+    expect(configuredCatalogProviders(providers, "video")).toEqual([]);
+    expect(configuredCatalogProviders(providers, "image").map((provider) => provider.name)).toEqual(["openai"]);
   });
 
   it("keeps provider ownership when custom model IDs collide, and never permits custom CLI IDs", () => {

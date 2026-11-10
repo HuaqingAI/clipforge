@@ -328,7 +328,7 @@ describe("Ollama 预设与迁移（Windows 上 localhost 会先解析到 ::1，�
     const build = (baseUrl: string): SettingsState => ({ llm: { provider: "", baseUrl, apiKey: "", model: "" } }) as SettingsState;
     expect(migrateSettings(build("http://localhost:11434/v1")).llm.baseUrl).toBe("http://127.0.0.1:11434/v1");
     expect(migrateSettings(build("http://localhost:3000/v1")).llm.baseUrl).toBe("http://localhost:3000/v1");
-    expect(migrateSettings(build("https://api.openai.com/v1")).llm.baseUrl).toBe("https://api.openai.com/v1");
+    expect(migrateSettings(build("https://custom.example/v1")).llm.baseUrl).toBe("https://custom.example/v1");
   });
 
   it("模型选择器与 Ollama 提示的文案键中英齐全（缺键只会在用户点开时才露出）", () => {

@@ -4,6 +4,7 @@ import { useSettingsStore } from "@/lib/stores/settings-store";
 
 const initial = useSettingsStore.getInitialState();
 const storageKey = "daihuo-jianshou-settings";
+const savedKlingModel = JSON.stringify(["kling-cli", "image_to_video", "saved-kling-model"]);
 const videoParams: VideoGenParams = {
   aspectRatio: "16:9", resolution: "1080p", duration: 8, fps: 24,
   motionStrength: 0.65, seed: 101, negativePrompt: "blur",
@@ -52,16 +53,16 @@ describe("video resolution settings", () => {
   ] as const)("hydrates version 5 with visible %s winning over hidden %s and saves the corrected version", async (visible, hidden) => {
     localStorage.setItem(storageKey, JSON.stringify({ version: 5, state: {
       defaultResolution: visible, videoParams: { ...videoParams, resolution: hidden },
-      defaultVideoModel: "saved-kling-model", spendCapUsd: 2,
+      defaultVideoModel: savedKlingModel, spendCapUsd: 2,
     } }));
 
     await useSettingsStore.persist.rehydrate();
 
     expect(useSettingsStore.getState()).toMatchObject({
       defaultResolution: visible, videoParams: { ...videoParams, resolution: visible },
-      defaultVideoModel: "saved-kling-model", spendCapUsd: 2,
+      defaultVideoModel: savedKlingModel, spendCapUsd: 2,
     });
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 8, state: {
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9, state: {
       defaultResolution: visible, videoParams: { ...videoParams, resolution: visible },
     } });
   });
@@ -74,6 +75,6 @@ describe("video resolution settings", () => {
     await useSettingsStore.persist.rehydrate();
 
     expect(useSettingsStore.getState()).toMatchObject({ defaultResolution: "720p", videoParams: { ...videoParams, resolution: "480p" } });
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 8 });
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9 });
   });
 });

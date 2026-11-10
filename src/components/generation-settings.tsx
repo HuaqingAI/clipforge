@@ -20,7 +20,6 @@ import {
   ASPECT_RATIO_OPTIONS,
   RESOLUTION_OPTIONS,
   type CustomModel,
-  type GenMediaType,
 } from "@/lib/gen-params";
 
 // platforms that support custom model attachment (keys match settings.providers)
@@ -28,9 +27,7 @@ const PROVIDER_OPTIONS: { value: string; label: string }[] = [
   { value: "atlas-cloud", label: "Atlas Cloud" },
   { value: "fal-ai", label: "fal.ai" },
   { value: "replicate", label: "Replicate" },
-  { value: "volcengine", label: "火山引擎" },
-  { value: "alibaba", label: "阿里百炼" },
-  { value: "siliconflow", label: "硅基流动" },
+  { value: "openai", label: "HTH" },
 ];
 
 const labelOf = (opts: { value: string; label: string }[], v: string) =>
@@ -67,7 +64,7 @@ function NumberField({
 
 /**
  * "Custom models + generation params" settings card. Self-contained read/write from the settings store,
- * allowing users to attach arbitrary model IDs to existing providers and set global default params for image/video generation.
+ * allowing users to attach image model IDs to existing providers and set global default params for image/video generation.
  */
 export function GenerationSettings() {
   const t = useT("generationSettings");
@@ -81,23 +78,15 @@ export function GenerationSettings() {
     setVideoParams,
   } = useSettingsStore();
 
-  // media type options (labels follow the UI language)
-  const MEDIA_OPTIONS: { value: GenMediaType; label: string }[] = [
-    { value: "image", label: t("mediaImage") },
-    { value: "video", label: t("mediaVideo") },
-  ];
-
   // aspect ratio options: reuse values from gen-params, labels via i18n (consistent with "default settings" on the settings page)
   const ASPECT_KEY: Record<string, string> = { "9:16": "aspect916", "16:9": "aspect169", "1:1": "aspect11" };
   const ASPECT_OPTIONS = ASPECT_RATIO_OPTIONS.map((o) => ({ value: o.value, label: t(ASPECT_KEY[o.value] ?? o.value) }));
 
   // form state for adding a new custom model
-  const [form, setForm] = useState<{ provider: string; modelId: string; name: string; mediaType: GenMediaType; supportsAudio: boolean }>({
-    provider: "fal-ai",
+  const [form, setForm] = useState<{ provider: string; modelId: string; name: string }>({
+    provider: "openai",
     modelId: "",
     name: "",
-    mediaType: "image",
-    supportsAudio: false,
   });
 
   const canAdd = form.modelId.trim().length > 0;
@@ -108,11 +97,10 @@ export function GenerationSettings() {
       provider: form.provider,
       modelId: form.modelId.trim(),
       name: form.name.trim() || form.modelId.trim(),
-      mediaType: form.mediaType,
-      ...(form.mediaType === "video" && form.supportsAudio ? { supportsAudio: true } : {}),
+      mediaType: "image",
     };
     addCustomModel(cm);
-    setForm((f) => ({ ...f, modelId: "", name: "", supportsAudio: false }));
+    setForm((f) => ({ ...f, modelId: "", name: "" }));
   };
 
   return (
@@ -141,17 +129,6 @@ export function GenerationSettings() {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{t("fieldType")}</Label>
-              <Select value={form.mediaType} onValueChange={(v) => setForm((f) => ({ ...f, mediaType: (v ?? "image") as GenMediaType }))}>
-                <SelectTrigger className="w-full">
-                  <SelectValue>{(value: string) => labelOf(MEDIA_OPTIONS, value)}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {MEDIA_OPTIONS.map((o) => (<SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">{t("fieldModelId")}</Label>
               <Input value={form.modelId} onChange={(e) => setForm((f) => ({ ...f, modelId: e.target.value }))} placeholder={t("modelIdPlaceholder")} className="font-mono text-xs" />
             </div>
@@ -160,13 +137,7 @@ export function GenerationSettings() {
               <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder={t("namePlaceholder")} className="text-xs" />
             </div>
           </div>
-          <div className="flex items-center justify-between">
-            {form.mediaType === "video" ? (
-              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                <input type="checkbox" checked={form.supportsAudio} onChange={(e) => setForm((f) => ({ ...f, supportsAudio: e.target.checked }))} />
-                {t("audioCheckbox")}
-              </label>
-            ) : <span />}
+          <div className="flex justify-end">
             <Button variant="outline" size="sm" onClick={handleAdd} disabled={!canAdd} className="text-xs">
               <LuPlus className="size-3.5 mr-1" /> {t("addModel")}
             </Button>

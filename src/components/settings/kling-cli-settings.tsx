@@ -185,6 +185,7 @@ export function KlingCliSettings({ onCatalogChanged }: { onCatalogChanged?: () =
 
   const profile = status?.profile;
   const locked = Boolean(busy || pollingLogin);
+  const managed = Boolean(status?.installationManaged);
   const account = profile?.accountSummary;
   const savedProfiles = status?.profiles.filter((item) => !item.disabled) ?? [];
   return (
@@ -193,7 +194,7 @@ export function KlingCliSettings({ onCatalogChanged }: { onCatalogChanged?: () =
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <h3 className="text-sm font-semibold">Kling 官方 CLI</h3>
-            <p className="text-xs text-muted-foreground">使用本机安装的官方 CLI 与 Kling 账号生成视频，支持单镜头生成和批量转动态。仅支持本机网页版，暂不支持 Electron。</p>
+            <p className="text-xs text-muted-foreground">使用本机安装的官方 CLI 与 Kling 账号生成视频，支持单镜头生成和批量转动态。客户端安装时自动准备 CLI，本机网页版也可使用。</p>
           </div>
           <ToggleSwitch
             checked={enabled}
@@ -208,9 +209,9 @@ export function KlingCliSettings({ onCatalogChanged }: { onCatalogChanged?: () =
         <details className="rounded-md border border-border/50 p-3" open={!profile}>
           <summary className="cursor-pointer text-xs font-medium">安装与本机运行配置</summary>
           <div className="mt-3 space-y-3">
-            <p className="text-xs text-muted-foreground">双击启动脚本已准备好 CLI 时，路径会自动填写，依次保存本机配置、检测环境、登录 Kling 即可。手动启动时先安装固定版本：<code className="select-all">npm install -g {KLING_PACKAGE}@{KLING_VERSION}</code>。当前仅支持 Global 账号。</p>
-            <div className="space-y-1.5"><Label htmlFor="kling-node-path">Node 可执行文件路径</Label><Input id="kling-node-path" value={nodePath} disabled={locked} onChange={(event) => { setNodePath(event.target.value); setDirty(true); }} placeholder="留空使用本机服务的 Node" className="font-mono text-xs" /></div>
-            <div className="space-y-1.5"><Label htmlFor="kling-package-path">CLI 包目录</Label><Input id="kling-package-path" value={packagePath} disabled={locked} onChange={(event) => { setPackagePath(event.target.value); setDirty(true); }} placeholder="包含 package.json 与 dist/cli.js 的 @klingai/cli-global 目录" className="font-mono text-xs" /><p className="text-xs text-muted-foreground">可运行 npm root -g 查看全局包目录，再定位其中的 @klingai/cli-global 文件夹。请填写目录路径。</p></div>
+            <p className="text-xs text-muted-foreground">{managed ? "客户端已准备好 CLI，安装路径随客户端版本自动管理。首次使用请保存本机配置、检测环境并登录 Kling。当前仅支持 Global 账号。" : <>双击启动脚本已准备好 CLI 时，路径会自动填写，依次保存本机配置、检测环境、登录 Kling 即可。手动启动时先安装固定版本：<code className="select-all">npm install -g {KLING_PACKAGE}@{KLING_VERSION}</code>。当前仅支持 Global 账号。</>}</p>
+            <div className="space-y-1.5"><Label htmlFor="kling-node-path">Node 可执行文件路径</Label><Input id="kling-node-path" value={nodePath} disabled={locked || managed} onChange={(event) => { setNodePath(event.target.value); setDirty(true); }} placeholder="留空使用本机服务的 Node" className="font-mono text-xs" /></div>
+            <div className="space-y-1.5"><Label htmlFor="kling-package-path">CLI 包目录</Label><Input id="kling-package-path" value={packagePath} disabled={locked || managed} onChange={(event) => { setPackagePath(event.target.value); setDirty(true); }} placeholder="包含 package.json 与 dist/cli.js 的 @klingai/cli-global 目录" className="font-mono text-xs" />{!managed && <p className="text-xs text-muted-foreground">可运行 npm root -g 查看全局包目录，再定位其中的 @klingai/cli-global 文件夹。请填写目录路径。</p>}</div>
             <Button size="sm" variant="outline" disabled={locked || !packagePath.trim()} onClick={() => void perform("save", "profiles", { ...(profileId ? { id: profileId } : {}), nodePath: nodePath.trim(), packagePath: packagePath.trim() })}>{busy === "save" ? "保存中…" : "保存本机配置"}</Button>
           </div>
         </details>

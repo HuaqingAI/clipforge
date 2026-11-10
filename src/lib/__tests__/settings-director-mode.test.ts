@@ -3,6 +3,7 @@ import { useSettingsStore } from "@/lib/stores/settings-store";
 
 const initial = useSettingsStore.getInitialState();
 const storageKey = "daihuo-jianshou-settings";
+const savedKlingModel = JSON.stringify(["kling-cli", "image_to_video", "saved-video-model"]);
 
 beforeEach(() => {
   useSettingsStore.setState(initial, true);
@@ -23,18 +24,18 @@ describe("director-only workspace", () => {
 
   it("migrates saved beginner mode and retains unrelated user settings", async () => {
     localStorage.setItem(storageKey, JSON.stringify({ version: 6, state: {
-      uiMode: "simple", locale: "en", defaultVideoModel: "saved-video-model",
+      uiMode: "simple", locale: "en", defaultVideoModel: savedKlingModel,
       visualLook: "phone_raw", motionIntensity: "strong", spendCapUsd: 2,
     } }));
 
     await useSettingsStore.persist.rehydrate();
 
     const expected = {
-      uiMode: "pro", locale: "en", defaultVideoModel: "saved-video-model",
+      uiMode: "pro", locale: "en", defaultVideoModel: savedKlingModel,
       visualLook: "phone_raw", motionIntensity: "strong", spendCapUsd: 2,
     };
     expect(useSettingsStore.getState()).toMatchObject(expected);
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 8, state: expected });
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9, state: expected });
   });
 
   it.each([8, undefined])("normalizes legacy mode during hydration even with version %s", async (version) => {

@@ -8,9 +8,19 @@ export interface CatalogProviderSetting {
   profileId?: string;
 }
 
+const RETIRED_CATALOG_PROVIDERS = new Set(["volcengine", "alibaba", "siliconflow"]);
+
+/** New video selections use the account-owned Kling CLI catalog on both app surfaces. */
+export function isCatalogProviderSupported(name: string, mediaType?: "image" | "video"): boolean {
+  if (RETIRED_CATALOG_PROVIDERS.has(name)) return false;
+  if (mediaType === "video") return name === "kling-cli";
+  if (mediaType === "image") return name !== "kling-cli";
+  return true;
+}
+
 /** CLI credentials live on the server; enabled CLI profiles never need a fake API key. */
 export function isCatalogProviderEnabled(name: string, setting: CatalogProviderSetting): boolean {
-  return Boolean(setting.enabled && (name === "kling-cli" || setting.apiKey?.trim()));
+  return Boolean(isCatalogProviderSupported(name) && setting.enabled && (name === "kling-cli" || setting.apiKey?.trim()));
 }
 
 export function configuredCatalogProviders(
@@ -18,7 +28,7 @@ export function configuredCatalogProviders(
   mediaType?: "image" | "video",
 ): CatalogProvider[] {
   return Object.entries(providers)
-    .filter(([name, setting]) => isCatalogProviderEnabled(name, setting) && !(name === "kling-cli" && mediaType === "image"))
+    .filter(([name, setting]) => isCatalogProviderEnabled(name, setting) && isCatalogProviderSupported(name, mediaType))
     .map(([name, setting]) => name === "kling-cli"
       ? { name, ...(setting.profileId ? { profileId: setting.profileId } : {}) }
       : { name, apiKey: setting.apiKey, baseUrl: setting.baseUrl });

@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { appStorage } from "@/lib/browser-storage";
 
 // brand configuration
 export interface BrandConfig {
@@ -60,6 +61,7 @@ export const useBrandStore = create<BrandState>()(
     }),
     {
       name: "daihuo-jianshou-brand",
+      storage: createJSONStorage(() => appStorage),
     }
   )
 );

@@ -1,0 +1,989 @@
+{
+  "schemaVersion": 2,
+  "installMode": "official-sources",
+  "platform": "win32",
+  "arch": "x64",
+  "nodeVersion": "24.18.0",
+  "nodeAbi": 137,
+  "paths": {
+    "nodePath": "node/node.exe",
+    "klingPackagePath": "cli/node_modules/@klingai/cli-global",
+    "elevenLabsPackagePath": "cli/node_modules/@elevenlabs/cli",
+    "elevenLabsExecutable": "cli/node_modules/@elevenlabs/cli-win32-x64/elevenlabs.exe",
+    "alignmentRuntimeDir": "alignment",
+    "alignmentPythonPath": "alignment/python/python.exe",
+    "alignmentModelDir": "alignment/model",
+    "alignmentCheckerPath": "alignment/scripts/check-runtime.py",
+    "asrModelDir": "asr",
+    "wasmDir": "asr/wasm",
+    "ffmpegPath": "media/ffmpeg.exe",
+    "ffprobePath": "media/ffprobe.exe"
+  },
+  "python": {
+    "version": "3.12.10",
+    "pipResourceId": "python-pip",
+    "wheelResourceIds": [
+      "python-certifi",
+      "python-charset-normalizer",
+      "python-click",
+      "python-cloudpickle",
+      "python-colorama",
+      "python-defusedxml",
+      "python-filelock",
+      "python-fsspec",
+      "python-huggingface-hub",
+      "python-idna",
+      "python-jinja2",
+      "python-joblib",
+      "python-markupsafe",
+      "python-mpmath",
+      "python-msvc-runtime",
+      "python-networkx",
+      "python-nltk",
+      "python-numpy",
+      "python-packaging",
+      "python-pandas",
+      "python-python-dateutil",
+      "python-pytz",
+      "python-pyyaml",
+      "python-regex",
+      "python-requests",
+      "python-safetensors",
+      "python-setuptools",
+      "python-sympy",
+      "python-tokenizers",
+      "python-torch",
+      "python-torchaudio",
+      "python-tqdm",
+      "python-transformers",
+      "python-typing-extensions",
+      "python-tzdata",
+      "python-urllib3",
+      "python-whisperx"
+    ]
+  },
+  "sources": {
+    "pythonProvider": "python.org embeddable",
+    "ortVersion": "1.26.0-dev.20260416-b7804b056c",
+    "ffmpegVersion": "b6.1.1",
+    "alignmentModel": "facebook/wav2vec2-base-960h",
+    "alignmentRevision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156",
+    "asrModel": "onnx-community/whisper-tiny_timestamped",
+    "asrRevision": "517244293732ee2d58139af5814231b7e6830a0d",
+    "nltkRevision": "550b6625bcef1f2abff2ff770a5a0d272c9c6b2a"
+  },
+  "resources": [
+    {
+      "id": "node",
+      "url": "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip",
+      "size": 37176245,
+      "sha256": "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
+      "format": "zip",
+      "target": "node",
+      "stripPrefix": "node-v24.18.0-win-x64"
+    },
+    {
+      "id": "python",
+      "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
+      "size": 11133606,
+      "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+      "format": "zip",
+      "target": "alignment/python"
+    },
+    {
+      "id": "python-pip",
+      "url": "https://files.pythonhosted.org/packages/c9/bc/b7db44f5f39f9d0494071bddae6880eb645970366d0a200022a1a93d57f5/pip-25.0.1-py3-none-any.whl",
+      "size": 1841526,
+      "sha256": "c46efd13b6aa8279f33f2864459c8ce587ea6a1a59ee20de055868d8f7688f7f",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/pip-25.0.1-py3-none-any.whl",
+      "fileName": "pip-25.0.1-py3-none-any.whl",
+      "role": "pip",
+      "pythonRequirement": "pip==25.0.1",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c9/bc/b7db44f5f39f9d0494071bddae6880eb645970366d0a200022a1a93d57f5/pip-25.0.1-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/c9/bc/b7db44f5f39f9d0494071bddae6880eb645970366d0a200022a1a93d57f5/pip-25.0.1-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-certifi",
+      "url": "https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl",
+      "size": 135082,
+      "sha256": "e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/certifi-2026.10.23-py3-none-any.whl",
+      "fileName": "certifi-2026.10.23-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "certifi==2026.10.23",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-charset-normalizer",
+      "url": "https://files.pythonhosted.org/packages/eb/e6/e6e083884cbcfd49c64865af05027fe7011be7b2d9179524f099a1b611f3/charset_normalizer-3.5.2-cp312-cp312-win_amd64.whl",
+      "size": 207486,
+      "sha256": "780fbe7cab297b81dad9fb8dc5eb003c0468ffb0d9e5f65068c53a34661a96bc",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/charset_normalizer-3.5.2-cp312-cp312-win_amd64.whl",
+      "fileName": "charset_normalizer-3.5.2-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "charset-normalizer==3.5.2",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/eb/e6/e6e083884cbcfd49c64865af05027fe7011be7b2d9179524f099a1b611f3/charset_normalizer-3.5.2-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/eb/e6/e6e083884cbcfd49c64865af05027fe7011be7b2d9179524f099a1b611f3/charset_normalizer-3.5.2-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-click",
+      "url": "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl",
+      "size": 125251,
+      "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/click-8.5.0-py3-none-any.whl",
+      "fileName": "click-8.5.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "click==8.5.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-cloudpickle",
+      "url": "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl",
+      "size": 22228,
+      "sha256": "9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/cloudpickle-3.1.2-py3-none-any.whl",
+      "fileName": "cloudpickle-3.1.2-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "cloudpickle==3.1.2",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-colorama",
+      "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+      "size": 25335,
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/colorama-0.4.6-py2.py3-none-any.whl",
+      "fileName": "colorama-0.4.6-py2.py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "colorama==0.4.6",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-defusedxml",
+      "url": "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl",
+      "size": 25604,
+      "sha256": "a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/defusedxml-0.7.1-py2.py3-none-any.whl",
+      "fileName": "defusedxml-0.7.1-py2.py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "defusedxml==0.7.1",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-filelock",
+      "url": "https://files.pythonhosted.org/packages/e0/1b/5e74289a1878e666bb4b65fe5805a04cafcac2aa5f519ef1ead67ef91c56/filelock-4.2.4-py3-none-any.whl",
+      "size": 162475,
+      "sha256": "301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/filelock-4.2.4-py3-none-any.whl",
+      "fileName": "filelock-4.2.4-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "filelock==4.2.4",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/e0/1b/5e74289a1878e666bb4b65fe5805a04cafcac2aa5f519ef1ead67ef91c56/filelock-4.2.4-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/e0/1b/5e74289a1878e666bb4b65fe5805a04cafcac2aa5f519ef1ead67ef91c56/filelock-4.2.4-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-fsspec",
+      "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
+      "size": 221738,
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/fsspec-2026.9.0-py3-none-any.whl",
+      "fileName": "fsspec-2026.9.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "fsspec==2026.9.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-huggingface-hub",
+      "url": "https://files.pythonhosted.org/packages/a8/af/48ac8483240de756d2438c380746e7130d1c6f75802ef22f3c6d49982787/huggingface_hub-0.36.2-py3-none-any.whl",
+      "size": 566395,
+      "sha256": "48f0c8eac16145dfce371e9d2d7772854a4f591bcb56c9cf548accf531d54270",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/huggingface_hub-0.36.2-py3-none-any.whl",
+      "fileName": "huggingface_hub-0.36.2-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "huggingface-hub==0.36.2",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a8/af/48ac8483240de756d2438c380746e7130d1c6f75802ef22f3c6d49982787/huggingface_hub-0.36.2-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/a8/af/48ac8483240de756d2438c380746e7130d1c6f75802ef22f3c6d49982787/huggingface_hub-0.36.2-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-idna",
+      "url": "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl",
+      "size": 69583,
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/idna-3.20-py3-none-any.whl",
+      "fileName": "idna-3.20-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "idna==3.20",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-jinja2",
+      "url": "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+      "size": 134899,
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/jinja2-3.1.6-py3-none-any.whl",
+      "fileName": "jinja2-3.1.6-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "jinja2==3.1.6",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-joblib",
+      "url": "https://files.pythonhosted.org/packages/18/53/84099323c2ec4be98d935f63c033ac4151ee83836ca1050ede3b3aadf155/joblib-1.6.0-py3-none-any.whl",
+      "size": 306115,
+      "sha256": "3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/joblib-1.6.0-py3-none-any.whl",
+      "fileName": "joblib-1.6.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "joblib==1.6.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/18/53/84099323c2ec4be98d935f63c033ac4151ee83836ca1050ede3b3aadf155/joblib-1.6.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/18/53/84099323c2ec4be98d935f63c033ac4151ee83836ca1050ede3b3aadf155/joblib-1.6.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-markupsafe",
+      "url": "https://files.pythonhosted.org/packages/aa/5b/bec5aa9bbbb2c946ca2733ef9c4ca91c91b6a24580193e891b5f7dbe8e1e/markupsafe-3.0.3-cp312-cp312-win_amd64.whl",
+      "size": 15105,
+      "sha256": "26a5784ded40c9e318cfc2bdb30fe164bdb8665ded9cd64d500a34fb42067b1c",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/markupsafe-3.0.3-cp312-cp312-win_amd64.whl",
+      "fileName": "markupsafe-3.0.3-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "markupsafe==3.0.3",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/aa/5b/bec5aa9bbbb2c946ca2733ef9c4ca91c91b6a24580193e891b5f7dbe8e1e/markupsafe-3.0.3-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/aa/5b/bec5aa9bbbb2c946ca2733ef9c4ca91c91b6a24580193e891b5f7dbe8e1e/markupsafe-3.0.3-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-mpmath",
+      "url": "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl",
+      "size": 536198,
+      "sha256": "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/mpmath-1.3.0-py3-none-any.whl",
+      "fileName": "mpmath-1.3.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "mpmath==1.3.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-msvc-runtime",
+      "url": "https://files.pythonhosted.org/packages/98/33/be9ef68901200813fc174a06758b4ae48ca4eb58fa783280dd879d5fd048/msvc_runtime-14.51.36231-cp312-cp312-win_amd64.whl",
+      "size": 2052033,
+      "sha256": "89f70d1a37bb64164cdb09d02dd82d6b1400e1310be2995b4ed5a9f23efe2222",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/msvc_runtime-14.51.36231-cp312-cp312-win_amd64.whl",
+      "fileName": "msvc_runtime-14.51.36231-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "msvc-runtime==14.51.36231",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/98/33/be9ef68901200813fc174a06758b4ae48ca4eb58fa783280dd879d5fd048/msvc_runtime-14.51.36231-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/98/33/be9ef68901200813fc174a06758b4ae48ca4eb58fa783280dd879d5fd048/msvc_runtime-14.51.36231-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-networkx",
+      "url": "https://files.pythonhosted.org/packages/7e/cd/fe58041e9011f307c490e3e17dd48cc516448f7c698a3f2d9d9d65d7e6a8/networkx-3.7-py3-none-any.whl",
+      "size": 2142205,
+      "sha256": "e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/networkx-3.7-py3-none-any.whl",
+      "fileName": "networkx-3.7-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "networkx==3.7",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/7e/cd/fe58041e9011f307c490e3e17dd48cc516448f7c698a3f2d9d9d65d7e6a8/networkx-3.7-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/7e/cd/fe58041e9011f307c490e3e17dd48cc516448f7c698a3f2d9d9d65d7e6a8/networkx-3.7-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-nltk",
+      "url": "https://files.pythonhosted.org/packages/a2/04/e7816813e409ca874ba2fcc35455db0e4130b79eb277e1f9edd270ca3c69/nltk-3.10.4-py3-none-any.whl",
+      "size": 1722994,
+      "sha256": "769ba5413f265b7d3e87cd163cc28efa01e29eeef8bb6080bc907949d9fcfb51",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/nltk-3.10.4-py3-none-any.whl",
+      "fileName": "nltk-3.10.4-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "nltk==3.10.4",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a2/04/e7816813e409ca874ba2fcc35455db0e4130b79eb277e1f9edd270ca3c69/nltk-3.10.4-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/a2/04/e7816813e409ca874ba2fcc35455db0e4130b79eb277e1f9edd270ca3c69/nltk-3.10.4-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-numpy",
+      "url": "https://files.pythonhosted.org/packages/12/33/fefe62073dc8acfd0f2b9ed7c003af2f50aa61555e113e6db02b8f79f145/numpy-2.5.4-cp312-cp312-win_amd64.whl",
+      "size": 12573091,
+      "sha256": "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/numpy-2.5.4-cp312-cp312-win_amd64.whl",
+      "fileName": "numpy-2.5.4-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "numpy==2.5.4",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/12/33/fefe62073dc8acfd0f2b9ed7c003af2f50aa61555e113e6db02b8f79f145/numpy-2.5.4-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/12/33/fefe62073dc8acfd0f2b9ed7c003af2f50aa61555e113e6db02b8f79f145/numpy-2.5.4-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-packaging",
+      "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "size": 129956,
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/packaging-26.3-py3-none-any.whl",
+      "fileName": "packaging-26.3-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "packaging==26.3",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-pandas",
+      "url": "https://files.pythonhosted.org/packages/86/41/585a168330ff063014880a80d744219dbf1dd7a1c706e75ab3425a987384/pandas-2.3.3-cp312-cp312-win_amd64.whl",
+      "size": 10992722,
+      "sha256": "a16dcec078a01eeef8ee61bf64074b4e524a2a3f4b3be9326420cabe59c4778b",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/pandas-2.3.3-cp312-cp312-win_amd64.whl",
+      "fileName": "pandas-2.3.3-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "pandas==2.3.3",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/86/41/585a168330ff063014880a80d744219dbf1dd7a1c706e75ab3425a987384/pandas-2.3.3-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/86/41/585a168330ff063014880a80d744219dbf1dd7a1c706e75ab3425a987384/pandas-2.3.3-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-python-dateutil",
+      "url": "https://files.pythonhosted.org/packages/2f/a9/52b89563d154433d79b51ed1eb4842bf7334cb2696891a7fe135618853d7/python_dateutil-4.0.0-py3-none-any.whl",
+      "size": 92853,
+      "sha256": "a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/python_dateutil-4.0.0-py3-none-any.whl",
+      "fileName": "python_dateutil-4.0.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "python-dateutil==4.0.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/2f/a9/52b89563d154433d79b51ed1eb4842bf7334cb2696891a7fe135618853d7/python_dateutil-4.0.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/2f/a9/52b89563d154433d79b51ed1eb4842bf7334cb2696891a7fe135618853d7/python_dateutil-4.0.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-pytz",
+      "url": "https://files.pythonhosted.org/packages/b6/25/564f3fc5b70c1398d706c51f2b1470d0ea0b1b2f96fee67877b6f5bdf3b6/pytz-2026.6-py2.py3-none-any.whl",
+      "size": 506321,
+      "sha256": "7fed3fee8fd6bd4a2b7b75a8d56021d0624127bf69bd5691f115db929ac570b3",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/pytz-2026.6-py2.py3-none-any.whl",
+      "fileName": "pytz-2026.6-py2.py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "pytz==2026.6",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/b6/25/564f3fc5b70c1398d706c51f2b1470d0ea0b1b2f96fee67877b6f5bdf3b6/pytz-2026.6-py2.py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/b6/25/564f3fc5b70c1398d706c51f2b1470d0ea0b1b2f96fee67877b6f5bdf3b6/pytz-2026.6-py2.py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-pyyaml",
+      "url": "https://files.pythonhosted.org/packages/86/bf/899e81e4cce32febab4fb42bb97dcdf66bc135272882d1987881a4b519e9/pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+      "size": 154003,
+      "sha256": "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+      "fileName": "pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "pyyaml==6.0.3",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/86/bf/899e81e4cce32febab4fb42bb97dcdf66bc135272882d1987881a4b519e9/pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/86/bf/899e81e4cce32febab4fb42bb97dcdf66bc135272882d1987881a4b519e9/pyyaml-6.0.3-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-regex",
+      "url": "https://files.pythonhosted.org/packages/93/19/489bc8db91196381c935752df01ba3f607140daece33b78d88573f028e64/regex-2026.9.29-cp312-cp312-win_amd64.whl",
+      "size": 280334,
+      "sha256": "fdd88ed5e20b1bcdd234421e454962c971aa44b653bdb7f1ea9ef683e90fb649",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/regex-2026.9.29-cp312-cp312-win_amd64.whl",
+      "fileName": "regex-2026.9.29-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "regex==2026.9.29",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/93/19/489bc8db91196381c935752df01ba3f607140daece33b78d88573f028e64/regex-2026.9.29-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/93/19/489bc8db91196381c935752df01ba3f607140daece33b78d88573f028e64/regex-2026.9.29-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-requests",
+      "url": "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl",
+      "size": 73075,
+      "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/requests-2.34.2-py3-none-any.whl",
+      "fileName": "requests-2.34.2-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "requests==2.34.2",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-safetensors",
+      "url": "https://files.pythonhosted.org/packages/1b/6d/3fba214c1e5e0f69991677ec3bc17023f0421776975e1de0c682dca475e2/safetensors-0.8.0-cp310-abi3-win_amd64.whl",
+      "size": 355540,
+      "sha256": "096ec1a98435df7beb08853bb5aa9081a84f23d0adc67ed1a0a10550f608373f",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/safetensors-0.8.0-cp310-abi3-win_amd64.whl",
+      "fileName": "safetensors-0.8.0-cp310-abi3-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "safetensors==0.8.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/1b/6d/3fba214c1e5e0f69991677ec3bc17023f0421776975e1de0c682dca475e2/safetensors-0.8.0-cp310-abi3-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/1b/6d/3fba214c1e5e0f69991677ec3bc17023f0421776975e1de0c682dca475e2/safetensors-0.8.0-cp310-abi3-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-setuptools",
+      "url": "https://files.pythonhosted.org/packages/54/21/f43f0a1fa8b06b32812e0975981f4677d28e0f3271601dc88ac5a5b83220/setuptools-78.1.0-py3-none-any.whl",
+      "size": 1256108,
+      "sha256": "3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/setuptools-78.1.0-py3-none-any.whl",
+      "fileName": "setuptools-78.1.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "setuptools==78.1.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/54/21/f43f0a1fa8b06b32812e0975981f4677d28e0f3271601dc88ac5a5b83220/setuptools-78.1.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/54/21/f43f0a1fa8b06b32812e0975981f4677d28e0f3271601dc88ac5a5b83220/setuptools-78.1.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-sympy",
+      "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+      "size": 6299353,
+      "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/sympy-1.14.0-py3-none-any.whl",
+      "fileName": "sympy-1.14.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "sympy==1.14.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-tokenizers",
+      "url": "https://files.pythonhosted.org/packages/65/71/0670843133a43d43070abeb1949abfdef12a86d490bea9cd9e18e37c5ff7/tokenizers-0.22.2-cp39-abi3-win_amd64.whl",
+      "size": 2747786,
+      "sha256": "c9ea31edff2968b44a88f97d784c2f16dc0729b8b143ed004699ebca91f05c48",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/tokenizers-0.22.2-cp39-abi3-win_amd64.whl",
+      "fileName": "tokenizers-0.22.2-cp39-abi3-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "tokenizers==0.22.2",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/65/71/0670843133a43d43070abeb1949abfdef12a86d490bea9cd9e18e37c5ff7/tokenizers-0.22.2-cp39-abi3-win_amd64.whl",
+        "https://mirrors.aliyun.com/pypi/packages/65/71/0670843133a43d43070abeb1949abfdef12a86d490bea9cd9e18e37c5ff7/tokenizers-0.22.2-cp39-abi3-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-torch",
+      "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl",
+      "size": 619352539,
+      "sha256": "2be20b2c05a0cce10430cc25f32b689259640d273232b2de357c35729132256d",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/torch-2.8.0+cpu-cp312-cp312-win_amd64.whl",
+      "fileName": "torch-2.8.0+cpu-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "torch==2.8.0+cpu",
+      "mirrors": [
+        "https://mirrors.nju.edu.cn/pytorch/whl/cpu/torch-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pytorch-wheels/cpu/torch-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-torchaudio",
+      "url": "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl",
+      "size": 2495725,
+      "sha256": "9b302192b570657c1cc787a4d487ae4bbb7f2aab1c01b1fcc46757e7f86f391e",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/torchaudio-2.8.0+cpu-cp312-cp312-win_amd64.whl",
+      "fileName": "torchaudio-2.8.0+cpu-cp312-cp312-win_amd64.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "torchaudio==2.8.0+cpu",
+      "mirrors": [
+        "https://mirrors.nju.edu.cn/pytorch/whl/cpu/torchaudio-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl",
+        "https://mirrors.aliyun.com/pytorch-wheels/cpu/torchaudio-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl"
+      ]
+    },
+    {
+      "id": "python-tqdm",
+      "url": "https://files.pythonhosted.org/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl",
+      "size": 80199,
+      "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/tqdm-4.70.1-py3-none-any.whl",
+      "fileName": "tqdm-4.70.1-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "tqdm==4.70.1",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-transformers",
+      "url": "https://files.pythonhosted.org/packages/03/b8/e484ef633af3887baeeb4b6ad12743363af7cce68ae51e938e00aaa0529d/transformers-4.57.6-py3-none-any.whl",
+      "size": 11993498,
+      "sha256": "4c9e9de11333ddfe5114bc872c9f370509198acf0b87a832a0ab9458e2bd0550",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/transformers-4.57.6-py3-none-any.whl",
+      "fileName": "transformers-4.57.6-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "transformers==4.57.6",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/03/b8/e484ef633af3887baeeb4b6ad12743363af7cce68ae51e938e00aaa0529d/transformers-4.57.6-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/03/b8/e484ef633af3887baeeb4b6ad12743363af7cce68ae51e938e00aaa0529d/transformers-4.57.6-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-typing-extensions",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "size": 45571,
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/typing_extensions-4.16.0-py3-none-any.whl",
+      "fileName": "typing_extensions-4.16.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "typing-extensions==4.16.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-tzdata",
+      "url": "https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl",
+      "size": 348210,
+      "sha256": "0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/tzdata-2026.6-py2.py3-none-any.whl",
+      "fileName": "tzdata-2026.6-py2.py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "tzdata==2026.6",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-urllib3",
+      "url": "https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl",
+      "size": 135717,
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/urllib3-2.8.0-py3-none-any.whl",
+      "fileName": "urllib3-2.8.0-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "urllib3==2.8.0",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "python-whisperx",
+      "url": "https://files.pythonhosted.org/packages/00/53/d533db85704e64b1709db695fba2dd3b747cb7e979a18bd18dfbf1e44b91/whisperx-3.8.6-py3-none-any.whl",
+      "size": 16486941,
+      "sha256": "cb6d4fcd3fb6c42305cb8b222a33a0b78f6b657e9db3b714345fe43dc0a69c1f",
+      "format": "wheel",
+      "target": "alignment/wheelhouse/whisperx-3.8.6-py3-none-any.whl",
+      "fileName": "whisperx-3.8.6-py3-none-any.whl",
+      "role": "python-dependency",
+      "pythonRequirement": "whisperx==3.8.6",
+      "mirrors": [
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/00/53/d533db85704e64b1709db695fba2dd3b747cb7e979a18bd18dfbf1e44b91/whisperx-3.8.6-py3-none-any.whl",
+        "https://mirrors.aliyun.com/pypi/packages/00/53/d533db85704e64b1709db695fba2dd3b747cb7e979a18bd18dfbf1e44b91/whisperx-3.8.6-py3-none-any.whl"
+      ]
+    },
+    {
+      "id": "klingai-cli-global",
+      "url": "https://registry.npmjs.org/@klingai/cli-global/-/cli-global-0.2.0.tgz",
+      "size": 152672,
+      "sha256": "9153ec3b83029a9037713fdb31c2291a88cb8d2d38ddca864b2d57401be50f76",
+      "format": "tgz",
+      "target": "cli/node_modules/@klingai/cli-global",
+      "stripPrefix": "package",
+      "fileName": "cli-global-0.2.0.tgz"
+    },
+    {
+      "id": "elevenlabs-cli",
+      "url": "https://registry.npmjs.org/@elevenlabs/cli/-/cli-1.8.0.tgz",
+      "size": 9784,
+      "sha256": "aca3a801aed47e377cbfa23974abbe9618ca822088db5150fa2764e4e30afc29",
+      "format": "tgz",
+      "target": "cli/node_modules/@elevenlabs/cli",
+      "stripPrefix": "package",
+      "fileName": "cli-1.8.0.tgz"
+    },
+    {
+      "id": "elevenlabs-cli-win32-x64",
+      "url": "https://registry.npmjs.org/@elevenlabs/cli-win32-x64/-/cli-win32-x64-1.8.0.tgz",
+      "size": 6207796,
+      "sha256": "4068f551eb6f16176fc01e35f6fa6a2651cd5bd654a3294bdf05b9b310c35f8f",
+      "format": "tgz",
+      "target": "cli/node_modules/@elevenlabs/cli-win32-x64",
+      "stripPrefix": "package",
+      "fileName": "cli-win32-x64-1.8.0.tgz"
+    },
+    {
+      "id": "onnxruntime-web",
+      "url": "https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-1.26.0-dev.20260416-b7804b056c.tgz",
+      "size": 30237790,
+      "sha256": "8e0d8aae2e88303912e6b51b2b76d71c790821849ad0438d09d5cd3e72dd870e",
+      "format": "tgz",
+      "target": "asr/wasm",
+      "stripPrefix": "package/dist",
+      "fileName": "onnxruntime-web-1.26.0-dev.20260416-b7804b056c.tgz"
+    },
+    {
+      "id": "ffprobe-installer-win32-x64",
+      "url": "https://registry.npmjs.org/@ffprobe-installer/win32-x64/-/win32-x64-5.1.0.tgz",
+      "size": 28822426,
+      "sha256": "97992b5e3b651c7df625831fd369eecc5ec0e9532ac98921138b1c4fbc8de96e",
+      "format": "tgz",
+      "target": "media",
+      "stripPrefix": "package",
+      "fileName": "win32-x64-5.1.0.tgz"
+    },
+    {
+      "id": "alignment-config-json",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/config.json",
+      "size": 1596,
+      "sha256": "d3ec255c063d9f95057b553b19c20135b259875834a4fe9deb218a6be25b4cf3",
+      "format": "file",
+      "target": "alignment/model/config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/config.json"
+      ]
+    },
+    {
+      "id": "alignment-model-safetensors",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/model.safetensors",
+      "size": 377607901,
+      "sha256": "8aa76ab2243c81747a1f832954586bc566090c83a0ac167df6f31f0fa917d74a",
+      "format": "file",
+      "target": "alignment/model/model.safetensors",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/model.safetensors"
+      ]
+    },
+    {
+      "id": "alignment-preprocessor-config-json",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/preprocessor_config.json",
+      "size": 159,
+      "sha256": "b225d617c025463b9e157e06afea8b90dc7078fc70b013c533328423e0486b4a",
+      "format": "file",
+      "target": "alignment/model/preprocessor_config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/preprocessor_config.json"
+      ]
+    },
+    {
+      "id": "alignment-special-tokens-map-json",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/special_tokens_map.json",
+      "size": 85,
+      "sha256": "bb7068de1150661a10b55f9e4b12a0e77af8bf91f5e45e1b58afaf1d0e17f675",
+      "format": "file",
+      "target": "alignment/model/special_tokens_map.json",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/special_tokens_map.json"
+      ]
+    },
+    {
+      "id": "alignment-tokenizer-config-json",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/tokenizer_config.json",
+      "size": 163,
+      "sha256": "dc790594f5bc351a4311c6624f40acd95850d4aaf2a5cb3c656c9b610720b608",
+      "format": "file",
+      "target": "alignment/model/tokenizer_config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/tokenizer_config.json"
+      ]
+    },
+    {
+      "id": "alignment-vocab-json",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/vocab.json",
+      "size": 291,
+      "sha256": "19727f8944fe6459fc3f240ae2c198395b740f6a029bd23e06656266b83bcf64",
+      "format": "file",
+      "target": "alignment/model/vocab.json",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/vocab.json"
+      ]
+    },
+    {
+      "id": "alignment-readme-md",
+      "url": "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/README.md",
+      "size": 4431,
+      "sha256": "fc52a0adfa64e446800f9944c6cf9b90da3127aba548860ea5714516ec8c18c7",
+      "format": "file",
+      "target": "alignment/model/README.md",
+      "mirrors": [
+        "https://modelscope.cn/models/AI-ModelScope/wav2vec2-base-960h/resolve/0c5dbe4bd2fc93cfaf7caf14bba8758bc433ae2b/README.md"
+      ]
+    },
+    {
+      "id": "asr-added-tokens-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/added_tokens.json",
+      "size": 34604,
+      "sha256": "9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/added_tokens.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/added_tokens.json"
+      ]
+    },
+    {
+      "id": "asr-config-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/config.json",
+      "size": 2243,
+      "sha256": "46aeea0a406afbeb563fc8e59ca10609203df4299af6a83f73752fef369efd2d",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/config.json"
+      ]
+    },
+    {
+      "id": "asr-generation-config-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/generation_config.json",
+      "size": 3772,
+      "sha256": "f5c67e5a4f7102f8cb4d058bc95da276bbc19eeec997267c3bb0f25ef68facd1",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/generation_config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/generation_config.json"
+      ]
+    },
+    {
+      "id": "asr-merges-txt",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/merges.txt",
+      "size": 493869,
+      "sha256": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/merges.txt",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/merges.txt"
+      ]
+    },
+    {
+      "id": "asr-normalizer-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/normalizer.json",
+      "size": 52666,
+      "sha256": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/normalizer.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/normalizer.json"
+      ]
+    },
+    {
+      "id": "asr-preprocessor-config-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/preprocessor_config.json",
+      "size": 339,
+      "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/preprocessor_config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/preprocessor_config.json"
+      ]
+    },
+    {
+      "id": "asr-special-tokens-map-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/special_tokens_map.json",
+      "size": 2194,
+      "sha256": "e67ae3a0aaa99abcd9f187138e12db1f65c16a14761c50ef10eef2c174a7a691",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/special_tokens_map.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/special_tokens_map.json"
+      ]
+    },
+    {
+      "id": "asr-tokenizer-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/tokenizer.json",
+      "size": 2480466,
+      "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/tokenizer.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/tokenizer.json"
+      ]
+    },
+    {
+      "id": "asr-tokenizer-config-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/tokenizer_config.json",
+      "size": 282683,
+      "sha256": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/tokenizer_config.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/tokenizer_config.json"
+      ]
+    },
+    {
+      "id": "asr-vocab-json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/vocab.json",
+      "size": 1036584,
+      "sha256": "50d6a919f0a0601d56a04eb583c780d18553aa388254ba3158eb6a00f13e2c1a",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/vocab.json",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/vocab.json"
+      ]
+    },
+    {
+      "id": "asr-onnx-encoder-model-onnx",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/onnx/encoder_model.onnx",
+      "size": 32894434,
+      "sha256": "8944ec04111e040305cdb07ac97f50363024255bf0bdc67ab93ecb76645f31ae",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/onnx/encoder_model.onnx",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/onnx/encoder_model.onnx"
+      ]
+    },
+    {
+      "id": "asr-onnx-encoder-model-quantized-onnx",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/onnx/encoder_model_quantized.onnx",
+      "size": 10097109,
+      "sha256": "d4397fbfed1975bb5dd1bedb748808367331c85293f54cbc927774728daec2b2",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/onnx/encoder_model_quantized.onnx",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/onnx/encoder_model_quantized.onnx"
+      ]
+    },
+    {
+      "id": "asr-onnx-decoder-model-merged-q4-onnx",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/onnx/decoder_model_merged_q4.onnx",
+      "size": 86804581,
+      "sha256": "a3308674834b99123b32c33e3577b09b6547df8c3cea16b5f1d0c36ebbd02b1f",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/onnx/decoder_model_merged_q4.onnx",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/onnx/decoder_model_merged_q4.onnx"
+      ]
+    },
+    {
+      "id": "asr-onnx-decoder-model-merged-quantized-onnx",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/onnx/decoder_model_merged_quantized.onnx",
+      "size": 30730264,
+      "sha256": "ced2053c1aa8ff7048927197416a5c169f50010e7b280e5d564b46a991fca011",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/onnx/decoder_model_merged_quantized.onnx",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/onnx/decoder_model_merged_quantized.onnx"
+      ]
+    },
+    {
+      "id": "asr-readme-md",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny_timestamped/resolve/517244293732ee2d58139af5814231b7e6830a0d/README.md",
+      "size": 531,
+      "sha256": "dc9a0879b11fb43db2c220466352b235f7cdb7af791c57c0ed47f0a4028d9267",
+      "format": "file",
+      "target": "asr/onnx-community/whisper-tiny_timestamped/README.md",
+      "mirrors": [
+        "https://modelscope.cn/models/onnx-community/whisper-tiny_timestamped/resolve/57245b55a20850977898baf6d5cdcc24d98a44e5/README.md"
+      ]
+    },
+    {
+      "id": "nltk-english",
+      "url": "https://raw.githubusercontent.com/nltk/nltk_data/550b6625bcef1f2abff2ff770a5a0d272c9c6b2a/packages/tokenizers/punkt_tab.zip",
+      "size": 4319076,
+      "sha256": "e57f64187974277726a3417ca6f181ec5403676c717672eef6a748a7b20e0106",
+      "format": "zip",
+      "target": "alignment/nltk-data/tokenizers/punkt_tab/english",
+      "stripPrefix": "punkt_tab/english"
+    },
+    {
+      "id": "ffmpeg",
+      "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
+      "size": 29581307,
+      "sha256": "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77",
+      "format": "gzip",
+      "target": "media/ffmpeg.exe"
+    },
+    {
+      "id": "ffmpeg-license",
+      "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.LICENSE",
+      "size": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "format": "file",
+      "target": "media/notices/ffmpeg/LICENSE"
+    },
+    {
+      "id": "ffmpeg-readme",
+      "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.README",
+      "size": 39494,
+      "sha256": "a636a7183c58006351acbaf35303c0ed85c6e1320fd4e80de453ba6157de6311",
+      "format": "file",
+      "target": "media/notices/ffmpeg/README"
+    }
+  ]
+}

@@ -145,6 +145,24 @@ function stopChild(child) {
   } else child.kill("SIGTERM");
 }
 
+/** Progress text is not proof of completion: wait for the actual child exit. */
+export async function waitForLauncherCommand(child, { label, onProgress, quietMs = 15_000 }) {
+  const started = Date.now();
+  let lastOutput = started;
+  const activity = () => { lastOutput = Date.now(); };
+  for (const stream of [child.stdout, child.stderr]) stream?.on("data", activity);
+  const timer = setInterval(() => {
+    if (Date.now() - lastOutput >= quietMs) {
+      onProgress(`${label}仍在运行（已用 ${Math.round((Date.now() - started) / 1000)} 秒），正在等待进程结束；可查看 .clipforge/logs/launcher.log。`);
+    }
+  }, quietMs);
+  try { return await child.completion; }
+  finally {
+    clearInterval(timer);
+    for (const stream of [child.stdout, child.stderr]) stream?.removeListener("data", activity);
+  }
+}
+
 export async function main(args = process.argv.slice(2)) {
   const { values } = parseArgs({ args, options: { port: { type: "string" }, "no-browser": { type: "boolean" }, check: { type: "boolean" }, help: { type: "boolean" } } });
   if (values.help) { console.log("Usage: node scripts/launch-local.mjs [--port 3000] [--no-browser] [--check]\nWindows: double-click start.cmd. Keep the console open; Ctrl+C stops the service."); return; }
@@ -170,7 +188,7 @@ export async function main(args = process.argv.slice(2)) {
   const klingPackage = join(klingPrefix, "node_modules", "@klingai", "cli-global");
   const elevenLabsPrefix = join(local, "tools", "elevenlabs");
   const elevenLabsPackage = join(elevenLabsPrefix, "node_modules", "@elevenlabs", "cli");
-  const env = { ...alignmentEnvironment(root), PATH: `${dirname(process.execPath)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH || ""}`, ELECTRON_SKIP_BINARY_DOWNLOAD: "1", NEXT_TELEMETRY_DISABLED: "1", CLIPFORGE_INSTANCE_ID: instanceId, CLIPFORGE_KLING_PACKAGE_PATH: klingPackage, CLIPFORGE_ELEVENLABS_PACKAGE_PATH: elevenLabsPackage };
+  const env = { ...alignmentEnvironment(root), PATH: `${dirname(process.execPath)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH || ""}`, ELECTRON_SKIP_BINARY_DOWNLOAD: "1", NEXT_TELEMETRY_DISABLED: "1", npm_config_update_notifier: "false", CLIPFORGE_INSTANCE_ID: instanceId, CLIPFORGE_KLING_PACKAGE_PATH: klingPackage, CLIPFORGE_ELEVENLABS_PACKAGE_PATH: elevenLabsPackage };
   // Do not pass a terminal's inherited Electron mode to the actual Node runtime.
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLIPFORGE_RUNTIME;
@@ -210,7 +228,7 @@ export async function main(args = process.argv.slice(2)) {
   let stopping = false;
   const stop = () => { stopping = true; stopChild(activeChild); };
   process.on("SIGINT", stop); process.on("SIGTERM", stop);
-  function log(message) { console.log(message); appendFileSync(logFile, message + "\n"); }
+  function log(message) { console.log(message); appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`); }
   function start(script, arguments_) {
     if (stopping) throw new Error("启动已停止。");
     const child = spawn(process.execPath, [script, ...arguments_], { cwd: root, env, windowsHide: true, stdio: ["inherit", "pipe", "pipe"] });
@@ -220,32 +238,35 @@ export async function main(args = process.argv.slice(2)) {
     child.completion = new Promise((done) => { child.once("error", (error) => done({ error })); child.once("exit", (code, signal) => done({ code, signal })); });
     return child;
   }
-  async function run(script, arguments_) {
+  async function run(script, arguments_, label) {
+    const started = Date.now();
     const child = start(script, arguments_);
-    const result = await child.completion;
+    const result = await waitForLauncherCommand(child, { label, onProgress: log });
     if (activeChild === child) activeChild = undefined;
     if (stopping) throw new Error("启动已停止。");
     if (result.error || result.code !== 0) throw new Error(`命令执行失败：${result.error?.message || `exit ${result.code}`}。详情见 ${logFile}`);
+    log(`${label}完成，用时 ${((Date.now() - started) / 1000).toFixed(1)} 秒。`);
   }
   try {
     log("ClipForge 本机网页版启动器（首次安装与构建可能需要数分钟）");
-    log("[1/7] 准备 WhisperX 英文音频对齐环境和模型（CPU）");
-    await run(join(root, "scripts", "setup-alignment.mjs"), []);
+    log("[1/7] 检查 WhisperX 英文音频对齐环境和模型（CPU；复用时仍需离线校验和推理，可能需要几十秒）");
+    await run(join(root, "scripts", "setup-alignment.mjs"), [], "音频对齐环境检查");
     if (!existsSync(npmCli)) throw new Error("当前 Node.js 没有 npm。请使用 start.cmd 自动准备完整 Node.js。");
     if (!pnpmReady()) {
       log(`[2/7] 准备 pnpm ${pnpmVersion}（仅安装到项目目录）`);
-      await run(npmCli, ["install", "--prefix", pnpmPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--save-exact", `pnpm@${pnpmVersion}`]);
+      await run(npmCli, ["install", "--prefix", pnpmPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--save-exact", `pnpm@${pnpmVersion}`], "准备 pnpm");
     }
     const dependencyPaths = DEPENDENCY_PATHS;
     const dependenciesHash = fingerprint(root, dependencyPaths);
     const installed = json(join(local, "dependencies.json"));
     if (installed?.fingerprint !== dependenciesHash || probeDependencies(root, env).status !== 0) {
       log("[3/7] 安装项目依赖（保留 SQLite 和媒体工具安装脚本，跳过 Electron 下载）");
-      await run(pnpmEntry, ["install", "--frozen-lockfile", "--prod=false", "--config.confirmModulesPurge=false", "--config.ignore-scripts=false"]);
+      await run(pnpmEntry, ["install", "--frozen-lockfile", "--prod=false", "--config.confirmModulesPurge=false", "--config.ignore-scripts=false"], "安装项目依赖");
+      log("正在检查 SQLite / FFmpeg / FFprobe...");
       let probe = probeDependencies(root, env);
       if (probe.status !== 0) {
         log("修复当前 Node 版本所需的 SQLite / 媒体二进制...");
-        await run(pnpmEntry, ["rebuild", "better-sqlite3", "ffmpeg-static", "@ffprobe-installer/ffprobe"]);
+        await run(pnpmEntry, ["rebuild", "better-sqlite3", "ffmpeg-static", "@ffprobe-installer/ffprobe"], "修复数据库与媒体工具");
         probe = probeDependencies(root, env);
       }
       if (probe.status !== 0) throw new Error(`SQLite / FFmpeg / FFprobe 无法运行。请检查下载网络和系统架构。${probe.stderr?.trim() || probe.error?.message || ""}`);
@@ -253,15 +274,15 @@ export async function main(args = process.argv.slice(2)) {
     } else log("[3/7] 项目依赖与媒体工具可用，复用现有安装。");
     if (!klingReady()) {
       log(`[4/7] 准备 Kling Global CLI ${KLING_VERSION}（不登录、不生成）`);
-      await run(npmCli, ["install", "--prefix", klingPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--save-exact", `${KLING_PACKAGE}@${KLING_VERSION}`]);
+      await run(npmCli, ["install", "--prefix", klingPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--save-exact", `${KLING_PACKAGE}@${KLING_VERSION}`], "准备 Kling CLI");
     } else log("[4/7] Kling CLI 已准备。");
     if (!elevenLabsReady(elevenLabsPackage, env)) {
       log(`[5/7] 准备 ElevenLabs 官方 CLI ${ELEVENLABS_VERSION}（不登录、不生成）`);
       // Remove a partial installation through npm so an intact lockfile cannot hide missing binaries.
       if (existsSync(join(elevenLabsPrefix, "package.json"))) {
-        await run(npmCli, ["uninstall", "--prefix", elevenLabsPrefix, "--no-audit", "--no-fund", "--ignore-scripts", ELEVENLABS_PACKAGE]);
+        await run(npmCli, ["uninstall", "--prefix", elevenLabsPrefix, "--no-audit", "--no-fund", "--ignore-scripts", ELEVENLABS_PACKAGE], "清理不完整的 ElevenLabs CLI");
       }
-      await run(npmCli, ["install", "--prefix", elevenLabsPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--include=optional", "--save-exact", `${ELEVENLABS_PACKAGE}@${ELEVENLABS_VERSION}`]);
+      await run(npmCli, ["install", "--prefix", elevenLabsPrefix, "--no-audit", "--no-fund", "--ignore-scripts", "--include=optional", "--save-exact", `${ELEVENLABS_PACKAGE}@${ELEVENLABS_VERSION}`], "准备 ElevenLabs CLI");
       if (!elevenLabsReady(elevenLabsPackage, env)) throw new Error("ElevenLabs CLI 安装后仍无法运行，请检查网络及 optionalDependencies 平台二进制下载，再重新启动。");
     } else log("[5/7] ElevenLabs CLI 已准备。");
     const buildPaths = buildInputPaths(root);
@@ -270,7 +291,7 @@ export async function main(args = process.argv.slice(2)) {
     const buildStatus = localBuildStatus(root, distDirName);
     if (built?.fingerprint !== fingerprint(root, buildPaths) || !buildStatus.buildId || built.buildId !== buildStatus.buildId || !buildStatus.ok || !existsSync(entry) || probeDependencies(root, env, true).status !== 0) {
       log("[6/7] 构建本机网页版（源码或配置更新后自动重建）");
-      await run(pnpmEntry, ["run", "build"]);
+      await run(pnpmEntry, ["run", "build"], "构建本机网页版");
       const rebuiltStatus = localBuildStatus(root, distDirName);
       if (!rebuiltStatus.ok || !rebuiltStatus.buildId || !existsSync(entry)) {
         throw new Error(`构建没有生成完整的 standalone 服务：${rebuiltStatus.missing.slice(0, 8).join(", ") || "缺少关键产物"}`);

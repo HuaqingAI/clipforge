@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeChatBase } from "@/lib/llm-models";
-import { ARK_STANDARD_BASE_URL, isArkAgentPlanBase, normalizeArkBaseUrl } from "@/lib/ark-config";
 import { normalizeOpenAIBaseUrl } from "@/lib/openai-config";
+import { HTH_BASE_URL } from "@/lib/hth-config";
 import { errText } from "@/lib/api-error";
 
 /**
@@ -17,25 +17,17 @@ const DEFAULT_BASE: Record<string, string> = {
   "atlas-cloud": "https://api.atlascloud.ai/api/v1",
   "fal-ai": "https://queue.fal.run",
   replicate: "https://api.replicate.com/v1",
-  volcengine: ARK_STANDARD_BASE_URL,
-  alibaba: "https://dashscope.aliyuncs.com/api/v1",
-  siliconflow: "https://api.siliconflow.cn/v1",
-  openai: "https://api.openai.com/v1",
+  openai: HTH_BASE_URL,
 };
+
+const DISABLED_PROVIDERS = new Set(["volcengine", "alibaba", "siliconflow"]);
 
 type Probe = { url: string; headers: Record<string, string>; authFirst?: boolean; method?: "GET" | "POST"; body?: string };
 
 function buildProbe(name: string, apiKey: string, baseUrl?: string): Probe {
-  const base = name === "volcengine"
-    ? normalizeArkBaseUrl(baseUrl)
-    : name === "openai"
-      ? normalizeOpenAIBaseUrl(baseUrl)
+  const base = name === "openai"
+    ? normalizeOpenAIBaseUrl(baseUrl)
     : (baseUrl || DEFAULT_BASE[name] || "").replace(/\/$/, "");
-  if (name === "volcengine" && isArkAgentPlanBase(base)) {
-    // AgentPlan has no /models endpoint. Listing tasks validates credentials without
-    // creating a video or consuming generation quota.
-    return { url: `${base}/contents/generations/tasks?page_size=1`, headers: { Authorization: `Bearer ${apiKey}` } };
-  }
   if (name === "fal-ai") {
     // fal 先校验鉴权再解析 request id：到达 404/422 即说明 Key 有效
     return {
@@ -46,10 +38,6 @@ function buildProbe(name: string, apiKey: string, baseUrl?: string): Probe {
   }
   if (name === "replicate") {
     return { url: `${base}/account`, headers: { Authorization: `Bearer ${apiKey}` } };
-  }
-  if (name === "alibaba") {
-    // dashscope 原生无 /models，用 OpenAI 兼容模式的 /models 验 Key
-    return { url: `https://dashscope.aliyuncs.com/compatible-mode/v1/models`, headers: { Authorization: `Bearer ${apiKey}` } };
   }
   if (name === "atlas-cloud") {
     // Atlas 的 GET /models 是公开模型目录，无效 Key 也返回 2xx（会误判为有效）。
@@ -69,7 +57,7 @@ function buildProbe(name: string, apiKey: string, baseUrl?: string): Probe {
       }),
     };
   }
-  // siliconflow / volcengine / 自定义 OpenAI 兼容：GET /models
+  // HTH / 自定义 OpenAI 兼容：GET /models
   return { url: `${base}/models`, headers: { Authorization: `Bearer ${apiKey}` } };
 }
 
@@ -81,6 +69,11 @@ export async function POST(req: NextRequest) {
     /* 空 body */
   }
   const { name, apiKey, baseUrl } = body;
+  if (name && DISABLED_PROVIDERS.has(name)) {
+    return NextResponse.json({ status: "unknown", message: errText(req,
+      "此平台已停用，请在设置中选择当前支持的平台。",
+      "This provider is disabled. Select a supported provider in settings.") }, { status: 400 });
+  }
   if (!name || !apiKey) {
     return NextResponse.json({ status: "unknown", message: "缺少平台或 Key" }, { status: 400 });
   }
@@ -90,25 +83,6 @@ export async function POST(req: NextRequest) {
   const timer = setTimeout(() => controller.abort(), 10000);
   try {
     const r = await fetch(probe.url, { method: probe.method ?? "GET", headers: probe.headers, body: probe.body, signal: controller.signal });
-    if (name === "volcengine") {
-      const agentPlan = isArkAgentPlanBase(baseUrl);
-      if (r.status === 401 || r.status === 403) {
-        return NextResponse.json({ status: "invalid", message: agentPlan
-          ? errText(req, "AgentPlan 套餐 Key 无效或无权限，请检查套餐状态，以及 Key 是否对应 /api/plan/v3 接口。", "AgentPlan rejected this key or its permissions. Check your plan status and use the plan key with /api/plan/v3.")
-          : errText(req, "方舟 Key 无效或无权限，请检查项目权限；AgentPlan 套餐 Key 请切换到 AgentPlan 模式（/api/plan/v3）。", "Ark rejected this key or its project permissions. For an AgentPlan key, select AgentPlan mode (/api/plan/v3).") });
-      }
-      if (agentPlan) {
-        return NextResponse.json({ status: r.ok ? "ok" : "unknown", message: r.ok
-          ? errText(req, "AgentPlan 连接正常，任务查询鉴权通过；具体视频模型与额度以生成时为准。", "AgentPlan connection verified through authenticated task listing. Video model access and quota are checked when generating.")
-          : errText(req, `无法判定 AgentPlan 连接（HTTP ${r.status}），请检查套餐 Key 和 /api/plan/v3 接口地址。`, `AgentPlan connection could not be verified (HTTP ${r.status}). Check the plan key and /api/plan/v3 Base URL.`) });
-      }
-      return NextResponse.json({
-        status: "unknown",
-        message: r.ok
-          ? "Ark is reachable. This model-list probe does not verify Seedream/Seedance generation permissions. Check the selected model and this API key's project access in the Ark console."
-          : `Generation permissions could not be verified (HTTP ${r.status}). Check the Ark API key, project access and Base URL: ${ARK_STANDARD_BASE_URL}. For an AgentPlan key, select AgentPlan mode (/api/plan/v3).`,
-      });
-    }
     if (r.status === 401 || r.status === 403) {
       return NextResponse.json({ status: "invalid", message: "Key 无效或无权限" });
     }

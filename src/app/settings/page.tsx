@@ -15,18 +15,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { LuUpload, LuPalette, LuTriangleAlert } from "react-icons/lu";
+import { LuTriangleAlert } from "react-icons/lu";
 import { ARK_STANDARD_BASE_URL, ARK_AGENT_PLAN_BASE_URL, isArkAgentPlanBase } from "@/lib/ark-config";
 import { useT } from "@/lib/i18n";
 import { useSettingsStore, type ProviderSetting } from "@/lib/stores/settings-store";
-import { useBrandStore } from "@/lib/stores/brand-store";
+import { HTH_BASE_URL, HTH_DEFAULT_MODEL } from "@/lib/hth-config";
 import { mergeCustomModels } from "@/lib/gen-params";
 import { ModelPicker } from "@/components/settings/model-picker";
 import { GenerationSettings } from "@/components/generation-settings";
 import { PresenterManager } from "@/components/presenter-manager";
 import { KlingCliSettings } from "@/components/settings/kling-cli-settings";
 import { TTSSettings } from "@/components/settings/tts-settings";
+import { ConfigurationTransfer } from "@/components/settings/configuration-transfer";
 import { configuredCatalogProviders } from "@/lib/model-catalog";
 
 // default resolution options
@@ -50,7 +50,6 @@ const SETTINGS_SECTIONS = [
   { id: "video", labelKey: "tabVideo" },
   { id: "tts", labelKey: "tabTts" },
   { id: "characters", labelKey: "tabCharacters" },
-  { id: "brand", labelKey: "tabBrand" },
 ];
 const SETTINGS_TABS: string[] = SETTINGS_SECTIONS.map((s) => s.id);
 
@@ -144,7 +143,7 @@ const AI_PROVIDERS = [
   },
   {
     key: "openai",
-    name: "OpenAI",
+    name: "HTH",
     descKey: "providerOpenaiDesc",
     tipKey: "providerOpenaiTip",
     icon: (
@@ -158,7 +157,7 @@ const AI_PROVIDERS = [
 ];
 
 // Keep these integrations available to existing projects while hiding their setup cards from the UI.
-const HIDDEN_AI_PROVIDER_KEYS = new Set(["atlas-cloud", "fal-ai", "replicate"]);
+const HIDDEN_AI_PROVIDER_KEYS = new Set(["atlas-cloud", "fal-ai", "replicate", "volcengine", "alibaba", "siliconflow"]);
 const VISIBLE_AI_PROVIDERS = [
   ...AI_PROVIDERS.filter((platform) => platform.key === "openai" && !HIDDEN_AI_PROVIDER_KEYS.has(platform.key)),
   ...AI_PROVIDERS.filter((platform) => platform.key !== "openai" && !HIDDEN_AI_PROVIDER_KEYS.has(platform.key)),
@@ -273,22 +272,24 @@ export default function SettingsPage() {
 
   // save feedback state
 
-  const enabledProviders = configuredCatalogProviders(providers);
-  const catalog = useModelCatalog(enabledProviders);
-  const imageModels = catalog.models.filter((model) => model.mediaType === "image");
-  const videoModels = catalog.models.filter((model) => model.mediaType === "video");
-  const modelsLoading = catalog.loading;
+  const imageProviders = configuredCatalogProviders(providers, "image");
+  const videoProviders = configuredCatalogProviders(providers, "video");
+  const imageCatalog = useModelCatalog(imageProviders, "image");
+  const videoCatalog = useModelCatalog(videoProviders, "video");
+  const imageModels = imageCatalog.models.filter((model) => model.mediaType === "image");
+  const videoModels = videoCatalog.models.filter((model) => model.mediaType === "video" && model.provider === "kling-cli");
 
   // merge user custom models into dropdowns (enabled providers only), so custom models can be selected as default
-  const enabledNames = new Set(enabledProviders.map((p) => p.name));
-  const imageModelOptions = mergeCustomModels(imageModels, customModels, "image", enabledNames);
-  const videoModelOptions = mergeCustomModels(videoModels, customModels, "video", enabledNames);
+  const imageProviderNames = new Set(imageProviders.map((p) => p.name));
+  const videoProviderNames = new Set(videoProviders.map((p) => p.name));
+  const imageModelOptions = mergeCustomModels(imageModels, customModels, "image", imageProviderNames);
+  const videoModelOptions = mergeCustomModels(videoModels, customModels, "video", videoProviderNames).filter((model) => model.provider === "kling-cli");
 
   // Image defaults retain their initial convenience selection. Video models are an explicit
   // choice here, so catalog refreshes and provider-mode changes cannot change the billed model.
   const imageIds = imageModelOptions.map((m) => m.id).join(",");
   const selectedVideoModel = videoModelOptions.find((model) => model.id === defaultVideoModel);
-  const videoSelectionUnavailable = Boolean(defaultVideoModel && !modelsLoading && (!selectedVideoModel || (selectedVideoModel.provider !== "kling-cli" && selectedVideoModel.extra?.available === false)));
+  const videoSelectionUnavailable = Boolean(defaultVideoModel && !videoCatalog.loading && !selectedVideoModel);
   useEffect(() => {
     if (imageModelOptions.length && !defaultImageModel) {
       setDefaultImageModel(imageModelOptions[0].id);
@@ -354,6 +355,7 @@ export default function SettingsPage() {
           </p>
         </div>
 
+        <ConfigurationTransfer />
         {/* configuration status banner: surfaces missing setup right at the top (the footer summary is easy to miss) */}
         {(!llm.apiKey || !hasAnyProvider) && (
           <div className="mb-6 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4">
@@ -392,7 +394,7 @@ export default function SettingsPage() {
           {tab === "providers" && (
           <section className="min-w-0 flex-1">
             <div className="space-y-4">
-              <KlingCliSettings onCatalogChanged={() => catalog.retry("kling-cli")} />
+              <KlingCliSettings onCatalogChanged={() => videoCatalog.retry("kling-cli")} />
               {VISIBLE_AI_PROVIDERS.map((platform) => {
                 const provider = providers[platform.key] ?? {
                   enabled: false,
@@ -521,14 +523,14 @@ export default function SettingsPage() {
                         </summary>
                         <div className="mt-2">
                           <Input
-                            value={provider.baseUrl ?? ""}
+                            value={provider.baseUrl ?? (platform.key === "openai" ? HTH_BASE_URL : "")}
                             onChange={(e) =>
                               updateProvider(platform.key, {
                                 ...provider,
-                                baseUrl: e.target.value || undefined,
+                                baseUrl: e.target.value || (platform.key === "openai" ? HTH_BASE_URL : undefined),
                               })
                             }
-                            placeholder={t("providerBaseUrlPlaceholder")}
+                            placeholder={platform.key === "openai" ? HTH_BASE_URL : t("providerBaseUrlPlaceholder")}
                             className="font-mono text-xs"
                           />
                           {platform.key === "openai" && (
@@ -571,7 +573,7 @@ export default function SettingsPage() {
                         onChange={(e) =>
                           setLLM({ ...llm, baseUrl: e.target.value })
                         }
-                        placeholder="https://api.openai.com/v1"
+                        placeholder={HTH_BASE_URL}
                         className="font-mono text-xs"
                       />
                     </div>
@@ -613,7 +615,7 @@ export default function SettingsPage() {
                           onChange={(e) =>
                             setLLM({ ...llm, model: e.target.value })
                           }
-                          placeholder="gpt-4o"
+                          placeholder={HTH_DEFAULT_MODEL}
                           className="font-mono text-xs"
                         />
                         {/* 模型名靠手打是最常见的错配来源，本地 Ollama 还必须带 :tag（issue #19 追问） */}
@@ -635,7 +637,7 @@ export default function SettingsPage() {
                               visionModel: e.target.value || undefined,
                             })
                           }
-                          placeholder="gpt-4o"
+                          placeholder={HTH_DEFAULT_MODEL}
                           className="font-mono text-xs"
                         />
                         <ModelPicker
@@ -703,7 +705,7 @@ export default function SettingsPage() {
               <Card className="glass-card">
                 <CardContent className="p-5">
                   <h3 className="font-semibold text-sm mb-4">{t("imageCardTitle")}</h3>
-                  <ModelCatalogStatus statuses={catalog.statuses.filter((status) => status.mediaType === "image")} pending={catalog.pending} onRetry={catalog.retry} />
+                  <ModelCatalogStatus statuses={imageCatalog.statuses} pending={imageCatalog.pending} onRetry={imageCatalog.retry} />
                   <div className="grid grid-cols-1 gap-4">
                     {/* default image generation model */}
                     <div className="space-y-1.5">
@@ -720,7 +722,7 @@ export default function SettingsPage() {
                           <SelectValue>
                             {(value: string) =>
                               imageModelOptions.find((m) => m.id === value)?.name ??
-                              (modelsLoading ? t("modelsLoading") : enabledProviders.length === 0 ? t("enableProviderFirst") : t("selectImageModel"))
+                              (imageCatalog.loading ? t("modelsLoading") : imageProviders.length === 0 ? t("enableProviderFirst") : t("selectImageModel"))
                             }
                           </SelectValue>
                         </SelectTrigger>
@@ -748,7 +750,7 @@ export default function SettingsPage() {
               <Card className="glass-card">
                 <CardContent className="p-5">
                   <h3 className="font-semibold text-sm mb-4">{t("videoCardTitle")}</h3>
-                  <ModelCatalogStatus statuses={catalog.statuses.filter((status) => status.mediaType === "video")} pending={catalog.pending} onRetry={catalog.retry} />
+                  <ModelCatalogStatus statuses={videoCatalog.statuses} pending={videoCatalog.pending} onRetry={videoCatalog.retry} />
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* default video generation model */}
                     <div className="space-y-1.5">
@@ -765,13 +767,13 @@ export default function SettingsPage() {
                           <SelectValue>
                             {(value: string) =>
                               videoModelOptions.find((m) => m.id === value)?.name ??
-                              (modelsLoading ? t("modelsLoading") : value ? t("videoModelUnavailable", { model: value }) : enabledProviders.length === 0 ? t("enableProviderFirst") : t("selectVideoModel"))
+                              (videoCatalog.loading ? t("modelsLoading") : value ? t("videoModelUnavailable", { model: value }) : videoProviders.length === 0 ? t("enableProviderFirst") : t("selectVideoModel"))
                             }
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
                           {videoModelOptions.map((m) => (
-                            <SelectItem key={m.id} value={m.id} disabled={m.provider !== "kling-cli" && m.extra?.available === false}>
+                            <SelectItem key={m.id} value={m.id}>
                               {m.name}{m.custom ? t("customModelSuffix") : ""}
                             </SelectItem>
                           ))}
@@ -862,12 +864,6 @@ export default function SettingsPage() {
             <PresenterManager />
           </section>
           )}
-          {/* Tab 4: brand settings */}
-          {tab === "brand" && (
-          <section className="min-w-0 flex-1">
-            <BrandSettings />
-          </section>
-          )}
         </div>
 
         {/* custom model endpoints + generation params (advanced, cross-cutting, collapsed) */}
@@ -888,279 +884,6 @@ export default function SettingsPage() {
         <p className="mt-8 text-xs text-muted-foreground">{t("autoSaveHint")}</p>
 
       </main>
-    </div>
-  );
-}
-
-// ==================== character management component ====================
-
-// ==================== brand settings component ====================
-
-// watermark position options (labelKey is rendered per language inside the component)
-const WATERMARK_POSITIONS = [
-  { value: "top-left" as const, labelKey: "brandPositionTopLeft" },
-  { value: "top-right" as const, labelKey: "brandPositionTopRight" },
-  { value: "bottom-left" as const, labelKey: "brandPositionBottomLeft" },
-  { value: "bottom-right" as const, labelKey: "brandPositionBottomRight" },
-] as const;
-
-function BrandSettings() {
-  const t = useT("settings");
-  const { brand, updateBrand, updateWatermark } = useBrandStore();
-
-  return (
-    <div className="space-y-6">
-      {/* shop basic info */}
-      <Card className="glass-card">
-        <CardContent className="p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                <polyline points="9 22 9 12 15 12 15 22" />
-              </svg>
-            </div>
-            <h3 className="font-semibold text-sm">{t("brandShopTitle")}</h3>
-          </div>
-
-          <div className="grid gap-4">
-            {/* shop name */}
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{t("brandNameLabel")}</Label>
-              <Input
-                value={brand.name}
-                onChange={(e) => updateBrand({ name: e.target.value })}
-                placeholder={t("brandNamePlaceholder")}
-                className="text-sm"
-              />
-            </div>
-
-            {/* Logo upload area */}
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Logo</Label>
-              <div className="flex items-center gap-4">
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border-2 border-dashed border-border bg-muted/30 overflow-hidden">
-                  {brand.logoUrl ? (
-                    <img
-                      src={brand.logoUrl}
-                      alt={t("brandLogoAlt")}
-                      className="h-full w-full object-contain"
-                    />
-                  ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/50">
-                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                      <circle cx="8.5" cy="8.5" r="1.5" />
-                      <polyline points="21 15 16 10 5 21" />
-                    </svg>
-                  )}
-                </div>
-                <div className="flex flex-col gap-2">
-                  <label className="cursor-pointer">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          // convert the selected image to a Data URL for storage
-                          const reader = new FileReader();
-                          reader.onload = (ev) => {
-                            updateBrand({ logoUrl: ev.target?.result as string });
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                      }}
-                    />
-                    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent transition-colors">
-                      <LuUpload className="w-3 h-3" />
-                      {t("brandUploadLogo")}
-                    </span>
-                  </label>
-                  {brand.logoUrl && (
-                    <button
-                      onClick={() => updateBrand({ logoUrl: undefined })}
-                      className="text-xs text-destructive hover:underline text-left"
-                    >
-                      {t("brandRemove")}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* brand color settings */}
-      <Card className="glass-card">
-        <CardContent className="p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-pink-500 to-rose-600 text-white">
-              <LuPalette className="w-4 h-4" />
-            </div>
-            <h3 className="font-semibold text-sm">{t("brandColorTitle")}</h3>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* primary color */}
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{t("brandPrimaryColor")}</Label>
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <input
-                    type="color"
-                    value={brand.primaryColor}
-                    onChange={(e) => updateBrand({ primaryColor: e.target.value })}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <div
-                    className="h-9 w-9 rounded-lg border border-border shadow-sm"
-                    style={{ backgroundColor: brand.primaryColor }}
-                  />
-                </div>
-                <Input
-                  value={brand.primaryColor}
-                  onChange={(e) => updateBrand({ primaryColor: e.target.value })}
-                  className="font-mono text-xs uppercase flex-1"
-                  maxLength={7}
-                />
-              </div>
-            </div>
-
-            {/* secondary color */}
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{t("brandSecondaryColor")}</Label>
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <input
-                    type="color"
-                    value={brand.secondaryColor}
-                    onChange={(e) => updateBrand({ secondaryColor: e.target.value })}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <div
-                    className="h-9 w-9 rounded-lg border border-border shadow-sm"
-                    style={{ backgroundColor: brand.secondaryColor }}
-                  />
-                </div>
-                <Input
-                  value={brand.secondaryColor}
-                  onChange={(e) => updateBrand({ secondaryColor: e.target.value })}
-                  className="font-mono text-xs uppercase flex-1"
-                  maxLength={7}
-                />
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* watermark settings */}
-      <Card className="glass-card">
-        <CardContent className="p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 text-white">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                </svg>
-              </div>
-              <h3 className="font-semibold text-sm">{t("brandWatermarkTitle")}</h3>
-            </div>
-            <ToggleSwitch
-              checked={brand.watermark.enabled}
-              onChange={(enabled) => updateWatermark({ enabled })}
-            />
-          </div>
-
-          {brand.watermark.enabled && (
-            <div className="space-y-4 pt-2">
-              {/* watermark position */}
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">{t("brandWatermarkPosition")}</Label>
-                <div className="grid grid-cols-4 gap-2">
-                  {WATERMARK_POSITIONS.map((pos) => (
-                    <button
-                      key={pos.value}
-                      onClick={() => updateWatermark({ position: pos.value })}
-                      className={`h-9 rounded-lg border text-xs font-medium transition-colors ${
-                        brand.watermark.position === pos.value
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border bg-background hover:bg-accent text-muted-foreground"
-                      }`}
-                    >
-                      {t(pos.labelKey)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* opacity */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs text-muted-foreground">{t("brandWatermarkOpacity")}</Label>
-                  <span className="text-xs text-muted-foreground font-mono">
-                    {Math.round(brand.watermark.opacity * 100)}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  step="5"
-                  value={Math.round(brand.watermark.opacity * 100)}
-                  onChange={(e) =>
-                    updateWatermark({ opacity: Number(e.target.value) / 100 })
-                  }
-                  className="w-full h-1.5 bg-muted rounded-full appearance-none cursor-pointer accent-primary"
-                />
-                <div className="flex justify-between text-[10px] text-muted-foreground/50">
-                  <span>10%</span>
-                  <span>100%</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* outro settings */}
-      <Card className="glass-card">
-        <CardContent className="p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 text-white">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="23 7 16 12 23 17 23 7" />
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                </svg>
-              </div>
-              <h3 className="font-semibold text-sm">{t("brandOutroTitle")}</h3>
-            </div>
-            <ToggleSwitch
-              checked={brand.outroEnabled}
-              onChange={(enabled) => updateBrand({ outroEnabled: enabled })}
-            />
-          </div>
-
-          {brand.outroEnabled && (
-            <div className="space-y-1.5 pt-2">
-              <Label className="text-xs text-muted-foreground">{t("brandOutroTextLabel")}</Label>
-              <Textarea
-                value={brand.outroText ?? ""}
-                onChange={(e) => updateBrand({ outroText: e.target.value })}
-                placeholder={t("brandOutroTextPlaceholder")}
-                rows={2}
-                className="text-sm resize-none"
-              />
-              <p className="text-[11px] text-muted-foreground/60">
-                {t("brandOutroTip")}
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

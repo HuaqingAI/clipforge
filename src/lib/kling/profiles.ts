@@ -7,7 +7,8 @@ import { getDataDir } from "@/lib/paths";
 import { klingProfiles, klingAuthSessions } from "./profile-schema";
 import { KLING_PACKAGE, KLING_VERSION, KLING_ADAPTER_VERSION, KLING_ENDPOINT, type KlingProfile, type KlingPublicStatus } from "./types";
 import { KlingError } from "./errors";
-import { getDefaultKlingPackagePath, inspectEnvironment } from "./environment";
+import { effectiveKlingInstallation, getDefaultKlingPackagePath, inspectEnvironment } from "./environment";
+import { isManagedDesktopRuntime } from "@/lib/runtime-capabilities";
 import { klingJobs } from "./job-schema";
 import { klingJobOccupiesGenerationSlot, klingJobHasUnknownSubmission } from "./concurrency";
 
@@ -55,8 +56,9 @@ export function updateProfile(id: string, input: ProfileInput): KlingProfile {
   const values = readInput(input); const profile = getProfile(id);
   const row = db.select().from(klingProfiles).where(eq(klingProfiles.id, id)).get()!;
   if (row.leaseOwner) throw new KlingError("KLING_PROFILE_BUSY", "Kling 正在执行操作，请稍后修改配置。", 409);
-  const nodePath = values.nodePath === undefined ? profile.nodePath : values.nodePath || process.execPath;
-  const packagePath = values.packagePath === undefined ? profile.packagePath : values.packagePath || getDefaultKlingPackagePath();
+  const managed = isManagedDesktopRuntime();
+  const nodePath = managed || values.nodePath === undefined ? profile.nodePath : values.nodePath || process.execPath;
+  const packagePath = managed || values.packagePath === undefined ? profile.packagePath : values.packagePath || getDefaultKlingPackagePath();
   const changed = nodePath !== profile.nodePath || packagePath !== profile.packagePath;
   return saveProfile({ ...profile, ...(values.label !== undefined ? { label: values.label || "Kling 官方 CLI" } : {}), nodePath, packagePath, ...(changed ? { cliEntry: "", environmentState: "not_configured", environmentCheckedAt: undefined, environmentError: undefined, authState: "unknown", authRevision: profile.authRevision + 1, catalogSnapshot: [], catalogRevision: undefined, catalogCheckedAt: undefined } : {}) });
 }
@@ -81,9 +83,9 @@ export function getPublicKlingStatus(profileId?: string): KlingPublicStatus {
     return { ...descriptor, available: true, capabilities: { image: true, tailFrame: true, multiImage: true, audio: true } };
   }) ?? [];
   let publicProfile: KlingPublicStatus["profile"] = null;
-  if (profile) { const { homePath: _private, ...rest } = profile; void _private; publicProfile = { ...rest, catalogSnapshot: models }; }
+  if (profile) { const { homePath: _private, ...rest } = profile; void _private; publicProfile = { ...rest, ...effectiveKlingInstallation(profile), catalogSnapshot: models }; }
   const jobs = profile?.principalKey ? db.select().from(klingJobs).where(and(eq(klingJobs.principalKey, profile.principalKey), eq(klingJobs.region, profile.region))).all() : [];
   const concurrency = { active: jobs.filter(klingJobOccupiesGenerationSlot).length, max: null, blockedByUnknownSubmission: jobs.some(klingJobHasUnknownSubmission) };
   const defaultPackagePath = !profile ? getDefaultKlingPackagePath() : "";
-  return { profile: publicProfile, profiles: profiles.map((p) => ({ id: p.id, label: p.label, authState: p.authState, disabled: !!p.disabledAt, ...(p.accountSummary ? { accountSummary: p.accountSummary } : {}) })), configured: profile?.environmentState === "ready", loggedIn: profile?.authState === "authenticated", models: profile?.authState === "authenticated" ? models : [], concurrency, ...(latest ? { authSession: latest } : {}), ...(defaultPackagePath ? { installationDefaults: { nodePath: process.execPath, packagePath: defaultPackagePath } } : {}) };
+  return { profile: publicProfile, profiles: profiles.map((p) => ({ id: p.id, label: p.label, authState: p.authState, disabled: !!p.disabledAt, ...(p.accountSummary ? { accountSummary: p.accountSummary } : {}) })), configured: profile?.environmentState === "ready", loggedIn: profile?.authState === "authenticated", models: profile?.authState === "authenticated" ? models : [], concurrency, ...(latest ? { authSession: latest } : {}), ...(isManagedDesktopRuntime() ? { installationManaged: true } : {}), ...(defaultPackagePath ? { installationDefaults: { nodePath: process.execPath, packagePath: defaultPackagePath } } : {}) };
 }

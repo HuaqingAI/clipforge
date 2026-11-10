@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, toNamespacedPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocked = vi.hoisted(() => ({ execFile: vi.fn() }));
@@ -141,10 +141,65 @@ describe("English acoustic alignment process and cache", () => {
     expect(requests[0].ffmpegPath).toBeTruthy();
   });
 
+  it("preserves explicitly configured Python paths for the Web launcher", async () => {
+    vi.stubEnv("CLIPFORGE_RUNTIME", "");
+    vi.stubEnv("PYTHONPATH", "C:/web-launcher/custom-site-packages");
+    await align();
+    expect(mocked.execFile.mock.calls[0][2].env.PYTHONPATH).toBe("C:/web-launcher/custom-site-packages");
+  });
+
   it("reports a missing runtime with an actionable start.cmd instruction without spawning anything", async () => {
     await rm(join(runtime, "ready.json"));
     await expect(align()).rejects.toThrow(/start\.cmd/);
     expect(mocked.execFile).not.toHaveBeenCalled();
+  });
+  it("uses the installation-managed portable Python and model paths on desktop", async () => {
+    const portablePython = await resourceFile("managed runtime/python/python.exe");
+    const modelDirectory = join(resource, "managed models");
+    await mkdir(modelDirectory, { recursive: true });
+    await writeFile(join(modelDirectory, "model.safetensors"), "fixture");
+    vi.stubEnv("CLIPFORGE_RUNTIME", "desktop");
+    vi.stubEnv("CLIPFORGE_DESKTOP_LOCAL", "1");
+    vi.stubEnv("PYTHONHOME", "C:/unrelated/python");
+    vi.stubEnv("PYTHONPATH", "C:/unrelated/site-packages");
+    vi.stubEnv("PYTHONUSERBASE", "C:/unrelated/user-base");
+    vi.stubEnv("APP_ALIGNMENT_PYTHON", portablePython);
+    vi.stubEnv("APP_ALIGNMENT_MODEL_DIR", modelDirectory);
+    await rm(join(runtime, ".venv"), { recursive: true, force: true });
+    await align();
+    expect(mocked.execFile.mock.calls[0][0]).toBe(process.platform === "win32" ? toNamespacedPath(portablePython) : portablePython);
+    expect(mocked.execFile.mock.calls[0][2].env.APP_ALIGNMENT_MODEL_DIR).toBe(process.platform === "win32" ? toNamespacedPath(modelDirectory) : modelDirectory);
+    expect(mocked.execFile.mock.calls[0][2].env.PYTHONDONTWRITEBYTECODE).toBe("1");
+    expect(mocked.execFile.mock.calls[0][2].env).not.toHaveProperty("PYTHONHOME");
+    expect(mocked.execFile.mock.calls[0][2].env).not.toHaveProperty("PYTHONPATH");
+    expect(mocked.execFile.mock.calls[0][2].env).not.toHaveProperty("PYTHONUSERBASE");
+    await rm(join(runtime, "ready.json"));
+    await expect(align()).rejects.toThrow(/安装程序修复资源/);
+  });
+
+  it.runIf(process.platform === "win32")("supports long Chinese managed paths without changing persisted media paths", async () => {
+    const longRuntime = join(directory, ...Array.from({ length: 7 }, (_, index) => `在线安装资源-${index}-${"long-runtime".repeat(4)}`));
+    const modelDirectory = join(longRuntime, "model");
+    const python = join(longRuntime, "python", "python.exe");
+    await mkdir(modelDirectory, { recursive: true });
+    await mkdir(dirname(python), { recursive: true });
+    await writeFile(python, "fixture");
+    await writeFile(join(modelDirectory, "model.safetensors"), "fixture");
+    await writeFile(join(longRuntime, "ready.json"), await readFile(join(runtime, "ready.json")));
+    vi.stubEnv("CLIPFORGE_RUNTIME", "desktop");
+    vi.stubEnv("CLIPFORGE_DESKTOP_LOCAL", "1");
+    vi.stubEnv("APP_ALIGNMENT_RUNTIME_DIR", longRuntime);
+    vi.stubEnv("APP_ALIGNMENT_PYTHON", python);
+    vi.stubEnv("APP_ALIGNMENT_MODEL_DIR", modelDirectory);
+    await align();
+    const [executable, args, options] = mocked.execFile.mock.calls[0] as [string, string[], ExecOptions];
+    expect(python.length).toBeGreaterThan(260);
+    expect(executable).toBe(toNamespacedPath(python));
+    expect(args).toEqual([toNamespacedPath(join(resource, "scripts/alignment/align.py")), "--runtime-dir", toNamespacedPath(longRuntime),
+      "--input", toNamespacedPath(join(directory, "work/request.json")), "--output", toNamespacedPath(join(directory, "work/result.json"))]);
+    expect(options.env?.APP_ALIGNMENT_MODEL_DIR).toBe(toNamespacedPath(modelDirectory));
+    expect(requests[0].jobs[0].sourcePath).toBe(input.sourcePath);
+    expect(requests[0].jobs[0].audioPath).toBe(join(directory, "work/audio-0.wav"));
   });
 
   it("rejects an incompatible ready marker even when Python and weights exist", async () => {

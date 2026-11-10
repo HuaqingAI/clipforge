@@ -1,5 +1,6 @@
-/** Migration/resource paths do not determine whether the local web integration is available. */
+import { isLocalCliRuntimeEnabled } from "@/lib/runtime-capabilities";
+
+/** Runtime availability never replaces the per-request Host, Origin and CSRF checks. */
 export function isKlingRuntimeEnabled(): boolean {
-  return process.env.CLIPFORGE_KLING_DISABLED !== "1" &&
-    process.env.CLIPFORGE_RUNTIME !== "desktop" && !process.versions?.electron;
+  return isLocalCliRuntimeEnabled("kling");
 }

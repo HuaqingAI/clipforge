@@ -29,7 +29,20 @@ function progressValue(data: unknown): number | null {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
 }
 
-async function loadPipeline(model: LocalAsrModel, device: LocalAsrDevice) {
+async function loadPipeline(model: LocalAsrModel, device: LocalAsrDevice, request: AsrWorkerRequest) {
+  const runtime = request.runtime;
+  if (runtime?.mode === "managed") {
+    if (!runtime.models.includes(model)) throw new Error("此转写模型尚未安装，请运行客户端安装程序准备资源");
+    if (runtime.modelBaseUrl !== "/api/runtime/asr/models/" || runtime.wasmBaseUrl !== "/api/runtime/asr/wasm/") throw new Error("本地转写资源地址无效");
+    env.allowLocalModels = true;
+    env.allowRemoteModels = false;
+    env.localModelPath = new URL(runtime.modelBaseUrl, worker.location.origin).href;
+    if (!env.backends.onnx.wasm) throw new Error("本地 WASM 运行环境不可用");
+    env.backends.onnx.wasm.wasmPaths = new URL(runtime.wasmBaseUrl, worker.location.origin).href;
+  } else {
+    env.allowLocalModels = false;
+    env.allowRemoteModels = true;
+  }
   const key = `${model}:${device}`;
   const cached = pipelines.get(key);
   if (cached) return cached;
@@ -68,7 +81,7 @@ function wordsFromOutput(output: AutomaticSpeechRecognitionOutput, offsetSeconds
 
 async function transcribe(request: AsrWorkerRequest, device: LocalAsrDevice): Promise<TranscriptDocument> {
   post({ type: "device", device });
-  const transcriber = await loadPipeline(request.model, device);
+  const transcriber = await loadPipeline(request.model, device, request);
   post({ type: "progress", phase: "transcribing", progress: 5 });
   const output = await transcriber(request.audio, {
     return_timestamps: "word",

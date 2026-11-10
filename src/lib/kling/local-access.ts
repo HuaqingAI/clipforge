@@ -22,7 +22,7 @@ function localHost(value: string): boolean {
 /** Local web only. Forwarded headers never establish trust. */
 export function assertLocalKlingOrigin(req: NextRequest): void {
   if (!isKlingRuntimeEnabled()) {
-    throw new KlingAccessError("Kling CLI 当前仅支持本机运行的网页版", 503);
+    throw new KlingAccessError("Kling CLI 需要本机运行的网页版，或已完成资源安装的客户端", 503);
   }
   const url = new URL(req.url);
   const host = req.headers.get("host");

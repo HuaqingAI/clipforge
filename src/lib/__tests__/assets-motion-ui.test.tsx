@@ -67,7 +67,7 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-const kling: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","image_to_video","chosen"]', provider: "kling-cli", profileId: "profile", region: "global", tool: "image_to_video", remoteModelId: "chosen", displayName: "Chosen Kling", catalogRevision: "rev", available: true, parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5, 10], default: 5 }], inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { image: true, tailFrame: false, multiImage: false, audio: false } };
+const kling: KlingVideoModelDescriptor = { selectionKey: '["kling-cli","image_to_video","chosen"]', provider: "kling-cli", profileId: "profile", region: "global", tool: "image_to_video", remoteModelId: "chosen", displayName: "Chosen Kling", catalogRevision: "rev", available: true, parameters: [{ name: "duration", type: "number", required: true, allowedValues: [5, 10], default: 5 }, { name: "audioEnabled", type: "boolean", required: false }], inputSlots: [{ name: "image", role: "image", required: true }], capabilities: { image: true, tailFrame: false, multiImage: false, audio: false } };
 const ark = "doubao-seedance-2.5";
 const initial = useSettingsStore.getInitialState();
 const initialCharacters = useCharacterStore.getInitialState();
@@ -115,7 +115,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("fetch", fetchMock);
   navigation.projectId = "project";
   navigation.router.replace.mockReset().mockImplementation((url: string) => changeUrl(url));
-  useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: ark, providers: { volcengine: { enabled: true, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
+  useSettingsStore.setState({ ...initial, uiMode: "simple", locale: "zh", defaultVideoModel: kling.selectionKey, providers: { openai: { enabled: true, apiKey: "fixture" }, volcengine: { enabled: false, apiKey: "fixture" }, "kling-cli": { enabled: true, apiKey: "", profileId: "profile" } } });
   useCharacterStore.setState({ ...initialCharacters, characters: [] });
   api.models = [{ id: ark, name: "Ark", provider: "volcengine", mediaType: "video", modes: ["image-to-video"] }, { id: kling.selectionKey, name: "Chosen Kling", provider: "kling-cli", mediaType: "video", modes: ["image-to-video"] }];
   api.jobs = []; api.runs = []; api.concurrency = undefined; api.showMaterialLibrary = false; batch.props = null; refinement.props = null; isVideo = false; pending = [];
@@ -144,7 +144,7 @@ describe("asset page loading recovery", () => {
     api.runs = [1, 2, 3].map((index) => ({ id: `historical-${index}`, projectId: "project", kind: "image", status: "completed", total: 1, done: 1, failed: 0,
       items: [{ id: `completed-${index}`, kind: "image", status: "completed", result: { assetId: `asset-${index}` } }] }));
     await navigate("/project/project/assets?runId=historical-1");
-    await mount(ark);
+    await mount(kling.selectionKey);
     for (const path of ["/api/project/project", "/api/project/project/scripts", "/api/project/project/assets", "/api/generation-runs?projectId=project"]) {
       expect(fetchMock.mock.calls.filter(([url]) => url === path)).toHaveLength(1);
     }
@@ -158,7 +158,7 @@ describe("asset page loading recovery", () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? Promise.resolve({ ok: true, json: () => new Promise(() => {}) })
       : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(container.textContent).toContain("loadingShots");
     await act(async () => vi.advanceTimersByTimeAsync(20_300));
     expect(container.textContent).not.toContain("loadingShots");
@@ -176,7 +176,7 @@ describe("asset page loading recovery", () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? Promise.resolve(Response.json({ error: "Not found" }, { status: 404 }))
       : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(container.textContent).toContain("errorLoadFailed");
     expect(container.textContent).not.toContain("errorNoScript");
     expect(button("retry")).toBeDefined();
@@ -184,7 +184,7 @@ describe("asset page loading recovery", () => {
   });
 
   it("ignores a previous project's delayed refresh callback after navigation", async () => {
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("keyframeRefine");
     const oldRefresh = refinement.props!.onApplied;
     const normal = fetchMock.getMockImplementation()!;
@@ -195,7 +195,7 @@ describe("asset page loading recovery", () => {
       return normal(url, init);
     });
     navigation.projectId = "project-B";
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(container.querySelector('img[src="/api/files/frame-B.jpg"]')).not.toBeNull();
     const before = fetchMock.mock.calls.length;
     await act(async () => { await oldRefresh(); });
@@ -206,12 +206,12 @@ describe("asset page loading recovery", () => {
 
 describe("image background result reconciliation", () => {
   function enableImages() {
-    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "openai", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
     useSettingsStore.setState({ defaultImageModel: "fixture-image" });
   }
-  it("waits for the exact newly saved keyframe before offering automatic motion", async () => {
+  it("reconciles the exact saved keyframe before preparing explicit Kling motion", async () => {
     enableImages(); api.jobs = [savedKlingJob()];
-    await mount(ark); await click("btnRegenerate");
+    await mount(kling.selectionKey); await click("btnRegenerate");
     await click("查看 / 恢复");
     await act(async () => (container.querySelector('[aria-label="refresh-job-detail"]') as HTMLButtonElement).click());
     expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
@@ -223,13 +223,16 @@ describe("image background result reconciliation", () => {
     await act(async () => window.dispatchEvent(new Event("clipforge:generation-runs-refresh")));
     expect(previewRequests()).toHaveLength(0);
     await act(async () => finishAssets(Response.json([{ id: "new-frame", shotId: 1, status: "done", selected: true, filePath: "/api/files/new-frame.jpg" }])));
+    expect(container.querySelector('img[src="/api/files/new-frame.jpg"]')).not.toBeNull();
+    expect(previewRequests()).toHaveLength(0);
+    await click("btnConvertMotion");
     expect(previewRequests()).toHaveLength(1);
     expect(previewRequests()[0].controlInputs?.firstFrameUrl).toBe("/api/files/new-frame.jpg");
     expect(submissions()).toHaveLength(0);
   });
 
   it("clears the local generating indicator when an accepted image task fails", async () => {
-    enableImages(); await mount(ark); await click("btnRegenerate");
+    enableImages(); await mount(kling.selectionKey); await click("btnRegenerate");
     expect(button("btnGenerating")).toBeDefined();
     api.runs = [{ id: "run-1", projectId: "project", kind: "image", status: "failed", total: 1, done: 0, failed: 1, items: [{ id: "failed-image", kind: "image", scriptId: "script", shotId: 1, status: "failed", error: "Provider image failed" }] }];
     await act(async () => window.dispatchEvent(new Event("clipforge:generation-runs-refresh")));
@@ -243,7 +246,7 @@ describe("image background result reconciliation", () => {
 describe("batch image keyframes", () => {
   function configureBatchShots(options: { imageModel?: boolean; allPending?: boolean } = {}) {
     if (options.imageModel !== false) {
-      api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+      api.models.push({ id: "fixture-image", name: "Fixture image", provider: "openai", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
       useSettingsStore.setState({ defaultImageModel: "fixture-image" });
     } else useSettingsStore.setState({ defaultImageModel: "" });
     const shots = Array.from({ length: options.allPending ? 5 : 9 }, (_, index) => {
@@ -278,7 +281,7 @@ describe("batch image keyframes", () => {
     expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1, 2, 8]);
     expect(runRequests().every((run) => run.kind === "image")).toBe(true);
     for (const item of backgroundItems("image")) {
-      expect(item).toMatchObject({ scriptId: "script", request: { provider: "volcengine", model: "fixture-image", scriptId: "script", shotId: item.shotId }, asset: { scriptId: "script", shotId: item.shotId, expectedSelectedAssetId: null } });
+      expect(item).toMatchObject({ scriptId: "script", request: { provider: "openai", model: "fixture-image", scriptId: "script", shotId: item.shotId }, asset: { scriptId: "script", shotId: item.shotId, expectedSelectedAssetId: null } });
     }
     expect(fetchMock.mock.calls.some(([url, init]) => url.endsWith("/assets") && init?.method === "POST")).toBe(false);
     expect(previewRequests()).toHaveLength(0);
@@ -303,7 +306,7 @@ describe("batch image keyframes", () => {
       { id: "unresolved", shotId: 4, provider: "volcengine", model: ark, taskId: "paid-video", status: "unknown" },
       { id: "failed", shotId: 5, provider: "volcengine", model: ark, taskId: "failed-video", status: "failed" },
     ];
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("batchKeyframesButton");
     expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1, 5]);
     expect(submissions()).toHaveLength(0);
@@ -321,7 +324,7 @@ describe("batch image keyframes", () => {
       }
       return normal(url, init);
     });
-    await mount(ark);
+    await mount(kling.selectionKey);
     const generate = button("batchKeyframesButton")!;
     await act(async () => { generate.click(); generate.click(); });
     expect(backgroundItems("image").map((item) => item.shotId)).toEqual([1]);
@@ -332,16 +335,16 @@ describe("batch image keyframes", () => {
 
   it("keeps the batch entry disabled without a configured image model", async () => {
     configureBatchShots({ imageModel: false });
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(button("batchKeyframesButton")?.disabled).toBe(true);
     await click("batchKeyframesButton");
     expect(runRequests()).toHaveLength(0);
   });
 
   it("keeps the batch entry visible and disabled after all AI shots have assets", async () => {
-    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image"] });
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "openai", mediaType: "image", modes: ["text-to-image"] });
     useSettingsStore.setState({ defaultImageModel: "fixture-image" });
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(button("batchKeyframesButton")?.disabled).toBe(true);
     expect(button("batchKeyframesButton")?.title).toContain("batchKeyframesNeedShots");
     expect(runRequests()).toHaveLength(0);
@@ -350,7 +353,7 @@ describe("batch image keyframes", () => {
 
 describe("keyframe refinement entry points", () => {
   function configureFrames() {
-    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "openai", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
     useSettingsStore.setState({ defaultImageModel: "fixture-image" });
     const shots: Shot[] = [1, 2, 3, 4, 5, 6].map((shotId) => ({
       shotId, type: "demo", duration: 5, description: `Frame ${shotId}`, camera: "Slow dolly in", voiceover: "",
@@ -391,19 +394,19 @@ describe("keyframe refinement entry points", () => {
     expect(button("btnGenerate")?.disabled).toBe(false);
     expect(button("gridButton")?.disabled).toBe(false);
     expect(button("keyframeRefineBatch")?.disabled).toBe(false);
-    expect(button("batchMotionButton")?.disabled).toBe(false);
+    expect(button("batchMotionButton")?.disabled).toBe(videoModel === ark);
     expectNoGenerationRequests();
   });
 
   it("opens batch refinement for selected saved stills and excludes videos, missing, failed and unadopted assets", async () => {
     configureFrames();
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(refinement.props).toBeNull();
     await click("keyframeRefineBatch");
     expect(container.querySelector('[aria-label="keyframe-refinement-dialog"]')).not.toBeNull();
     expect(refinement.props).toMatchObject({
       open: true, projectId: "project", scriptId: "script",
-      modelTarget: { provider: "volcengine", model: "fixture-image", apiKey: "fixture" },
+      modelTarget: { provider: "openai", model: "fixture-image", apiKey: "fixture" },
       shots: [
         { assetId: "frame-1", shotId: 1, imageUrl: "/api/files/crop-1.png", description: "Frame 1" },
         { assetId: "frame-6", shotId: 6, imageUrl: "/api/files/crop-6.png", description: "Frame 6" },
@@ -415,7 +418,7 @@ describe("keyframe refinement entry points", () => {
 
   it("preselects the clicked shot while retaining the other available frames", async () => {
     configureFrames();
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(singleRefineButtons()).toHaveLength(2);
     await act(async () => singleRefineButtons()[1].click());
     expect(refinement.props!.initialShotId).toBe(6);
@@ -425,7 +428,7 @@ describe("keyframe refinement entry points", () => {
 
   it("opens refinement from the original image preview with the correct shot and closes the preview", async () => {
     configureFrames();
-    await mount(ark);
+    await mount(kling.selectionKey);
     const previewTrigger = container.querySelector('img[src="/api/files/crop-6.png"]')!.closest("button")!;
     await act(async () => previewTrigger.click());
     const previewTitle = [...container.querySelectorAll("h2")].find((heading) => heading.textContent === "imagePreviewTitle")!;
@@ -440,7 +443,7 @@ describe("keyframe refinement entry points", () => {
 
   it("refreshes the selected image after explicit adoption and keeps the original refinement source snapshot", async () => {
     const frames = configureFrames();
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("keyframeRefineBatch");
     const sourceSnapshot = refinement.props!.shots;
     const readsBefore = fetchMock.mock.calls.filter(([url]) => url.endsWith("/assets")).length;
@@ -457,7 +460,7 @@ describe("keyframe refinement entry points", () => {
 
 const tideweScriptHash = "a".repeat(64);
 function configureTideweAssets({ productVisible = true, savedFrame = false, projectOverrides = {}, pacingVersion }: { productVisible?: boolean; savedFrame?: boolean; projectOverrides?: Record<string, unknown>; pacingVersion?: string } = {}) {
-  api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
+  api.models.push({ id: "fixture-image", name: "Fixture image", provider: "openai", mediaType: "image", modes: ["text-to-image", "image-to-image"] });
   useSettingsStore.setState({ defaultImageModel: "fixture-image", uiMode: "pro" });
   const planned: Shot = {
     shotId: 1, type: "demo", duration: 5, description: productVisible ? "猎人在森林边整理迷彩夹克" : "森林清晨，树梢上的薄雾缓慢消散", camera: "Slow dolly in", visualSource: "ai_generate", transition: "direct_concat",
@@ -489,7 +492,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
       : url.endsWith("/scripts")
         ? Promise.resolve(Response.json([{ id: "script", selected: true, scriptHash: tideweScriptHash, shots: [planned, { ...planned, shotId: 2 }] }]))
         : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     const identity = container.querySelector('[aria-label="presenterLabel"]');
     expect(identity?.textContent).toContain(selectedPresenter.name);
     expect(container.querySelector(`select option[value="${presenter.id}"]`)).toBeNull();
@@ -507,22 +510,26 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(JSON.stringify(imageRequest)).not.toContain("changed-presenter");
     expect(JSON.stringify(imageRequest)).not.toContain("query-presenter");
   });
-  it("automatically sends the frozen presenter identity to the reviewed video controls", async () => {
+  it("offers the frozen presenter as a Kling frame choice without adding implicit video references", async () => {
     const presenter = snapshotTidewePresenter(selectedPresenter)!;
     const { planned } = configureTideweAssets({ savedFrame: true, projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
     planned.tidewe = { ...planned.tidewe!, personVisible: true, presenter };
-    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
     useCharacterStore.setState({ characters: [{ ...selectedPresenter, referenceImages: ["/api/files/changed-presenter.png"] }] });
-    await mount(ark); await click("btnConvertMotion");
-    expect(previewRequests()[0]).toMatchObject({ generateAudio: true, controlInputs: { characterReferenceUrl: "/api/files/frozen-presenter.png", productReferenceUrl: "/api/files/product.jpg" } });
+    await mount(kling.selectionKey); await click("btnConvertMotion");
+    expect(previewRequests()[0]).toMatchObject({ generateAudio: true, controlInputs: { firstFrameUrl: "/api/files/frame.jpg" } });
+    expect(previewRequests()[0].controlInputs?.characterReferenceUrl).toBeUndefined();
+    expect(previewRequests()[0].controlInputs?.productReferenceUrl).toBeUndefined();
+    expect(container.querySelector('select option[value="/api/files/frozen-presenter.png"]')).not.toBeNull();
+    expect(container.querySelector('select option[value="/api/files/changed-presenter.png"]')).toBeNull();
   });
   it("keeps the selected presenter out of silent person-free B-roll image and video reference packs", async () => {
     const presenter = snapshotTidewePresenter(selectedPresenter)!;
     const { planned } = configureTideweAssets({ productVisible: false, projectOverrides: { creativeProfile: createTideweOutdoorProfile({ presenter }) } });
     planned.voiceover = "";
     planned.tidewe = { ...planned.tidewe!, personVisible: false, presenter };
-    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
-    await mount(ark); await click("btnGenerate");
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
+    await mount(kling.selectionKey); await click("btnGenerate");
     const imageRequest = JSON.parse(generationRequests("image")[0][1].body);
     expect(imageRequest.mode).toBe("text-to-image");
     expect(imageRequest).not.toHaveProperty("imageUrl");
@@ -539,9 +546,9 @@ describe("TIDEWE assets preserve the frozen script context", () => {
   it.each([false, true])("keeps exact native spoken text and audio enabled for TIDEWE batch=%s even when global audio is off", async (batchMode) => {
     const { planned } = configureTideweAssets({ savedFrame: true });
     planned.duration = 5.4;
-    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: false } });
-    await mount(ark);
+    await mount(kling.selectionKey);
     if (batchMode) {
       await click("batchMotionButton");
       await act(async () => (container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).click());
@@ -552,51 +559,42 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     }
     expect(previewRequests()[0]).toMatchObject({ batch: batchMode, generateAudio: true, controlInputs: { supportsAudio: true } });
     expect(submissions()).toHaveLength(1);
-    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ options: { duration: 6, audioEnabled: true, voiceover: planned.voiceover, audioPrompt: serverAudioPrompt } });
+    const request = JSON.parse(submissions()[0][1].body);
+    expect(request).toMatchObject({ prompt: serverPrompt(), promptContext: { scriptId: "script", shotId: 1, generateAudio: true }, options: { duration: 6, audioEnabled: true } });
+    if (batchMode) expect(request.options).toMatchObject({ voiceover: planned.voiceover, audioPrompt: serverAudioPrompt });
+    else expect(Object.keys(request.options).sort()).toEqual(["audioEnabled", "duration"]);
   });
   it.each([false, true])("uses the complete line's generation budget only for the new pacing version, paced=%s", async (paced) => {
     const { planned } = configureTideweAssets({ savedFrame: true, pacingVersion: paced ? TIDEWE_PACING_VERSION : undefined });
     planned.duration = 2;
     planned.voiceover = Array.from({ length: 5 }, () => "The trail begins here.").join(" ");
-    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
-    await mount(ark);
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
     expect(submissions()).toHaveLength(1);
-    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ options: { duration: paced ? 6 : 4, audioEnabled: true, voiceover: planned.voiceover } });
+    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ promptContext: { scriptId: "script", shotId: 1, generateAudio: true }, options: { duration: paced ? 6 : 4, audioEnabled: true } });
   });
-  it.each([false, true])("generates TIDEWE visuals with post narration for a silent model, batch=%s", async (batchMode) => {
+  it.each([false, true])("blocks a retired silent model from new TIDEWE motion, batch=%s", async (batchMode) => {
     configureTideweAssets({ savedFrame: true });
     api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: false } : model);
-    const normal = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === videoPromptUrl) {
-        const request = JSON.parse(init!.body as string) as VideoPromptRequest;
-        const preview = promptPreview(request);
-        return Promise.resolve(Response.json({ ...preview, controlPlan: { ...preview.controlPlan, audioMode: "post", voiceoverBound: false } }));
-      }
-      return normal(url, init);
-    });
     await mount(ark);
     if (batchMode) {
+      expect(button("batchMotionButton")?.disabled).toBe(true);
       await click("batchMotionButton");
-      await act(async () => (container.querySelector('[aria-label="batch-submit-1"]') as HTMLButtonElement).click());
+      expect(container.querySelector('[aria-label="batch-motion-panel"]')).toBeNull();
     } else {
       await click("btnConvertMotion");
-      await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
-      await click("确认生成此镜头");
+      expect(container.textContent).toContain("errorNoVideoModel");
+      expect(container.querySelector("textarea")).toBeNull();
     }
-    expect(submissions()).toHaveLength(1);
-    const generated = JSON.parse(submissions()[0][1].body);
-    expect(generated).toMatchObject({ prompt: serverPrompt(), controlPlan: { audioMode: "post" }, options: { audioEnabled: false } });
-    expect(generated.options.voiceover).toBeUndefined();
-    expect(generated.options.audioPrompt).toBeUndefined();
-    expect(backgroundItems("video")[0].asset).toMatchObject({ generationPlan: { audioMode: "post" } });
+    expect(previewRequests()).toHaveLength(0);
+    expect(submissions()).toHaveLength(0);
   });
   it("registers image generation together with its source script hash and import snapshot", async () => {
     configureTideweAssets();
-    await mount(ark); await click("btnGenerate");
+    await mount(kling.selectionKey); await click("btnGenerate");
     expect(backgroundItems("image")).toHaveLength(1);
     expect(backgroundItems("image")[0]).toMatchObject({ request: { scriptId: "script", shotId: 1, mode: "image-to-image", imageUrl: "/api/files/product.jpg" }, asset: { scriptId: "script", expectedScriptHash: tideweScriptHash, shotId: 1, expectedSelectedAssetId: null } });
     expect(fetchMock.mock.calls.some(([url, init]) => url.endsWith("/assets") && init?.method === "POST")).toBe(false);
@@ -608,7 +606,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     const normal = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs" && init?.method === "POST"
       ? Promise.resolve(Response.json({ error: "The script revision changed. Refresh before adopting this image." }, { status: 409 })) : normal(url, init));
-    await mount(ark); await click("btnGenerate");
+    await mount(kling.selectionKey); await click("btnGenerate");
     expect(container.textContent).toContain("The script revision changed. Refresh before adopting this image.");
     expect(button("retry")).toBeDefined();
     expect(button("btnConvertMotion")).toBeUndefined();
@@ -619,7 +617,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
       creativeIntent: { subject: "OLD SALES HOST", continuity: ["黑棚产品促销"] },
       visualBible: { productAnchors: ["OLD SALES PACKAGING"], forbiddenChanges: ["森林清晨"] },
     } });
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnGenerate");
     const imageCalls = generationRequests("image");
     expect(imageCalls).toHaveLength(1);
@@ -638,7 +636,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     const normal = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts") && init?.method === "PATCH"
       ? Promise.resolve(Response.json({ success: true })) : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await act(async () => (container.querySelector('button[title="cameraEditTip"]') as HTMLButtonElement).click());
     const input = container.querySelector('input[maxlength="200"]') as HTMLInputElement;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Slow pan across the jacket"); input.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -655,7 +653,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     const normal = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/ai/video/task"
       ? Promise.resolve(Response.json({ status: "completed", videoUrls: ["https://example.test/recovered.mp4"] })) : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnResumeTask");
     expect(container.textContent).toContain("该历史任务没有原始文案版本");
     expect(container.textContent).toContain("https://example.test/recovered.mp4");
@@ -665,7 +663,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each(["pin", "tail"] as const)("keeps TIDEWE's own first frame while allowing matching-scene pin chaining with %s", async (chainMode) => {
+  it.each(["pin", "tail"] as const)("keeps TIDEWE's own Kling first frame without implicitly chaining with %s", async (chainMode) => {
     const { planned } = configureTideweAssets();
     useSettingsStore.setState({ chainMode });
     const shots = [1, 2, 3].map((shotId): Shot => ({ ...planned, shotId, type: "hook", tidewe: { ...planned.tidewe!, sceneId: "same-woods", productVisible: true } }));
@@ -677,15 +675,15 @@ describe("TIDEWE assets preserve the frozen script context", () => {
         { shotId: 2, status: "done", selected: true, filePath: "/api/files/frame-2.jpg" },
         { shotId: 3, status: "done", selected: true, filePath: "/api/files/frame-3.jpg" },
       ])) : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion"); // shot 1 is already video; the first still is shot 2.
     expect(previewRequests()).toHaveLength(1);
     const request = previewRequests()[0];
     expect(request.shotId).toBe(2);
     expect(request.controlInputs?.firstFrameUrl).toBe("/api/files/frame-2.jpg");
-    expect(request.controlInputs?.lastFrameUrl).toBe(chainMode === "pin" ? "/api/files/frame-3.jpg" : undefined);
+    expect(request.controlInputs?.lastFrameUrl).toBeUndefined();
     expect(request.controlInputs?.continuityReferenceUrl).toBeUndefined();
-    expect(request.chainToNext).toBe(chainMode === "pin");
+    expect(request.chainToNext).toBe(false);
     expect(submissions()).toHaveLength(0);
   });
 
@@ -762,7 +760,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
         { shotId: 2, status: "done", selected: true, filePath: "/api/files/frame-2.jpg" },
         { shotId: 3, status: "done", selected: true, filePath: "/api/files/frame-3.jpg" },
       ])) : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
     expect(previewRequests()).toHaveLength(1);
     expect(previewRequests()[0]).toMatchObject({ shotId: 2, chainToNext: false, controlInputs: { firstFrameUrl: "/api/files/frame-2.jpg" } });
@@ -787,7 +785,7 @@ describe("TIDEWE assets preserve the frozen script context", () => {
       if (url === "/api/ai/video/task") return Promise.resolve(Response.json({ status: "completed", videoUrls: ["https://example.test/original-recovered.mp4"] }));
       return normal(url, init);
     });
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnResumeTask");
     const save = fetchMock.mock.calls.find(([url, init]) => url === "/api/project/project/assets" && init?.method === "POST")!;
     expect(JSON.parse(save[1].body)).toMatchObject({ scriptId: sourceContext.sourceScriptId, expectedScriptHash: sourceContext.sourceRevision, sourceUrl: "https://example.test/original-recovered.mp4", generationPlan: { sourceContext } });
@@ -805,11 +803,11 @@ describe("TIDEWE assets preserve the frozen script context", () => {
 
 describe("assets uses the configured provider through one motion entry", () => {
   it("queues the selected grid resolution and lets the user leave before rendering completes", async () => {
-    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "volcengine", mediaType: "image", modes: ["text-to-image"] });
+    api.models.push({ id: "fixture-image", name: "Fixture image", provider: "openai", mediaType: "image", modes: ["text-to-image"] });
     useSettingsStore.setState({ uiMode: "pro", defaultImageModel: "fixture-image", imageParams: { aspectRatio: "1:1", count: 4, seed: 23 } });
     const normal = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts") ? Promise.resolve(Response.json([{ id: "script", selected: true, shots: [1, 2].map(shotId => ({ shotId, type: "demo", duration: 5, description: "Product rotates", visualSource: "ai_generate" })) }])) : normal(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     const select = container.querySelector<HTMLSelectElement>("#storyboard-grid-resolution")!;
     expect(select.value).toBe("4k");
     await act(async () => { select.value = "2k"; select.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -1184,17 +1182,24 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each([ark, kling.selectionKey])("opens confirmation from the same motion button with default %s and a prepared motion prompt", async (defaultModel) => {
+  it.each([ark, kling.selectionKey])("prepares confirmation only when the saved default %s is a current Kling selection", async (defaultModel) => {
     await mount(defaultModel);
     expect(button("Kling 生成视频")).toBeUndefined();
     await click("btnConvertMotion");
+    if (defaultModel === ark) {
+      expect(container.textContent).toContain("errorNoVideoModel");
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(previewRequests()).toHaveLength(0);
+      expect(submissions()).toHaveLength(0);
+      return;
+    }
     expect(container.querySelector("h2")?.textContent).toContain("确认镜头 1 视频生成");
-    expect(container.querySelector('[aria-label="默认视频模型"]')?.textContent).toContain(defaultModel === ark ? ark : "chosen");
+    expect(container.querySelector('[aria-label="默认视频模型"]')?.textContent).toContain("chosen");
     const prompt = container.querySelector("textarea") as HTMLTextAreaElement;
     expect(prompt.value).toBe(serverPrompt());
     expect(prompt.readOnly).toBe(true);
     expect(previewRequests()).toHaveLength(1);
-    expect(previewRequests()[0]).toMatchObject({ scriptId: "script", shotId: 1, provider: defaultModel === ark ? "volcengine" : "kling-cli", model: defaultModel });
+    expect(previewRequests()[0]).toMatchObject({ scriptId: "script", shotId: 1, provider: "kling-cli", model: defaultModel });
     expect(submissions()).toHaveLength(0);
   });
 
@@ -1218,7 +1223,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each([ark, kling.selectionKey])("sends the saved negative prompt to the server and forwards its final negative unchanged with %s", async (defaultModel) => {
+  it.each([ark, kling.selectionKey])("forwards reviewed negative text only for a supported default %s", async (defaultModel) => {
     const savedNegative = "Avoid distorted controls and duplicated product parts.";
     const finalNegative = "Backend exclusions in approved order.\nPreserve the exact final text.";
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, negativePrompt: savedNegative } });
@@ -1233,6 +1238,12 @@ describe("assets uses the configured provider through one motion entry", () => {
 
     await mount(defaultModel);
     await click("btnConvertMotion");
+    if (defaultModel === ark) {
+      expect(previewRequests()).toHaveLength(0);
+      expect(submissions()).toHaveLength(0);
+      expect(container.querySelector("textarea")).toBeNull();
+      return;
+    }
     expect(previewRequests()[0]).toMatchObject({ negativePrompt: savedNegative });
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
@@ -1240,15 +1251,24 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(1);
     const request = JSON.parse(submissions()[0][1].body);
     expect(request.promptContext).toMatchObject({ negativePrompt: savedNegative, contextKey: "backend-context-1" });
-    expect(request.options[defaultModel === ark ? "negativePrompt" : "negative_prompt"]).toBe(finalNegative);
+    expect(request.options.negative_prompt).toBe(finalNegative);
   });
 
   it.each([
     { creationType: "sales", defaultModel: ark },
     { creationType: "sales", defaultModel: kling.selectionKey },
-  ])("uses the same backend text for initial and redo $creationType generation with $defaultModel", async ({ defaultModel }) => {
+  ])("uses reviewed text for supported initial and redo $creationType generation with $defaultModel", async ({ defaultModel }) => {
     await mount(defaultModel);
     await click("btnConvertMotion");
+    if (defaultModel === ark) {
+      expect(previewRequests()).toHaveLength(0);
+      isVideo = true;
+      await click("刷新任务");
+      expect(button("btnRedoMotion")).toBeUndefined();
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(submissions()).toHaveLength(0);
+      return;
+    }
     const firstPrompt = (container.querySelector("textarea") as HTMLTextAreaElement).value;
     expect(firstPrompt).toBe(serverPrompt());
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
@@ -1275,7 +1295,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === videoPromptUrl && ++attempts === 1
       ? Promise.resolve(Response.json({ error: "Backend preview unavailable" }, { status: 503 }))
       : normalFetch(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
     expect(container.textContent).toContain("Backend preview unavailable");
     expect(container.querySelector("textarea")).toBeNull();
@@ -1298,7 +1318,7 @@ describe("assets uses the configured provider through one motion entry", () => {
       }
       return normalFetch(url, init);
     });
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
     const previousRequest = previewRequests()[0];
     await act(async () => useSettingsStore.setState({ motionIntensity: "strong" }));
@@ -1316,7 +1336,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === videoPromptUrl
       ? new Promise<Response>((resolve) => { resolvePreview = resolve; })
       : normalFetch(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     const convert = button("btnConvertMotion")!;
     await act(async () => { convert.click(); convert.click(); });
     expect(previewRequests()).toHaveLength(1);
@@ -1340,32 +1360,35 @@ describe("assets uses the configured provider through one motion entry", () => {
 
   it("submits the server prompt and native audio plan without adding local instructions", async () => {
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: true } });
-    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
     const originalFetch = fetchMock.getMockImplementation()!;
     const voiceover = "只自然说一遍这句台词";
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? Promise.resolve(Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, description: "商品保持静止，底部显示“价格以商品页为准”", camera: "固定镜头。", voiceover, visualSource: "ai_generate", transition: "direct_concat" }] }]))
       : originalFetch(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
-    const reviewedPrompt = (container.querySelector('[aria-label="视频提示词"]') as HTMLTextAreaElement).value;
+    const reviewedPrompt = (container.querySelector('[aria-label="Kling 视频提示词"]') as HTMLTextAreaElement).value;
     expect(reviewedPrompt).toBe(serverPrompt());
     expect(previewRequests()[0]).toMatchObject({ generateAudio: true, controlInputs: { supportsAudio: true } });
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
     expect(submissions()).toHaveLength(1);
-    expect(JSON.parse(submissions()[0][1].body)).toMatchObject({ prompt: reviewedPrompt, promptContext: { contextKey: "backend-context-1", generateAudio: true }, options: { audioEnabled: true, voiceover, audioPrompt: serverAudioPrompt } });
+    const request = JSON.parse(submissions()[0][1].body);
+    expect(request).toMatchObject({ prompt: reviewedPrompt, promptContext: { scriptId: "script", shotId: 1, contextKey: "backend-context-1", generateAudio: true }, options: { audioEnabled: true } });
+    expect(request.options).not.toHaveProperty("voiceover");
+    expect(request.options).not.toHaveProperty("audioPrompt");
   });
 
-  it("keeps an explicit silent API setting ahead of native audio capability and scripted dialogue", async () => {
+  it("keeps an explicit silent setting ahead of Kling native audio capability and scripted dialogue", async () => {
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: false } });
     const originalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? Promise.resolve(Response.json([{ id: "script", selected: true, shots: [{ shotId: 1, type: "demo", duration: 5, description: "商品保持静止", camera: "固定镜头", voiceover: "这段台词不能进入静音生成", visualSource: "ai_generate", transition: "direct_concat" }] }]))
       : originalFetch(url, init));
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
-    const prompt = (container.querySelector('[aria-label="视频提示词"]') as HTMLTextAreaElement).value;
+    const prompt = (container.querySelector('[aria-label="Kling 视频提示词"]') as HTMLTextAreaElement).value;
     expect(prompt).toBe(serverPrompt());
     expect(previewRequests()[0]).toMatchObject({ generateAudio: false, controlInputs: { supportsAudio: false } });
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
@@ -1437,15 +1460,14 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it.each([false, true])("requests audioEnabled=%s from the backend before the API confirmation", async (audioEnabled) => {
-    const modelId = "fixture/image-to-video";
-    api.models.push({ id: modelId, name: "Fixture", provider: "volcengine", mediaType: "video", modes: ["image-to-video"], supportsAudio: false });
+  it.each([false, true])("requests audioEnabled=%s from the backend before Kling confirmation", async (audioEnabled) => {
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: false } : model);
     useSettingsStore.setState({ videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled } });
-    await mount(modelId);
+    await mount(kling.selectionKey);
     await click("btnConvertMotion");
-    const prompt = (container.querySelector('[aria-label="视频提示词"]') as HTMLTextAreaElement).value;
+    const prompt = (container.querySelector('[aria-label="Kling 视频提示词"]') as HTMLTextAreaElement).value;
     expect(prompt).toBe(serverPrompt());
-    expect(previewRequests()[0]).toMatchObject({ generateAudio: audioEnabled, controlInputs: { supportsAudio: false } });
+    expect(previewRequests()[0]).toMatchObject({ generateAudio: audioEnabled, controlInputs: { supportsAudio: audioEnabled } });
     expect(submissions()).toHaveLength(0);
   });
 
@@ -1486,10 +1508,10 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(submissions()).toHaveLength(0);
   });
 
-  it("keeps an API submission with uncertain status blocked after closing the confirmation", async () => {
+  it("keeps a Kling submission with uncertain status blocked after closing the confirmation", async () => {
     const normal = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/generation-runs" && init?.method === "POST" ? Promise.reject(new TypeError("Network interrupted")) : normal(url, init));
-    await mount(ark); await click("btnConvertMotion");
+    await mount(kling.selectionKey); await click("btnConvertMotion");
     await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
     await click("确认生成此镜头");
     await act(async () => (container.querySelector('[aria-label="close-dialog"]') as HTMLButtonElement).click());
@@ -1497,6 +1519,31 @@ describe("assets uses the configured provider through one motion entry", () => {
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.textContent).toContain("此镜头已有待恢复视频任务");
     expect(submissions()).toHaveLength(1);
+  });
+
+  it("allows a fresh Kling confirmation after a definite rejected registration", async () => {
+    const normal = fetchMock.getMockImplementation()!;
+    let rejected = true;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/generation-runs" && init?.method === "POST" && rejected) {
+        rejected = false;
+        return Promise.resolve(Response.json({ code: "GENERATION_RUN_INVALID", error: "The request was rejected before dispatch." }, { status: 400 }));
+      }
+      return normal(url, init);
+    });
+    await mount(kling.selectionKey);
+    await click("btnConvertMotion");
+    await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await click("确认生成此镜头");
+    expect(submissions()).toHaveLength(1);
+    expect(container.textContent).toContain("The request was rejected before dispatch.");
+    await act(async () => (container.querySelector('[aria-label="close-dialog"]') as HTMLButtonElement).click());
+    await click("btnConvertMotion");
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(serverPrompt());
+    expect(previewRequests()).toHaveLength(2);
+    await act(async () => (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await click("确认生成此镜头");
+    expect(submissions()).toHaveLength(2);
   });
 
   it("prepares batch motion without submitting and generates only the chosen shots from their own silent keyframes", async () => {
@@ -1507,15 +1554,15 @@ describe("assets uses the configured provider through one motion entry", () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/scripts")
       ? Promise.resolve(Response.json([{ id: "script", selected: true, shots }]))
       : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json(saved)) : normal(url, init));
-    api.models = api.models.map((model) => model.id === ark ? { ...model, supportsAudio: true } : model);
+    api.models = api.models.map((model) => model.provider === "kling-cli" ? { ...model, supportsAudio: true } : model);
     useSettingsStore.setState({ chainMode: "tail", videoParams: { ...useSettingsStore.getState().videoParams, audioEnabled: true } });
-    await mount(ark);
+    await mount(kling.selectionKey);
 
     expect(button("整片自动编排")).toBeUndefined();
     await click("batchMotionButton");
     expect(container.querySelector('[aria-label="batch-motion-panel"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="film-panel"]')).toBeNull();
-    expect(batch.props).toMatchObject({ projectId: "project", scriptId: "script", provider: "volcengine", selectionKey: ark, valid: true });
+    expect(batch.props).toMatchObject({ projectId: "project", scriptId: "script", provider: "kling-cli", selectionKey: kling.selectionKey, valid: true });
     expect(submissions()).toHaveLength(0);
     const chosen = batch.props!.shots.filter(({ asset }) => asset.shotId === 2 || asset.shotId === 4);
     expect(chosen).toHaveLength(2);
@@ -1552,7 +1599,7 @@ describe("assets uses the configured provider through one motion entry", () => {
       : url.endsWith("/assets") && !init?.method ? Promise.resolve(Response.json(saved)) : normal(url, init));
     pending = [{ id: "pending-row", shotId: 5, provider: "volcengine", model: ark, taskId: "pending-video", status: "processing" }];
     api.jobs = [savedKlingJob({ shotId: 6, submissionState: "submission_unknown", remoteState: "unknown", importState: "not_ready", outputs: [] })];
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("batchMotionButton");
     expect(batch.props?.shots).toHaveLength(6);
     expect(batch.props?.shots.find(({ asset }) => asset.shotId === 1)?.draft).toBeDefined();
@@ -1566,7 +1613,7 @@ describe("assets uses the configured provider through one motion entry", () => {
   });
 
   it("invalidates prepared batch submissions after video settings change", async () => {
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("batchMotionButton");
     const draft = batch.props!.shots[0].draft!;
     expect(batch.props?.valid).toBe(true);
@@ -1583,7 +1630,7 @@ describe("assets uses the configured provider through one motion entry", () => {
       ? Promise.resolve(Response.json([{ id: "asset", shotId: 1, status: "done", selected: true, type: "ai_generate", provider: "volcengine", filePath: source }]))
       : normal(url, init));
     api.jobs = [savedKlingJob()];
-    await mount(ark);
+    await mount(kling.selectionKey);
     await click("batchMotionButton");
     const draft = batch.props!.shots[0].draft!;
     expect(draft.firstFrameUrl).toBe(source);
@@ -1596,16 +1643,16 @@ describe("assets uses the configured provider through one motion entry", () => {
   });
 
   it("freezes batch video import metadata alongside the provider request", async () => {
-    await mount(ark); await click("batchMotionButton");
+    await mount(kling.selectionKey); await click("batchMotionButton");
     const draft = batch.props!.shots[0].draft!;
     await act(async () => { await draft.generate(); });
-    expect(backgroundItems("video")[0].asset).toMatchObject({ scriptId: "script", shotId: 1, provider: "volcengine", model: ark, thumbnailPath: "/api/files/frame.jpg", expectedSelectedAssetId: "asset" });
+    expect(backgroundItems("video")[0].asset).toMatchObject({ scriptId: "script", shotId: 1, provider: "kling-cli", model: kling.selectionKey, thumbnailPath: "/api/files/frame.jpg", expectedSelectedAssetId: "asset" });
     expect(fetchMock.mock.calls.some(([url, init]) => url.endsWith("/assets") && init?.method === "POST")).toBe(false);
   });
 
   it("restores a background import failure and keeps its snapshot out of a new batch", async () => {
     api.runs = [{ id: "old-run", projectId: "project", kind: "video", status: "needs_attention", total: 1, done: 0, failed: 1, items: [{ id: "old-item", kind: "video", scriptId: "script", shotId: 1, status: "needs_attention", error: "Import unavailable" }] }];
-    await mount(ark);
+    await mount(kling.selectionKey);
     expect(container.textContent).toContain("Import unavailable");
     await click("batchMotionButton");
     expect(batch.props!.shots[0].disabledReason).toBe("batchMotionExistingTask");

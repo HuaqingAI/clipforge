@@ -12,6 +12,7 @@ import { DEFAULT_FREE_VOICE } from "@/lib/tts-voices";
 
 const initial = useSettingsStore.getInitialState();
 const storageKey = "daihuo-jianshou-settings";
+const savedKlingModel = JSON.stringify(["kling-cli", "image_to_video", "saved-model"]);
 const freeDefaults = {
   enabled: true, provider: "microsoft", baseUrl: "", apiKey: "",
   model: "", voice: DEFAULT_FREE_VOICE, speed: 1,
@@ -87,12 +88,12 @@ describe("voiceover provider settings", () => {
   it.each([7, 8, undefined])("normalizes retired TTS during hydration at version %s and preserves unrelated settings", async (version) => {
     localStorage.setItem(storageKey, JSON.stringify({ version, state: {
       tts: { provider: "atlas", enabled: true, apiKey: "old-key", baseUrl: "https://paid.example", voice: "eve", model: "xai/tts-v1" },
-      defaultVideoModel: "saved-model", locale: "en",
+      defaultVideoModel: savedKlingModel, locale: "en",
     } }));
     await useSettingsStore.persist.rehydrate();
-    expect(useSettingsStore.getState()).toMatchObject({ tts: freeDefaults, defaultVideoModel: "saved-model", locale: "en" });
+    expect(useSettingsStore.getState()).toMatchObject({ tts: freeDefaults, defaultVideoModel: savedKlingModel, locale: "en" });
     expect(isPaidTTSReady(useSettingsStore.getState().tts)).toBe(false);
-    if (version === 7) expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 8, state: { tts: freeDefaults } });
+    if (version === 7) expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9, state: { tts: freeDefaults } });
   });
 
   it.each([7, 8, undefined])("preserves OAuth CLI preferences during hydration at version %s", async (version) => {

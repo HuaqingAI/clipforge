@@ -59,4 +59,5 @@ export interface KlingPublicStatus {
   configured: boolean; loggedIn: boolean; models: KlingVideoModelDescriptor[]; authSession?: KlingAuthSession;
   concurrency?: KlingConcurrencyStatus;
   installationDefaults?: { nodePath: string; packagePath: string };
+  installationManaged?: boolean;
 }

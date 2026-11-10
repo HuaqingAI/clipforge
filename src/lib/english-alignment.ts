@@ -2,10 +2,11 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
 import { promisify } from "node:util";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { getAppResourceDir, getDataDir } from "@/lib/paths";
+import { isManagedDesktopRuntime } from "@/lib/runtime-capabilities";
 
 const run = promisify(execFile);
 export const ENGLISH_ALIGNMENT_MODEL = "facebook/wav2vec2-base-960h";
@@ -81,16 +82,23 @@ export async function alignEnglishAudio(
     }
   }
   return serial(async () => {
+    const managed = isManagedDesktopRuntime();
+    // CPython preserves this prefix in sys.prefix/site-packages. Without it,
+    // metadata and Transformers imports can fail under long Windows install paths.
+    const executionPath = (value: string) => managed && process.platform === "win32" ? toNamespacedPath(value) : value;
     const runtime = englishAlignmentRuntimeDir();
-    const python = join(runtime, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+    const python = process.env.APP_ALIGNMENT_PYTHON || join(runtime, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+    const modelDirectory = process.env.APP_ALIGNMENT_MODEL_DIR || join(runtime, "model");
     const runner = join(getAppResourceDir(), "scripts", "alignment", "align.py");
     let ready: { schemaVersion?: number; runtimeVersion?: string; model?: string; modelRevision?: string; asrUsed?: boolean; device?: string } | undefined;
     try { ready = JSON.parse(await readFile(join(runtime, "ready.json"), "utf8")); } catch { /* launcher repairs incomplete installations */ }
-    if (![python, runner, join(runtime, "model", "model.safetensors")].every(existsSync)
+    if (![python, runner, join(modelDirectory, "model.safetensors")].every(existsSync)
       || ready?.schemaVersion !== 1 || ready.runtimeVersion !== "english-alignment-v1"
       || ready.model !== ENGLISH_ALIGNMENT_MODEL || ready.modelRevision !== "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"
       || ready.device !== "cpu" || ready.asrUsed !== false) {
-      throw new Error("英文音频对齐环境未就绪，请关闭项目后双击 start.cmd 完成自动初始化，再重新合成");
+      throw new Error(process.env.CLIPFORGE_RUNTIME === "desktop"
+        ? "英文音频对齐资源未就绪，请退出客户端并运行安装程序修复资源，再重新合成"
+        : "英文音频对齐环境未就绪，请关闭项目后双击 start.cmd 完成自动初始化，再重新合成");
     }
     const cacheDir = join(getDataDir(), "cache", "english-alignment");
     await mkdir(cacheDir, { recursive: true });
@@ -114,9 +122,13 @@ export async function alignEnglishAudio(
         jobs: pending.map(({ input }, index) => ({ ...input, text: input.text.trim().replace(/\s+/g, " "),
           audioPath: join(options.workDir, `audio-${index}.wav`) })) }));
       try {
-        await run(python, [runner, "--runtime-dir", runtime, "--input", inputPath, "--output", outputPath], {
+        const env: NodeJS.ProcessEnv = { ...process.env, APP_ALIGNMENT_MODEL_DIR: executionPath(modelDirectory), PYTHONIOENCODING: "utf-8", PYTHONNOUSERSITE: "1", PYTHONDONTWRITEBYTECODE: "1", HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" };
+        if (managed) {
+          for (const key of Object.keys(env)) if (/^(?:PYTHONHOME|PYTHONPATH|PYTHONUSERBASE)$/i.test(key)) delete env[key];
+        }
+        await run(executionPath(python), [executionPath(runner), "--runtime-dir", executionPath(runtime), "--input", executionPath(inputPath), "--output", executionPath(outputPath)], {
           windowsHide: true, timeout: 15 * 60 * 1000, maxBuffer: 4 * 1024 * 1024,
-          env: { ...process.env, PYTHONIOENCODING: "utf-8", HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" },
+          env,
         });
       } catch (error) {
         const detail = error as Error & { stderr?: string; killed?: boolean };

@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { appStorage } from "@/lib/browser-storage";
 import type { Shot, CharacterVoiceProfile } from "@/lib/db/schema";
 
 // ==================== Character ====================
@@ -135,6 +136,6 @@ export const useCharacterStore = create<CharacterState>()(
           ),
         })),
     }),
-    { name: "daihuo-jianshou-characters" }
+    { name: "daihuo-jianshou-characters", storage: createJSONStorage(() => appStorage) }
   )
 );

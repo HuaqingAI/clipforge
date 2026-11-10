@@ -1,14 +1,63 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { acquireLock, compatibleNode, fingerprint, healthyInstance, portAvailable, readHealth, ROOT } from "../../../scripts/launch-local.mjs";
+import { acquireLock, compatibleNode, fingerprint, healthyInstance, portAvailable, readHealth, ROOT, waitForLauncherCommand } from "../../../scripts/launch-local.mjs";
 
 const temporaryDirectories: string[] = [];
+
+describe("launcher command completion and progress", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  function command() {
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    let finish!: (result: { code: number }) => void;
+    const completion = new Promise<{ code: number }>((resolve) => { finish = resolve; });
+    return { stdout, stderr, completion, finish };
+  }
+
+  it("keeps waiting after a Done message and reports a silent child until it actually exits", async () => {
+    vi.useFakeTimers();
+    const child = command();
+    const progress = vi.fn();
+    let finished = false;
+    const waiting = waitForLauncherCommand(child, { label: "安装项目依赖", onProgress: progress, quietMs: 15_000 }).then((result) => { finished = true; return result; });
+    child.stdout.emit("data", Buffer.from("Done in 3.3s\n"));
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(progress).not.toHaveBeenCalled();
+    expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(progress).toHaveBeenCalledWith(expect.stringContaining("安装项目依赖仍在运行"));
+    expect(finished).toBe(false);
+    child.finish({ code: 0 });
+    await expect(waiting).resolves.toEqual({ code: 0 });
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.stderr.listenerCount("data")).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(progress).toHaveBeenCalledOnce();
+  });
+
+  it("does not convert a late command failure into success and clears progress timers", async () => {
+    vi.useFakeTimers();
+    const child = command();
+    const progress = vi.fn();
+    const waiting = waitForLauncherCommand(child, { label: "构建本机网页版", onProgress: progress, quietMs: 15_000 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    child.stderr.emit("data", Buffer.from("still working\n"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(progress).not.toHaveBeenCalled();
+    child.finish({ code: 1 });
+    await expect(waiting).resolves.toEqual({ code: 1 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 function temporaryDirectory() {
   const directory = mkdtempSync(join(tmpdir(), "clipforge-launcher-"));
   temporaryDirectories.push(directory);

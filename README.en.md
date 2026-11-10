@@ -389,6 +389,10 @@ Clone the repository from GitHub, or download and fully extract its ZIP, then do
 
 The first run needs internet access and may take several minutes. Keep the console open; press **Ctrl+C** to stop. Running it again reuses this project's existing service. No administrator access or desktop package is required, and local `data` is preserved. Complete Kling login and model selection in Settings; launching does not log you in or submit paid generation. Supports Windows x64 and Windows 11 ARM64 through x64 emulation. See the [launcher guide and troubleshooting (Chinese)](docs/local-launcher.md).
 
+### Windows x64 desktop online installer
+
+The Windows `.exe` installer downloads and verifies Node, Kling CLI, ElevenLabs CLI, portable Python, English alignment and Tiny transcription models, and media tools during setup. Large resources are separate release assets, **not embedded in the installer**. Users need no npm/pip installation; sign in to your own accounts in Settings after setup. Desktop can open an existing Web workspace in place, and Settings supports JSON export/import between both surfaces. See the [installation, migration and release guide (Chinese)](docs/desktop-online-install.md). Windows x64 is the initial target; macOS/Linux runtime resources require separate validation.
+
 ### Local development
 
 > This project uses **pnpm** (declared in `packageManager`). Don't use `npm install` — pnpm's symlink layout makes npm error. No pnpm? Run `corepack enable` or `npm i -g pnpm`.
@@ -418,7 +422,9 @@ open http://localhost:3000
 4. (Optional) Add a character under "On-camera" and brand visuals under "Brand"
 5. Back on the home page, click **New project** to start
 
-> Compositing needs local **FFmpeg** (install it yourself: `brew install ffmpeg` / `apt install ffmpeg`).
+> Manual development needs local **FFmpeg** (`brew install ffmpeg` / `apt install ffmpeg`). The Windows source launcher and desktop online installer prepare media tools automatically.
+
+Local Web and the managed Windows x64 desktop support Kling official CLI login, dynamic model discovery, single-shot and batch motion generation, task recovery and standard composition. The separate Kling one-click film workflow remains removed. ElevenLabs uses the current user's official CLI OAuth credentials. Installation never signs in or submits paid generation.
 
 ---
 
@@ -454,14 +460,14 @@ open http://localhost:3000
 | **Framework** | Next.js 16 + React 19 |
 | **Language** | TypeScript 5 (strict mode) |
 | **Styling** | Tailwind CSS 4 + shadcn/ui |
-| **State** | Zustand (localStorage persist) |
+| **State** | Zustand (browser storage on Web, OS-encrypted storage on Desktop; configuration export/import) |
 | **Database** | SQLite + Drizzle ORM (auto-migrates on start, runs even with no tables) |
 | **Compositing** | FFmpeg (fluent-ffmpeg) |
 | **AI integration** | OpenAI SDK (LLM) + 7-platform image/video providers |
 | **Asset engine** | Multi-source licensed assets (Openverse key-free / Pixabay / Pexels), registry-style aggregated search |
 | **Testing** | Vitest + Playwright (E2E) |
 | **CI/CD** | GitHub Actions (lint + test + build) |
-| **Desktop packaging** | Electron + electron-builder (Win/Mac; packaged app verified to launch with working DB routes) |
+| **Desktop packaging** | Electron + electron-builder (Windows x64 online installer; ordinary Node backend, CLI/Python/models downloaded during setup) |
 | **Icons** | react-icons (Lucide) |
 
 ---
@@ -493,7 +499,7 @@ src/
 │   ├── stores/                       # Zustand state
 │   └── db/                           # SQLite + Drizzle (migrate on start)
 │
-├── electron/                         # Electron main process + packaging hooks
+├── electron/                         # Desktop shell, online resources, encrypted settings and packaging hooks
 └── components/ui/                    # shadcn/ui component library
 ```
 
@@ -549,13 +555,20 @@ pnpm lint
 # DB migration (after editing the schema)
 pnpm drizzle-kit generate
 
-# Production build (incl. .next/standalone, for Electron packaging)
+# Web production build (.next)
 pnpm build
 
-# Package the desktop app (mac; first run lets pnpm fetch electron/ffmpeg binaries)
-pnpm pack:dir   # unpacked .app to release/ (fast, layout check)
-pnpm dist       # .dmg installer
+# Windows x64, Node 24.18.0: prepare the pinned upstream download manifest
+pnpm desktop:runtime
+pnpm desktop:verify-downloads
+
+# Both commands build .next-desktop separately, preserving the Web build
+pnpm pack:dir   # release/win-unpacked for layout checks
+pnpm dist       # Windows NSIS online installer
+pnpm desktop:smoke # real downloads, installation and hidden renderer probe
 ```
+
+Installation downloads pinned resources directly from Node.js, Python, npm, PyPI, PyTorch, Hugging Face and other upstream publishers, configures the environment and runs local checks. You do not need to host runtime bundles in your own GitHub repository, and large resources are not embedded in the installer. See the [desktop guide](docs/desktop-online-install.md) and [runtime resource specification](docs/desktop-runtime-resources.md) (Chinese).
 
 ---
 
@@ -577,7 +590,7 @@ pnpm dist       # .dmg installer
 - ✅ **Zero-cost loop**: key-free asset engine (Openverse / Wikimedia real footage / NASA / local asset pool, semantic matching + cross-shot dedup + same-source continuity) + free Edge TTS (self-built keyless client) + local compositing — a full video with no API key at all; one-sentence topic videos / bring-your-own-script / dubbing for going global
 - ✅ **Publish gatekeeping**: one-click publish gate (ad-law wordlist / video QC / asset license credits, `--strict` CI-ready) + AIGC labeling (explicit badge + implicit metadata per the Chinese national standard) + product-visible-in-3s precheck + off-site QR policy guard + anti-homogenization variant engine + native-feel post-processing + contact-sheet review image
 - ✅ **Scale & growth**: batch rendering / viral templates & remix / A/B variants / data flywheel (feed real conversion numbers back into script generation) / trending topics / cover images / Xiaohongshu card decks / preview GIFs / shop-link QR with UTM tracking
-- ✅ **Integrations & distribution**: MCP Server (one-sentence video for agents) / CLI / agent Skill / Docker image / Electron desktop app (mac verified; CI-built .dmg/.exe pending) / bilingual UI / CI pipeline
+- ✅ **Integrations & distribution**: MCP Server (one-sentence video for agents) / CLI / agent Skill / Docker image / Windows x64 Electron online installer, managed CLI/models, existing workspace selection and configuration transfer / bilingual UI / CI pipeline
 
 **Next (deepen the real editing workflow)**
 - ✅ **Local text editing**: import video, transcribe locally in the browser with Transformers.js, remove words or silence, correct captions, import/export edit-plan JSON, download OTIO / EDL / CSV timelines together, and keep the source and history untouched.

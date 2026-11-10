@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { normalizeOpenAIBaseUrl, OPENAI_BASE_URL } from "@/lib/openai-config";
+import { HTH_BASE_URL } from "@/lib/hth-config";
 
 describe("OpenAI image API bases", () => {
-  it.each([undefined, "", "   "])("uses the official default for %j", (base) => {
-    expect(normalizeOpenAIBaseUrl(base)).toBe(OPENAI_BASE_URL);
+  it.each([undefined, "", "   "])("uses the HTH default for %j", (base) => {
+    expect(OPENAI_BASE_URL).toBe(HTH_BASE_URL);
+    expect(normalizeOpenAIBaseUrl(base)).toBe("https://hth.huaqing.run/v1");
   });
 
   it.each(["https://hth.huaqing.run", " https://hth.huaqing.run/// ", "https://hth.huaqing.run/v1/"])(
@@ -18,7 +20,7 @@ describe("OpenAI image API bases", () => {
   });
 
   it("normalizes the official root without changing arbitrary custom API paths", () => {
-    expect(normalizeOpenAIBaseUrl("https://api.openai.com/")).toBe(OPENAI_BASE_URL);
+    expect(normalizeOpenAIBaseUrl("https://api.openai.com/")).toBe("https://api.openai.com/v1");
     expect(normalizeOpenAIBaseUrl("https://custom.example/")).toBe("https://custom.example");
     expect(normalizeOpenAIBaseUrl("https://custom.example/api/image-proxy///")).toBe("https://custom.example/api/image-proxy");
     expect(normalizeOpenAIBaseUrl("https://hth.huaqing.run/custom/v2/")).toBe("https://hth.huaqing.run/custom/v2");

@@ -428,6 +428,10 @@ docker run -d -p 3000:3000 -v clipforge-data:/data ghcr.io/xixihhhh/clipforge
 
 首次启动需要联网，下载和构建可能耗时数分钟。保留控制台窗口，使用 **Ctrl+C** 停止；再次双击会复用本项目已运行的服务。无需管理员权限，本地 `data` 目录完整保留。登录 Kling、选择模型仍在设置中完成，启动脚本不会自动登录或提交付费生成。支持 Windows x64；Windows 11 ARM64 使用 x64 仿真运行。详见 [双击启动说明与常见问题](docs/local-launcher.md)。
 
+### Windows x64 客户端在线安装
+
+Windows `.exe` 安装器在安装阶段在线下载 Node、Kling CLI、ElevenLabs CLI、便携 Python、英文音频对齐模型、Tiny 转写模型和媒体工具；大体积资源独立发布，**不内置在安装包中**。全部校验与自检通过后才完成安装，无需用户安装 npm/pip。安装后在设置中登录自己的账号。客户端支持打开旧 Web 工作目录，设置可通过 JSON 在两个入口之间迁移。安装、资源发布和验证步骤见 [客户端在线安装与迁移](docs/desktop-online-install.md)。当前适配 Windows x64，macOS/Linux 在线资源待独立验收。
+
 ### 本地开发
 
 > 本项目用 **pnpm**（已在 `packageManager` 声明）。请勿用 `npm install`——pnpm 的 symlink 结构会让 npm 报错。没有 pnpm：`corepack enable` 或 `npm i -g pnpm`。
@@ -457,9 +461,9 @@ open http://localhost:3000
 4. （可选）在"出镜人物"Tab 添加角色，在"品牌设置"Tab 配置品牌视觉
 5. 回到首页，点击 **新建项目** 开始生成
 
-> 视频合成依赖本机 **FFmpeg**（需自行安装：`brew install ffmpeg` / `apt install ffmpeg`）。
+> 手动开发环境的视频合成依赖本机 **FFmpeg**（可用 `brew install ffmpeg` / `apt install ffmpeg`）。Windows 源码启动器和客户端在线安装过程会准备媒体工具。
 
-本机网页版支持 **Kling 官方 CLI** 的独立登录、动态模型、单镜头与批量镜头视频生成、任务恢复及视频入库播放。多个项目可以在后台并行处理，切换项目或刷新后可查看原批次进度；应用不再限制同账号合计 10 个名额，平台限流仍有效。Kling 整片生成已移除，历史任务仍可查看和处理。Windows 双击启动会自动准备固定版本 `@klingai/cli-global@0.2.0`；手动启动时请先安装该版本。Kling CLI 在 Electron 中暂不支持。后台运行条件和恢复说明见 [任务状态与模型选择](docs/task-recovery.md)。
+本机网页版与 Windows x64 客户端支持 **Kling 官方 CLI** 的独立登录、动态模型、单镜头与批量镜头视频生成、任务恢复及视频入库播放。多个项目可以在后台并行处理，切换项目或刷新后可查看原批次进度；应用不再限制同账号合计 10 个名额，平台限流仍有效。Kling 整片生成已移除，历史任务仍可查看和处理。Windows 双击启动会自动准备固定版本 `@klingai/cli-global@0.2.0`；客户端在安装时下载，手动启动 Web 时请先安装该版本。后台运行条件和恢复说明见 [任务状态与模型选择](docs/task-recovery.md)。
 
 ---
 
@@ -495,14 +499,14 @@ open http://localhost:3000
 | **框架** | Next.js 16 + React 19 |
 | **语言** | TypeScript 5 (strict mode) |
 | **样式** | Tailwind CSS 4 + shadcn/ui |
-| **状态管理** | Zustand (localStorage persist) |
+| **状态管理** | Zustand（Web 使用浏览器存储，客户端使用系统加密存储；支持配置导入导出） |
 | **数据库** | SQLite + Drizzle ORM（启动自动 migrate，开箱无表也能跑） |
 | **视频合成** | FFmpeg (fluent-ffmpeg) |
 | **AI 集成** | OpenAI SDK (LLM) + 7 平台生图/生视频 Provider |
 | **素材引擎** | 多源版权素材（Openverse 免 Key / Pixabay / Pexels），注册表式聚合检索 |
 | **测试** | Vitest（1170+ 用例）+ Playwright (E2E) |
 | **CI/CD** | GitHub Actions（lint + test + build） |
-| **桌面打包** | Electron + electron-builder（Win/Mac，已打通：打包 App 实测可启动 + DB 路由可用） |
+| **桌面打包** | Electron + electron-builder（Windows x64 在线安装器；独立普通 Node 后端，CLI/Python/模型在安装时下载） |
 | **图标** | react-icons (Lucide 图标集) |
 
 ---
@@ -537,7 +541,7 @@ src/
 │   ├── stores/                       # Zustand 状态管理
 │   └── db/                           # SQLite + Drizzle（启动 migrate）
 │
-├── electron/                         # Electron 主进程 + 打包钩子（进行中）
+├── electron/                         # Electron 主进程、在线资源安装、加密配置与打包钩子
 └── components/ui/                    # shadcn/ui 组件库
 ```
 
@@ -598,13 +602,20 @@ pnpm lint
 # 数据库迁移（修改 schema 后生成迁移）
 pnpm drizzle-kit generate
 
-# 构建生产版本（含 .next/standalone，供 Electron 打包）
+# 构建 Web 生产版本（.next）
 pnpm build
 
-# 打包桌面 App（mac；首次需让 pnpm 装好 electron/ffmpeg 二进制）
-pnpm pack:dir   # 出免安装 .app 到 release/（快，验证布局）
-pnpm dist       # 出 .dmg 安装包
+# 在 Windows x64、Node 24.18.0 下生成固定官方源清单
+pnpm desktop:runtime
+pnpm desktop:verify-downloads
+
+# 两个命令均会单独构建 .next-desktop，保留 Web 构建
+pnpm pack:dir   # release/win-unpacked，验证打包布局
+pnpm dist       # Windows NSIS 在线安装器
+pnpm desktop:smoke # 真实资源下载、安装与隐藏页面验证
 ```
+
+安装时直接从 Node.js、Python、npm、PyPI、PyTorch、Hugging Face 等上游来源下载固定资源，自动配置并自检；无需在自己的 GitHub 托管工具或模型包，大资源也不嵌入安装器。完整流程见 [客户端在线安装与迁移](docs/desktop-online-install.md) 和 [运行资源规范](docs/desktop-runtime-resources.md)。
 
 ---
 
@@ -626,7 +637,7 @@ pnpm dist       # 出 .dmg 安装包
 - ✅ **零成本闭环**：免 Key 素材引擎（Openverse / Wikimedia 实拍视频 / NASA / 本地素材池，语义配片 + 跨镜去重 + 同源连贯）+ 免费 Edge TTS（自研 keyless 客户端）+ 本地合成——没有任何 Key 也能出整片；一句话主题成片 / 自带脚本成片 / 配音译制出海
 - ✅ **发布把关**：发布门禁一键体检（广告法风险词 / 成片质检 QC / 素材授权 credits，`--strict` 可接 CI）+ AIGC 标识（国标显式角标 + 隐式元数据）+ 前 3 秒露商品预检 + 二维码站外导流把关 + 反同质化变体引擎 + 原生感处理 + 成片速览一张图（拼接点感知）
 - ✅ **规模化与增长**：批量出片 / 爆款模板与复刻 / A/B 变体 / 数据飞轮（回填转化数据反哺脚本生成）/ 热点选题 / 封面图 / 小红书图文卡 / 预览 GIF / 商品挂链二维码（UTM 追踪）
-- ✅ **集成与分发**：MCP Server（agent 一句话出片）/ 命令行 CLI / agent Skill / Docker 镜像 / Electron 桌面包（mac 已实测，CI 出 .dmg/.exe 待办）/ 中英双语 UI / CI 流水线
+- ✅ **集成与分发**：MCP Server（agent 一句话出片）/ 命令行 CLI / agent Skill / Docker 镜像 / Windows x64 Electron 在线安装、受管 CLI/模型、旧工作区原地打开及配置迁移 / 中英双语 UI / CI 流水线
 
 **下一步（在现有真实能力上继续加深）**
 - ✅ **本地文字剪辑**：导入已有视频后用 Transformers.js 在浏览器本地转写，删词、逐段试听并选择要剪掉的停顿、调整停顿两侧保留边界、字幕校对、剪辑计划 JSON 导入/导出、批量下载 OTIO / EDL / CSV 时间线，原片和历史版本不覆盖。

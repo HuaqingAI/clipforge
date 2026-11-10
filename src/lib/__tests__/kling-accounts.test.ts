@@ -56,6 +56,21 @@ afterEach(() => vi.unstubAllEnvs());
 afterAll(async () => { state.sqlite?.close(); await fs.rm(state.directory, { recursive: true, force: true }); });
 
 describe("launcher-prepared Kling installation", () => {
+  it("shows the active managed paths for old accounts while retaining their stored identity and installation", async () => {
+    const source = await accountFixture();
+    const packagePath = path.join(state.directory, "current-desktop-runtime", "cli");
+    vi.stubEnv("CLIPFORGE_RUNTIME", "desktop");
+    vi.stubEnv("CLIPFORGE_DESKTOP_LOCAL", "1");
+    vi.stubEnv("CLIPFORGE_KLING_PACKAGE_PATH", packagePath);
+    const status = getPublicKlingStatus(source.id);
+    expect(status).toMatchObject({ installationManaged: true, profile: {
+      nodePath: process.execPath, packagePath, cliEntry: path.join(packagePath, "dist", "cli.js"),
+      principalKey: source.principalKey, accountSummary: source.accountSummary, authRevision: source.authRevision,
+    } });
+    expect(getProfile(source.id)).toEqual(source);
+    expect(await fs.readFile(path.join(source.homePath, "credentials.json"), "utf8")).toBe("original-private-credential");
+  });
+
   it("offers installation defaults without creating or detecting an account", () => {
     const packagePath = path.join(state.directory, "启动脚本 tools", "@klingai", "cli-global");
     vi.stubEnv("CLIPFORGE_KLING_PACKAGE_PATH", packagePath);

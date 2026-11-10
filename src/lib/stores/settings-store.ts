@@ -1,5 +1,7 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { appStorage } from "@/lib/browser-storage";
+import { HTH_BASE_URL, HTH_DEFAULT_MODEL } from "@/lib/hth-config";
 import { DEFAULT_LOCALE, type Locale } from "@/lib/i18n/config";
 import { normalizeTTSSettings, type VoiceoverProvider } from "@/lib/tts-presets";
 import {
@@ -121,6 +123,59 @@ export interface SettingsState {
 /** Pollinations 的新端点（旧的 text.pollinations.ai 免 Key 接口已停用） */
 const POLLINATIONS_BASE_URL = "https://gen.pollinations.ai/v1";
 
+const RETIRED_PROVIDER_NAMES = new Set(["volcengine", "alibaba", "siliconflow"]);
+const LEGACY_OPENAI_BASE_URL = /^https:\/\/api\.openai\.com\/v1\/?$/i;
+
+function isKlingVideoSelectionKey(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const key: unknown = JSON.parse(value);
+    return Array.isArray(key) && key.length === 3 && key[0] === "kling-cli"
+      && (key[1] === "text_to_video" || key[1] === "image_to_video")
+      && typeof key[2] === "string" && Boolean(key[2].trim());
+  } catch { return false; }
+}
+
+/** Keep imported and saved settings usable without overwriting deliberate gateway/model choices. */
+function normalizeCurrentSettings(state: SettingsState, migrateLegacyDefaults = false): SettingsState {
+  const providers = { ...state.providers };
+  for (const [name, setting] of Object.entries(providers)) {
+    // Keep credentials for configuration export and historical task recovery, but exclude these
+    // retired integrations from new model discovery and generation.
+    if (RETIRED_PROVIDER_NAMES.has(name)) providers[name] = { ...setting, enabled: false };
+  }
+  const hth = providers.openai ?? { enabled: false, apiKey: "" };
+  if (!hth.baseUrl?.trim() || (migrateLegacyDefaults && LEGACY_OPENAI_BASE_URL.test(hth.baseUrl.trim()))) {
+    providers.openai = { ...hth, baseUrl: HTH_BASE_URL };
+  }
+  state.providers = providers;
+
+  const llm: LLMSetting = {
+    ...state.llm,
+    provider: state.llm?.provider ?? "",
+    baseUrl: state.llm?.baseUrl ?? "",
+    apiKey: state.llm?.apiKey ?? "",
+    model: state.llm?.model ?? "",
+  };
+  if (!llm.baseUrl.trim() || (migrateLegacyDefaults && LEGACY_OPENAI_BASE_URL.test(llm.baseUrl.trim()))) {
+    llm.baseUrl = HTH_BASE_URL;
+  }
+  if (llm.baseUrl.trim().replace(/\/$/, "").toLowerCase() === HTH_BASE_URL) {
+    if (!llm.provider.trim() || llm.provider === "OpenAI") llm.provider = "HTH";
+    if (!llm.model.trim() || (migrateLegacyDefaults && llm.model === "gpt-5.4")) llm.model = HTH_DEFAULT_MODEL;
+    if (!llm.visionModel?.trim() || (migrateLegacyDefaults && llm.visionModel === "gpt-5.4")) llm.visionModel = HTH_DEFAULT_MODEL;
+  }
+  state.llm = llm;
+  if (!Number.isFinite(state.spendCapUsd) || state.spendCapUsd < 0 || (migrateLegacyDefaults && state.spendCapUsd === 5)) {
+    state.spendCapUsd = 0;
+  }
+  // Catalog keys carry the CLI tool identity. Never silently substitute a different paid model.
+  if (!isKlingVideoSelectionKey(state.defaultVideoModel)) state.defaultVideoModel = "";
+  state.uiMode = "pro";
+  state.tts = normalizeTTSSettings(state.tts);
+  return state;
+}
+
 /**
  * 持久化设置的版本迁移（纯函数，可单测）。
  *
@@ -136,7 +191,7 @@ const POLLINATIONS_BASE_URL = "https://gen.pollinations.ai/v1";
  * v3：Ollama 预设的 localhost 改成 127.0.0.1。Windows 上 localhost 会先解析到 ::1，而 Ollama 默认
  * 只监听 127.0.0.1，用户会看到一个无从排查的"连不上"（issue #19 追问）。同端口同机，改写无副作用。
  */
-export function migrateSettings(state: SettingsState): SettingsState {
+export function migrateSettings(state: SettingsState, persistedVersion = 0): SettingsState {
   const llm = state?.llm;
   if (llm?.baseUrl) {
     const fixes: Array<{ hostRe: RegExp; from: string; to: string }> = [
@@ -181,7 +236,8 @@ export function migrateSettings(state: SettingsState): SettingsState {
   state.uiMode = "pro";
   // v8: retire key-based TTS settings in favor of Microsoft or local ElevenLabs OAuth.
   state.tts = normalizeTTSSettings(state.tts);
-  return state;
+  // v9: HTH defaults and Kling-only video selection. A saved custom endpoint or model stays intact.
+  return normalizeCurrentSettings(state, persistedVersion < 9);
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -194,23 +250,22 @@ export const useSettingsStore = create<SettingsState>()(
         volcengine: { enabled: false, apiKey: "" },
         alibaba: { enabled: false, apiKey: "" },
         siliconflow: { enabled: false, apiKey: "" },
-        openai: { enabled: false, apiKey: "" },
+        openai: { enabled: false, apiKey: "", baseUrl: HTH_BASE_URL },
         "kling-cli": { enabled: false, apiKey: "", authType: "cli-oauth" },
       },
       llm: {
-        provider: "",
-        baseUrl: "",
+        provider: "HTH",
+        baseUrl: HTH_BASE_URL,
         apiKey: "",
-        model: "",
-        visionModel: "",
+        model: HTH_DEFAULT_MODEL,
+        visionModel: HTH_DEFAULT_MODEL,
       },
       tts: normalizeTTSSettings(undefined),
       defaultImageModel: "",
       defaultVideoModel: "",
       defaultResolution: "720p",
-      // a per-run ceiling, on by default: an unattended run used to be able to spend
-      // whatever the model charged, with no figure shown beforehand (issue #28)
-      spendCapUsd: 5,
+      // 0 disables the optional per-run spending ceiling.
+      spendCapUsd: 0,
       defaultAspectRatio: "9:16",
       customModels: [],
       imageParams: DEFAULT_IMAGE_PARAMS,
@@ -230,7 +285,7 @@ export const useSettingsStore = create<SettingsState>()(
       applyAutoLocale: (locale) => set({ locale }),
       setProvider: (name, setting) =>
         set((state) => ({
-          providers: { ...state.providers, [name]: setting },
+          providers: { ...state.providers, [name]: RETIRED_PROVIDER_NAMES.has(name) ? { ...setting, enabled: false } : setting },
         })),
       setLLM: (llm) => set({ llm }),
       setTTS: (tts) => set({ tts: normalizeTTSSettings(tts) }),
@@ -283,6 +338,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "daihuo-jianshou-settings",
+      storage: createJSONStorage(() => appStorage),
       // v1：清洗历史版本预设写入的失效模型名（旧预设填过不存在的模型 ID，"测试连接"只验 Key
       // 不验模型名所以一直显示正常，直到生成脚本才报 Model Not Exist——issue #12 用户即此场景）。
       // 只在 baseUrl 匹配对应官方端点时改写，避免误伤自建代理上的同名自定义模型。
@@ -294,12 +350,17 @@ export const useSettingsStore = create<SettingsState>()(
       // v6: synchronize visible and advanced video resolution defaults; preserve explicit 480p.
       // v7: retire beginner mode and persist director mode for existing users.
       // v8: voiceover configuration and login live in Settings; remove retired providers.
-      version: 8,
-      migrate: (persisted) => migrateSettings(persisted as SettingsState),
+      // v9: HTH gateway/model defaults; retire three media platforms and non-CLI video defaults.
+      version: 9,
+      migrate: (persisted, version) => migrateSettings(persisted as SettingsState, version),
       // Normalize even unversioned imports or same-version storage containing the legacy value.
       merge: (persisted, current) => {
         const saved = persisted as Partial<SettingsState> | undefined;
-        return { ...current, ...saved, uiMode: "pro", tts: normalizeTTSSettings(saved?.tts ?? current.tts) };
+        return normalizeCurrentSettings({
+          ...current, ...saved,
+          providers: { ...current.providers, ...saved?.providers },
+          llm: saved?.llm ?? current.llm,
+        });
       },
     }
   )

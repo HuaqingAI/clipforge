@@ -4,6 +4,7 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { KlingError } from "./errors";
 import { KLING_PACKAGE, KLING_VERSION, type KlingProfile } from "./types";
+import { isManagedDesktopRuntime } from "@/lib/runtime-capabilities";
 
 export function buildControlledCliEnvironment(profile: Pick<KlingProfile, "homePath">, login = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV };
@@ -22,6 +23,13 @@ export function getDefaultKlingPackagePath(): string {
   return value && value.length <= 2048 && !/[\x00\r\n]/.test(value) && path.isAbsolute(value) ? value : "";
 }
 
+/** Installation versions can move without changing a profile's credential/account identity. */
+export function effectiveKlingInstallation(profile: Pick<KlingProfile, "nodePath" | "packagePath" | "cliEntry">) {
+  if (!isManagedDesktopRuntime()) return { nodePath: profile.nodePath, packagePath: profile.packagePath, cliEntry: profile.cliEntry };
+  const packagePath = getDefaultKlingPackagePath();
+  return { nodePath: process.execPath, packagePath, cliEntry: packagePath ? path.join(packagePath, "dist", "cli.js") : "" };
+}
+
 export async function discoverPackagePath(): Promise<string> {
   const prepared = getDefaultKlingPackagePath();
   if (prepared) return prepared;
@@ -31,11 +39,12 @@ export async function discoverPackagePath(): Promise<string> {
 }
 
 export async function verifyInstallation(profile: KlingProfile): Promise<Pick<KlingProfile, "nodePath" | "packagePath" | "cliEntry" | "cliVersion">> {
-  const nodeInput = profile.nodePath || process.execPath;
+  const effective = effectiveKlingInstallation(profile);
+  const nodeInput = effective.nodePath || process.execPath;
   if (!path.isAbsolute(nodeInput) || !/^node(?:\.exe)?$/i.test(path.basename(nodeInput))) throw new KlingError("KLING_NODE_UNAVAILABLE", "请选择本机 Node.js 的 node 可执行文件。", 400);
   let nodePath: string;
   try { nodePath = await fs.realpath(nodeInput); } catch { throw new KlingError("KLING_NODE_UNAVAILABLE", "未找到配置的 Node.js，请检查路径。", 400); }
-  let packageInput = profile.packagePath || await discoverPackagePath();
+  let packageInput = effective.packagePath || (isManagedDesktopRuntime() ? "" : await discoverPackagePath());
   if (!packageInput) throw new KlingError("KLING_NOT_FOUND", "未找到 Kling CLI。请先安装 @klingai/cli-global@0.2.0，或指定包目录。", 400);
   if (!path.isAbsolute(packageInput)) throw new KlingError("KLING_INVALID_PACKAGE", "CLI 包目录必须使用绝对路径。", 400);
   if (path.basename(packageInput) === "package.json") packageInput = path.dirname(packageInput);

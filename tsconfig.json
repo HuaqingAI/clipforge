@@ -38,6 +38,10 @@
   ],
   "exclude": [
     "node_modules",
+    ".clipforge",
+    ".next-desktop",
+    "artifacts",
+    "data",
     "e2e",
     "remotion",
     "integrations",

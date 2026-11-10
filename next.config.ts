@@ -2,19 +2,20 @@ import type { NextConfig } from "next";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
+const desktopBuild = process.env.CLIPFORGE_BUILD_TARGET === "desktop";
 const excludedDirectories = new Set([
   // `.next-local` was used by an earlier local launcher and can be left behind
   // as a complete old build. Never trace that legacy output into the current
   // `.next/standalone` bundle.
-  ".git", ".github", ".clipforge", ".next-local", "data", "docs", "tasks", "release", "integrations", "e2e", "remotion",
+  ".git", ".github", ".clipforge", ".next-local", "artifacts", desktopBuild ? ".next" : ".next-desktop", "data", "docs", "tasks", "release", "integrations", "e2e", "remotion",
 ]);
 
 const nextConfig: NextConfig = {
-  // Keep every production entry point on the same output directory. In
-  // particular, `pnpm build`, `pnpm start`, and start.cmd all use this build.
-  distDir: ".next",
+  // Web retains .next; desktop builds cannot replace a running Web instance.
+  distDir: desktopBuild ? ".next-desktop" : ".next",
+  typescript: { tsconfigPath: desktopBuild ? "tsconfig.desktop.json" : "tsconfig.json" },
   // standalone output: next build additionally emits .next/standalone (minimal server.js + nft-traced dependency subset),
-  // used by the Electron main process to fork-start the server without requiring npm install on the user's machine. Does not affect next dev.
+  // Desktop runs the same server with its installer-managed Node, not Electron's ABI.
   output: "standalone",
   compiler: {
     // Next 16 Turbopack skips route tracing exclusions for instrumentation. Apply

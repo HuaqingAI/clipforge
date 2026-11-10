@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { klingProfiles } from "./profile-schema";
 import { KlingError, classifyCliFailure } from "./errors";
 import { buildControlledCliEnvironment, verifyInstallation } from "./environment";
+import { isManagedDesktopRuntime } from "@/lib/runtime-capabilities";
 import { extractGenerationId, parseCliJson, record } from "./protocol";
 import type { KlingProfile, KlingCliResult, KlingRunOptions, KlingLease } from "./types";
 
@@ -61,7 +62,7 @@ export async function runKling(profile: KlingProfile, args: string[], opts: Klin
   if (opts.interactiveLogin && args[0] !== "login") throw new KlingError("KLING_INVALID_COMMAND", "仅登录操作允许浏览器授权。", 400);
   if (args.join(" ").length > 28_000) throw new KlingError("KLING_ARGUMENTS_TOO_LONG", "Kling 输入参数过长，请缩短提示词并使用本地参考图。", 400);
   const verified = await verifyInstallation(profile);
-  if (verified.cliEntry !== profile.cliEntry || verified.nodePath !== profile.nodePath) throw new KlingError("KLING_ENVIRONMENT_CHANGED", "Kling 安装路径已改变，请重新检测环境。", 409);
+  if (!isManagedDesktopRuntime() && (verified.cliEntry !== profile.cliEntry || verified.nodePath !== profile.nodePath)) throw new KlingError("KLING_ENVIRONMENT_CHANGED", "Kling 安装路径已改变，请重新检测环境。", 409);
   if (opts.signal?.aborted) throw new KlingError("KLING_CANCELLED", "Kling 本地操作已取消。", 409);
   // Job deletion may revoke dispatch while installation verification is awaiting disk I/O.
   opts.beforeSpawn?.();
@@ -69,7 +70,7 @@ export async function runKling(profile: KlingProfile, args: string[], opts: Klin
     const actualArgs = args.includes("--quiet") ? args : [...args, "--quiet"];
     db.update(klingProfiles).set({ leaseChildPid: -2 }).where(and(eq(klingProfiles.id, profile.id), eq(klingProfiles.leaseOwner, lease.owner), eq(klingProfiles.leaseToken, lease.token))).run();
     const child = (() => {
-      try { return spawn(profile.nodePath, [profile.cliEntry, ...actualArgs], { shell: false, windowsHide: true, cwd: profile.homePath, env: buildControlledCliEnvironment(profile, !!opts.interactiveLogin), stdio: ["ignore", "pipe", "pipe"] }); }
+      try { return spawn(verified.nodePath, [verified.cliEntry, ...actualArgs], { shell: false, windowsHide: true, cwd: profile.homePath, env: buildControlledCliEnvironment(profile, !!opts.interactiveLogin), stdio: ["ignore", "pipe", "pipe"] }); }
       catch (error) {
         const result: KlingCliResult = { exitCode: null, signal: null, stdout: "", stderr: error instanceof Error ? error.message.slice(0, 4096) : "Node.js process could not start", timedOut: false, aborted: false, spawnFailed: true };
         try { db.update(klingProfiles).set({ leaseChildPid: -1 }).where(and(eq(klingProfiles.id, profile.id), eq(klingProfiles.leaseOwner, lease.owner), eq(klingProfiles.leaseToken, lease.token))).run(); }

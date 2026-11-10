@@ -463,6 +463,16 @@ describe("OpenAI image canvas resolution", () => {
 describe("OpenAI image API transport", () => {
   const edit = { modelId: "gpt-image-2", mode: "image-to-image" as const, prompt: "A sofa", referenceImageUrls: [presenter, product] };
 
+  it("keeps the persisted openai identity while defaulting image requests to HTH", async () => {
+    const fetchMock = mockImageResponse();
+    const instance = provider("   ");
+    expect(instance.name).toBe("openai");
+    expect(instance.displayName).toBe("HTH");
+    await instance.generateImage(edit);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://hth.huaqing.run/v1/images/edits");
+  });
+
   it.each([400, 401, 403, 429].flatMap((status) => [
     { status, body: JSON.stringify({ error: { message: "Rejected before processing" } }), contentType: "application/json" },
     { status, body: "<html>Request rejected</html>", contentType: "text/html" },

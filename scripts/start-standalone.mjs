@@ -1,4 +1,4 @@
-// Run the standalone build under Node; bundle-standalone.mjs targets Electron's native ABI.
+// Run the Web standalone build under Node; desktop packaging uses isolated staging.
 import { existsSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { createRequire } from "node:module";
