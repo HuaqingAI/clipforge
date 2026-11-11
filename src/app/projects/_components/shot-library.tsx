@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useLocale, useT } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/relative-time";
+import { mediaDownloadUrl } from "@/lib/media-download";
 import type { LocalShotVideo } from "@/lib/shot-library-types";
 
 const NO_PROJECTS: string[] = [];
@@ -230,7 +231,7 @@ export function ShotLibrary({ active, onCountChange, excludedProjectIds = NO_PRO
                         <div className="flex items-center justify-between gap-2">
                           <p className="min-w-0 truncate text-[10px] text-muted-foreground" title={[row.provider, row.model].filter(Boolean).join(" · ")}>{[row.model || row.provider, formatRelativeTime(row.createdAt, locale)].filter(Boolean).join(" · ")}</p>
                           <div className="flex shrink-0 items-center gap-1">
-                            <a href={`${row.url}${row.url.includes("?") ? "&" : "?"}download=1`} aria-label={t("download")} title={t("download")} className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground hover:bg-muted/50 hover:text-foreground"><LuDownload className="h-3.5 w-3.5" /></a>
+                            <a href={mediaDownloadUrl(row.url)} download={row.fileName} aria-label={t("download")} title={t("download")} className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground hover:bg-muted/50 hover:text-foreground"><LuDownload className="h-3.5 w-3.5" /></a>
                             <button type="button" title={t("shotsDelete")} aria-label={t("shotsDelete")} disabled={busy || loading} onClick={() => deleteShots([row])} className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/15 hover:text-destructive disabled:opacity-50">{deletingIds.has(row.id) ? <LuLoader className="h-3.5 w-3.5 animate-spin" /> : <LuTrash2 className="h-3.5 w-3.5" />}</button>
                           </div>
                         </div>

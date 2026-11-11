@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useT, useLocale } from "@/lib/i18n";
 import { ProjectHeader } from "@/components/project-header";
+import { mediaDownloadUrl } from "@/lib/media-download";
 
 // script style → i18n key (resolved to translated text at render time)
 const styleLabelKeys: Record<string, string> = {
@@ -244,7 +245,7 @@ export default function ExportPage() {
 
         {/* action buttons */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 mb-8">
-          <a href={`${composition.url}?download=1`} download={composition.fileName}>
+          <a href={mediaDownloadUrl(composition.url)} download={composition.fileName}>
             <Button className="brand-gradient text-white h-12 px-8 text-base font-semibold w-full">
               <LuDownload className="w-[18px] h-[18px] mr-2" />
               {t("downloadVideo")}

@@ -13,6 +13,7 @@ const { acquireWorkspaceLock, readLocalJson, readHealth, assertHealthy } = requi
 const { resolveWorkspaceSelection, loadWorkspace, saveWorkspace } = require("./workspace.cjs");
 const { probeRenderer } = require("./renderer-probe.cjs");
 const { trustedSetupEvent: isTrustedSetupEvent } = require("./setup-window.cjs");
+const { configureRendererDownloads } = require("./renderer-downloads.cjs");
 
 const installMode = process.argv.includes("--install-runtime");
 const probeMode = Boolean(process.env.HEADLESS_SMOKE) || process.argv.includes("--verify-runtime");
@@ -246,9 +247,12 @@ async function createWindow({ show = true } = {}) {
     preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true,
   } });
   protectWindow(mainWindow, sameApplicationOrigin);
-  mainWindow.webContents.session.on("will-download", (_event, item, contents) => {
-    if (contents !== mainWindow?.webContents || !sameApplicationOrigin(item.getURL())) { item.cancel(); return; }
-    item.setSaveDialogOptions({ title: "保存 ClipForge 文件", defaultPath: path.join(app.getPath("downloads"), path.basename(item.getFilename())) });
+  configureRendererDownloads(mainWindow, {
+    downloadsPath: app.getPath("downloads"), isAllowedUrl: sameApplicationOrigin,
+    onFailure: (filename) => {
+      log(`文件下载失败：${filename}`);
+      if (!silent && !probeMode) dialog.showErrorBox("ClipForge 下载失败", `未能保存 ${filename}，请检查目标目录权限和磁盘空间后重新下载。`);
+    },
   });
   mainWindow.webContents.on("did-fail-load", (_event, code, description) => {
     if (code === -3 || quitting) return;

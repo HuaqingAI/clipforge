@@ -139,6 +139,52 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(initial); useCharacterStore.setState(initialCharacters); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+describe("asset video popup playback", () => {
+  it("opens the selected shot in a controlled player and removes it when closed", async () => {
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/scripts")) return Promise.resolve(Response.json([{ id: "script", selected: true, shots: [1, 2].map((shotId) => ({ shotId, type: "demo", duration: 5, description: `Video shot ${shotId}`, visualSource: "ai_generate", transition: "direct_concat" })) }]));
+      if (url.endsWith("/assets")) return Promise.resolve(Response.json([1, 2].map((shotId) => ({ id: `video-${shotId}`, shotId, status: "done", selected: true, type: "ai_generated", provider: "kling-cli", filePath: `/api/files/project/shot-${shotId}.mp4`, thumbnailPath: `/api/files/project/shot-${shotId}.jpg` }))));
+      return normal(url, init);
+    });
+    await mount(kling.selectionKey);
+    expect(container.querySelector('a[aria-label="playShotVideo"]')).toBeNull();
+    const triggers = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label="playShotVideo"]')];
+    expect(triggers).toHaveLength(2);
+    expect(container.querySelector("video[autoplay]")).toBeNull();
+    for (const [index, trigger] of triggers.entries()) {
+      const currentUrl = window.location.href;
+      await act(async () => trigger.click());
+      const player = container.querySelector<HTMLVideoElement>("video[autoplay]")!;
+      expect(player).not.toBeNull();
+      expect(player.getAttribute("src")).toBe(`/api/files/project/shot-${index + 1}.mp4`);
+      expect(player.getAttribute("poster")).toBe(`/api/files/project/shot-${index + 1}.jpg`);
+      expect(player.controls).toBe(true);
+      expect(player.autoplay).toBe(true);
+      expect(player.playsInline).toBe(true);
+      expect(window.location.href).toBe(currentUrl);
+      expect(submissions()).toHaveLength(0);
+      await act(async () => (container.querySelector('[aria-label="close-dialog"]') as HTMLButtonElement).click());
+      expect(container.querySelector("video[autoplay]")).toBeNull();
+    }
+  });
+
+  it("does not retain the previous project's player when switching projects", async () => {
+    isVideo = true;
+    await mount(kling.selectionKey);
+    await click("btnPlayVideo");
+    expect(container.querySelector('video[autoplay][src="/api/files/clip.mp4"]')).not.toBeNull();
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-B"
+      ? Promise.resolve(Response.json({ name: "Project B", productImages: [] }))
+      : normal(url, init));
+    navigation.projectId = "project-B";
+    await mount(kling.selectionKey);
+    expect(container.querySelector("video[autoplay]")).toBeNull();
+    expect(container.querySelector('[aria-label="close-dialog"]')).toBeNull();
+  });
+});
+
 describe("asset page loading recovery", () => {
   it("loads the storyboard once for historical completed runs and shares task polling", async () => {
     api.runs = [1, 2, 3].map((index) => ({ id: `historical-${index}`, projectId: "project", kind: "image", status: "completed", total: 1, done: 1, failed: 0,
@@ -899,7 +945,7 @@ describe("assets uses the configured provider through one motion entry", () => {
       return originalKling(url, init);
     });
     await mount(kling.selectionKey);
-    expect(container.querySelector('a[href="/api/files/clip.mp4"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="playShotVideo"]')).not.toBeNull();
     await click("查看 / 恢复");
     const assetsReads = fetchMock.mock.calls.filter(([url]) => url.endsWith("/assets")).length;
     const materialReads = fetchMock.mock.calls.filter(([url]) => url.endsWith("/materials")).length;
@@ -908,7 +954,7 @@ describe("assets uses the configured provider through one motion entry", () => {
     await click("确认删除");
     expect(container.querySelector('[aria-label="Kling 视频任务"]')).toBeNull();
     expect(container.querySelector('[aria-label="job-detail"]')).toBeNull();
-    expect(container.querySelector('a[href="/api/files/clip.mp4"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="playShotVideo"]')).toBeNull();
     expect(container.querySelector('img[src="/api/files/frame.jpg"]')).not.toBeNull();
     expect(container.textContent).not.toContain("最多同时生成 10");
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/assets")).length).toBeGreaterThan(assetsReads);
@@ -1157,7 +1203,10 @@ describe("assets uses the configured provider through one motion entry", () => {
       await act(async () => (container.querySelector('[aria-label="closeImagePreview"]') as HTMLButtonElement).click());
       expect([...container.querySelectorAll("h2")].some((heading) => heading.textContent === "imagePreviewTitle")).toBe(false);
     }
-    expect(container.querySelector('a[aria-label="playShotVideo"]')?.getAttribute("href")).toBe(video);
+    const play = container.querySelector<HTMLButtonElement>('button[aria-label="playShotVideo"]')!;
+    expect(play).not.toBeNull();
+    await act(async () => play.click());
+    expect(container.querySelector("video[autoplay]")?.getAttribute("src")).toBe(video);
     expect(submissions()).toHaveLength(0);
   });
 

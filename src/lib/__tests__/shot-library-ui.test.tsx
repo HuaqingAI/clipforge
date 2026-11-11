@@ -144,7 +144,11 @@ describe("local shot library", () => {
   it("previews the original video with controls and exposes a download for every take", async () => {
     await mount();
     const take = card("take-b")!;
-    expect(take.querySelector('a[href="/api/files/project-1/take-b.mp4?download=1"]')).toBeTruthy();
+    for (const row of rows) {
+      const download = card(row.id)!.querySelector<HTMLAnchorElement>('a[title="download"]')!;
+      expect(download.getAttribute("href")).toBe(`${row.url}?download=1`);
+      expect(download.download).toBe(row.fileName);
+    }
     await click(button("shotsPreview", take));
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog).toBeTruthy();

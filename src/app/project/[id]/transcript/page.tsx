@@ -1,5 +1,6 @@
 "use client";
 import type { AsrRuntimeDescriptor } from "@/lib/local-asr";
+import { mediaDownloadUrl } from "@/lib/media-download";
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -956,7 +957,7 @@ export default function TranscriptPage() {
               {(edit.status === "failed" || edit.status === "cancelled") && <Button variant="outline" className="mt-2 min-h-11 w-full" disabled={busy === "render"} onClick={() => void controlRender(edit.id, "retry")}>{t("renderRetry")}</Button>}
               {edit.summary && <p className="mt-2 text-xs text-muted-foreground">{t("reviewSummary", { words: edit.summary.removedWordCount, ranges: edit.summary.removedRangeCount, duration: formatDuration(edit.summary.removedDuration) })}</p>}
               {edit.error && <p className="mt-2 text-xs text-destructive">{edit.error === "RENDER_INTERRUPTED" ? t("renderInterrupted") : edit.error}</p>}
-              {edit.composition?.status === "done" && edit.composition.outputUrl && <><video controls preload="metadata" src={edit.composition.outputUrl} className="mt-3 aspect-video w-full rounded-lg bg-black object-contain" /><div className="mt-2 flex flex-wrap gap-2"><a href={edit.composition.downloadUrl || edit.composition.outputUrl} className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"><LuDownload />{t("download")}</a><Link href={`/project/${id}/export`} className="inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium text-primary hover:bg-primary/10">{t("openExport")}</Link></div></>}
+              {edit.composition?.status === "done" && edit.composition.outputUrl && <><video controls preload="metadata" src={edit.composition.outputUrl} className="mt-3 aspect-video w-full rounded-lg bg-black object-contain" /><div className="mt-2 flex flex-wrap gap-2"><a href={mediaDownloadUrl(edit.composition.downloadUrl || edit.composition.outputUrl)} download className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"><LuDownload />{t("download")}</a><Link href={`/project/${id}/export`} className="inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium text-primary hover:bg-primary/10">{t("openExport")}</Link></div></>}
               <Button variant="ghost" size="sm" className="mt-2 h-10 w-full text-xs" onClick={() => loadEditAsDraft(edit)}><LuRotateCcw />{t("loadDraft")}</Button>
             </div>)}</div> : <p className="text-sm text-muted-foreground">{t("noVersions")}</p>}
           </div>

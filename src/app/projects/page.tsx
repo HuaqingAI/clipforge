@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { LuPlus, LuFolderOpen, LuLoader, LuTrash2, LuDownload, LuImage, LuPlay } from "react-icons/lu";
 import { useT, useLocale } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/relative-time";
+import { mediaDownloadUrl } from "@/lib/media-download";
 import { ShotLibrary } from "./_components/shot-library";
 
 interface ProjectRow {
@@ -309,7 +310,8 @@ export default function ProjectsPage() {
                           </div>
                           <div className="flex shrink-0 items-center gap-1">
                             <a
-                              href={`${w.url}?download=1`}
+                              href={mediaDownloadUrl(w.url)}
+                              download
                               title={t("download")}
                               className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
                             >

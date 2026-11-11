@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useLocale, useT } from "@/lib/i18n";
 import { PLATFORM_SPECS } from "@/lib/platform-specs";
 import { DEFAULT_VIDEO_FRAMING, type VideoFraming } from "@/lib/video-framing";
+import { mediaDownloadUrl } from "@/lib/media-download";
 
 export interface ExportComposition {
   id: string;
@@ -148,7 +149,7 @@ export function PlatformExportPanel({ projectId, compositions }: { projectId: st
           return <div key={key} className="rounded-lg border border-border/50 bg-muted/10 p-3 space-y-2">
             <label className="flex min-h-11 items-center gap-2 text-sm font-medium"><input type="checkbox" checked={selected.includes(key)} disabled={busy !== null} onChange={(event) => setSelected((items) => event.target.checked ? platformKeys.filter((item) => items.includes(item) || item === key) : items.filter((item) => item !== key))} />{t(nameKeys[key])}</label>
             <p className="text-xs text-muted-foreground">{spec.ratio} · {spec.w} × {spec.h}</p>
-            {result?.url && <a className="flex min-h-11 items-center justify-center gap-1 rounded-md border border-border text-sm text-primary" href={`${result.url}?download=1`} download><LuDownload aria-hidden="true" className="size-3" />{t("downloadPlatform", { platform: t(nameKeys[key]) })}</a>}
+            {result?.url && <a className="flex min-h-11 items-center justify-center gap-1 rounded-md border border-border text-sm text-primary" href={mediaDownloadUrl(result.url)} download><LuDownload aria-hidden="true" className="size-3" />{t("downloadPlatform", { platform: t(nameKeys[key]) })}</a>}
             {result?.report && <p className="text-xs text-muted-foreground">{result.report.message[locale === "en" ? "en" : "zh"]}</p>}
             {result?.error && <p role="alert" className="text-xs text-destructive">{result.error}</p>}
             {result?.status !== "done" && <Button variant="outline" className="w-full min-h-11 text-xs" disabled={busy !== null || !source?.url} onClick={() => void exportPlatforms([key])}>{result?.status === "running" ? t("exporting") : result?.status === "error" ? t("retryExport") : t("exportPlatform", { platform: t(nameKeys[key]) })}</Button>}

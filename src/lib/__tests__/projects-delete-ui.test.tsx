@@ -55,7 +55,7 @@ describe("work deletion feedback", () => {
     await act(async () => button("tabWorks").click());
     const card = workCard()!;
     expect(card.querySelector('a[href="/project/project-1/export"]')).toBeTruthy();
-    expect(card.querySelector('a[title="download"]')).toBeTruthy();
+    expect(card.querySelector('a[title="download"][download]')?.getAttribute("href")).toBe("/api/output/table.mp4?download=1");
     expect(card.querySelector("a button")).toBeNull();
     await act(async () => deleteWorkButton().click());
     expect(confirmMock).toHaveBeenCalledExactlyOnceWith("deleteWorkConfirm");

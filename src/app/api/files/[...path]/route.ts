@@ -3,9 +3,10 @@ import { getDataDir } from "@/lib/paths";
 import { apiError } from "@/lib/api-error";
 import { parseRangeHeader } from "@/lib/http-range";
 import { stat } from "fs/promises";
-import { join, normalize, sep } from "path";
+import { basename, join, normalize, sep } from "path";
 import { existsSync } from "fs";
 import { fileResponseStream } from "@/lib/file-response-stream";
+import { downloadDisposition } from "@/lib/download-disposition";
 
 // Static file server - serves uploaded images/videos.
 // Streams from disk (no whole-file buffering) and supports single-range HTTP Range requests (206),
@@ -56,6 +57,9 @@ export async function GET(
     "Content-Type": mimeTypes[ext || ""] || "application/octet-stream",
     "Cache-Control": "public, max-age=31536000",
     "Accept-Ranges": "bytes",
+    ...(req.nextUrl.searchParams.get("download")
+      ? { "Content-Disposition": downloadDisposition(basename(filePath)) }
+      : {}),
   };
 
   const range = parseRangeHeader(req.headers.get("range"), size);

@@ -1,5 +1,6 @@
 "use client";
 import { appStorage } from "@/lib/browser-storage";
+import { mediaDownloadUrl } from "@/lib/media-download";
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
@@ -1352,7 +1353,7 @@ export default function VideoPage() {
 
               {composeDone && outputUrl && (
                 <>
-                  <a href={`${outputUrl}?download=1`} download>
+                  <a href={mediaDownloadUrl(outputUrl)} download>
                     <Button variant="outline" className="w-full">{t("downloadVideo")}</Button>
                   </a>
                   <Link href={`/project/${id}/export`}>

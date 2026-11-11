@@ -58,6 +58,7 @@ import { useT, useLocale } from "@/lib/i18n";
 import { LocalMaterialLibrary } from "./_components/local-material-library";
 import { ShotMaterialPreview } from "./_components/shot-material-preview";
 import { AssetImagePreview } from "./_components/asset-image-preview";
+import { AssetVideoPreview } from "./_components/asset-video-preview";
 import { classifyMaterial, MATERIAL_ACCEPT, type PublicLocalMaterial } from "@/lib/material-library";
 import { uploadLocalMaterial, type MaterialUploadProgress } from "@/lib/upload-local-material";
 import { AssetPageLoadError, createAssetPageLoader, type AssetPageSnapshot } from "@/lib/asset-page-loader";
@@ -1913,15 +1914,7 @@ function AssetsPageContent() {
                           </div>
 
                           {asset.status === "done" && asset.isVideo && asset.videoUrl && (
-                            <a
-                              href={asset.videoUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className={buttonVariants({ variant: "outline", size: "sm", className: "text-xs w-24" })}
-                              aria-label={t("playShotVideo", { shot: asset.shotId })}
-                            >
-                              <LuPlay className="w-3 h-3 mr-1" />{t("btnPlayVideo")}
-                            </a>
+                            <AssetVideoPreview key={`${id}:${asset.videoUrl}`} asset={asset} projectName={projectName} />
                           )}
 
                           {/* action buttons (AI-generated shots can be manually generated or retried) */}

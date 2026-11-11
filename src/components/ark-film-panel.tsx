@@ -10,6 +10,7 @@ import { characterSheetRequest, hasCharacterSheetInput, hasSameCharacterSheetInp
 import { buildImageOptions, buildVideoOptions, resolveDefaultModelTarget, toEditVariant, type GenModelTarget } from "@/lib/gen-params";
 import { isKlingVideoSelection } from "@/lib/assets-view";
 import { isTideweOutdoorProfile, isTideweNativeSpeech } from "@/lib/creative-profiles";
+import { mediaDownloadUrl } from "@/lib/media-download";
 
 interface FilmPreview {
   prompt: string; model: string; shotCount: number; seconds: number; scriptSeconds: number;
@@ -241,7 +242,7 @@ export function ArkFilmPanel({ open, onOpenChange, projectId, scriptId, presente
       </section>}
       {busy && <p role="status" className="text-sm text-muted-foreground">{stage} 请勿重复操作。</p>}
       {!busy && taskId && !videoUrl && stage && <p role="status" className="text-sm text-muted-foreground">{stage}</p>}
-      {videoUrl && <div className="space-y-2"><video src={videoUrl} controls preload="metadata" className="max-h-[28rem] w-full rounded bg-black" /><a href={videoUrl} download className="text-sm text-primary underline">下载整片视频</a><Link href={`/project/${projectId}/export`} className="ml-4 text-sm text-primary underline">查看项目成片</Link></div>}
+      {videoUrl && <div className="space-y-2"><video src={videoUrl} controls preload="metadata" className="max-h-[28rem] w-full rounded bg-black" /><a href={mediaDownloadUrl(videoUrl)} download className="text-sm text-primary underline">下载整片视频</a><Link href={`/project/${projectId}/export`} className="ml-4 text-sm text-primary underline">查看项目成片</Link></div>}
     </DialogContent>
   </Dialog>;
 }
