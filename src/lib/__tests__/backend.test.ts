@@ -115,6 +115,31 @@ describe("buildComposeCommand", () => {
     expect(buildComposeCommand(config)).toContain("atrim=start=2");
   });
 
+  it("drops sub-microsecond BGM trims and fades without creating FFmpeg default fades", () => {
+    const config: ComposeConfig = {
+      ...baseConfig,
+      output: { ...baseConfig.output, bgmPath: "/data/bgm.mp3", bgmIntroSkipSec: 1.3877787807814457e-17, bgmFadeOutSec: 1e-17 },
+    };
+    for (const graph of [buildComposeCommand(config), buildComposeInvocation(config).filterComplex]) {
+      expect(graph).not.toContain("atrim=start=");
+      expect(graph).not.toContain("afade=");
+      expect(graph).toContain("aloop=loop=-1:size=2e9");
+    }
+  });
+
+  it("serializes a floating-point cross-fade offset as decimal seconds", () => {
+    const invocation = buildComposeInvocation({
+      ...baseConfig,
+      clips: [
+        { type: "video", filePath: "/data/clip1.mp4", duration: 0.5000000000000001, transition: "direct_concat" },
+        { type: "video", filePath: "/data/clip2.mp4", duration: 1, transition: "ffmpeg_fade" },
+      ],
+    });
+    expect(invocation.filterComplex).toContain("xfade=transition=fade:duration=0.5:offset=0[");
+    expect(invocation.filterComplex).toContain("stop_duration=0.5,trim=duration=0.5");
+    expect(invocation.filterComplex).not.toMatch(/(?:start|end|duration|offset)=[+-]?\d+(?:\.\d+)?[eE][+-]?\d+/);
+  });
+
   it("BGM 旁白闪避 opt-in（bgmDuck → sidechaincompress + asplit 复制旁白作 sidechain 键）", () => {
     const config: ComposeConfig = {
       ...baseConfig,

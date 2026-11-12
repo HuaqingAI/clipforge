@@ -426,12 +426,21 @@ interface InputSpec {
   path: string;
 }
 
+/** FFmpeg duration options require decimal seconds, not JavaScript's exponent notation. */
+function ffmpegSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || Math.abs(seconds) >= 1e21) throw new Error("合成时间参数无效。");
+  // FFmpeg stores durations in microseconds. Round only at serialization so the
+  // speech planner and subtitle word timings keep their original precision.
+  const decimal = seconds.toFixed(6).replace(/\.?0+$/, "");
+  return decimal === "-0" ? "0" : decimal;
+}
+
 /** ffmpeg argv tokens for one input — raw path, no shell quoting (shell-free execFile path). */
 function inputToArgv(spec: InputSpec): string[] {
   const a: string[] = [];
   if (spec.loop) {
     a.push("-loop", "1");
-    if (spec.t != null) a.push("-t", String(spec.t));
+    if (spec.t != null) a.push("-t", ffmpegSeconds(spec.t));
   }
   a.push("-i", spec.path);
   return a;
@@ -439,7 +448,7 @@ function inputToArgv(spec: InputSpec): string[] {
 
 /** Shell fragment for one input — path shell-escaped + double-quoted (legacy command-string form). */
 function inputToShell(spec: InputSpec): string {
-  const flags = spec.loop ? (spec.t != null ? `-loop 1 -t ${spec.t} ` : `-loop 1 `) : "";
+  const flags = spec.loop ? (spec.t != null ? `-loop 1 -t ${ffmpegSeconds(spec.t)} ` : `-loop 1 `) : "";
   return `${flags}-i "${escapeShellPath(spec.path)}"`;
 }
 
@@ -462,27 +471,32 @@ export function buildClipAudioFilters(input: {
   nativeSpeechEdit?: NativeSpeechEdit;
 }): string[] {
   const { duration, outputLabel, ttsInput, nativeInput, preserveNativeSpeech, nativeSpeechEdit } = input;
+  const durationArg = ffmpegSeconds(duration);
   const filters: string[] = [];
   if (ttsInput !== undefined) {
     const label = nativeInput !== undefined ? `${outputLabel}_tts` : outputLabel;
-    filters.push(`[${ttsInput}:a]aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS[${label}]`);
+    filters.push(`[${ttsInput}:a]aresample=44100,apad,atrim=duration=${durationArg},asetpts=PTS-STARTPTS[${label}]`);
   }
   if (nativeInput !== undefined) {
     const label = ttsInput !== undefined ? `${outputLabel}_native` : outputLabel;
     // Keep the original ambience, softening its edges without shortening the clip.
+    const fadeIn = ffmpegSeconds(nativeSpeechEdit?.fadeInSec ?? 0);
+    const fadeOut = ffmpegSeconds(nativeSpeechEdit?.fadeOutSec ?? 0);
+    // A rounded-zero duration must be omitted: afade d=0 falls back to its
+    // default sample count and can fade a whole second of otherwise intact speech.
     const edgeFade = nativeSpeechEdit
-      ? `${nativeSpeechEdit.fadeInSec ? `,afade=t=in:st=0:d=${nativeSpeechEdit.fadeInSec}` : ""}${nativeSpeechEdit.fadeOutSec ? `,afade=t=out:st=${Math.max(0, duration - nativeSpeechEdit.fadeOutSec).toFixed(6)}:d=${nativeSpeechEdit.fadeOutSec}` : ""}`
+      ? `${Number(fadeIn) > 0 ? `,afade=t=in:st=0:d=${fadeIn}` : ""}${Number(fadeOut) > 0 ? `,afade=t=out:st=${ffmpegSeconds(Math.max(0, duration - Number(fadeOut)))}:d=${fadeOut}` : ""}`
       : !preserveNativeSpeech && duration > 0.1
         ? `,afade=t=in:st=0:d=0.02,afade=t=out:st=${Math.max(0, duration - 0.02).toFixed(3)}:d=0.02`
         : "";
-    const edit = nativeSpeechEdit ? `atrim=start=${nativeSpeechEdit.startSec}:end=${nativeSpeechEdit.endSec},asetpts=PTS-STARTPTS,atempo=${nativeSpeechEdit.speed},` : "";
-    filters.push(`[${nativeInput}:a]${edit}aresample=44100,apad,atrim=duration=${duration},asetpts=PTS-STARTPTS${edgeFade}[${label}]`);
+    const edit = nativeSpeechEdit ? `atrim=start=${ffmpegSeconds(nativeSpeechEdit.startSec)}:end=${ffmpegSeconds(nativeSpeechEdit.endSec)},asetpts=PTS-STARTPTS,atempo=${nativeSpeechEdit.speed},` : "";
+    filters.push(`[${nativeInput}:a]${edit}aresample=44100,apad,atrim=duration=${durationArg},asetpts=PTS-STARTPTS${edgeFade}[${label}]`);
   }
   if (ttsInput !== undefined && nativeInput !== undefined) {
     // Preserve narration level and constrain combined peaks; compensate limiter lookahead to keep sync.
     filters.push(`[${outputLabel}_tts][${outputLabel}_native]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0:latency=1[${outputLabel}]`);
   } else if (ttsInput === undefined && nativeInput === undefined) {
-    filters.push(`anullsrc=r=44100:cl=stereo,atrim=duration=${duration},asetpts=PTS-STARTPTS[${outputLabel}]`);
+    filters.push(`anullsrc=r=44100:cl=stereo,atrim=duration=${durationArg},asetpts=PTS-STARTPTS[${outputLabel}]`);
   }
   return filters;
 }
@@ -512,6 +526,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
 
   // process each clip
   config.clips.forEach((clip, i) => {
+    const durationArg = ffmpegSeconds(clip.duration);
     if (clip.nativeSpeechEdit) {
       const edit = clip.nativeSpeechEdit;
       if (clip.type !== "video" || !clip.hasAudio || clip.audioPath || clip.mixNativeAudio || clip.preserveNativeSpeech
@@ -556,7 +571,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
       // output resolution slow pans/zooms stutter one hard pixel at a time and magnified frames sample
       // an already-downscaled image. Running zoompan on a doubled canvas halves the step size (sub-pixel
       // at output scale) and keeps detail for zoom>1, then one lanczos downscale smooths everything.
-      filterParts.push(`[${i}:v]scale=${width * 2}:${height * 2}:force_original_aspect_ratio=decrease,pad=${width * 2}:${height * 2}:(ow-iw)/2:(oh-ih)/2,trim=end_frame=1,setpts=PTS-STARTPTS,${motion.getFilter(width * 2, height * 2, clip.duration)},scale=${width}:${height}:flags=lanczos,tpad=stop_mode=clone:stop_duration=${clip.duration},trim=duration=${clip.duration},setpts=PTS-STARTPTS,${SEGMENT_NORM}[v${i}]`);
+      filterParts.push(`[${i}:v]scale=${width * 2}:${height * 2}:force_original_aspect_ratio=decrease,pad=${width * 2}:${height * 2}:(ow-iw)/2:(oh-ih)/2,trim=end_frame=1,setpts=PTS-STARTPTS,${motion.getFilter(width * 2, height * 2, clip.duration)},scale=${width}:${height}:flags=lanczos,tpad=stop_mode=clone:stop_duration=${durationArg},trim=duration=${durationArg},setpts=PTS-STARTPTS,${SEGMENT_NORM}[v${i}]`);
     } else {
       // video clip: scale to fill + align to shot duration. real stock library videos (Wikimedia etc.) vary in length;
       // clips shorter than the shot duration would leave a black tail and cause audio/subtitle desync if only trimmed —
@@ -578,8 +593,8 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
         ((ratio > 1.001 && ratio <= SPEEDFIT_MAX_RATIO) || (ratio >= SPEEDFIT_MIN_RATIO && ratio < 0.999));
       const edit = clip.nativeSpeechEdit;
       const fit = speedFit ? `setpts=PTS/${ratio.toFixed(4)},` : "";
-      const sourceEdit = edit ? `trim=start=${edit.startSec}:end=${edit.syncVideo ? edit.endSec : edit.startSec + clip.duration},setpts=(PTS-STARTPTS)/${edit.syncVideo ? edit.speed : 1},` : "";
-      filterParts.push(`[${i}:v]${sourceEdit}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,${fit}tpad=stop_mode=clone:stop_duration=${clip.duration},trim=duration=${clip.duration},setpts=PTS-STARTPTS,${SEGMENT_NORM}[v${i}]`);
+      const sourceEdit = edit ? `trim=start=${ffmpegSeconds(edit.startSec)}:end=${ffmpegSeconds(edit.syncVideo ? edit.endSec : edit.startSec + clip.duration)},setpts=(PTS-STARTPTS)/${edit.syncVideo ? edit.speed : 1},` : "";
+      filterParts.push(`[${i}:v]${sourceEdit}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,${fit}tpad=stop_mode=clone:stop_duration=${durationArg},trim=duration=${durationArg},setpts=PTS-STARTPTS,${SEGMENT_NORM}[v${i}]`);
     }
   });
 
@@ -615,7 +630,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
       // start the cross-fade fadeDuration seconds before the end of the current accumulated stream
       const offset = Math.max(accumulated - fadeDuration, 0);
       filterParts.push(
-        `[${currentVideoStream}][v${i}]xfade=transition=fade:duration=${fadeDuration}:offset=${offset}[${nextStream}]`
+        `[${currentVideoStream}][v${i}]xfade=transition=fade:duration=${ffmpegSeconds(fadeDuration)}:offset=${ffmpegSeconds(offset)}[${nextStream}]`
       );
       // xfade overlaps by fadeDuration, so subtract the overlap from the accumulated total after adding the new clip.
       // clamp to ≥0: a clip shorter than fadeDuration (0.5s) would make accumulated go negative, corrupting subsequent offsets and BGM fade-out timing (such clips are already degenerate; this clamp is a safety net)
@@ -639,7 +654,7 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
     for (let i = 1; i < config.clips.length; i++) {
       const next = `acs${i}`;
       if ((config.clips[i].transition as TransitionMode) === "ffmpeg_fade") {
-        filterParts.push(`[${curA}][a${i}]acrossfade=d=${FADE_DURATION}[${next}]`);
+        filterParts.push(`[${curA}][a${i}]acrossfade=d=${ffmpegSeconds(FADE_DURATION)}[${next}]`);
       } else {
         filterParts.push(`[${curA}][a${i}]concat=n=2:v=0:a=1[${next}]`);
       }
@@ -654,11 +669,11 @@ function assembleComposeGraph(config: ComposeConfig): ComposeGraph {
     inputs.push({ path: config.output.bgmPath });
     const vol = config.output.bgmVolume ?? 0.3;
     // skip intro silence (opt-in, default 0): atrim drops the first N seconds then loops
-    const introSkip = config.output.bgmIntroSkipSec ?? 0;
-    const introArg = introSkip > 0 ? `atrim=start=${introSkip},asetpts=PTS-STARTPTS,` : "";
+    const introSkip = ffmpegSeconds(config.output.bgmIntroSkipSec ?? 0);
+    const introArg = Number(introSkip) > 0 ? `atrim=start=${introSkip},asetpts=PTS-STARTPTS,` : "";
     // fade out at the end (default 3s, anchored to the final video duration): prevents aloop from being hard-cut by -t/amix, making the ending sound more polished
-    const fadeOut = config.output.bgmFadeOutSec ?? 3;
-    const fadeArg = fadeOut > 0 ? `,afade=t=out:st=${Math.max(0, accumulated - fadeOut).toFixed(3)}:d=${fadeOut}` : "";
+    const fadeOut = ffmpegSeconds(config.output.bgmFadeOutSec ?? 3);
+    const fadeArg = Number(fadeOut) > 0 ? `,afade=t=out:st=${Math.max(0, accumulated - Number(fadeOut)).toFixed(3)}:d=${fadeOut}` : "";
 
     if (currentAudioStream) {
       // clip audio present: loop BGM to fill the full video (aloop prevents silence when BGM is shorter than the video),
