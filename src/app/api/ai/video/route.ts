@@ -365,8 +365,8 @@ export async function POST(req: NextRequest) {
     // if it still fails, the task is marked "unknown"/"failed" but never dropped.
     try {
       const finalStatus = await provider.waitForTask(taskId, { interval: 5000 });
-      const result = finalStatus.result;
-      const videoUrls = result && "videoUrls" in result ? result.videoUrls : undefined;
+      const result = finalStatus.result && "videoUrls" in finalStatus.result ? finalStatus.result : undefined;
+      const videoUrls = result?.videoUrls;
       if (!videoUrls || videoUrls.length === 0) {
         await updateAiTask(rowId, { status: "unknown", error: "任务完成但未返回视频地址" });
         return NextResponse.json(
@@ -380,9 +380,9 @@ export async function POST(req: NextRequest) {
         taskId,
         videoUrls,
         modelId,
-        duration: videoOptions.duration,
+        duration: result?.duration ?? videoOptions.duration,
         processingTime: Date.now() - startTime,
-        hasAudio: videoOptions.audioEnabled ?? false,
+        hasAudio: result?.hasAudio ?? videoOptions.audioEnabled ?? false,
         ...(sourceContext && { sourceContext }),
       });
     } catch (error) {

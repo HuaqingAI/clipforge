@@ -38,8 +38,8 @@ export const settings: NamespaceMessages = {
     providerAlibabaTip: "万相系列，商品图生视频效果佳",
     providerSiliconflowDesc: "国产 AI 推理平台，提供高性价比的模型推理服务",
     providerSiliconflowTip: "国产高性价比推理平台",
-    providerOpenaiDesc: "HTH 图片 API，支持 GPT Image 2.5 Flare / Sunburst、GPT Image 2 / 1.5 图片生成与编辑",
-    providerOpenaiTip: "支持自定义 API 地址；模型可用性以 HTH 服务为准（视频使用 Kling CLI）",
+    providerOpenaiDesc: "HTH 图片与视频 API，支持 GPT Image 系列图片生成与编辑、MiniMax-H3 图生视频",
+    providerOpenaiTip: "支持自定义 API 地址；启用并填好 Key 后，可在「视频模型」选择 MiniMax-H3，用于素材转动态",
 
     // AI 平台卡片
     providerEnabled: "已启用",
@@ -122,7 +122,7 @@ export const settings: NamespaceMessages = {
     defaultAspectRatio: "默认画面比例",
     defaultImageModel: "默认生图模型",
     defaultVideoModel: "默认视频模型",
-    defaultVideoModelScope: "单镜头生成、批量转动态与重跑动态统一使用此 Kling 模型。切换只影响新生成，已有任务按原模型恢复。",
+    defaultVideoModelScope: "单镜头生成、批量转动态与重跑动态统一使用此默认视频模型，可选择 Kling 或 HTH MiniMax-H3。切换只影响新生成，已有任务按原模型恢复。",
     videoModelUnavailable: "{model}（当前不可用）",
     defaultVideoModelReselect: "所选模型当前不可用。请检查平台配置并重新选择；系统不会自动更换生成模型。",
     spendCap: "单次生成花费上限（美元）",
@@ -261,8 +261,8 @@ export const settings: NamespaceMessages = {
     providerAlibabaTip: "Wanxiang series, great for product image-to-video",
     providerSiliconflowDesc: "Homegrown AI inference platform with cost-effective model inference",
     providerSiliconflowTip: "Cost-effective domestic inference platform",
-    providerOpenaiDesc: "HTH image API: GPT Image 2.5 Flare / Sunburst, GPT Image 2 / 1.5 generation and editing",
-    providerOpenaiTip: "Custom API URLs supported; model availability depends on HTH (video uses Kling CLI)",
+    providerOpenaiDesc: "HTH image and video API: GPT Image generation and editing, and MiniMax-H3 image-to-video",
+    providerOpenaiTip: "Custom API URLs supported. Enable HTH and add a key, then choose MiniMax-H3 under Video models to animate assets.",
 
     // AI platform card
     providerEnabled: "Enabled",
@@ -345,7 +345,7 @@ export const settings: NamespaceMessages = {
     defaultAspectRatio: "Default aspect ratio",
     defaultImageModel: "Default image model",
     defaultVideoModel: "Default video model",
-    defaultVideoModelScope: "Single-shot generation, batch motion and regeneration use this Kling model. Changes apply to new generations; existing tasks recover with their original model.",
+    defaultVideoModelScope: "Single-shot generation, batch motion and regeneration use this default video model: Kling or HTH MiniMax-H3. Changes apply to new generations; existing tasks recover with their original model.",
     videoModelUnavailable: "{model} (unavailable)",
     defaultVideoModelReselect: "The selected model is unavailable. Check its provider settings and choose a model again; generation will not automatically switch models.",
     spendCap: "Per-run spend cap (USD)",

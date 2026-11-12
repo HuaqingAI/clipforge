@@ -359,6 +359,32 @@ describe("authoritative TIDEWE video preview and dispatch", () => {
 });
 
 describe("authoritative dynamic prompt preview", () => {
+  it.each([
+    { motionIntensity: "strong", motionRealism: "auto" },
+    { motionIntensity: "invalid-retired-value", motionRealism: { obsolete: true } },
+  ])("ignores retired settings in preview fingerprints and manual dispatch (%j)", async (retired) => {
+    const baseline = await getPreview();
+    const settings = { visualLook: "none", ...retired };
+    const request = input({ settings });
+    const { response, value } = await getPreview(request);
+    expect(response.status).toBe(200);
+    expect(value.settings).toEqual({ visualLook: "none" });
+    expect(value.prompt).toBe(baseline.value.prompt);
+    expect(value.contextKey).toBe(baseline.value.contextKey);
+    const result = await submit(value, request);
+    expect(result.status).toBe(200);
+    expect(state.generate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ prompt: value.prompt }));
+  });
+
+  it("requires a fresh review for a historical fingerprint instead of rewriting a pending prompt", async () => {
+    const request = input();
+    const { value } = await getPreview(request);
+    const response = await submit({ ...value, contextKey: "historical-motion-settings-fingerprint" }, request);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "VIDEO_PROMPT_CONTEXT_CHANGED" });
+    expect(state.provider).not.toHaveBeenCalled();
+  });
+
   it.each([false, true].flatMap((batch) => [undefined, "/api/files/end.png"].map((lastFrameUrl) => ({ batch, lastFrameUrl }))))("reviews only the selected Kling frames with batch=$batch and tail=$lastFrameUrl", async ({ batch, lastFrameUrl }) => {
     const request = input({
       provider: "kling-cli", model: "future-kling-model", batch, generateAudio: true,

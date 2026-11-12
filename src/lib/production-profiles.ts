@@ -1,5 +1,4 @@
 import type { ImageGenParams, VideoGenParams } from "@/lib/gen-params";
-import type { MotionIntensity, MotionRealismTier } from "@/lib/motion-prompt";
 
 export const PRODUCTION_PROFILE_IDS = ["rapid", "balanced", "cinematic"] as const;
 export type ProductionProfileId = (typeof PRODUCTION_PROFILE_IDS)[number];
@@ -9,8 +8,6 @@ export interface ProductionProfile {
   resolution: "720p" | "1080p";
   duration: number;
   motionStrength: number;
-  motionIntensity: MotionIntensity;
-  motionRealism: MotionRealismTier;
   chainMode: "pin" | "tail" | "off";
   visualLook: string;
   speed: 1 | 2 | 3;
@@ -25,8 +22,6 @@ export const PRODUCTION_PROFILES: Record<ProductionProfileId, ProductionProfile>
     resolution: "720p",
     duration: 4,
     motionStrength: 0.35,
-    motionIntensity: "subtle",
-    motionRealism: "constraints",
     chainMode: "off",
     visualLook: "none",
     speed: 3,
@@ -39,8 +34,6 @@ export const PRODUCTION_PROFILES: Record<ProductionProfileId, ProductionProfile>
     resolution: "720p",
     duration: 5,
     motionStrength: 0.55,
-    motionIntensity: "normal",
-    motionRealism: "auto",
     chainMode: "pin",
     visualLook: "daylight_clean",
     speed: 2,
@@ -52,8 +45,6 @@ export const PRODUCTION_PROFILES: Record<ProductionProfileId, ProductionProfile>
     resolution: "1080p",
     duration: 8,
     motionStrength: 0.72,
-    motionIntensity: "strong",
-    motionRealism: "auto",
     chainMode: "tail",
     visualLook: "studio_product",
     speed: 1,
@@ -86,8 +77,6 @@ export function productionProfilePatch(id: ProductionProfileId, current: Current
       duration: profile.duration,
       motionStrength: profile.motionStrength,
     },
-    motionIntensity: profile.motionIntensity,
-    motionRealism: profile.motionRealism,
     chainMode: profile.chainMode,
     visualLook: profile.visualLook,
   } as const;

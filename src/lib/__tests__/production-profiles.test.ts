@@ -15,6 +15,8 @@ describe("production profiles", () => {
       expect(profile.motionStrength).toBeGreaterThanOrEqual(0);
       expect(profile.motionStrength).toBeLessThanOrEqual(1);
       expect(profile.duration).toBeGreaterThan(0);
+      expect(profile).not.toHaveProperty("motionIntensity");
+      expect(profile).not.toHaveProperty("motionRealism");
     }
   });
 
@@ -28,6 +30,9 @@ describe("production profiles", () => {
     expect(patch.imageParams).toMatchObject({ aspectRatio: "16:9", count: 1, seed: 42, negativePrompt: "blur" });
     expect(patch.videoParams).toMatchObject({ aspectRatio: "16:9", resolution: "720p", duration: 4, seed: 7, fps: 30 });
     expect(patch.chainMode).toBe("off");
+    expect(patch.visualLook).toBe("none");
+    expect(patch).not.toHaveProperty("motionIntensity");
+    expect(patch).not.toHaveProperty("motionRealism");
   });
 
   it("rejects stale or unknown persisted ids", () => {

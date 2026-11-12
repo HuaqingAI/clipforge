@@ -10,10 +10,10 @@ export interface CatalogProviderSetting {
 
 const RETIRED_CATALOG_PROVIDERS = new Set(["volcengine", "alibaba", "siliconflow"]);
 
-/** New video selections use the account-owned Kling CLI catalog on both app surfaces. */
+/** Video selections come from HTH or the account-owned Kling CLI catalog. */
 export function isCatalogProviderSupported(name: string, mediaType?: "image" | "video"): boolean {
   if (RETIRED_CATALOG_PROVIDERS.has(name)) return false;
-  if (mediaType === "video") return name === "kling-cli";
+  if (mediaType === "video") return name === "kling-cli" || name === "openai";
   if (mediaType === "image") return name !== "kling-cli";
   return true;
 }

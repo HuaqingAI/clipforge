@@ -86,6 +86,8 @@ export abstract class BaseProvider implements AIProvider {
       body?: unknown
       headers?: Record<string, string>
       timeout?: number
+      /** Use a vendor-native API root without changing this provider's default API version. */
+      baseUrl?: string
       /**
        * Whether this request is idempotent (safe to auto-retry).
        * Defaults to `method === 'GET'`.
@@ -101,7 +103,7 @@ export abstract class BaseProvider implements AIProvider {
   ): Promise<T> {
     const { method = 'GET', body, headers = {}, timeout } = options
     const idempotent = options.idempotent ?? method === 'GET'
-    const url = `${this.config.baseUrl}${path}`
+    const url = `${options.baseUrl ?? this.config.baseUrl}${path}`
     const requestTimeout = timeout ?? this.config.timeout ?? 30000
 
     // build request headers

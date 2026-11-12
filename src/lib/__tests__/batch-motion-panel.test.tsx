@@ -63,6 +63,24 @@ async function confirmAndSubmit() { await act(async () => checkbox("确认批量
 function runRequests() { return runFetch.mock.calls.filter(([url]) => url === "/api/generation-runs").map(([, init]) => JSON.parse(String(init.body))); }
 
 describe("batch shot animation", () => {
+  it("registers an HTH H3 batch without needing a Kling account or catalog", async () => {
+    for (const { asset, draft } of shots) {
+      draft!.request = { provider: "openai", model: "MiniMax-H3", apiKey: "fixture", mode: "image-to-video", imageUrl: draft!.firstFrameUrl, prompt: draft!.prompt, options: { duration: 6, width: 768, height: 1366 } };
+      draft!.assetPayload = { ...draft!.assetPayload, provider: "openai", model: "MiniMax-H3", shotId: asset.shotId };
+    }
+    await mount({ provider: "openai", selectionKey: "MiniMax-H3", modelLabel: "HTH · MiniMax-H3" });
+    expect(container.textContent).toContain("始终生成原生音轨");
+    expect(runRequests()).toHaveLength(0);
+    expect(button("确认提交").disabled).toBe(true);
+    await confirmAndSubmit();
+    expect(runRequests()).toHaveLength(1);
+    expect(runRequests()[0]).toMatchObject({ kind: "video_batch", items: [
+      { shotId: 1, request: { provider: "openai", model: "MiniMax-H3", imageUrl: "/frame-1.png" } },
+      { shotId: 2, request: { provider: "openai", model: "MiniMax-H3", imageUrl: "/frame-2.png" } },
+    ] });
+    expect(api.request).not.toHaveBeenCalled();
+  });
+
   it("reuses a recently verified catalog on open and reopen while requiring a new billing confirmation", async () => {
     api.request.mockImplementation(() => Promise.resolve(json(status({ profile: { ...readyProfile, catalogCheckedAt: Date.now() } }))));
     await mount();

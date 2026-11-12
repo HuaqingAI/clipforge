@@ -4,7 +4,7 @@ import type { VideoPromptRequest } from "@/lib/video-prompt-request";
 
 const request: VideoPromptRequest = {
   scriptId: "script-1", shotId: 1, provider: "kling-cli", model: "account-model",
-  settings: { visualLook: "none", motionIntensity: "normal", motionRealism: "auto" },
+  settings: { visualLook: "none" },
   generateAudio: false,
 };
 const prompt = "Approved shot direction: 产品完整入画。\n\nPreserve markings; no added text.\n";
@@ -34,6 +34,15 @@ describe("backend video prompt transport", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchVideoPrompt("project-1", request)).rejects.toThrow("当前脚本已改变");
     await expect(fetchVideoPrompt("project-1", request)).rejects.toThrow("后端未返回有效的视频提示词");
+  });
+
+  it("drops retired motion settings from new requests and review receipts", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(response));
+    vi.stubGlobal("fetch", fetchMock);
+    const legacy = { ...request, settings: { visualLook: "none", motionIntensity: "strong", motionRealism: { obsolete: true } } };
+    const result = await fetchVideoPrompt("project-1", legacy);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).settings).toEqual({ visualLook: "none" });
+    expect(result.promptContext.settings).toEqual({ visualLook: "none" });
   });
 
   it("sends text-model credentials only for preparation and omits them from the paid review context", async () => {

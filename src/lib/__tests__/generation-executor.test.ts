@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import type { GenerationExecutionItem } from "@/lib/generation-types";
 import type { KlingJob } from "@/lib/kling/job-schema";
 
-const state = vi.hoisted(() => ({ sqlite: null as Database.Database | null, submit: vi.fn(), script: vi.fn(), grid: vi.fn(), query: vi.fn(), download: vi.fn(), createKling: vi.fn(), retryKling: vi.fn(), startKling: vi.fn(), getKling: vi.fn(), outputs: vi.fn() }));
+const state = vi.hoisted(() => ({ sqlite: null as Database.Database | null, provider: vi.fn(), submit: vi.fn(), script: vi.fn(), grid: vi.fn(), query: vi.fn(), download: vi.fn(), createKling: vi.fn(), retryKling: vi.fn(), startKling: vi.fn(), getKling: vi.fn(), outputs: vi.fn() }));
 vi.mock("@/lib/db", async () => {
   const { default: Sqlite } = await import("better-sqlite3");
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
@@ -17,7 +17,7 @@ vi.mock("@/lib/db", async () => {
   const db = drizzle(state.sqlite); migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
   return { getDb: () => db };
 });
-vi.mock("@/lib/providers", () => ({ createProvider: () => ({ getTaskStatus: state.query }) }));
+vi.mock("@/lib/providers", () => ({ createProvider: (config: unknown) => { state.provider(config); return { getTaskStatus: state.query }; } }));
 vi.mock("@/app/api/ai/video/route", () => ({ POST: state.submit }));
 vi.mock("@/app/api/ai/image/route", () => ({ POST: state.submit }));
 vi.mock("@/app/api/llm/script/route", () => ({ POST: state.script }));
@@ -55,6 +55,25 @@ beforeEach(() => {
 afterAll(() => state.sqlite?.close());
 
 describe("generation executor recovery", () => {
+  it("resumes the accepted HTH task and retries its import without submitting another video", async () => {
+    const input = item();
+    input.payload.request = { ...input.payload.request, provider: "openai", model: "MiniMax-H3", baseUrl: "https://hth.example/v1" };
+    input.checkpoint = { taskId: "h3-original-paid", modelId: "MiniMax-H3", submissionState: "acknowledged" };
+    await recordAiTask({ projectId: "A", shotId: 1, provider: "openai", model: "MiniMax-H3", taskId: "h3-original-paid", mediaType: "video" });
+    state.query.mockResolvedValueOnce({ taskId: "h3-original-paid", status: "processing" }).mockResolvedValueOnce({
+      taskId: "h3-original-paid", status: "completed", result: { taskId: "h3-original-paid", modelId: "MiniMax-H3", videoUrls: ["https://cdn.example/h3.mp4"], hasAudio: true, duration: 6 },
+    });
+    expect(await run(input)).toMatchObject({ pending: true });
+    state.download.mockRejectedValueOnce(new Error("interrupted download"));
+    await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_IMPORT_FAILED", retryable: true });
+    expect(input.checkpoint).toMatchObject({ taskId: "h3-original-paid", generationResult: { hasAudio: true, duration: 6 }, resultUrls: ["https://cdn.example/h3.mp4"] });
+    expect(await run(input)).toHaveProperty("assetId");
+    expect(state.query.mock.calls).toEqual([["h3-original-paid"], ["h3-original-paid"]]);
+    expect(state.provider).toHaveBeenCalledWith({ name: "openai", apiKey: "test-secret", baseUrl: "https://hth.example/v1" });
+    expect(state.submit).not.toHaveBeenCalled();
+    expect(getDb().select().from(aiTasks).get()).toMatchObject({ taskId: "h3-original-paid", status: "completed", importState: "imported" });
+  });
+
   it("recovers an image after media storage failed without submitting or querying its paid generation again", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "clipforge-paid-image-retry-"));
     vi.stubEnv("APP_DATA_DIR", directory);

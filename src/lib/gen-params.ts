@@ -11,9 +11,10 @@
  */
 
 import { configuredCatalogProviders } from "@/lib/model-catalog";
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
 
 export type GenAspectRatio = "9:16" | "16:9" | "1:1";
-export type GenResolution = "480p" | "720p" | "1080p";
+export type GenResolution = "480p" | "720p" | "768p" | "1080p" | "2k";
 export type GenMediaType = "image" | "video";
 
 /** User-defined custom model (any model id mounted on an existing platform) */
@@ -90,6 +91,20 @@ export const RESOLUTION_OPTIONS: { value: GenResolution; label: string }[] = [
   { value: "1080p", label: "1080p" },
 ];
 
+const HTH_RESOLUTION_OPTIONS: { value: GenResolution; label: string }[] = [
+  { value: "768p", label: "768P" },
+  { value: "2k", label: "2K" },
+];
+
+export function videoResolutionOptions(modelId?: string) {
+  return modelId === HTH_VIDEO_MODEL ? HTH_RESOLUTION_OPTIONS : RESOLUTION_OPTIONS;
+}
+
+/** Keep legacy settings on H3's standard tier until the user explicitly selects 2K. */
+export function videoResolutionForModel(resolution: GenResolution, modelId?: string): GenResolution {
+  return modelId === HTH_VIDEO_MODEL ? (resolution === "2k" ? "2k" : "768p") : resolution;
+}
+
 /** Aspect ratio → image dimensions (portrait commerce mode defaults to higher resolution) */
 export function imageSize(aspect: GenAspectRatio): { width: number; height: number } {
   switch (aspect) {
@@ -105,8 +120,14 @@ export function imageSize(aspect: GenAspectRatio): { width: number; height: numb
 
 /** Resolution + aspect ratio → video dimensions */
 export function videoSize(resolution: GenResolution, aspect: GenAspectRatio): { width: number; height: number } {
-  const long = resolution === "1080p" ? 1920 : resolution === "480p" ? 854 : 1280;
-  const short = resolution === "1080p" ? 1080 : resolution === "480p" ? 480 : 720;
+  const sizes: Record<GenResolution, [number, number]> = {
+    "480p": [854, 480],
+    "720p": [1280, 720],
+    "768p": [1366, 768],
+    "1080p": [1920, 1080],
+    "2k": [2560, 1440],
+  };
+  const [long, short] = sizes[resolution] ?? sizes["720p"];
   switch (aspect) {
     case "16:9":
       return { width: long, height: short };
@@ -150,9 +171,9 @@ function finiteInteger(value: unknown, fallback?: number, min?: number, max?: nu
 }
 
 /** Maps video parameters to the options object expected by /api/ai/video (field names aligned with VideoOptions) */
-export function buildVideoOptions(p: VideoGenParams | undefined): Record<string, unknown> {
+export function buildVideoOptions(p: VideoGenParams | undefined, modelId?: string): Record<string, unknown> {
   const params = p ?? DEFAULT_VIDEO_PARAMS;
-  const { width, height } = videoSize(params.resolution, params.aspectRatio);
+  const { width, height } = videoSize(videoResolutionForModel(params.resolution, modelId), params.aspectRatio);
   const duration = finiteNumber(params.duration);
   const fps = finiteNumber(params.fps);
   const motionStrength = finiteNumber(params.motionStrength);

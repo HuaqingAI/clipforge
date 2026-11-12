@@ -5,9 +5,11 @@ import {
   pickEnumDuration,
   pickRatio,
   pickResolution,
+  HTH_VIDEO_PARAM_SPEC,
 } from "@/lib/providers/atlas-video-params";
 import { modelSupportsLastFrame } from "@/lib/video-composer/transitions";
 import { arkSeedanceVersion } from "@/lib/ark-video-models";
+import { HTH_VIDEO_MODEL, HTH_VIDEO_RATIOS, hthVideoResolution } from "@/lib/hth-video-config";
 
 export type CapabilityConfidence = "known" | "inferred" | "unknown";
 
@@ -134,6 +136,17 @@ export function getVideoModelCapabilities(modelId: string, supportsAudio?: boole
       regionMask: true, multiKeyframes: true, performanceReference: true,
     };
   }
+  if (modelId === HTH_VIDEO_MODEL && (!provider || provider === "openai")) {
+    return {
+      confidence: "known", textToVideo: true, imageToVideo: true,
+      referenceImages: false, referenceVideo: false, referenceAudio: false,
+      lastFrame: true, nativeAudio: true, videoEdit: false, temporalRetake: false,
+      regionMask: false, multiKeyframes: false, performanceReference: false,
+      durationValues: HTH_VIDEO_PARAM_SPEC.durationEnum,
+      resolutionValues: HTH_VIDEO_PARAM_SPEC.resolutionEnum,
+      aspectRatioValues: [...HTH_VIDEO_RATIOS, "adaptive"],
+    };
+  }
   const spec = getVideoParamSpec(modelId);
   const modes = inferredModes(modelId, provider);
   const references = referenceCapabilities(modelId, provider);
@@ -185,7 +198,8 @@ export function preflightVideoGeneration(input: {
   referenceAudioCount?: number;
 }): VideoGenerationPreflight {
   const capabilities = getVideoModelCapabilities(input.modelId, input.supportsAudio, input.provider);
-  const spec = getVideoParamSpec(input.modelId);
+  const isHthH3 = input.modelId === HTH_VIDEO_MODEL && (!input.provider || input.provider === "openai");
+  const spec = isHthH3 ? HTH_VIDEO_PARAM_SPEC : getVideoParamSpec(input.modelId);
   const adjustments: PreflightAdjustment[] = [];
   const warnings: VideoGenerationPreflight["warnings"] = [];
   if (input.provider === "kling-cli") return { capabilities, adjustments, warnings };
@@ -217,7 +231,7 @@ export function preflightVideoGeneration(input: {
     }
   }
   if (spec.resolutionEnum) {
-    const effective = pickResolution(spec.resolutionEnum, width, height);
+    const effective = isHthH3 ? hthVideoResolution(width, height) : pickResolution(spec.resolutionEnum, width, height);
     if (effective && effective.toLowerCase() !== input.resolution.toLowerCase()) {
       adjustments.push({ field: "resolution", requested: input.resolution, effective, code: "mapped-resolution" });
     }

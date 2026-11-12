@@ -2,6 +2,77 @@ import { describe, expect, it } from "vitest";
 import { getVideoModelCapabilities, preflightVideoGeneration } from "@/lib/model-capabilities";
 
 describe("video model capabilities", () => {
+  it("recognizes native HTH H3 frame generation without reference-pack capabilities", () => {
+    const caps = getVideoModelCapabilities("MiniMax-H3", false, "openai");
+    expect(caps).toMatchObject({
+      confidence: "known",
+      textToVideo: true,
+      imageToVideo: true,
+      referenceImages: false,
+      referenceVideo: false,
+      referenceAudio: false,
+      lastFrame: true,
+      nativeAudio: true,
+      videoEdit: false,
+      temporalRetake: false,
+      regionMask: false,
+      multiKeyframes: false,
+      performanceReference: false,
+      durationValues: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      resolutionValues: ["768P", "2K"],
+    });
+    expect(caps.aspectRatioValues).toEqual(expect.arrayContaining(["16:9", "9:16", "adaptive"]));
+    expect(getVideoModelCapabilities("MiniMax-H3", undefined, "atlas-cloud").confidence).toBe("unknown");
+  });
+
+  it.each(["720p", "1080p"] as const)("previews HTH H3's standard tier for legacy %s settings", (resolution) => {
+    const result = preflightVideoGeneration({
+      modelId: "MiniMax-H3",
+      provider: "openai",
+      duration: 3,
+      resolution,
+      aspectRatio: "9:16",
+      chainMode: "pin",
+      audioEnabled: true,
+    });
+    expect(result.adjustments).toEqual([
+      { field: "duration", requested: 3, effective: 4, code: "nearest-duration" },
+      { field: "resolution", requested: resolution, effective: "768P", code: "mapped-resolution" },
+      { field: "aspectRatio", requested: "9:16", effective: "adaptive", code: "adaptive-ratio" },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each(["768p", "2k"] as const)("preserves the explicit HTH H3 %s resolution tier", (resolution) => {
+    const result = preflightVideoGeneration({
+      modelId: "MiniMax-H3",
+      provider: "openai",
+      duration: 15,
+      resolution,
+      aspectRatio: "16:9",
+      chainMode: "pin",
+    });
+    expect(result.adjustments).toEqual([
+      { field: "aspectRatio", requested: "16:9", effective: "adaptive", code: "adaptive-ratio" },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns when HTH H3 frame generation cannot carry separate references", () => {
+    const result = preflightVideoGeneration({
+      modelId: "MiniMax-H3",
+      provider: "openai",
+      duration: 5,
+      resolution: "720p",
+      aspectRatio: "9:16",
+      chainMode: "pin",
+      referenceImageCount: 2,
+      referenceAudioCount: 1,
+    });
+    expect(result.warnings).toEqual(["reference-conditioning-unavailable", "reference-audio-unavailable"]);
+    expect(result.adjustments.some((item) => item.field === "chainMode")).toBe(false);
+  });
+
   it("normalizes a schema-backed image-to-video model", () => {
     const caps = getVideoModelCapabilities("google/veo3.1/image-to-video");
     expect(caps).toMatchObject({

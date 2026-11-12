@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildVideoOptions, DEFAULT_VIDEO_PARAMS, RESOLUTION_OPTIONS, videoSize } from "@/lib/gen-params";
+import { buildVideoOptions, DEFAULT_VIDEO_PARAMS, RESOLUTION_OPTIONS, videoResolutionOptions, videoSize } from "@/lib/gen-params";
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
 
 describe("video resolution parameters", () => {
   it.each([false, true])("preserves an explicit audio setting of %s", (audioEnabled) => {
@@ -20,5 +21,12 @@ describe("video resolution parameters", () => {
     expect(DEFAULT_VIDEO_PARAMS.resolution).toBe("720p");
     expect(videoSize("720p", "9:16")).toEqual({ width: 720, height: 1280 });
     expect(videoSize("1080p", "16:9")).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it("offers H3's native tiers and keeps legacy settings on 768P", () => {
+    expect(videoResolutionOptions(HTH_VIDEO_MODEL).map((option) => option.value)).toEqual(["768p", "2k"]);
+    expect(videoResolutionOptions("kling")).toBe(RESOLUTION_OPTIONS);
+    expect(buildVideoOptions({ ...DEFAULT_VIDEO_PARAMS, resolution: "1080p" }, HTH_VIDEO_MODEL)).toMatchObject({ width: 768, height: 1366 });
+    expect(buildVideoOptions({ ...DEFAULT_VIDEO_PARAMS, resolution: "2k" }, HTH_VIDEO_MODEL)).toMatchObject({ width: 1440, height: 2560 });
   });
 });

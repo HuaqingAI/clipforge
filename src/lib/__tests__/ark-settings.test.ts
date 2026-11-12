@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsPage from "@/app/settings/page";
 import { HTH_BASE_URL, HTH_DEFAULT_MODEL } from "@/lib/hth-config";
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useBrandStore } from "@/lib/stores/brand-store";
 import { useModelCatalog } from "@/lib/hooks/use-model-catalog";
@@ -57,6 +58,7 @@ beforeEach(() => {
   catalogState.models = [
     { id: "gpt-image-2", name: "HTH Image", provider: "openai", mediaType: "image", modes: ["text-to-image"] },
     { id: klingKey, name: "Kling 4.0 image to video", provider: "kling-cli", mediaType: "video", modes: ["image-to-video"] },
+    { id: HTH_VIDEO_MODEL, name: "MiniMax-H3 · HTH", provider: "openai", mediaType: "video", modes: ["text-to-video", "image-to-video"], supportsAudio: true },
     { id: "sora-2", name: "Retired video option", provider: "openai", mediaType: "video", modes: ["text-to-video"] },
   ];
   useSettingsStore.setState({
@@ -142,28 +144,64 @@ describe("HTH and Kling settings UI", () => {
     expect(hthCard()).toBeTruthy();
   });
 
-  it("keeps the video directory scoped to Kling even with HTH and legacy custom videos configured", async () => {
+  it("offers Kling and HTH MiniMax-H3 without reviving unsupported custom videos", async () => {
     useSettingsStore.setState({ customModels: [{ id: "old-custom", provider: "openai", modelId: "custom-video", name: "Legacy custom video", mediaType: "video" }] });
     window.history.replaceState(null, "", "/settings?tab=video");
     await mount();
-    expect(useModelCatalog).toHaveBeenCalledWith([{ name: "kling-cli", profileId: "account-profile" }], "video");
+    expect(useModelCatalog).toHaveBeenCalledWith([{ name: "openai", apiKey: "hth-key", baseUrl: HTH_BASE_URL }, { name: "kling-cli", profileId: "account-profile" }], "video");
     expect(useModelCatalog).toHaveBeenCalledWith([{ name: "openai", apiKey: "hth-key", baseUrl: HTH_BASE_URL }], "image");
     const section = container.querySelector("section")!;
     expect(section.textContent).toContain("kling-cli");
-    expect(section.textContent).not.toContain("openai");
+    expect(section.textContent).toContain("hth");
     await act(async () => videoSelect().click());
     const options = [...document.querySelectorAll('[role="option"]')].map((item) => item.textContent);
-    expect(options).toEqual(["Kling 4.0 image to video"]);
+    expect(options).toEqual(["Kling 4.0 image to video", "MiniMax-H3 · HTH"]);
   });
 
   it("requires an explicit video model choice and never submits generation while selecting it", async () => {
     window.history.replaceState(null, "", "/settings?tab=video");
     await mount();
     expect(useSettingsStore.getState().defaultVideoModel).toBe("");
-    expect(container.textContent).toContain("Single-shot generation, batch motion and regeneration use this Kling model");
+    expect(container.textContent).toContain("Single-shot generation, batch motion and regeneration use this default video model");
     await choose(videoSelect(), "Kling 4.0 image to video");
     expect(useSettingsStore.getState().defaultVideoModel).toBe(klingKey);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("selects HTH without Kling and keeps its generation resolution separate from composition", async () => {
+    useSettingsStore.setState({
+      providers: { openai: { enabled: true, apiKey: "hth-key", baseUrl: HTH_BASE_URL } },
+      defaultResolution: "1080p", videoParams: { ...initialSettings.videoParams, resolution: "1080p" },
+    });
+    window.history.replaceState(null, "", "/settings?tab=video");
+    await mount();
+    expect(useSettingsStore.getState().defaultVideoModel).toBe("");
+    await choose(videoSelect(), "MiniMax-H3 · HTH");
+    expect(useSettingsStore.getState()).toMatchObject({ defaultVideoModel: HTH_VIDEO_MODEL, defaultResolution: "1080p", videoParams: { resolution: "768p" } });
+    const resolution = container.querySelectorAll('section [role="combobox"]')[1] as HTMLButtonElement;
+    expect(resolution.textContent).toContain("768P");
+    await choose(resolution, "2K");
+    expect(useSettingsStore.getState()).toMatchObject({ defaultResolution: "1080p", videoParams: { resolution: "2k" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([{ enabled: false, apiKey: "hth-key" }, { enabled: true, apiKey: "" }, { enabled: true, apiKey: "  " }])
+    ("keeps an HTH default unavailable without silently choosing Kling when configuration is %o", async (openai) => {
+      useSettingsStore.setState({ providers: { openai }, defaultVideoModel: HTH_VIDEO_MODEL });
+      window.history.replaceState(null, "", "/settings?tab=video");
+      await mount();
+      expect(videoSelect().disabled).toBe(true);
+      expect(container.querySelector('section [role="alert"]')).not.toBeNull();
+      expect(useSettingsStore.getState().defaultVideoModel).toBe(HTH_VIDEO_MODEL);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+  it("restores the existing Kling output tier when switching back from HTH", async () => {
+    useSettingsStore.setState({ defaultVideoModel: HTH_VIDEO_MODEL, defaultResolution: "1080p", videoParams: { ...initialSettings.videoParams, resolution: "2k" } });
+    window.history.replaceState(null, "", "/settings?tab=video");
+    await mount();
+    await choose(videoSelect(), "Kling 4.0 image to video");
+    expect(useSettingsStore.getState()).toMatchObject({ defaultVideoModel: klingKey, defaultResolution: "1080p", videoParams: { resolution: "1080p" } });
   });
 
   it("shows a missing saved Kling descriptor without selecting a different billed model", async () => {

@@ -29,7 +29,7 @@ describe("per-provider catalog status", () => {
       method: "POST", body: JSON.stringify({ providers: ["openai", "kling-cli", "volcengine", "alibaba", "siliconflow"].map((name) => ({ name })), mediaType }),
     }));
     expect(response.status).toBe(200);
-    const expected = mediaType === "image" ? [["openai", "image"]] : mediaType === "video" ? [["kling-cli", "video"]] : [["openai", "image"], ["kling-cli", "video"]];
+    const expected = mediaType === "image" ? [["openai", "image"]] : mediaType === "video" ? [["openai", "video"], ["kling-cli", "video"]] : [["openai", "image"], ["openai", "video"], ["kling-cli", "video"]];
     expect(catalogCalls.mock.calls).toEqual(expected);
     const result = await response.json();
     expect(result.providers.map(({ provider, mediaType }: { provider: string; mediaType: string }) => [provider, mediaType])).toEqual(expected);

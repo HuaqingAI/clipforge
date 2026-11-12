@@ -11,17 +11,20 @@
  *   DALL·E 2/3 支持 response_format=url。本实现统一把 base64 包成 data URI 返回，
  *   下游落库（persistSource）已支持 data: 协议。
  * - gpt-image-2 / 2.5 / 2.6 支持任意分辨率（宽高被 16 整除、比例 1:3~3:1），竖屏带货可直接出 9:16。
- * - 视频（Sora）下载需鉴权（GET /v1/videos/{id}/content 带 Bearer），
- *   而本应用素材落库走的是无鉴权直链下载，故暂不接入 OpenAI 视频，generateVideo 直接报错。
+ * - MiniMax-H3 视频使用 HTH 的原生 /v2/video_generation 异步接口，成品为可下载直链。
  */
 
 import { BaseProvider, ProviderError } from './base'
 import { normalizeOpenAIBaseUrl } from '@/lib/openai-config'
 import { OPENAI_MASK_IMAGE_MODELS } from '@/lib/openai-image-capabilities'
+import { HTH_VIDEO_MODEL, HTH_VIDEO_DURATIONS, HTH_VIDEO_RESOLUTIONS, HTH_VIDEO_RATIOS, hthVideoResolution, normalizeHTHVideoBaseUrl } from '@/lib/hth-video-config'
+import { pickEnumDuration, pickRatio } from './atlas-video-params'
+import { generationCheckpoint, GenerationTaskPending } from '@/lib/provider-generation-hooks'
 import type {
   ProviderConfig,
   ImageOptions,
   ImageResult,
+  VideoOptions,
   VideoResult,
   TaskStatus,
   Model,
@@ -38,6 +41,21 @@ interface OpenAIImageResponse {
     revised_prompt?: string
   }>
   [key: string]: unknown
+}
+
+interface H3Response {
+  task_id?: string
+  request_id?: string
+  error?: { type?: string; message?: string; http_code?: string }
+  base_resp?: { status_code?: number; status_msg?: string }
+  task?: {
+    id?: string
+    status?: string
+    model?: string
+    duration?: number
+    content?: { url?: string }
+    error?: { code?: string; message?: string }
+  }
 }
 
 const MASK_IMAGE_MODELS = new Set(OPENAI_MASK_IMAGE_MODELS)
@@ -92,32 +110,99 @@ export class OpenAIProvider extends BaseProvider {
     return this.textToImage(options)
   }
 
-  /**
-   * 生成视频（暂不支持）
-   * OpenAI Sora 的成片需鉴权下载，本应用素材落库走无鉴权直链，故暂未接入。
-   */
-  async generateVideo(): Promise<VideoResult> {
-    throw this.rejectedBeforeSubmission(
-      'HTH 当前图片接口暂未接入视频生成，请改用 Kling 官方 CLI、fal.ai 或 Replicate 等视频平台',
-      'NOT_SUPPORTED',
-    )
+  /** Return a paid receipt before polling so background jobs can resume it safely. */
+  async submitVideoTask(options: VideoOptions): Promise<{ taskId: string; modelId: string }> {
+    const body = this.h3VideoBody(options)
+    let response: H3Response
+    try {
+      response = await this.request<H3Response>('/v2/video_generation', {
+        method: 'POST', body, baseUrl: normalizeHTHVideoBaseUrl(this.config.baseUrl),
+      })
+    } catch (error) {
+      // MiniMax's typed validation/balance responses reject before creating work.
+      if (error instanceof ProviderError && [402, 413, 415, 422].includes(error.statusCode ?? 0)) error.submissionRejected = true
+      throw error
+    }
+    // A receipt always wins over an accompanying error: work may already be paid.
+    if (typeof response.task_id === 'string' && response.task_id.trim()) {
+      const taskId = response.task_id
+      generationCheckpoint({ taskId, modelId: HTH_VIDEO_MODEL, provider: this.name, submissionState: 'acknowledged' })
+      return { taskId, modelId: HTH_VIDEO_MODEL }
+    }
+    if (response.error || (response.base_resp && response.base_resp.status_code !== 0)) {
+      const failure = this.rejectedBeforeSubmission(response.error?.message ?? response.base_resp?.status_msg ?? 'MiniMax-H3 任务被拒绝', response.error?.type ?? 'H3_SUBMIT_REJECTED')
+      failure.requestId = response.request_id
+      throw failure
+    }
+    throw new ProviderError('MiniMax-H3 没有返回任务编号，请先核对平台任务记录，勿直接重复提交', 'INVALID_RESPONSE', this.name)
   }
 
-  /**
-   * 查询任务状态
-   * 图片为同步生成，无异步任务可查
-   */
-  async getTaskStatus(): Promise<TaskStatus> {
-    throw new ProviderError('OpenAI 图片为同步生成，无需查询任务状态', 'NOT_SUPPORTED', this.name)
+  async generateVideo(options: VideoOptions): Promise<VideoResult> {
+    const { taskId } = await this.submitVideoTask(options)
+    try {
+      const status = await this.waitForTask(taskId, { interval: 5000 })
+      return this.requireResult(status.result) as VideoResult
+    } catch (error) {
+      if (error instanceof GenerationTaskPending) throw error
+      const failure = error instanceof ProviderError ? error : new ProviderError(error instanceof Error ? error.message : 'MiniMax-H3 查询失败', 'STATUS_UNKNOWN', this.name)
+      failure.taskId = taskId
+      throw failure
+    }
+  }
+
+  async waitForTask(taskId: string, options: { interval?: number; maxAttempts?: number } = {}): Promise<TaskStatus> {
+    const status = await super.waitForTask(taskId, options)
+    if (status.status === 'cancelled') {
+      const failure = new ProviderError(status.error ?? 'MiniMax-H3 视频任务已取消', 'TASK_FAILED', this.name)
+      failure.taskId = taskId
+      throw failure
+    }
+    return status
+  }
+
+  async getTaskStatus(taskId: string): Promise<TaskStatus> {
+    const response = await this.request<H3Response>(`/v2/query/video_generation/${encodeURIComponent(taskId)}`, {
+      baseUrl: normalizeHTHVideoBaseUrl(this.config.baseUrl),
+    })
+    if (response.error || (response.base_resp && response.base_resp.status_code !== 0)) {
+      const failure = new ProviderError(response.error?.message ?? response.base_resp?.status_msg ?? 'MiniMax-H3 查询失败', response.error?.type ?? 'H3_QUERY_ERROR', this.name)
+      failure.taskId = taskId
+      failure.requestId = response.request_id
+      throw failure
+    }
+    const task = response.task
+    const statuses: Record<string, TaskStatus['status']> = { queued: 'pending', running: 'processing', succeeded: 'completed', failed: 'failed', cancelled: 'cancelled' }
+    const status = task?.status && statuses[task.status]
+    if (!task || !status) {
+      const failure = new ProviderError('MiniMax-H3 返回的任务状态无效，请继续查询原任务', 'INVALID_RESPONSE', this.name)
+      failure.taskId = taskId
+      throw failure
+    }
+    const result: TaskStatus = { taskId, status }
+    if (status === 'completed' && typeof task.content?.url === 'string' && /^https?:\/\//i.test(task.content.url)) {
+      result.result = { taskId, modelId: task.model || HTH_VIDEO_MODEL, videoUrls: [task.content.url], hasAudio: true, duration: task.duration }
+    }
+    if (status === 'failed' || status === 'cancelled') {
+      result.error = [task.error?.code, task.error?.message ?? (status === 'cancelled' ? '视频任务已取消' : '视频生成失败')].filter(Boolean).join(': ')
+      result.errorCode = status === 'cancelled' ? 'TASK_CANCELLED' : 'TASK_FAILED'
+    }
+    return result
   }
 
   /**
    * 获取可用模型列表（2026 当前 GPT Image 系列，均支持文生图 + 图生图编辑）
    */
   async listModels(mediaType?: MediaType): Promise<Model[]> {
-    if (mediaType === 'video') return []
-
     const models: Model[] = [
+      {
+        id: HTH_VIDEO_MODEL,
+        name: 'MiniMax-H3',
+        description: '文生视频与首尾帧图生视频，768P / 2K，4–15 秒，原生立体声',
+        modes: ['text-to-video', 'image-to-video'],
+        mediaType: 'video',
+        provider: this.name,
+        supportsAudio: true,
+      },
       {
         id: 'gpt-image-2.6-flare',
         name: 'GPT Image 2.6 Flare',
@@ -168,10 +253,43 @@ export class OpenAIProvider extends BaseProvider {
       },
     ]
 
-    return models
+    return mediaType ? models.filter((model) => model.mediaType === mediaType) : models
   }
 
   // ==================== 私有方法 ====================
+
+  private h3VideoBody(options: VideoOptions): Record<string, unknown> {
+    if (options.modelId !== HTH_VIDEO_MODEL) throw this.rejectedBeforeSubmission('HTH 视频生成当前仅支持 MiniMax-H3', 'NOT_SUPPORTED')
+    if (!['text-to-video', 'image-to-video'].includes(options.mode)) throw this.rejectedBeforeSubmission('HTH MiniMax-H3 当前支持文生视频与首尾帧图生视频', 'MODE_UNSUPPORTED')
+    if (typeof options.prompt !== 'string' || !options.prompt.trim() || options.prompt.length > 7000) throw this.rejectedBeforeSubmission('MiniMax-H3 提示词须为 1–7000 个字符', 'BAD_PROMPT')
+    if (options.referenceImageUrls?.length || options.referenceVideoUrls?.length || options.referenceAudioUrls?.length || options.referenceVideoUrl) throw this.rejectedBeforeSubmission('HTH MiniMax-H3 当前仅接入首尾帧模式，不能混用参考图片、视频或音频', 'REFERENCE_MODE_UNSUPPORTED')
+    const frames = [options.firstFrameUrl, options.lastFrameUrl]
+    for (const frame of frames) {
+      if (frame !== undefined && (typeof frame !== 'string' || !/^(?:https?:\/\/|data:image\/(?:png|jpe?g|webp);base64,)/i.test(frame))) throw this.rejectedBeforeSubmission('MiniMax-H3 首尾帧须为图片 URL 或 Base64 图片', 'BAD_REFERENCE')
+      if (frame?.startsWith('data:') && frame.length > 42 * 1024 * 1024) throw this.rejectedBeforeSubmission('MiniMax-H3 首尾帧图片不能超过 30MB', 'REFERENCE_TOO_LARGE')
+    }
+    if (options.mode === 'image-to-video' && !options.firstFrameUrl) throw this.rejectedBeforeSubmission('MiniMax-H3 图生视频需要首帧图片', 'BAD_REFERENCE')
+    if (options.mode === 'text-to-video' && frames.some(Boolean)) throw this.rejectedBeforeSubmission('提供首尾帧图片时必须使用图生视频模式', 'MODE_MISMATCH')
+    const requested = options.duration ?? 5
+    const minimum = options.minimumDuration ?? 0
+    if (!Number.isFinite(requested) || requested <= 0 || !Number.isFinite(minimum) || minimum < 0) throw this.rejectedBeforeSubmission('MiniMax-H3 视频时长无效', 'BAD_DURATION')
+    const duration = pickEnumDuration(HTH_VIDEO_DURATIONS.filter((value) => value >= minimum), requested)
+    if (duration === undefined) throw this.rejectedBeforeSubmission('MiniMax-H3 单次最长 15 秒，无法满足镜头要求的最短时长', 'MINIMUM_DURATION_UNSUPPORTED')
+    const extra = options.extra ?? {}
+    if (Object.keys(extra).some((key) => !['resolution', 'ratio', 'aigc_watermark'].includes(key))) throw this.rejectedBeforeSubmission('MiniMax-H3 高级参数仅支持 resolution、ratio 与 aigc_watermark', 'UNSUPPORTED_PARAMETER')
+    const width = options.width ?? 1280, height = options.height ?? 720
+    if (![width, height].every((value) => Number.isFinite(value) && value > 0)) throw this.rejectedBeforeSubmission('MiniMax-H3 视频尺寸无效', 'BAD_DIMENSIONS')
+    const resolution = extra.resolution ?? hthVideoResolution(width, height)
+    if (typeof resolution !== 'string' || !HTH_VIDEO_RESOLUTIONS.includes(resolution)) throw this.rejectedBeforeSubmission('MiniMax-H3 分辨率仅支持 768P 或 2K', 'BAD_RESOLUTION')
+    const ratio = extra.ratio ?? (options.firstFrameUrl ? 'adaptive' : pickRatio(HTH_VIDEO_RATIOS, width, height))
+    if (typeof ratio !== 'string' || (!HTH_VIDEO_RATIOS.includes(ratio) && !(ratio === 'adaptive' && options.firstFrameUrl))) throw this.rejectedBeforeSubmission('MiniMax-H3 画幅比例无效，纯文本生成不能使用 adaptive', 'BAD_RATIO')
+    if (extra.aigc_watermark !== undefined && typeof extra.aigc_watermark !== 'boolean') throw this.rejectedBeforeSubmission('aigc_watermark 必须为布尔值', 'BAD_WATERMARK')
+    const content: Record<string, unknown>[] = [{ type: 'text', text: options.prompt }]
+    if (options.firstFrameUrl) content.push({ type: 'image_url', image_url: { url: options.firstFrameUrl }, role: 'first_frame' })
+    if (options.lastFrameUrl) content.push({ type: 'image_url', image_url: { url: options.lastFrameUrl }, role: 'last_frame' })
+    // H3 always creates native audio. No unsupported audio/negative-prompt/seed fields are sent.
+    return { model: HTH_VIDEO_MODEL, content, duration, resolution, ratio, ...(extra.aigc_watermark !== undefined && { aigc_watermark: extra.aigc_watermark }) }
+  }
 
   /** 文生图：POST /images/generations（JSON） */
   private async textToImage(options: ImageOptions): Promise<ImageResult> {

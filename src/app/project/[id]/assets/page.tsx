@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { SHOW_TEXT_EDITOR } from "@/lib/ui-features";
 import { mergeCustomModels, buildImageOptions, buildVideoOptions, toEditVariant } from "@/lib/gen-params";
+import { HTH_VIDEO_MODEL, hthVideoResolution } from "@/lib/hth-video-config";
 import { DEFAULT_STORYBOARD_GRID_RESOLUTION, type StoryboardGridResolution } from "@/lib/storyboard-grid-resolution";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import type { Shot } from "@/lib/db/schema";
@@ -34,7 +35,7 @@ import { realMixFromRows, shotReality } from "@/lib/real-mix";
 import { fetchVideoPrompt } from "@/lib/video-prompt-client";
 import type { VideoPromptRequest } from "@/lib/video-prompt-request";
 import { keyframeInstantLine } from "@/lib/prompt-lint";
-import { RETAKE_SYMPTOMS, type RetakeSymptom } from "@/lib/retake-patch";
+import type { RetakeSymptom } from "@/lib/retake-patch";
 import {
   CAMERA_PRESETS,
   CAMERA_PRESET_CATEGORIES,
@@ -63,7 +64,6 @@ import { classifyMaterial, MATERIAL_ACCEPT, type PublicLocalMaterial } from "@/l
 import { uploadLocalMaterial, type MaterialUploadProgress } from "@/lib/upload-local-material";
 import { AssetPageLoadError, createAssetPageLoader, type AssetPageSnapshot } from "@/lib/asset-page-loader";
 import { ProjectHeader } from "@/components/project-header";
-import { ModelCapabilityPreflight } from "@/components/model-capability-preflight";
 import {
   checkPromptConsistency,
   compileCreativePrompt,
@@ -157,7 +157,7 @@ function AssetsPageContent() {
   const searchParams = useSearchParams();
   const requestedJob = searchParams.get("klingJob");
   const requestedFilm = searchParams.get("film");
-  const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, motionIntensity, setMotionIntensity, motionRealism, setMotionRealism, chainMode, visualLook, setVisualLook } = useSettingsStore();
+  const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, chainMode, visualLook, setVisualLook } = useSettingsStore();
   // beginner/director split: simple mode hides the director panel, the storyboard-grid button
   // and per-shot camera tooling — beginners see shots + generate, nothing else
   const uiMode = useSettingsStore((st) => st.uiMode);
@@ -166,9 +166,8 @@ function AssetsPageContent() {
   const [productImages, setProductImages] = useState<string[]>([]);
   // product fidelity: when AI generates shots featuring the product, use the original product photo as a reference for redrawing to prevent AI from altering the product (critical for commerce)
   const [productSafe, setProductSafe] = useState(true);
-  // after image generation, automatically run image-to-video to produce real motion shots (i2v quality path, replacing fake Ken-Burns camera moves). Only active when a video model is configured.
-  const [autoMotion, setAutoMotion] = useState(true);
-  const imageMotionRuns = useRef(new Map<string, { projectId: string; scriptId: string; shotId: number; autoMotion: boolean }>());
+  // Images stay as keyframes until the user explicitly opens single-shot or batch motion.
+  const imageRuns = useRef(new Map<string, { projectId: string; scriptId: string; shotId: number }>());
   const imageSubmissionContext = useRef({ projectId: id, scriptId: "" });
   const [projectName, setProjectName] = useState("");
   // project type: topic (one-sentence-to-video without a product) uses the free stock library for automatic visuals
@@ -282,7 +281,7 @@ function AssetsPageContent() {
   const isKlingDefault = videoModelTarget?.provider === "kling-cli" || isKlingVideoSelection(defaultVideoModel);
   const klingProfileId = providers["kling-cli"]?.profileId;
   const klingEnabled = providers["kling-cli"]?.enabled === true;
-  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, scriptPacingVersion, productSafe, productImages, presenterSheet, presenterLib: isTideweOutdoorProfile(projectCreativeProfile) ? undefined : presenterLib });
+  const videoConfigurationKey = JSON.stringify({ target: videoModelTarget, videoParams, visualLook, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, projectCreativeProfile, scriptPacingVersion, productSafe, productImages, presenterSheet, presenterLib: isTideweOutdoorProfile(projectCreativeProfile) ? undefined : presenterLib });
 
   const tidewe = isTideweOutdoorProfile(projectCreativeProfile);
   const tideweNative = isTideweNativeSpeech(projectCreativeProfile);
@@ -336,8 +335,6 @@ function AssetsPageContent() {
       setProjectVisualBible(sanitizeVisualBible(project.visualBible));
       const requestedPresenter = new URLSearchParams(window.location.search).get("presenter");
       setPresenterId(isTideweOutdoorProfile(project.creativeProfile) ? project.creativeProfile.presenter?.id ?? "" : requestedPresenter || project.characterId || "");
-      const motionStage = project.productionWorkflow?.find((stage) => stage.id === "motion");
-      if (motionStage) setAutoMotion(motionStage.enabled !== false);
       assetRefresh.initialized = true;
     }
     setProjectCreativeProfile(project.creativeProfile);
@@ -829,7 +826,7 @@ function AssetsPageContent() {
       };
       const promptRequest: VideoPromptRequest = {
         scriptId, shotId, provider: videoModelTarget.provider, model: videoModelTarget.model,
-        settings: { visualLook, motionIntensity, motionRealism },
+        settings: { visualLook },
         ...(videoParams.negativePrompt && { negativePrompt: videoParams.negativePrompt }),
         chainToNext: !!chainFrame, locale, batch, retake,
         generateAudio: tideweNative || (!tidewe && !batch && videoParams.audioEnabled !== false),
@@ -854,7 +851,7 @@ function AssetsPageContent() {
       // per-shot duration: the composer's slot follows the script duration (voice-fitted), and the
       // composer trims overshoot from the TAIL — which would cut a chained ending. Round to the
       // model's supported range instead of always sending the global 5s default.
-      const videoOptions = buildVideoOptions(videoParams);
+      const videoOptions = buildVideoOptions(videoParams, videoModelTarget.model);
       if (preview.negativePrompt) {
         videoOptions.negativePrompt = preview.negativePrompt;
       }
@@ -936,7 +933,9 @@ function AssetsPageContent() {
               ...referenceImageUrls.map((url, index) => ({ label: `参考图片 ${index + 1}`, url })),
             ],
             validateAssetSelection: !firstFrameOverride || firstFrameOverride === asset.thumbnailUrl || firstFrameOverride === asset.keyframeUrl,
-            options: videoOptions,
+            options: videoModelTarget.provider === "openai" && videoModelTarget.model === HTH_VIDEO_MODEL
+              ? { duration: videoOptions.duration ?? 5, resolution: hthVideoResolution(Number(videoOptions.width), Number(videoOptions.height)), ratio: "adaptive", audioEnabled: true }
+              : videoOptions,
             klingParameters: { ...videoParams, duration: videoOptions.duration, negativePrompt: videoOptions.negativePrompt, audioEnabled: videoOptions.audioEnabled },
             validate, request, assetPayload,
             generate: async () => {
@@ -951,7 +950,7 @@ function AssetsPageContent() {
             },
       };
     },
-    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, scriptPacingVersion, id, videoParams, motionIntensity, motionRealism, chainMode, projectVisualBible, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
+    [assets, videoModelTarget, videoConfigurationKey, isKlingDefault, klingEnabled, klingJobs, klingJobsLoaded, klingJobsError, backgroundShots, pendingTasks, unresolvedMotionShots, scriptId, scriptHash, scriptPacingVersion, id, videoParams, chainMode, projectVisualBible, tidewe, tideweNative, visualLook, productReferenceLocked, productImages, presenterLib, presenterSheet, t, locale, llm]
   );
 
   const generateMotion = useCallback(async (shotId: number, firstFrameOverride?: string, lastFrameOverride?: string | null, retake?: RetakeSymptom) => {
@@ -978,27 +977,20 @@ function AssetsPageContent() {
   }, [prepareMotion, batchMotionBusy, preparingBatchMotion]);
 
   useEffect(() => {
-    for (const [runId, submission] of imageMotionRuns.current) {
+    for (const [runId, submission] of imageRuns.current) {
       const { shotId } = submission;
-      if (submission.projectId !== id || submission.scriptId !== scriptId) { imageMotionRuns.current.delete(runId); continue; }
+      if (submission.projectId !== id || submission.scriptId !== scriptId) { imageRuns.current.delete(runId); continue; }
       const run = generationRuns.find((candidate) => candidate.id === runId);
       if (!run) continue;
       if (["failed", "cancelled", "needs_attention"].includes(run.status)) {
-        imageMotionRuns.current.delete(runId);
+        imageRuns.current.delete(runId);
         const error = run.items.find((item) => item.kind === "image" && item.shotId === shotId)?.error || run.error || (run.status === "cancelled" ? "图片生成已取消。" : "图片生成或保存失败，请查看后台任务。");
         setAssets((previous) => previous.map((asset) => asset.shotId === shotId && asset.status === "generating" ? { ...asset, status: "failed", error } : asset));
         continue;
       }
-      if (run.status !== "completed") continue;
-      const result = run.items.find((item) => item.kind === "image" && item.shotId === shotId)?.result;
-      if (!submission.autoMotion || !autoMotion || result?.selected === false) { imageMotionRuns.current.delete(runId); continue; }
-      const saved = assets.find((asset) => asset.shotId === shotId && asset.status === "done" && !asset.isVideo);
-      if (typeof result?.assetId === "string" && saved?.assetId === result.assetId && saved.thumbnailUrl && !motionDraftDone.current && !motionPreparation.current) {
-        imageMotionRuns.current.delete(runId);
-        void generateMotion(shotId, saved.thumbnailUrl);
-      }
+      if (run.status === "completed") imageRuns.current.delete(runId);
     }
-  }, [id, scriptId, generationRuns, assets, autoMotion, generateMotion]);
+  }, [id, scriptId, generationRuns]);
 
   const openBatchMotion = useCallback(async () => {
     if (batchMotionLock.current || motionPreparation.current || batchMotionBusy || motionDraftDone.current || isGridGenerating || !scriptId || !videoModelTarget) return;
@@ -1033,9 +1025,9 @@ function AssetsPageContent() {
     }
   }, [assets, scriptId, videoModelTarget, videoConfigurationKey, klingJobs, motionShots, unresolvedMotionShots, pendingTasks, backgroundShots, klingEnabled, isKlingDefault, klingJobsLoaded, klingJobsError, prepareMotion, batchMotionBusy, isGridGenerating, t]);
 
-  // Generate and save one shot, then offer motion generation when enabled.
+  // Generate and save one keyframe; video generation remains an explicit action.
   const generateOne = useCallback(
-    async (shotId: number, opts?: { skipMotion?: boolean }): Promise<void> => {
+    async (shotId: number): Promise<void> => {
       const asset = assets.find((a) => a.shotId === shotId);
       if (!asset) return;
 
@@ -1069,8 +1061,6 @@ function AssetsPageContent() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ shotId, type: "product_image", sourceUrl: productImages[0] }),
           }).catch(() => {});
-          // auto motion: use the product image as the first frame and run image-to-video (bring the real product to life); falls back to a static image on failure
-          if (!opts?.skipMotion && autoMotion && videoModelTarget && !isKlingDefault) await generateMotion(shotId, productImages[0]);
         }
         return;
       }
@@ -1153,7 +1143,7 @@ function AssetsPageContent() {
           } }],
         });
         if (imageSubmissionContext.current.projectId === id && imageSubmissionContext.current.scriptId === scriptId) {
-          imageMotionRuns.current.set(run.id, { projectId: id, scriptId, shotId, autoMotion: Boolean(!opts?.skipMotion && autoMotion && videoModelTarget && !isKlingDefault) });
+          imageRuns.current.set(run.id, { projectId: id, scriptId, shotId });
         }
       } catch (e) {
         if (imageSubmissionContext.current.projectId !== id || imageSubmissionContext.current.scriptId !== scriptId) return;
@@ -1164,7 +1154,7 @@ function AssetsPageContent() {
         );
       }
     },
-    [assets, id, scriptId, scriptHash, modelTarget, productImages, productReferenceLocked, imageParams, autoMotion, videoModelTarget, isKlingDefault, projectCreativeIntent, projectVisualBible, tidewe, tideweNative, boundPresenter, presenterSheet, visualLook, generateMotion, t]
+    [assets, id, scriptId, scriptHash, modelTarget, productImages, productReferenceLocked, imageParams, projectCreativeIntent, projectVisualBible, tidewe, tideweNative, boundPresenter, presenterSheet, visualLook, t]
   );
 
   // Register missing keyframes with the durable queue; execution continues in the background.
@@ -1177,7 +1167,7 @@ function AssetsPageContent() {
     try {
       for (const asset of pendingKeyframeShots) {
         if (controller.signal.aborted) break;
-        await generateOne(asset.shotId, { skipMotion: true });
+        await generateOne(asset.shotId);
       }
     } finally {
       batchKeyframeSubmission.current = null;
@@ -1263,8 +1253,9 @@ function AssetsPageContent() {
         onSubmitted={(jobId) => { finishMotionDraft(); setKlingJobId(jobId); void reloadKlingJobs(); }}
       />
       {motionDraftValid && motionDraft && motionDraft.provider !== "kling-cli" && <ApiShotGenerator
-        shotId={motionDraft.asset.shotId} modelLabel={`${motionDraft.provider} · ${motionDraft.selectionKey}`}
+        shotId={motionDraft.asset.shotId} modelLabel={`${motionDraft.provider === "openai" ? "hth" : motionDraft.provider} · ${motionDraft.selectionKey}`}
         prompt={motionDraft.prompt} images={motionDraft.apiImages} options={motionDraft.options}
+        audioNotice={motionDraft.provider === "openai" && motionDraft.selectionKey === HTH_VIDEO_MODEL ? "MiniMax-H3 始终生成原生音轨，接口不支持关闭声音。" : undefined}
         onOpenChange={(open) => { if (!open) finishMotionDraft(); }}
         onGenerate={motionDraft.generate} onRefreshTasks={reloadPendingTasks}
       />}
@@ -1513,56 +1504,6 @@ function AssetsPageContent() {
               </optgroup>
             </select>
           </div>
-          {videoModelTarget && !isKlingDefault && (
-            <div
-              className="flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1 h-8"
-              title={t("motionIntensityTip")}
-            >
-              <span className="text-xs font-medium text-muted-foreground mr-1">{t("motionIntensity")}</span>
-              {(["subtle", "normal", "strong"] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setMotionIntensity(v)}
-                  className={`rounded-full px-2 h-6 text-xs font-medium transition-all ${
-                    motionIntensity === v
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t(`motionIntensity_${v}`)}
-                </button>
-              ))}
-            </div>
-          )}
-          {videoModelTarget && !isKlingDefault && (
-            <div
-              className="flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/20 pl-2.5 pr-1 h-8"
-              title={t("motionRealismTip")}
-            >
-              <span className="text-xs font-medium text-muted-foreground mr-1">{t("motionRealism")}</span>
-              {(["auto", "constraints", "off"] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setMotionRealism(v)}
-                  className={`rounded-full px-2 h-6 text-xs font-medium transition-all ${
-                    motionRealism === v
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t(`motionRealism_${v}`)}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {videoModelTarget && !isKlingDefault && (
-            <button type="button" onClick={() => setAutoMotion((value) => !value)} title="出图后在本页确认转动态；切换项目后可返回手动确认。" className={`flex items-center gap-1.5 rounded-full border px-3 h-8 text-xs font-medium ${autoMotion ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-muted/20 text-muted-foreground"}`}>
-              {t("autoMotion")}{autoMotion ? t("on") : t("off")}
-            </button>
-          )}
           {productImages.length > 0 && (
             <button
               type="button"
@@ -1579,20 +1520,6 @@ function AssetsPageContent() {
             </button>
           )}
         </div>
-        )}
-
-        {uiMode === "pro" && videoModelTarget && !isKlingDefault && (
-          <ModelCapabilityPreflight
-            modelId={videoModelTarget.model}
-            provider={videoModelTarget.provider}
-            supportsAudio={videoModelTarget.supportsAudio}
-            duration={videoParams.duration}
-            resolution={videoParams.resolution}
-            aspectRatio={videoParams.aspectRatio}
-            chainMode={chainMode}
-            audioEnabled={videoModelTarget.supportsAudio === true}
-            referenceImageCount={Number(Boolean(presenterSheet)) + Number(Boolean(productReferenceLocked && productImages[0]))}
-          />
         )}
 
         {/* storyboard-grid outcome line (success count or error) */}
@@ -1997,27 +1924,6 @@ function AssetsPageContent() {
                             >
                               {motionShots.has(asset.shotId) ? t("btnConvertingMotion") : t("btnRedoMotion")}
                             </Button>
-                          )}
-                          {/* diagnosis retake: pick ONE symptom → resubmit with exactly ONE prompt patch
-                              (user-initiated paid call; the notice states what the retake changed) */}
-                          {asset.isVideo && asset.keyframeUrl && videoModelTarget && !isKlingDefault && (
-                            <select
-                              className="h-7 w-24 rounded-md border border-border/60 bg-background px-1 text-[11px] text-muted-foreground"
-                              disabled={batchMotionBusy || backgroundShots.has(asset.shotId) || motionShots.has(asset.shotId)}
-                              value=""
-                              title={t("retakeDiagTip")}
-                              onChange={(e) => {
-                                const v = e.target.value as RetakeSymptom | "";
-                                if (v) void generateMotion(asset.shotId, asset.keyframeUrl, undefined, v);
-                              }}
-                            >
-                              <option value="">{t("retakeDiag")}</option>
-                              {RETAKE_SYMPTOMS.map((sym) => (
-                                <option key={sym.id} value={sym.id}>
-                                  {locale === "zh" ? sym.label.zh : sym.label.en}
-                                </option>
-                              ))}
-                            </select>
                           )}
                           {/* error text lives in the middle column next to the shot content; not repeated here */}
                         </div>

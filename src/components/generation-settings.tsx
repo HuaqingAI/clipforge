@@ -18,7 +18,8 @@ import { useT } from "@/lib/i18n";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import {
   ASPECT_RATIO_OPTIONS,
-  RESOLUTION_OPTIONS,
+  videoResolutionOptions,
+  videoResolutionForModel,
   type CustomModel,
 } from "@/lib/gen-params";
 
@@ -74,9 +75,12 @@ export function GenerationSettings() {
     removeCustomModel,
     imageParams,
     videoParams,
+    defaultVideoModel,
     setImageParams,
     setVideoParams,
   } = useSettingsStore();
+  const resolutionOptions = videoResolutionOptions(defaultVideoModel);
+  const videoResolution = videoResolutionForModel(videoParams.resolution, defaultVideoModel);
 
   // aspect ratio options: reuse values from gen-params, labels via i18n (consistent with "default settings" on the settings page)
   const ASPECT_KEY: Record<string, string> = { "9:16": "aspect916", "16:9": "aspect169", "1:1": "aspect11" };
@@ -216,12 +220,12 @@ export function GenerationSettings() {
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">{t("resolution")}</Label>
-                <Select value={videoParams.resolution} onValueChange={(v) => setVideoParams({ ...videoParams, resolution: (v ?? "720p") as typeof videoParams.resolution })}>
+                <Select value={videoResolution} onValueChange={(v) => setVideoParams({ ...videoParams, resolution: (v ?? videoResolution) as typeof videoParams.resolution })}>
                   <SelectTrigger className="w-full">
-                    <SelectValue>{(value: string) => labelOf(RESOLUTION_OPTIONS, value)}</SelectValue>
+                    <SelectValue>{(value: string) => labelOf(resolutionOptions, value)}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {RESOLUTION_OPTIONS.map((o) => (<SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>))}
+                    {resolutionOptions.map((o) => (<SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </div>

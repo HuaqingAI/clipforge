@@ -45,6 +45,7 @@ export function videoParameterDescription(parameter: { name: string; description
 }
 
 export function videoParameterValueLabel(name: string, value: unknown): string {
+  if (PARAMETER_ALIASES[name] === "aspectRatio" && value === "adaptive") return "适配首帧画面";
   if (value === true || value === "true") return "开启";
   if (value === false || value === "false") return "关闭";
   if (PARAMETER_ALIASES[name] === "audioEnabled") {

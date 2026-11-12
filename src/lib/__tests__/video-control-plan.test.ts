@@ -2,6 +2,55 @@ import { describe, expect, it } from "vitest";
 import { buildVideoControlPlan, sanitizeVideoControlSummary } from "@/lib/video-control-plan";
 
 describe("video control plan", () => {
+  it("keeps HTH H3 start/end frames and binds native speech even with legacy audio metadata", () => {
+    const plan = buildVideoControlPlan({
+      provider: "openai",
+      modelId: "MiniMax-H3",
+      supportsAudio: false,
+      firstFrameUrl: "https://e.com/key.png",
+      lastFrameUrl: "https://e.com/end.png",
+      voiceover: "Try it on.",
+      speakerVisible: true,
+      locale: "en",
+    });
+    expect(plan).toMatchObject({
+      strategy: "keyframe",
+      mode: "image-to-video",
+      firstFrameUrl: "https://e.com/key.png",
+      lastFrameUrl: "https://e.com/end.png",
+      referenceRoles: ["keyframe", "end-frame"],
+      referenceCount: 2,
+      referenceInputs: [],
+      audioMode: "native",
+      voiceoverBound: true,
+      warnings: [],
+    });
+    expect(plan.promptSuffix).toContain("Try it on.");
+  });
+
+  it("warns about unsupported HTH references while preserving the native frame request", () => {
+    const plan = buildVideoControlPlan({
+      provider: "openai",
+      modelId: "MiniMax-H3",
+      firstFrameUrl: "https://e.com/key.png",
+      lastFrameUrl: "https://e.com/end.png",
+      characterReferenceUrl: "https://e.com/person.png",
+      productReferenceUrl: "https://e.com/product.png",
+      audioReferenceUrl: "https://e.com/voice.wav",
+      locale: "en",
+    });
+    expect(plan).toMatchObject({
+      strategy: "keyframe",
+      mode: "image-to-video",
+      firstFrameUrl: "https://e.com/key.png",
+      lastFrameUrl: "https://e.com/end.png",
+      referenceCount: 2,
+      referenceInputs: [],
+      warnings: ["reference-pack-unsupported", "reference-audio-unsupported"],
+    });
+    expect(plan.promptSuffix).not.toContain("Reference map:");
+  });
+
   it.each(["kling-video-v2", "kling-video-v4_0", "future-account-model"])("keeps every requested Kling reference and native speech for %s", (modelId) => {
     const plan = buildVideoControlPlan({
       provider: "kling-cli", modelId, supportsAudio: false,

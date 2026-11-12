@@ -62,7 +62,7 @@ describe("OpenAI explicit image output controls", () => {
         provider: "openai", mediaType: "image", modes: ["text-to-image", "image-to-image"],
       });
     }
-    expect(await provider().listModels("video")).toEqual([]);
+    expect(await provider().listModels("video")).toEqual([expect.objectContaining({ id: "MiniMax-H3", provider: "openai", mediaType: "video" })]);
   });
 
   it.each(image26Models.flatMap(modelId => (["text-to-image", "image-to-image"] as const).map(mode => ({ modelId, mode }))))(

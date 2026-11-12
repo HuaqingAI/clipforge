@@ -1,11 +1,13 @@
 import { abortable } from "@/lib/script-generation-client";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import type { LLMConfig } from "@/lib/script-engine/generator";
+import { normalizeVideoPromptSettings } from "@/lib/shot-video-prompt";
 
 export type ServerVideoPrompt = VideoPromptPreview & { promptContext: VideoPromptContext };
 
 /** Fetch the complete execution prompt. The browser displays this text without rewriting it. */
 export async function fetchVideoPrompt(projectId: string, request: VideoPromptRequest, signal?: AbortSignal, llmConfig?: LLMConfig): Promise<ServerVideoPrompt> {
+  const normalizedRequest = { ...request, settings: normalizeVideoPromptSettings(request.settings) };
   const controller = new AbortController();
   const cancel = () => controller.abort(signal?.reason);
   if (signal?.aborted) cancel();
@@ -17,7 +19,7 @@ export async function fetchVideoPrompt(projectId: string, request: VideoPromptRe
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // Translation credentials are transient preparation inputs, never part of a review receipt.
-        body: JSON.stringify({ ...request, ...(llmConfig && { llmConfig: { baseUrl: llmConfig.baseUrl, apiKey: llmConfig.apiKey, model: llmConfig.model } }) }),
+        body: JSON.stringify({ ...normalizedRequest, ...(llmConfig && { llmConfig: { baseUrl: llmConfig.baseUrl, apiKey: llmConfig.apiKey, model: llmConfig.model } }) }),
         signal: controller.signal,
       });
       const data = await response.json();
@@ -27,7 +29,7 @@ export async function fetchVideoPrompt(projectId: string, request: VideoPromptRe
         || !data.controlPlan || typeof data.controlPlan !== "object") {
         throw new Error("后端未返回有效的视频提示词，请重试。");
       }
-      return { ...data, promptContext: { ...request, contextKey: data.contextKey } };
+      return { ...data, promptContext: { ...normalizedRequest, contextKey: data.contextKey } };
     })(), controller.signal);
   } finally {
     clearTimeout(timeout);

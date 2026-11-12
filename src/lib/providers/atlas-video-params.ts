@@ -23,6 +23,7 @@
 
 import type { VideoOptions } from './types'
 import { ProviderError } from './base'
+import { HTH_VIDEO_DURATIONS, HTH_VIDEO_RESOLUTIONS } from '@/lib/hth-video-config'
 
 // ==================== Spec type ====================
 
@@ -60,6 +61,19 @@ export interface AtlasVideoParamSpec {
    * provided nothing to derive them from (e.g. H3 requires resolution+duration).
    */
   requiredDefaults?: { resolution?: string; duration?: number }
+}
+
+/** Native HTH frame-generation metadata for the shared preflight UI only.
+ * Keep this out of the Atlas lookup: HTH serializes frames in native content items.
+ */
+export const HTH_VIDEO_PARAM_SPEC: AtlasVideoParamSpec = {
+  firstFrameKey: 'image',
+  lastFrameKey: 'end_image',
+  durationEnum: HTH_VIDEO_DURATIONS,
+  resolutionEnum: HTH_VIDEO_RESOLUTIONS,
+  ratioKey: 'ratio',
+  ratioEnum: ['adaptive'],
+  requiredDefaults: { resolution: '768P', duration: 5 },
 }
 
 // ==================== Curated specs (transcribed from published schemas) ====================

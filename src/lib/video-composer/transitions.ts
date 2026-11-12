@@ -11,6 +11,8 @@
  * 5. Or directly let the AI use the last frame of the previous clip as a reference when generating the next clip
  */
 
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
+
 // transition mode
 export type TransitionMode =
   | "ai_start_end"    // AI start/end frame transition (recommended, best quality)
@@ -104,6 +106,7 @@ export function getTransitionList(): TransitionConfig[] {
  */
 export function modelSupportsLastFrame(modelId: string): boolean {
   if (!modelId) return false;
+  if (modelId === HTH_VIDEO_MODEL) return true;
   if (TRANSITIONS.ai_start_end.supportedModels.includes(modelId)) return true;
   return /seedance-2\.[05]/.test(modelId);
 }

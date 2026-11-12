@@ -59,7 +59,7 @@ registerProvider({
 registerProvider({
   name: 'openai',
   displayName: 'HTH',
-  description: 'HTH 图片 API，支持 GPT Image 系列和兼容 API 地址',
+  description: 'HTH 图片与视频 API，支持 GPT Image 系列和 MiniMax-H3 图生视频',
   factory: (config) => new OpenAIProvider(config),
 })
 

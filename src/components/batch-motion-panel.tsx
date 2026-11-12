@@ -12,6 +12,7 @@ import type { KlingSubmitRequest } from "@/lib/kling/job-types";
 import type { KlingPublicStatus } from "@/lib/kling/types";
 import { videoParameterLabel, videoParameterValueLabel } from "@/lib/video-parameter-copy";
 import { validateVideoPrompt } from "@/lib/video-prompt";
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
 
 type RowStatus = "pending" | "submitting" | "submitted" | "completed" | "failed" | "uncertain";
 type Row = BatchMotionShot & { selected: boolean; state: RowStatus; message?: string; taskId?: string; reviewing?: boolean; frameError?: string };
@@ -191,6 +192,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
       <p className="text-sm text-muted-foreground">勾选要转动态的分镜，使用各自的当前关键帧生成视频。</p>
       <p className="text-xs text-muted-foreground">确认后，所选分镜的提示词、参考图和参数会进入后台队列依次提交，正常排队自动继续。可收起窗口或切换项目；账号、素材变化或提交结果不明时会暂停核对。</p>
       <p className="break-all text-xs text-muted-foreground">视频模型：{modelLabel}</p>
+      {provider === "openai" && selectionKey === HTH_VIDEO_MODEL && <p className="text-xs text-muted-foreground">MiniMax-H3 始终生成原生音轨，接口不支持关闭声音。</p>}
       {loading && <p role="status" className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" />正在读取当前账号可用模型…</p>}
       {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

@@ -20,6 +20,7 @@ import { ARK_STANDARD_BASE_URL, ARK_AGENT_PLAN_BASE_URL, isArkAgentPlanBase } fr
 import { useT } from "@/lib/i18n";
 import { useSettingsStore, type ProviderSetting } from "@/lib/stores/settings-store";
 import { HTH_BASE_URL, HTH_DEFAULT_MODEL } from "@/lib/hth-config";
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
 import { mergeCustomModels } from "@/lib/gen-params";
 import { ModelPicker } from "@/components/settings/model-picker";
 import { GenerationSettings } from "@/components/generation-settings";
@@ -33,6 +34,10 @@ import { configuredCatalogProviders } from "@/lib/model-catalog";
 const resolutionOptions = [
   { value: "720p", label: "720p (1280x720)" },
   { value: "1080p", label: "1080p (1920x1080)" },
+];
+const hthResolutionOptions = [
+  { value: "768p", label: "768P" },
+  { value: "2k", label: "2K" },
 ];
 
 // default aspect ratio options (labelKey is rendered per language inside the component)
@@ -233,12 +238,14 @@ export default function SettingsPage() {
     defaultImageModel,
     defaultVideoModel,
     customModels,
+    videoParams,
     setProvider,
     setLLM,
     setDefaultResolution,
     setDefaultAspectRatio,
     setDefaultImageModel,
     setDefaultVideoModel,
+    setVideoParams,
   } = useSettingsStore();
 
   // AI platform key connectivity test (real auth probe, not a fake test)
@@ -277,18 +284,25 @@ export default function SettingsPage() {
   const imageCatalog = useModelCatalog(imageProviders, "image");
   const videoCatalog = useModelCatalog(videoProviders, "video");
   const imageModels = imageCatalog.models.filter((model) => model.mediaType === "image");
-  const videoModels = videoCatalog.models.filter((model) => model.mediaType === "video" && model.provider === "kling-cli");
+  const videoModels = videoCatalog.models.filter((model) => model.mediaType === "video" && (
+    model.provider === "kling-cli" || (model.provider === "openai" && model.id === HTH_VIDEO_MODEL)
+  ));
 
   // merge user custom models into dropdowns (enabled providers only), so custom models can be selected as default
   const imageProviderNames = new Set(imageProviders.map((p) => p.name));
   const videoProviderNames = new Set(videoProviders.map((p) => p.name));
   const imageModelOptions = mergeCustomModels(imageModels, customModels, "image", imageProviderNames);
-  const videoModelOptions = mergeCustomModels(videoModels, customModels, "video", videoProviderNames).filter((model) => model.provider === "kling-cli");
+  const videoModelOptions = mergeCustomModels(videoModels, customModels, "video", videoProviderNames).filter((model) => (
+    model.provider === "kling-cli" || (model.provider === "openai" && model.id === HTH_VIDEO_MODEL)
+  ));
 
   // Image defaults retain their initial convenience selection. Video models are an explicit
   // choice here, so catalog refreshes and provider-mode changes cannot change the billed model.
   const imageIds = imageModelOptions.map((m) => m.id).join(",");
   const selectedVideoModel = videoModelOptions.find((model) => model.id === defaultVideoModel);
+  const hthVideoSelected = defaultVideoModel === HTH_VIDEO_MODEL;
+  const videoResolutionOptions = hthVideoSelected ? hthResolutionOptions : resolutionOptions;
+  const selectedVideoResolution = hthVideoSelected ? videoParams.resolution === "2k" ? "2k" : "768p" : defaultResolution;
   const videoSelectionUnavailable = Boolean(defaultVideoModel && !videoCatalog.loading && !selectedVideoModel);
   useEffect(() => {
     if (imageModelOptions.length && !defaultImageModel) {
@@ -759,7 +773,14 @@ export default function SettingsPage() {
                       </Label>
                       <Select
                         value={defaultVideoModel}
-                        onValueChange={(val) => setDefaultVideoModel(val ?? "")}
+                        onValueChange={(val) => {
+                          setDefaultVideoModel(val ?? "");
+                          if (val === HTH_VIDEO_MODEL) {
+                            setVideoParams({ ...videoParams, resolution: videoParams.resolution === "2k" ? "2k" : "768p" });
+                          } else if (val) {
+                            setDefaultResolution(defaultResolution);
+                          }
+                        }}
                         disabled={videoModelOptions.length === 0}
                       >
                         <SelectTrigger className="w-full">
@@ -788,19 +809,23 @@ export default function SettingsPage() {
                         {t("defaultResolution")}
                       </Label>
                       <Select
-                        value={defaultResolution}
-                        onValueChange={(val) =>
-                          setDefaultResolution(val as "720p" | "1080p")
-                        }
+                        value={selectedVideoResolution}
+                        onValueChange={(val) => {
+                          if (hthVideoSelected && (val === "768p" || val === "2k")) {
+                            setVideoParams({ ...videoParams, resolution: val });
+                          } else if (val === "720p" || val === "1080p") {
+                            setDefaultResolution(val);
+                          }
+                        }}
                       >
                         <SelectTrigger className="w-full">
                           {/* Base UI Select.Value shows the raw value by default; use a function child to map it to a label */}
                           <SelectValue>
-                            {(value: string) => resolutionOptions.find((o) => o.value === value)?.label ?? value}
+                            {(value: string) => videoResolutionOptions.find((o) => o.value === value)?.label ?? value}
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
-                          {resolutionOptions.map((o) => (
+                          {videoResolutionOptions.map((o) => (
                             <SelectItem key={o.value} value={o.value}>
                               {o.label}
                             </SelectItem>

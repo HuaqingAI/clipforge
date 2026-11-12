@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { appStorage } from "@/lib/browser-storage";
 import { HTH_BASE_URL, HTH_DEFAULT_MODEL } from "@/lib/hth-config";
+import { HTH_VIDEO_MODEL } from "@/lib/hth-video-config";
 import { DEFAULT_LOCALE, type Locale } from "@/lib/i18n/config";
 import { normalizeTTSSettings, type VoiceoverProvider } from "@/lib/tts-presets";
 import {
@@ -12,7 +13,6 @@ import {
   type VideoGenParams,
 } from "@/lib/gen-params";
 import { ATLAS_LLM_BASE_URL, ATLAS_ONEKEY_MODELS, fillAtlasModelDefaults } from "@/lib/atlas-onekey";
-import type { MotionIntensity, MotionRealismTier } from "@/lib/motion-prompt";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import {
   isProductionProfileId,
@@ -76,10 +76,6 @@ export interface SettingsState {
   imageParams: ImageGenParams;
   // 视频生成全局默认参数
   videoParams: VideoGenParams;
-  // i2v 运镜强度档位（轻/中/强，作用于 motion prompt 的运镜幅度措辞）
-  motionIntensity: MotionIntensity;
-  // i2v 物理真实感层档位（auto=全层默认 / constraints=仅品类约束 / off=关闭）
-  motionRealism: MotionRealismTier;
   // i2v 接缝模式（pin=下一镜关键帧钉尾帧[默认] / tail=用上一镜真实尾帧当首帧续拍 / off=不链）
   chainMode: "pin" | "tail" | "off";
   // 全局画面风格 Look（look-presets.ts 预设 id，"none"=不加；同时注入生图 prompt 与 i2v 光线锚点）
@@ -109,8 +105,6 @@ export interface SettingsState {
   removeCustomModel: (id: string) => void;
   setImageParams: (params: ImageGenParams) => void;
   setVideoParams: (params: VideoGenParams) => void;
-  setMotionIntensity: (intensity: MotionIntensity) => void;
-  setMotionRealism: (tier: MotionRealismTier) => void;
   setChainMode: (mode: "pin" | "tail" | "off") => void;
   setVisualLook: (look: string) => void;
   /** Legacy action: always enables director mode, including calls from older UI bundles. */
@@ -125,6 +119,14 @@ const POLLINATIONS_BASE_URL = "https://gen.pollinations.ai/v1";
 
 const RETIRED_PROVIDER_NAMES = new Set(["volcengine", "alibaba", "siliconflow"]);
 const LEGACY_OPENAI_BASE_URL = /^https:\/\/api\.openai\.com\/v1\/?$/i;
+const RETIRED_MOTION_SETTINGS = ["motionIntensity", "motionRealism", "autoMotion", "setMotionIntensity", "setMotionRealism", "setAutoMotion"];
+
+/** Old exports may still contain removed global controls; never merge or persist them again. */
+function withoutRetiredMotionSettings<T extends object>(state: T): T {
+  const current = { ...state };
+  for (const key of RETIRED_MOTION_SETTINGS) delete (current as Record<string, unknown>)[key];
+  return current;
+}
 
 function isKlingVideoSelectionKey(value: string | undefined): boolean {
   if (!value) return false;
@@ -169,11 +171,11 @@ function normalizeCurrentSettings(state: SettingsState, migrateLegacyDefaults = 
   if (!Number.isFinite(state.spendCapUsd) || state.spendCapUsd < 0 || (migrateLegacyDefaults && state.spendCapUsd === 5)) {
     state.spendCapUsd = 0;
   }
-  // Catalog keys carry the CLI tool identity. Never silently substitute a different paid model.
-  if (!isKlingVideoSelectionKey(state.defaultVideoModel)) state.defaultVideoModel = "";
+  // Preserve explicit HTH or account-owned CLI choices. Never substitute a different paid model.
+  if (state.defaultVideoModel !== HTH_VIDEO_MODEL && !isKlingVideoSelectionKey(state.defaultVideoModel)) state.defaultVideoModel = "";
   state.uiMode = "pro";
   state.tts = normalizeTTSSettings(state.tts);
-  return state;
+  return withoutRetiredMotionSettings(state);
 }
 
 /**
@@ -227,7 +229,8 @@ export function migrateSettings(state: SettingsState, persistedVersion = 0): Set
   // v6: the visible video default and advanced generation parameters used to diverge.
   // Honor the visible default for existing 720p/1080p settings, preserving other parameters.
   // 480p remains an explicit advanced generation tier; composition has no 480p option.
-  if ((state?.defaultResolution === "720p" || state?.defaultResolution === "1080p") && state.videoParams?.resolution !== "480p") {
+  const separateGenerationResolution = state.videoParams?.resolution === "480p" || state.videoParams?.resolution === "768p" || state.videoParams?.resolution === "2k";
+  if ((state?.defaultResolution === "720p" || state?.defaultResolution === "1080p") && !separateGenerationResolution) {
     state.videoParams = { ...DEFAULT_VIDEO_PARAMS, ...state.videoParams, resolution: state.defaultResolution };
   } else if (state?.videoParams?.resolution === "720p" || state?.videoParams?.resolution === "1080p") {
     state.defaultResolution = state.videoParams.resolution;
@@ -236,7 +239,7 @@ export function migrateSettings(state: SettingsState, persistedVersion = 0): Set
   state.uiMode = "pro";
   // v8: retire key-based TTS settings in favor of Microsoft or local ElevenLabs OAuth.
   state.tts = normalizeTTSSettings(state.tts);
-  // v9: HTH defaults and Kling-only video selection. A saved custom endpoint or model stays intact.
+  // v9: HTH defaults. A saved custom endpoint or supported video choice stays intact.
   return normalizeCurrentSettings(state, persistedVersion < 9);
 }
 
@@ -270,8 +273,6 @@ export const useSettingsStore = create<SettingsState>()(
       customModels: [],
       imageParams: DEFAULT_IMAGE_PARAMS,
       videoParams: DEFAULT_VIDEO_PARAMS,
-      motionIntensity: DEFAULT_VIDEO_PROMPT_SETTINGS.motionIntensity,
-      motionRealism: DEFAULT_VIDEO_PROMPT_SETTINGS.motionRealism,
       chainMode: "pin",
       visualLook: DEFAULT_VIDEO_PROMPT_SETTINGS.visualLook,
       uiMode: "pro",
@@ -304,8 +305,6 @@ export const useSettingsStore = create<SettingsState>()(
         videoParams: params,
         ...(params.resolution === "720p" || params.resolution === "1080p" ? { defaultResolution: params.resolution } : {}),
       }),
-      setMotionIntensity: (intensity) => set({ motionIntensity: intensity }),
-      setMotionRealism: (tier) => set({ motionRealism: tier }),
       setChainMode: (mode) => set({ chainMode: mode }),
       setVisualLook: (look) => set({ visualLook: look }),
       setUiMode: () => set({ uiMode: "pro" }),
@@ -351,8 +350,10 @@ export const useSettingsStore = create<SettingsState>()(
       // v7: retire beginner mode and persist director mode for existing users.
       // v8: voiceover configuration and login live in Settings; remove retired providers.
       // v9: HTH gateway/model defaults; retire three media platforms and non-CLI video defaults.
-      version: 9,
+      // v10: remove retired global motion tuning and automatic motion settings.
+      version: 10,
       migrate: (persisted, version) => migrateSettings(persisted as SettingsState, version),
+      partialize: (state) => withoutRetiredMotionSettings(state),
       // Normalize even unversioned imports or same-version storage containing the legacy value.
       merge: (persisted, current) => {
         const saved = persisted as Partial<SettingsState> | undefined;

@@ -62,7 +62,7 @@ describe("video resolution settings", () => {
       defaultResolution: visible, videoParams: { ...videoParams, resolution: visible },
       defaultVideoModel: savedKlingModel, spendCapUsd: 2,
     });
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9, state: {
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 10, state: {
       defaultResolution: visible, videoParams: { ...videoParams, resolution: visible },
     } });
   });
@@ -75,6 +75,6 @@ describe("video resolution settings", () => {
     await useSettingsStore.persist.rehydrate();
 
     expect(useSettingsStore.getState()).toMatchObject({ defaultResolution: "720p", videoParams: { ...videoParams, resolution: "480p" } });
-    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9 });
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 10 });
   });
 });

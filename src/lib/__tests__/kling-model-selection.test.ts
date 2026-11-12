@@ -22,9 +22,9 @@ describe("account-owned Kling model selection", () => {
     expect(configuredCatalogProviders({ "kling-cli": { enabled: false, profileId: "profile-1" } })).toEqual([]);
   });
 
-  it("excludes HTH and retired platform credentials from video requests", () => {
+  it("includes HTH video credentials while excluding retired platforms", () => {
     const providers = Object.fromEntries(["openai", "volcengine", "alibaba", "siliconflow"].map((name) => [name, { enabled: true, apiKey: "saved-key" }]));
-    expect(configuredCatalogProviders(providers, "video")).toEqual([]);
+    expect(configuredCatalogProviders(providers, "video")).toEqual([{ name: "openai", apiKey: "saved-key" }]);
     expect(configuredCatalogProviders(providers, "image").map((provider) => provider.name)).toEqual(["openai"]);
   });
 

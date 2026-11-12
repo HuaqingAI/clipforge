@@ -16,7 +16,6 @@ export interface AssetPageProject {
   creativeIntent?: unknown;
   visualBible?: unknown;
   characterId?: string | null;
-  productionWorkflow?: Array<{ id?: unknown; enabled?: unknown }> | null;
 }
 
 export interface AssetPageScript {

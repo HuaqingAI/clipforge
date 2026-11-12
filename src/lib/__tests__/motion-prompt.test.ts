@@ -3,7 +3,7 @@ import { buildMotionPrompt, hasCameraConflict, pickBehaviorBeats } from "@/lib/m
 import { getLookPreset } from "@/lib/look-presets";
 import { klingAudioPrompt } from "@/lib/kling/audio-prompt";
 import { validateVideoPrompt } from "@/lib/video-prompt";
-import { buildShotVideoPrompt } from "@/lib/shot-video-prompt";
+import { buildShotVideoPrompt, normalizeVideoPromptSettings } from "@/lib/shot-video-prompt";
 
 describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
   it("脚本 camera 字段优先，置于提示词开头（运镜是主信息）", () => {
@@ -48,7 +48,7 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
   it("显式中文模板覆盖英文分镜的语言推断，并保留原始内容", () => {
     const camera = "camera pans left";
     const description = "A Model X device rotates on a blue background";
-    const p = buildMotionPrompt({ locale: "zh", shotType: "demo", camera, description, productShot: true, intensity: "strong", look: getLookPreset("warm_life")!.motion });
+    const p = buildMotionPrompt({ locale: "zh", shotType: "demo", camera, description, productShot: true, look: getLookPreset("warm_life")!.motion });
     expect(p).toContain(`运镜：${camera}`);
     expect(p).toContain(`场景：${description}`);
     expect(p).toContain("画面动态：");
@@ -71,7 +71,7 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
     const result = buildShotVideoPrompt({
       locale: "zh", ordinal: 0,
       shot: { type: "demo", camera, description, visualSource: "product_image" },
-      settings: { visualLook: "warm_life", motionIntensity: "strong", motionRealism: "constraints" },
+      settings: { visualLook: "warm_life" },
       creativeIntent: { subject: "完整商品", environment: "蓝色背景", lighting: "自然光", palette: "冷色", composition: "居中", camera: "平稳横移", motion: "自然连贯", continuity: ["同一空间"], productConstraints: ["按键位置不变"], negative: ["不要多余按钮"] },
     });
     expect(result.prompt).toContain(`运镜：${camera}`);
@@ -134,23 +134,7 @@ describe("buildMotionPrompt（i2v 运镜提示词引擎）", () => {
   });
 });
 
-describe("提示词工程包（强度三档 / 单镜头声明 / 音效 / 冲突消解）", () => {
-  it("强度三档：subtle/strong 各有幅度措辞，normal 与不传完全一致（基线不变）", () => {
-    const base = buildMotionPrompt({ shotType: "hook", description: "开场" });
-    expect(buildMotionPrompt({ shotType: "hook", description: "开场", intensity: "normal" })).toBe(base);
-    const subtle = buildMotionPrompt({ shotType: "hook", description: "开场", intensity: "subtle" });
-    const strong = buildMotionPrompt({ shotType: "hook", description: "开场", intensity: "strong" });
-    expect(subtle).toContain("轻微克制");
-    expect(strong).toContain("大胆明显");
-    expect(subtle).not.toBe(strong);
-  });
-
-  it("强度措辞跟随语言（英文脚本出英文幅度行）", () => {
-    const en = buildMotionPrompt({ shotType: "hook", description: "opening scene", intensity: "strong" });
-    expect(en).toContain("bold pronounced camera movement");
-    expect(en).not.toMatch(/[一-鿿]/);
-  });
-
+describe("提示词工程包（单镜头声明 / 音效 / 冲突消解）", () => {
   it("非链式片段声明连续单镜头（防模型中途切镜）；链式片段用尾帧过渡引导，二者互斥", () => {
     const plain = buildMotionPrompt({ shotType: "demo", description: "演示" });
     expect(plain).toContain("连续单镜头");
@@ -208,77 +192,37 @@ describe("提示词工程包（强度三档 / 单镜头声明 / 音效 / 冲突�
   });
 });
 
-describe("物理真实感层（品类约束/物理交互/活背景/情绪过程，档位单选）", () => {
-  it("分镜明确描述材质时才追加品类材质约束", () => {
-    const p = buildMotionPrompt({ shotType: "product_reveal", description: "面霜膏体特写", productShot: true, category: "beauty" });
-    expect(p).toContain("标志与文字必须保持完全不变"); // 通用约束仍在
-    expect(p).toContain("已有膏体与液体质地保持均匀顺滑");
+describe("已移除运镜强度与真实感设置的兼容", () => {
+  it.each([
+    { motionIntensity: "strong", motionRealism: "auto" },
+    { motionIntensity: "subtle", motionRealism: "constraints" },
+    { motionIntensity: "normal", motionRealism: "off" },
+    { motionIntensity: { obsolete: true }, motionRealism: "invalid-retired-tier" },
+  ])("忽略旧设置且保留画面风格与商品保真（%j）", (retired) => {
+    const settings = { visualLook: "warm_life", ...retired };
+    expect(normalizeVideoPromptSettings(settings)).toEqual({ visualLook: "warm_life" });
+    const input = {
+      ordinal: 0,
+      shot: { type: "demo" as const, camera: "镜头平稳横移", description: "人物展示食物，背景有窗帘。", visualSource: "product_image" as const, characterId: "presenter" },
+    };
+    const baseline = buildShotVideoPrompt({ ...input, settings: { visualLook: "warm_life" } });
+    expect(buildShotVideoPrompt({ ...input, settings })).toEqual(baseline);
+    expect(baseline.prompt).toContain("运镜：镜头平稳横移");
+    expect(baseline.prompt).toContain("全程保持温暖的橙黄午后光调");
+    expect(baseline.prompt).toContain("标志与文字必须保持完全不变");
+    expect(baseline.prompt).not.toMatch(/运镜幅度|随气流轻轻晃动|滞后的摆动|眉心先皱/);
   });
 
-  it("未知品类（other/空）不加品类层，输出与不传 category 一致", () => {
-    const base = buildMotionPrompt({ shotType: "demo", description: "使用演示", productShot: true });
-    expect(buildMotionPrompt({ shotType: "demo", description: "使用演示", productShot: true, category: "other" })).toBe(base);
-    expect(buildMotionPrompt({ shotType: "demo", description: "使用演示", productShot: true, category: "" })).toBe(base);
-  });
-
-  it("只在分镜已描述的动作中确定性选择物理反馈", () => {
-    const description = "掰开酥脆饼干，食物表面冒着热气，酱汁沿边缘流下";
-    const a = buildMotionPrompt({ shotType: "demo", description, category: "food", beatSeed: 0 });
-    const b = buildMotionPrompt({ shotType: "demo", description, category: "food", beatSeed: 1 });
-    expect(a).toContain("掰开的瞬间外层酥脆掉渣");
-    expect(b).toContain("酱汁沿边缘慢慢流下");
-    expect(buildMotionPrompt({ shotType: "demo", description, category: "food", beatSeed: 0 })).toBe(a);
-    const unspecified = buildMotionPrompt({ shotType: "demo", description: "试吃", category: "food", beatSeed: 0 });
-    expect(unspecified).not.toContain("酥脆掉渣");
-    expect(unspecified).not.toContain("酱汁");
-  });
-
-  it("hook 镜不属演示类：有品类也不拼物理交互短语", () => {
-    const p = buildMotionPrompt({ shotType: "hook", description: "开场", category: "food", beatSeed: 0 });
-    expect(p).not.toContain("酥脆掉渣");
-  });
-
-  it("人物镜只补充分镜已有的背景元素", () => {
-    const person = buildMotionPrompt({ shotType: "pain_point", description: "人物皱眉，背景有窗帘", personShot: true, beatSeed: 0 });
-    expect(person).toContain("窗帘随气流轻轻晃动");
-    expect(person).toContain("头发与衣料带一点滞后的摆动");
-    const product = buildMotionPrompt({ shotType: "product_reveal", description: "商品", productShot: true });
-    expect(product).not.toContain("窗帘");
-    expect(product).not.toContain("滞后的摆动");
-    expect(buildMotionPrompt({ shotType: "pain_point", description: "人物皱眉", personShot: true })).not.toContain("窗帘");
-  });
-
-  it("非说话人物镜按镜头类型补情绪过程句（pain_point→身体先反应）；talking 镜不加（已有行为节拍）", () => {
-    const silent = buildMotionPrompt({ shotType: "pain_point", description: "人物困扰", personShot: true, beatSeed: 0 });
-    expect(silent).toContain("眉心先皱了一下");
-    const talking = buildMotionPrompt({ shotType: "pain_point", description: "人物吐槽", personShot: true, talking: true, beatSeed: 0 });
-    expect(talking).not.toContain("眉心先皱了一下");
-  });
-
-  it("档位单选：constraints=仅品类约束、off=全关（回到旧版形状）", () => {
-    const cons = buildMotionPrompt({ shotType: "demo", description: "饼干展示", productShot: true, personShot: true, category: "food", beatSeed: 0, realism: "constraints" });
-    expect(cons).toContain("色泽鲜亮"); // 品类约束保留
-    expect(cons).not.toContain("酥脆掉渣"); // 物理交互关
-    expect(cons).not.toContain("窗帘"); // 活背景关
-    expect(cons).not.toContain("滞后的摆动"); // 惯性关
-    const off = buildMotionPrompt({ shotType: "demo", description: "演示", productShot: true, personShot: true, category: "food", beatSeed: 0, realism: "off" });
-    expect(off).not.toContain("色泽鲜亮");
-    const legacy = buildMotionPrompt({ shotType: "demo", description: "演示", productShot: true, personShot: true, beatSeed: 0, realism: "off" });
-    expect(off).toBe(legacy); // off 档 = 不传品类的旧版输出
-  });
-
-  it("英文脚本走英文层（品类约束/物理短语/活背景全英文）", () => {
-    const p = buildMotionPrompt({ shotType: "demo", camera: "smooth follow", description: "a fingertip spreads cream onto skin, curtains in the background", productShot: true, personShot: true, category: "beauty", beatSeed: 0 });
-    expect(p).toContain("holding their shape without clumping");
-    expect(p).toContain("gliding open");
-    expect(p).toContain("curtains in the background");
-    expect(p).not.toMatch(/[一-鿿]/); // 不混中文
+  it("仍校验有效画面风格，不再校验已废弃设置", () => {
+    expect(normalizeVideoPromptSettings({ motionIntensity: null, motionRealism: false })).toEqual({ visualLook: "none" });
+    expect(() => normalizeVideoPromptSettings({ visualLook: "invalid-look" })).toThrow("视觉风格设置无效");
+    expect(() => normalizeVideoPromptSettings(null)).toThrow("必须是对象");
   });
 });
 
 describe("Kling 实际问题回归", () => {
   const look = getLookPreset("phone_raw")!;
-  const shared = { productShot: true, category: "tech", intensity: "strong" as const, beatSeed: 2, look: look.motion, opener: look.opener };
+  const shared = { productShot: true, beatSeed: 2, look: look.motion, opener: look.opener };
 
   it("静态购买引导完整保留价格说明，不追加手持或大幅运镜", () => {
     const description = "完整商品原图静止居中，背景为纯净浅蓝色。商品下方固定显示“点击下方小黄车”，二维向下箭头指向购买入口方向；底部小字为“价格、使用及清洗要求以商品页和说明书为准”。";
@@ -302,7 +246,7 @@ describe("Kling 实际问题回归", () => {
   it("静止商品可以配移动相机，固定相机可以配旋转商品", () => {
     const camera = "镜头缓慢横移，商品保持静止";
     expect(hasCameraConflict(camera)).toBe(false);
-    const movingCamera = buildMotionPrompt({ camera, description: "商品静置于纯色背景", shotType: "demo", intensity: "strong", category: "tech" });
+    const movingCamera = buildMotionPrompt({ camera, description: "商品静置于纯色背景", shotType: "demo" });
     expect(movingCamera).toContain(`运镜：${camera}`);
     expect(movingCamera).not.toContain("大胆明显");
     const turntable = buildMotionPrompt({ camera: "镜头固定，商品缓缓旋转", description: "商品在已有转台上转动", shotType: "product_reveal" });
@@ -311,7 +255,7 @@ describe("Kling 实际问题回归", () => {
   });
 
   it("展示文字与否定要求不能成为凭空添加物体的依据", () => {
-    const prompt = buildMotionPrompt({ shotType: "demo", description: "透明杯身特写，文字显示“金属屏幕”。不要添加背景灯，不要转动金属机身。", category: "tech", productShot: true });
+    const prompt = buildMotionPrompt({ shotType: "demo", description: "透明杯身特写，文字显示“金属屏幕”。不要添加背景灯，不要转动金属机身。", productShot: true });
     expect(prompt).not.toContain("已有屏幕内容");
     expect(prompt).not.toContain("已有金属表面");
     expect(prompt).not.toContain("高光缓缓扫过");
@@ -319,24 +263,25 @@ describe("Kling 实际问题回归", () => {
   });
 
   it("静止背景不添加摆动，数码类目不会自动补屏幕", () => {
-    const background = buildMotionPrompt({ shotType: "demo", description: "背景窗帘保持静止，透明杯身近景", productShot: true, category: "tech" });
+    const background = buildMotionPrompt({ shotType: "demo", description: "背景窗帘保持静止，透明杯身近景", productShot: true });
     expect(background).not.toContain("随气流轻轻晃动");
     expect(background).not.toContain("屏幕");
-    const metal = buildMotionPrompt({ shotType: "demo", description: "金属机身特写", productShot: true, category: "tech" });
-    expect(metal).toContain("已有金属表面");
+    const metal = buildMotionPrompt({ shotType: "demo", description: "金属机身特写", productShot: true });
+    expect(metal).not.toContain("已有金属表面");
+    expect(metal).toContain("标志与文字必须保持完全不变");
     expect(metal).not.toContain("屏幕");
     const globalStillBackground = buildMotionPrompt({ shotType: "demo", description: "商品展示，背景保持静止，窗帘清晰可见" });
     expect(globalStillBackground).not.toContain("随气流轻轻晃动");
   });
 
-  it.each(["auto", "constraints", "off"] as const)("显式旋转不会与商品展示默认静止冲突（%s）", (realism) => {
-    const prompt = buildMotionPrompt({ camera: "镜头平稳横移", description: "商品缓慢旋转展示", shotType: "product_reveal", realism });
+  it("显式旋转不会与商品展示默认静止冲突", () => {
+    const prompt = buildMotionPrompt({ camera: "镜头平稳横移", description: "商品缓慢旋转展示", shotType: "product_reveal" });
     expect(prompt).not.toContain("商品保持静置不动");
     expect(prompt).toContain("商品缓慢旋转展示");
   });
 
   it("涂抹在板上的面霜不会引入皮肤或手指", () => {
-    const prompt = buildMotionPrompt({ shotType: "demo", description: "面霜在亚克力板上推开，质地均匀", category: "beauty" });
+    const prompt = buildMotionPrompt({ shotType: "demo", description: "面霜在亚克力板上推开，质地均匀" });
     expect(prompt).not.toContain("指腹");
     expect(prompt).not.toContain("皮肤");
   });
@@ -346,9 +291,10 @@ describe("Kling 实际问题回归", () => {
     expect(prompt).not.toContain("画面动态：主体保持静止");
   });
 
-  it.each(["static", "fixed.", "locked-off"])("简写固定机位 %s 也不会追加大幅运镜", (camera) => {
-    const prompt = buildMotionPrompt({ camera, description: "A complete product on a plain blue background", intensity: "strong" });
-    expect(prompt).not.toContain("bold pronounced camera movement");
+  it.each(["static", "fixed.", "locked-off"])("简写固定机位 %s 不叠加手持风格", (camera) => {
+    const prompt = buildMotionPrompt({ camera, description: "A complete product on a plain blue background", opener: look.opener, look: look.motion });
+    expect(prompt).toContain(`Camera: ${camera}`);
+    expect(prompt).not.toContain("handheld");
   });
 
   it("展示镜头拿起商品时不会追加静置要求", () => {

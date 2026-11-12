@@ -93,7 +93,7 @@ describe("voiceover provider settings", () => {
     await useSettingsStore.persist.rehydrate();
     expect(useSettingsStore.getState()).toMatchObject({ tts: freeDefaults, defaultVideoModel: savedKlingModel, locale: "en" });
     expect(isPaidTTSReady(useSettingsStore.getState().tts)).toBe(false);
-    if (version === 7) expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 9, state: { tts: freeDefaults } });
+    if (version === 7) expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({ version: 10, state: { tts: freeDefaults } });
   });
 
   it.each([7, 8, undefined])("preserves OAuth CLI preferences during hydration at version %s", async (version) => {

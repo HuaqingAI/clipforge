@@ -139,7 +139,6 @@ export function previewProjectVideoPrompt(projectId: string, raw: unknown): Vide
     ordinal: script.shots?.findIndex((item) => item.shotId === request.shotId) ?? 0,
     settings: request.settings,
     chainToNext: request.chainToNext,
-    category: project.productCategory,
     creativeIntent: project.creativeIntent,
     visualBible: project.visualBible,
     creativeProfile: profile,

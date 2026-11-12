@@ -456,7 +456,7 @@ Director mode adds a four-step bar to every project: **Script → Assets → Vid
 | **🎞️ One-tap full film** | All keyframes → video model → the whole film (script ≤30s) | ✅ Video credits |
 | **Generate all** | Generate assets shot by shot | ✅ |
 | **Product-safe** toggle | Shots showing the product are repainted from your photo so AI can't distort it | — |
-| **AI motion** toggle | Turns generated stills into real moving shots via image-to-video (better, costs video credits; off = stills only) | ✅ |
+| **Add motion / Batch motion** | Review the keyframes, manually start image-to-video, then preview and confirm a single shot or batch | ✅ |
 | **Presenter** | Pick from your presenter library; a presenter with a sheet locks the face | — |
 | **Real footage ratio** | Share of real/uploaded footage by duration — **≥50% qualifies for Douyin's mixed-content traffic tilt** | — |
 
