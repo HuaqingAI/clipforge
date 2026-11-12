@@ -97,6 +97,19 @@ describe("manual top title generation endpoint", () => {
     expect(db.select().from(schema.scripts).where(eq(schema.scripts.id, "current")).get()!.shots).toEqual(shots);
   });
 
+  it("rejects an archived project carrying a TIDEWE snapshot before generating a title", async () => {
+    db.update(schema.projects).set({ creativeProfile: {
+      version: 1, id: "unsupported", creationType: "unsupported", styleType: "scene",
+      videoMode: "product_closeup", targetDuration: 30, composeSnapshot: {},
+    } }).where(eq(schema.projects.id, "project")).run();
+    db.update(schema.scripts).set({ creativeProfileSnapshot: createCreativeProfileSnapshot(createTideweOutdoorProfile(), 1) })
+      .where(eq(schema.scripts.id, "current")).run();
+    const response = await request();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "CREATIVE_PROFILE_MISMATCH" });
+    expect(state.generate).not.toHaveBeenCalled();
+  });
+
   it("uses canonical TIDEWE copy and refuses temporary overrides or broken copy spans", async () => {
     const profile = createTideweOutdoorProfile({ speechMode: "on_camera" });
     const text = "The walk into the woods is only the start. Have a look if that sounds familiar.";

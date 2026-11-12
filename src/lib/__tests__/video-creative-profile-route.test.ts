@@ -11,7 +11,6 @@ import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import {
   createCreativeProfileSnapshot,
 
-  createShortVideoSalesProfile,
 } from "@/lib/creative-profiles";
 
 const state = vi.hoisted(() => ({
@@ -36,6 +35,13 @@ import { POST } from "@/app/api/ai/video/route";
 
 let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle<typeof schema>>;
+
+// Persisted JSON fixture from the removed workflow; it is only read by media/history APIs.
+const archivedProfile = {
+  version: 1, id: "short_video_sales_v1", creationType: "short_video_sales",
+  styleType: "pain_point", videoMode: "product_closeup", targetDuration: 30,
+  composeSnapshot: {}, creativeSettings: {}, promptCompilerVersion: "short-video-sales-1",
+} as unknown as NonNullable<typeof schema.projects.$inferInsert["creativeProfile"]>;
 
 const projectId = "video-profile-project";
 const scriptId = "video-profile-script";
@@ -74,7 +80,7 @@ beforeEach(() => {
   state.db = db;
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
 
-  const profile = createShortVideoSalesProfile();
+  const profile = archivedProfile;
   db.insert(schema.projects).values({
     id: projectId,
     name: "Sales video profile",
@@ -88,7 +94,7 @@ beforeEach(() => {
     selected: true,
     styleType: "pain_point",
     shots: [silentShot],
-    creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 2),
+    creativeProfileSnapshot: { profile, creativeConfigRevision: 2 },
   }).run();
 
   state.generateVideo.mockReset().mockResolvedValue({ videoUrls: ["https://example.test/video.mp4"] });
@@ -119,9 +125,9 @@ describe("video generation profile context", () => {
   });
 
   it("uses the selected script's frozen policy despite a newer project configuration", async () => {
-    const profile = createShortVideoSalesProfile();
-    const snapshot = createCreativeProfileSnapshot(profile, 1);
-    db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() })
+    const profile = archivedProfile;
+    const snapshot = { profile, creativeConfigRevision: 1 };
+    db.update(schema.projects).set({ creativeProfile: archivedProfile })
       .where(eq(schema.projects.id, projectId)).run();
     db.update(schema.scripts)
       .set({ creativeProfileSnapshot: snapshot })
@@ -148,7 +154,7 @@ describe("video generation profile context", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       code: "CREATIVE_PROFILE_MISMATCH",
-      projectCreationType: "short_video_sales",
+      projectCreationType: "unsupported",
       scriptCreationType: "tidewe_outdoor",
     });
     expect(state.createProvider).not.toHaveBeenCalled();

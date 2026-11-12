@@ -38,4 +38,4 @@ cp -r skills/clipforge-video .cursor/skills/    # Cursor
 cp -r skills/clipforge-video .windsurf/skills/  # Windsurf
 ```
 
-Then start a ClipForge instance (`pnpm dev`), set `CLIPFORGE_LLM_*` for script generation, and ask your assistant to create a video — e.g. *"make me a 9:16 video from this product link …"* (drives the one-shot `clipforge_product_script`). See [`clipforge-video/SKILL.md`](clipforge-video/SKILL.md) for prerequisites, the three drive methods (MCP / CLI / HTTP), and all workflows.
+Then start a ClipForge instance (`pnpm dev`) and use `clipforge_ingest_product` to import a product into a TIDEWE project. Complete the product facts, presenter and copy settings in the shared desktop/Web project editor before generating the script. See [`clipforge-video/SKILL.md`](clipforge-video/SKILL.md) for prerequisites, the three drive methods (MCP / CLI / HTTP), and all workflows.

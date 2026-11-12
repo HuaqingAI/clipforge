@@ -1,15 +1,11 @@
 #!/usr/bin/env node
 /**
- * ClipForge CLI — generate a video from a topic in one command: auto-write script, match footage, add voiceover, and compose.
+ * ClipForge CLI — inspect, compose and export existing ClipForge projects.
  *
  * Thin wrapper around the ClipForge HTTP API (same orchestration as mcp/clipforge-mcp.mjs: DB / FFmpeg / free TTS / free stock),
  * zero third-party deps, pure Node. Requires a running instance (pnpm dev / pnpm start). Stock + voiceover need no API key; only script generation needs an LLM key.
  *
  * Usage:
- *   node bin/clipforge.mjs create --topic "在家手冲咖啡" [--duration 25] [--style knowledge]
- *        [--footage auto|image|video] [--voice <id>] [--aspect 9:16|16:9|1:1]
- *        [--quality fast|standard|hd] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--caption standard|bold|minimal|karaoke]
- *        [--cta "👇 点击下方下单"] [--json]
  *   node bin/clipforge.mjs compose --project <id> [same compose options]   compose an existing project with script + assets
  *   node bin/clipforge.mjs list                     list projects
  *   node bin/clipforge.mjs voices                   list free voices
@@ -18,7 +14,7 @@
  *
  * Environment variables (same as MCP):
  *   CLIPFORGE_BASE_URL (default http://localhost:3000)
- *   CLIPFORGE_LLM_BASE_URL / CLIPFORGE_LLM_API_KEY / CLIPFORGE_LLM_MODEL (required for create, OpenAI-compatible)
+ *   CLIPFORGE_LLM_BASE_URL / CLIPFORGE_LLM_API_KEY / CLIPFORGE_LLM_MODEL (optional, OpenAI-compatible)
  *   CLIPFORGE_PEXELS_KEY / CLIPFORGE_PIXABAY_KEY (optional, for supplemental paid high-quality video sources)
  */
 import { readFileSync, writeFileSync } from "fs";
@@ -35,7 +31,6 @@ const STOCK_KEYS = {};
 if (process.env.CLIPFORGE_PIXABAY_KEY) STOCK_KEYS.pixabay = process.env.CLIPFORGE_PIXABAY_KEY;
 if (process.env.CLIPFORGE_PEXELS_KEY) STOCK_KEYS.pexels = process.env.CLIPFORGE_PEXELS_KEY;
 
-const NARRATION_STYLES = ["knowledge", "story", "lifestyle", "inspiration", "travel"];
 const FOOTAGE_KINDS = ["auto", "image", "video"];
 const ASPECT_RATIOS = ["9:16", "16:9", "1:1"];
 const QUALITY_PRESETS = ["fast", "standard", "hd"];
@@ -174,172 +169,9 @@ const step = (m) => process.stderr.write(`· ${m}\n`);
 function requireLlm() {
   if (!LLM.baseUrl || !LLM.apiKey || !LLM.model) {
     throw new Error(
-      "create 需要 LLM。请设置环境变量 CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（OpenAI 兼容，如 Atlas Cloud / DeepSeek / OpenRouter）。",
+      "此操作需要 LLM。请设置环境变量 CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（OpenAI 兼容，如 Atlas Cloud / DeepSeek / OpenRouter）。",
     );
   }
-}
-
-/**
- * Judge pass — the same quality bar the web hands-off chains run: five narrow judges
- * (pacing / spoken voice / freshness / structure / visuals) tear the lines apart and
- * their length-preserving rewrites are applied in place BEFORE footage/voice work.
- * Best-effort: any failure returns 0 and the chain continues with the original lines.
- * Returns the number of rewritten lines.
- */
-async function judgePass(projectId, scriptId) {
-  if (!scriptId) return 0;
-  try {
-    const report = await api(`/api/project/${projectId}/script-judge`, {
-      method: "POST",
-      body: { scriptId, llmConfig: LLM },
-    });
-    // tier gate (judge v2): auto-apply invariant/default only — taste tier is opinion, not defect;
-    // the visual judge's description rewrites ride the same shotTexts PATCH
-    const gated = (rows) => (Array.isArray(rows) ? rows.filter((r) => r.tier !== "taste") : []);
-    const shotTexts = new Map();
-    for (const r of gated(report?.rewrites)) shotTexts.set(r.shotId, { shotId: r.shotId, voiceover: r.voiceover });
-    for (const r of gated(report?.descriptionRewrites)) {
-      shotTexts.set(r.shotId, { ...(shotTexts.get(r.shotId) ?? { shotId: r.shotId }), description: r.description });
-    }
-    if (shotTexts.size === 0) return 0;
-    await api(`/api/project/${projectId}/scripts`, {
-      method: "PATCH",
-      body: { scriptId, shotTexts: Array.from(shotTexts.values()) },
-    });
-    return shotTexts.size;
-  } catch {
-    return 0;
-  }
-}
-
-async function cmdCreate(flags) {
-  requireLlm();
-  const topic = String(flags.topic || "").trim();
-  if (topic.length < 2) throw new Error("--topic 太短，请给一句完整主题，如 --topic \"在家手冲咖啡\"");
-  const narrationStyle = NARRATION_STYLES.includes(flags.style) ? flags.style : "knowledge";
-  const targetDuration = Number.isFinite(Number(flags.duration)) && flags.duration ? Number(flags.duration) : 25;
-  const mediaType = FOOTAGE_KINDS.includes(flags.footage) ? flags.footage : "auto";
-
-  step(`写脚本：「${topic}」（${narrationStyle} · ${targetDuration}s）`);
-  const scriptRes = await api("/api/topic/script", {
-    method: "POST",
-    body: { topic, narrationStyle, targetDuration, llmConfig: LLM },
-  });
-  const projectId = scriptRes.projectId;
-  const shots = scriptRes?.scripts?.[0]?.shots ?? [];
-  step(`脚本完成：${shots.length} 个分镜 · 项目 ${projectId}`);
-
-  // judge pass: weak lines get rewritten before any footage/voice work (best-effort, never fatal)
-  const judged = await judgePass(projectId, scriptRes?.scripts?.[0]?.id);
-  if (judged) step(`判官团过词：重写 ${judged} 句`);
-
-  step(`配画面（${mediaType}，免费素材库）…`);
-  const fill = await api(`/api/project/${projectId}/stock-fill`, {
-    method: "POST",
-    body: { source: "all", mediaType, apiKeys: STOCK_KEYS, ...(LLM.baseUrl && LLM.model ? { llmConfig: LLM } : {}) },
-  });
-  if (!fill.filled) {
-    throw new Error(
-      `免费素材库没给「${topic}」配到画面，无法合成。换个更常见/具体的主题，或设置 CLIPFORGE_PEXELS_KEY 后重试。`,
-    );
-  }
-  step(`画面就绪：${fill.filled}/${fill.total}${fill.sameSourceHits ? ` · 同源连贯 ${fill.sameSourceHits} 镜` : ""}`);
-
-  const body = composeBodyFromFlags(flags);
-  if (!body.freeTts.voice) {
-    const v = defaultVoiceForTopic(topic);
-    if (v) body.freeTts.voice = v;
-  }
-  const usedVoice = body.freeTts.voice || "zh-CN-XiaoxiaoNeural";
-  step(`合成中（Edge TTS 配音 · 音色 ${usedVoice}）…`);
-  // POST returns the compositionId of this run — poll that exact one, not "latest"
-  const { compositionId } = await api(`/api/project/${projectId}/compose`, { method: "POST", body });
-  const composition = await pollCompose(projectId, { compositionId });
-
-  return {
-    ok: true,
-    projectId,
-    topic,
-    voice: usedVoice,
-    aspectRatio: ASPECT_RATIOS.includes(flags.aspect) ? flags.aspect : "9:16",
-    shots: shots.length,
-    footageFilled: `${fill.filled}/${fill.total}`,
-    videoUrl: absVideoUrl(composition),
-    status: composition.status,
-  };
-}
-
-// Product link → commerce script (→ optional full render). Chains ingest + /api/llm/script so a
-// single command turns a shop URL into a ready带货脚本; add --compose to render all the way to a video.
-async function cmdProduct(flags) {
-  requireLlm();
-  const url = String(flags.url || "").trim();
-  if (!/^https?:\/\/.+/i.test(url)) throw new Error('--url 必须是合法的 http/https 商品链接，如 --url "https://item.example.com/123"');
-
-  step(`抓取商品信息：${url}`);
-  const ingest = await api("/api/ingest/product", {
-    method: "POST",
-    body: { url, createProject: true, creativeProfile: { creationType: "short_video_sales" } },
-  });
-  const projectId = ingest.projectId;
-  if (!projectId) throw new Error("未能从该链接建项目（可能被反爬或缺少标准商品标签），请换一个链接。");
-  const productName = ingest.product?.title?.trim();
-  if (!productName) throw new Error("未能解析出商品标题，无法生成带货脚本，请换一个带标准 OG/JSON-LD 标签的链接。");
-  step(`商品：${productName}${ingest.product?.priceText ? ` · ${ingest.product.priceText}` : ""} · 图 ${ingest.productImages?.length ?? 0} 张`);
-
-  const styleType = ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "auto"].includes(flags.style) ? flags.style : "auto";
-  const targetDuration = Number.isFinite(Number(flags.duration)) && flags.duration ? Number(flags.duration) : 30;
-  step(`写带货脚本（${styleType} · ${targetDuration}s）…`);
-  const scriptRes = await api("/api/llm/script", {
-    method: "POST",
-    body: {
-      projectId,
-      productName,
-      productDescription: ingest.product?.description ?? "",
-      productImages: ingest.productImages ?? [],
-      ...(flags.category ? { category: String(flags.category) } : {}),
-      styleType,
-      targetDuration,
-      llmConfig: LLM,
-    },
-  });
-  const scripts = Array.isArray(scriptRes?.scripts) ? scriptRes.scripts : [];
-  step(`脚本完成：${scripts.length} 套方案 · 项目 ${projectId}`);
-
-  // Without --compose, stop at scripts (mirrors clipforge_product_script MCP tool)
-  if (!flags.compose) {
-    step(`下一步：clipforge compose --project ${projectId}（配画面+配音+合成出片）`);
-    return { ok: true, projectId, product: ingest.product ?? null, scripts: scripts.length };
-  }
-
-  // --compose: go all the way to a rendered video (product-image + free stock fill)
-  // judge pass on the selected (first) variant — the compose below reads the same one
-  const judged = await judgePass(projectId, scripts[0]?.id);
-  if (judged) step(`判官团过词：重写 ${judged} 句`);
-
-  const mediaType = FOOTAGE_KINDS.includes(flags.footage) ? flags.footage : "auto";
-  step(`配画面（${mediaType}，商品图 + 免费素材库）…`);
-  const fill = await api(`/api/project/${projectId}/stock-fill`, {
-    method: "POST",
-    body: { source: "all", mediaType, apiKeys: STOCK_KEYS, ...(LLM.baseUrl && LLM.model ? { llmConfig: LLM } : {}) },
-  });
-  step(`画面就绪：${fill.filled ?? 0}/${fill.total ?? 0}${fill.sameSourceHits ? ` · 同源连贯 ${fill.sameSourceHits} 镜` : ""}`);
-
-  const body = composeBodyFromFlags(flags);
-  const usedVoice = body.freeTts.voice || "zh-CN-XiaoxiaoNeural";
-  step(`合成中（Edge TTS 配音 · 音色 ${usedVoice}）…`);
-  const { compositionId } = await api(`/api/project/${projectId}/compose`, { method: "POST", body });
-  const composition = await pollCompose(projectId, { compositionId });
-  return {
-    ok: true,
-    projectId,
-    product: ingest.product ?? null,
-    scripts: scripts.length,
-    voice: usedVoice,
-    footageFilled: `${fill.filled ?? 0}/${fill.total ?? 0}`,
-    videoUrl: absVideoUrl(composition),
-    status: composition.status,
-  };
 }
 
 async function cmdCompose(flags) {
@@ -617,7 +449,7 @@ async function cmdCarousel(flags) {
   return { ok: true, projectId, count: res.count, cards: res.cards };
 }
 
-// Trending topics: suggest what topic to produce next (then use create --topic).
+// Trending topics for research.
 // Default = domestic boards (Douyin hot search / Toutiao fallback, matching the web landing page);
 // pass --geo for Google Trends daily searches of a region instead.
 async function cmdTrends(flags) {
@@ -743,18 +575,15 @@ async function cmdDub(flags) {
   return { ok: true, projectId, ...res };
 }
 
-const HELP = `ClipForge CLI · 命令行一句话出片
+const HELP = `ClipForge CLI · 项目合成与导出
 
 用法：
-  clipforge create --topic "在家手冲咖啡" [--duration 25] [--style knowledge]
-                   [--footage auto|image|video] [--voice <id>] [--aspect 9:16|16:9|1:1]
-                   [--quality fast|standard|hd] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--cta "..."] [--json]
-                   [--caption standard|bold|minimal|karaoke]   字幕样式预设(标准底板/重击大字/极简/逐字高亮)
-  clipforge product --url "<商品链接>" [--style pain_point|scene|comparison|story|drama|reversal|interview|unboxing|product_pov|talking_head|auto] [--duration 30]
-                   [--category beauty|food|home|fashion|tech|other] [--compose 同款成片选项]   贴链接→带货脚本(加 --compose 直接出片)
   clipforge import --project <id> (--file <路径> | --text "你的脚本") [--title "..."]   自带脚本出片
   clipforge dub --project <id> --lang en                                              配音译制(换语种,出海)
-  clipforge compose --project <id> [同款成片选项] [--no-fill]
+  clipforge compose --project <id> [--no-fill] [--footage auto|image|video]
+                   [--voice <id>] [--aspect 9:16|16:9|1:1] [--quality fast|standard|hd]
+                   [--bgm-volume 5-40] [--bgm-duck] [--audio-stems] [--karaoke]
+                   [--caption standard|bold|minimal|karaoke] [--cta "..."] [--json]
   clipforge trends [--geo US]   拉热搜选题(默认抖音/头条国内榜;--geo 走 Google Trends)
   clipforge list                列出项目
   clipforge voices              列出免费 Edge TTS 音色
@@ -784,12 +613,12 @@ const HELP = `ClipForge CLI · 命令行一句话出片
 
 环境变量：
   CLIPFORGE_BASE_URL（默认 http://localhost:3000，需先 pnpm dev/start）
-  CLIPFORGE_LLM_BASE_URL / CLIPFORGE_LLM_API_KEY / CLIPFORGE_LLM_MODEL（create 必需）
+  CLIPFORGE_LLM_BASE_URL / CLIPFORGE_LLM_API_KEY / CLIPFORGE_LLM_MODEL（需要 LLM 的操作使用）
   CLIPFORGE_PEXELS_KEY / CLIPFORGE_PIXABAY_KEY（可选）
 
 进度打印到 stderr，最终结果（含 videoUrl）打印到 stdout，便于管道取值。`;
 
-const COMMANDS = { create: cmdCreate, product: cmdProduct, import: cmdImport, dub: cmdDub, compose: cmdCompose, cover: cmdCover, qr: cmdQr, endcard: cmdEndcard, export: cmdExport, qc: cmdQc, master: cmdMaster, gate: cmdGate, credits: cmdCredits, native: cmdNative, preview: cmdPreview, sheet: cmdSheet, carousel: cmdCarousel, clips: cmdClips, transcript: cmdTranscriptInspect, "transcript-edit": cmdTranscriptEdit, timeline: cmdTimelineExport, list: cmdList, voices: cmdVoices, get: cmdGet, trends: cmdTrends };
+const COMMANDS = { import: cmdImport, dub: cmdDub, compose: cmdCompose, cover: cmdCover, qr: cmdQr, endcard: cmdEndcard, export: cmdExport, qc: cmdQc, master: cmdMaster, gate: cmdGate, credits: cmdCredits, native: cmdNative, preview: cmdPreview, sheet: cmdSheet, carousel: cmdCarousel, clips: cmdClips, transcript: cmdTranscriptInspect, "transcript-edit": cmdTranscriptEdit, timeline: cmdTimelineExport, list: cmdList, voices: cmdVoices, get: cmdGet, trends: cmdTrends };
 
 async function main() {
   const { _, flags } = parseArgs(process.argv.slice(2));

@@ -28,7 +28,7 @@ import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
 import { desc, and } from "drizzle-orm";
 import { readCompositionError, saveCompositionError } from "@/lib/composition-error";
-import { isTideweOutdoorProfile, isTideweNativeSpeech, sanitizeCreativeProfile, checkCreativeProfileContext } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile, isTideweNativeSpeech, sanitizeCreativeProfile, resolveCreativeProfile, checkCreativeProfileContext } from "@/lib/creative-profiles";
 import { resolveNarrationVoice } from "@/lib/narration-voice";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { assertTideweMediaDuration } from "@/lib/tidewe/visual-policy";
@@ -202,12 +202,11 @@ export async function POST(
     if (body.scriptId !== undefined && body.scriptId !== selected.id) {
       return NextResponse.json({ error: "当前脚本已切换，请刷新后重新选择镜头视频" }, { status: 409 });
     }
-    const projectProfile = sanitizeCreativeProfile(project.creativeProfile);
+    const projectProfile = project.creativeProfile == null ? undefined : resolveCreativeProfile(project.creativeProfile);
     const scriptSnapshotProfile = sanitizeCreativeProfile(profileFromSnapshot(selected.creativeProfileSnapshot));
 
-    // A script snapshot is immutable provenance. Reject a type/revision
-    // mismatch before touching assets or creating a composition. Snapshotless
-    // rows are classified as legacy sales by the shared checker.
+    // Preserve the identity of archived projects when checking immutable snapshots.
+    // An unsupported stored profile must not inherit a TIDEWE script's policy.
     if (projectProfile) {
       const context = checkCreativeProfileContext(
         {

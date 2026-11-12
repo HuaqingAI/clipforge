@@ -129,7 +129,7 @@ describe("TIDEWE custom copy before project creation", () => {
     expect(generationBodies()[0]).not.toHaveProperty("sceneDescription");
   });
 
-  it("keeps the scene draft across source and style switches and sends it only for TIDEWE AI copy", async () => {
+  it("keeps the scene draft across copy source switches and sends it only for AI copy", async () => {
     const scene = "  清晨湿地，主播穿涉水服走过浅水，靠岸展示靴底。\n用近景表现穿脱动作。  ";
     await act(async () => root.render(createElement(NewProjectPage)));
     await product();
@@ -141,18 +141,12 @@ describe("TIDEWE custom copy before project creation", () => {
     await source("ai");
     expect((container.querySelector("#tidewe-copy-input-scene-description") as HTMLTextAreaElement).value).toBe(scene);
     await click("submit");
-    await click("creationTypeSalesLabel");
-    expect(container.querySelector("#tidewe-copy-input-scene-description")).toBeNull();
-    await click("submitGenerate");
     const requests = generationBodies();
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(2);
     expect(requests[0]).toMatchObject({ copyText: original, count: 1 });
     expect(requests[0]).not.toHaveProperty("sceneDescription");
     expect(requests[1]).toMatchObject({ sceneDescription: scene.trim(), styleType: "tidewe_outdoor", count: 1 });
     expect(requests[1]).not.toHaveProperty("copyText");
-    expect(requests[2]).not.toHaveProperty("count");
-    expect(requests[2]).not.toHaveProperty("sceneDescription");
-    await click("label");
     expect((container.querySelector("#tidewe-copy-input-scene-description") as HTMLTextAreaElement).value).toBe(scene);
   });
 
@@ -222,7 +216,7 @@ describe("TIDEWE custom copy before project creation", () => {
     expect(generationBodies()).toEqual([]);
   });
 
-  it("keeps the manual draft across source and style switches without sending it for AI or sales", async () => {
+  it("keeps the manual draft across source switches without sending it for AI copy", async () => {
     await act(async () => root.render(createElement(NewProjectPage)));
     await product();
     await source("manual");
@@ -231,18 +225,9 @@ describe("TIDEWE custom copy before project creation", () => {
     await click("submit");
     await source("manual");
     expect((container.querySelector("#tidewe-copy-input") as HTMLTextAreaElement).value).toBe(original);
-    await click("creationTypeSalesLabel");
-    expect(container.querySelector("#tidewe-copy-input")).toBeNull();
-    await click("submitGenerate");
-    expect(generationBodies()).toHaveLength(2);
+    expect(generationBodies()).toHaveLength(1);
     expect(generationBodies()[0]).toHaveProperty("count", 1);
-    for (const body of generationBodies()) {
-      expect(body).not.toHaveProperty("copyText");
-    }
-    for (const body of generationBodies().slice(1)) {
-      expect(body).not.toHaveProperty("count");
-    }
-    await click("label");
+    expect(generationBodies()[0]).not.toHaveProperty("copyText");
     expect((container.querySelector('input[type="radio"][value="manual"]') as HTMLInputElement).checked).toBe(true);
     expect((container.querySelector("#tidewe-copy-input") as HTMLTextAreaElement).value).toBe(original);
   });

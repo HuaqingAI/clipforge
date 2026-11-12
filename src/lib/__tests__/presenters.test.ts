@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {PRESENTER_PRESETS, REAL_FACE_CONSTRAINT, realFaceLine, presenterPromptBlock, SPOKEN_VOICE_RULES, UGC_FIRST_FRAME_RULES } from "@/lib/presenters";
 import { buildMotionPrompt } from "@/lib/motion-prompt";
-import { stylePrompts } from "@/lib/script-engine/prompts";
 import { buildAssetRows } from "@/lib/assets-view";
 import type { Shot } from "@/lib/db/schema";
 
@@ -43,12 +42,7 @@ describe("真实人脸约束的注入链路", () => {
     expect(buildMotionPrompt({ shotType: "hook", description: "女生对镜头说话" })).not.toContain("网红脸");
   });
 
-  it("对话/口播风格公式都带素人要求与内置主播库", () => {
-    for (const s of ["drama", "interview", "talking_head"] as const) {
-      expect(stylePrompts[s], s).toContain("素人");
-      expect(stylePrompts[s], s).toContain("内置素人主播库");
-    }
-  });
+
 
   it("buildAssetRows 透传 characterId（触发约束的信号）", () => {
     const shot = {
@@ -75,10 +69,5 @@ describe("真实人脸约束的注入链路", () => {
     expect(UGC_FIRST_FRAME_RULES).not.toContain("眼袋");
   });
 
-  it("presenterPromptBlock 捎带两组规则 → drama/interview/talking_head 三风格自动生效", () => {
-    for (const s of ["drama", "interview", "talking_head"] as const) {
-      expect(stylePrompts[s], s).toContain("口语真实感");
-      expect(stylePrompts[s], s).toContain("首帧真实感");
-    }
-  });
+
 });

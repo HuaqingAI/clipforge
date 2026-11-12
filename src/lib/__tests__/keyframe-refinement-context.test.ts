@@ -1,11 +1,11 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
   checkCreativeProfileContext,
   createCreativeProfileSnapshot,
-  createShortVideoSalesProfile,
-  createTideweOutdoorProfile,
-} from "@/lib/creative-profiles";
+
+  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { checkKeyframeRefinementContext } from "@/lib/keyframe-refinement-context";
 function fixture() {
   const profile = createTideweOutdoorProfile();
@@ -46,7 +46,7 @@ describe("existing-keyframe creative context", () => {
 
   it("never allows a creation-type mismatch", () => {
     const { project, script } = fixture();
-    expect(checkKeyframeRefinementContext({ ...project, creativeProfile: createShortVideoSalesProfile() }, script))
+    expect(checkKeyframeRefinementContext({ ...project, creativeProfile: archivedCreativeProfile() }, script))
       .toMatchObject({ ok: false, code: "CREATIVE_PROFILE_MISMATCH" });
   });
 

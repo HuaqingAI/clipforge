@@ -2,31 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDataDir } from "@/lib/paths";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { generateScript, analyzeProduct, type LLMConfig } from "@/lib/script-engine/generator";
+import { generateScript, type LLMConfig } from "@/lib/script-engine/generator";
 import { scriptGenerationMetadata } from "@/lib/script-engine/provenance";
-import { styleNameMap, type ScriptStyleType } from "@/lib/script-engine/prompts";
-import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-patterns";
-import type { ProductCategory } from "@/lib/script-engine/templates";
 import { getDb } from "@/lib/db";
-import { scripts as scriptsTable, projects, publishMetrics } from "@/lib/db/schema";
+import { scripts as scriptsTable, projects } from "@/lib/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
-import { topConvertingStyle, topConvertingHook, buildPerformanceHint, type MetricInput } from "@/lib/performance-insights";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, isTideweOutdoorProfile, TIDEWE_OUTDOOR_STYLE, resolveCreativeProfile, validateCreativeProfileInput, type ProjectCreativeProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, isTideweOutdoorProfile, TIDEWE_OUTDOOR_STYLE, resolveCreativeProfile, validateCreativeProfileInput, type ResolvedCreativeProfile } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
 import { generationContextSnapshot, generationContextCheckpoint, generationCheckpoint, beforeGenerationSubmission } from "@/lib/generation-context";
 import { projectGenerationSignature } from "@/lib/generation-source-context";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 import { assertTideweImportedCopy, assertTideweScriptIntegrity, TideweValidationError } from "@/lib/tidewe/validation";
 import { analyzeTideweProductImages, isStaleTideweVisualObservations } from "@/lib/tidewe/image-analysis";
-
-/** Allowed enum values for the styleType column in the scripts table */
-const VALID_SCRIPT_STYLE = new Set([
-  "pain_point", "scene", "comparison", "story",
-  "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head",
-  "tidewe_outdoor", "custom",
-]);
 
 type RequestLlmConfig = LLMConfig & { provider?: string };
 
@@ -42,20 +31,14 @@ interface ScriptRequestBody {
   videoMode?: string;
   targetDuration?: number;
   duration?: number;
-  insightMode?: boolean;
   llmConfig?: RequestLlmConfig;
   creativeProfile?: unknown;
   profile?: unknown;
   creationType?: unknown;
   profileId?: unknown;
   creativeProfileId?: unknown;
-  priceRange?: string;
-  platforms?: string;
-  usageAdvantage?: string;
   targetAudience?: string;
-  referenceStructure?: string;
   customRequirements?: string;
-  preferredHookId?: string;
   requestId?: string;
   expectedCreativeConfigRevision?: number;
   sourceScriptId?: string;
@@ -100,82 +83,7 @@ async function imagePathToBase64(imagePath: string): Promise<string> {
   }
 }
 
-/** Normalize a frontend category value to a ProductCategory supported by the engine */
-function normalizeCategory(raw: unknown): ProductCategory {
-  const map: Record<string, ProductCategory> = {
-    beauty: "beauty",
-    food: "food",
-    home: "home",
-    fashion: "fashion",
-    tech: "tech",
-    digital: "tech", // frontend uses "digital" for the "Electronics/3C" category
-    "3c": "tech",
-    other: "beauty", // fallback for uncategorized items
-  };
-  return map[String(raw ?? "").toLowerCase()] ?? "beauty";
-}
-
-/** Normalize a frontend script style value to a ScriptStyleType supported by the engine */
-function normalizeStyle(raw: unknown): ScriptStyleType {
-  const map: Record<string, ScriptStyleType> = {
-    pain_point: "pain_point",
-    "pain-point": "pain_point",
-    scene: "scene",
-    scenario: "scene", // frontend uses "scenario" for the "scene recommendation" style
-    comparison: "comparison",
-    story: "story",
-    // The four commerce-video forms (剧情形/物品形/口播形 additions)
-    drama: "drama", // dialogue-driven mini-drama (multi-character conflict)
-    reversal: "reversal", // expectation-subverting skit
-    interview: "interview", // street-interview (host + interviewee)
-    unboxing: "unboxing", // first-person immersive unboxing review
-    product_pov: "product_pov", // personified product speaking first-person
-    talking_head: "talking_head", // persona-driven direct-to-camera pitch
-    custom: "custom",
-    auto: "pain_point", // smart-recommend mode defaults to pain-point style
-  };
-  return map[String(raw ?? "").toLowerCase()] ?? "pain_point";
-}
-
-/**
- * Data-flywheel read side: turn the creator's real published-video metrics into a generation hint.
- * Prefers same-category conversion signal, falls back to the global aggregate when a category lacks
- * enough samples, and degrades to an empty hint on cold start or any DB error (never blocks generation).
- * Returns the hint text plus the top-converting style key (used to bias "auto"/smart-recommend mode).
- */
-async function loadInsights(category: string): Promise<{ hint: string; topStyle: string | null }> {
-  try {
-    const db = getDb();
-    const rows = await db.select().from(publishMetrics);
-    if (rows.length === 0) return { hint: "", topStyle: null };
-    const toRec = (r: (typeof rows)[number]): MetricInput => ({
-      style: r.style,
-      hookId: r.hookId ?? undefined,
-      views: r.views,
-      likes: r.likes,
-      comments: r.comments,
-      shares: r.shares,
-      orders: r.orders,
-    });
-    const scoped = rows.filter((r) => r.category === category).map(toRec);
-    const all = rows.map(toRec);
-    // same-category signal first (topConvertingStyle/Hook require >=2 samples and return null otherwise),
-    // then global fallback so a creator with cross-category history still gets a useful prior
-    const topStyle = topConvertingStyle(scoped) ?? topConvertingStyle(all);
-    const topHook = topConvertingHook(scoped) ?? topConvertingHook(all);
-    const hint = buildPerformanceHint(topStyle, topHook, {
-      styleLabel: (s) => styleNameMap[s as ScriptStyleType] ?? s,
-      hookLabel: hookPatternName,
-    });
-    return { hint, topStyle: topStyle?.style ?? null };
-  } catch (e) {
-    // Feedback is best-effort — never let a metrics read failure break script generation
-    console.warn("读取历史转化数据失败（已跳过反馈）:", e);
-    return { hint: "", topStyle: null };
-  }
-}
-
-// Generate commerce script
+// Generate a TIDEWE script
 export async function POST(req: NextRequest) {
   let rawBody: unknown;
   try { rawBody = await req.json(); }
@@ -207,10 +115,9 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
   } = body;
   const projectId = typeof body.projectId === "string" && body.projectId.trim() ? body.projectId.trim() : undefined;
 
-  // A persisted project profile is authoritative. The request fields remain a compatibility path
-  // for callers that generate without a project, and for legacy projects whose profile is null.
+  // Persisted identity is authoritative, including an unsupported or absent historical profile.
   let project: typeof projects.$inferSelect | undefined;
-  let projectProfile: ProjectCreativeProfile;
+  let projectProfile: ResolvedCreativeProfile;
   let projectRevision = 0;
   if (projectId) {
     const db = getDb();
@@ -224,8 +131,6 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     projectRevision = project.creativeConfigRevision ?? 0;
     projectProfile = resolveCreativeProfile(project.creativeProfile, {
       videoMode: project.videoMode,
-      styleType: body.styleType,
-      targetDuration: body.targetDuration ?? body.duration,
     });
   } else {
     const requestedProfile = body.creativeProfile ?? body.profile ?? (
@@ -248,14 +153,13 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
       }
       projectProfile = validatedProfile;
     } else {
-      projectProfile = createShortVideoSalesProfile({
-        styleType: body.styleType,
-        videoMode: body.videoMode,
-        targetDuration: body.targetDuration ?? body.duration,
-      });
+      return NextResponse.json({ error: "A TIDEWE creative profile is required.", code: "CREATIVE_PROFILE_REQUIRED" }, { status: 400 });
     }
   }
-  const tideweProfile = isTideweOutdoorProfile(projectProfile) ? projectProfile : undefined;
+  if (!isTideweOutdoorProfile(projectProfile)) {
+    return NextResponse.json({ error: "This creation workflow is no longer supported. Create a TIDEWE project to continue.", code: "CREATIVE_PROFILE_UNSUPPORTED" }, { status: 400 });
+  }
+  const tideweProfile = projectProfile;
   let originalSelection: { id: string; hash: string } | undefined;
   let originalSource: { id: string; hash: string } | undefined;
   if (projectId) {
@@ -314,17 +218,9 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
   const productDescription = project?.productDescription ?? requestedProductDescription;
   const effectiveCategory = project?.productCategory ?? body.category ?? body.productCategory;
 
-  // Support both frontend field naming conventions: category/productCategory, targetDuration/duration
-  // TIDEWE's original outdoor category travels in facts/categoryHint, never in the legacy beauty fallback.
-  const category = tideweProfile ? "fashion" : normalizeCategory(effectiveCategory);
-  // detect smart-recommend ("auto"/unset) BEFORE normalizing, so the flywheel can pick a data-driven
-  // default instead of the hardcoded pain_point fallback; an explicit style is always respected
-  const rawStyle = String(projectProfile.styleType ?? body.styleType ?? "").toLowerCase();
-  const isAutoStyle = rawStyle === "" || rawStyle === "auto";
-  let styleType = tideweProfile ? TIDEWE_OUTDOOR_STYLE : normalizeStyle(projectProfile.styleType);
-  const duration = projectProfile.targetDuration;
-  // data flywheel: performance feedback is on by default; pass insightMode:false to opt out
-  const useInsights = !tideweProfile && body.insightMode !== false;
+  const category = "fashion";
+  const styleType = TIDEWE_OUTDOOR_STYLE;
+  const duration = tideweProfile.targetDuration;
 
   if (!productName) {
     return apiError(req, "请填写商品名称", "Please enter the product name");
@@ -357,28 +253,8 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         console.warn("TIDEWE image observations unavailable:", error);
       }
     }
-    if (!tideweProfile && !analysis && imageReferences.length > 0 && llmConfig && !analysisComplete) {
-      try {
-        const imageUrls = await Promise.all(
-          imageReferences.map(imagePathToBase64)
-        );
-        beforeGenerationSubmission();
-        analysis = await analyzeProduct(imageUrls, llmConfig);
-      } catch (e) {
-        // Image analysis failure should not block script generation
-        console.warn("商品图片分析失败（已跳过）:", e);
-      }
-    }
 
     generationCheckpoint({ analysisComplete: true, productAnalysis: analysis ?? null, submissionState: "not_submitted" });
-    // Data flywheel (read side): pull the creator's real conversion feedback for this category.
-    // Used two ways: (1) bias smart-recommend ("auto") mode toward the top-converting style,
-    // (2) inject an advisory hint into the prompt so generated variants lean toward what sells.
-    const insights = useInsights ? await loadInsights(category) : { hint: "", topStyle: null };
-    if (useInsights && isAutoStyle && insights.topStyle) {
-      styleType = normalizeStyle(insights.topStyle);
-    }
-
     // Generate script (category/styleType/duration already normalized above)
     const savedGenerated = generationContextCheckpoint()?.generatedScripts as Awaited<ReturnType<typeof generateScript>> | undefined;
     if (!savedGenerated) beforeGenerationSubmission();
@@ -403,20 +279,8 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
         count: 1,
       }),
 
-      priceRange: body.priceRange,
-      platforms: body.platforms,
-      usageAdvantage: body.usageAdvantage,
       targetAudience: body.targetAudience,
-      referenceStructure: body.referenceStructure,
-      // ad-template creative direction (look + per-shot-type camera plan) and any other
-      // caller-supplied requirements — buildUserPrompt already injects this field
       customRequirements: typeof body.customRequirements === "string" ? body.customRequirements.slice(0, 2000) : undefined,
-      performanceHint: tideweProfile ? undefined : insights.hint,
-      // anti-homogenization: batch rotation pins a different opening hook mechanism per video (validated against the pattern library)
-      preferredHookId:
-        typeof body.preferredHookId === "string" && HOOK_PATTERNS.some((p) => p.id === body.preferredHookId)
-          ? body.preferredHookId
-          : undefined,
       llmConfig,
     });
     if (tideweProfile) {
@@ -433,7 +297,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
     // Persist: write generated scripts to the scripts table so the script/assets pages can read them by projectId
     const generationMetadata = { ...scriptGenerationMetadata(
       llmConfig,
-      tideweProfile ? "tidewe-outdoor-script" : "commerce-script",
+      "tidewe-outdoor-script",
     ), ...(body.requestId && { requestId: body.requestId }) };
     let savedScripts = scripts;
     if (projectId) {
@@ -514,10 +378,7 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
             scripts.map((s, i) => ({
               projectId,
               version: nextVersion,
-              styleType: (VALID_SCRIPT_STYLE.has(s.styleType) ? s.styleType : "custom") as
-                | "pain_point" | "scene" | "comparison" | "story"
-                | "drama" | "reversal" | "interview" | "unboxing" | "product_pov" | "talking_head" | "tidewe_outdoor"
-                | "custom",
+              styleType: TIDEWE_OUTDOOR_STYLE,
               title: s.title,
               totalDuration: s.totalDuration,
               shots: s.shots,
@@ -528,8 +389,6 @@ async function generateRequestedScripts(req: NextRequest, body: ScriptRequestBod
                 projectRevision,
                 { styleType, videoMode: projectProfile.videoMode, targetDuration: duration },
               ),
-              // dialogue-script cast (drama style) — read back at compose time for multi-voice TTS
-              ...(s.characters?.length && { characters: s.characters }),
                 // A profile changed while the LLM was working: archive this output under its
                 // original snapshot, but never let it replace the current selected script.
                 selected: !creativeConfigChanged && i === 0,

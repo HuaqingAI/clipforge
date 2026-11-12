@@ -1,12 +1,10 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
+import { useParams } from "next/navigation";
 import { useGenerationRuns, generationRunActive } from "@/lib/hooks/use-generation-runs";
 import { GenerationRunsPanel } from "@/components/generation-runs-panel";
-import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil, LuTrash2, LuHistory } from "react-icons/lu";
-import { checkScriptCompliance } from "@/lib/ad-compliance";
-import { checkPublishReadiness } from "@/lib/publish-readiness";
+import { LuWand, LuClock, LuImage, LuArrowRight, LuLoaderCircle, LuTriangleAlert, LuPencil, LuTrash2, LuHistory } from "react-icons/lu";
 import Link from "next/link";
 import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,16 +12,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import type { Shot } from "@/lib/db/schema";
-import { JUDGE_META, type JudgeReport, autoApplicableRewrites, autoApplicableDescriptionRewrites } from "@/lib/script-judge";
-import { useTemplateStore } from "@/lib/stores/template-store";
+import { JUDGE_META, type JudgeReport } from "@/lib/script-judge";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useT, useLocale } from "@/lib/i18n";
-import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
 import { abortable, currentScriptOptions, generateProjectScripts, type SavedScript as DbScript } from "@/lib/script-generation-client";
-import { SHOW_FREE_QUICK_CUT } from "@/lib/ui-features";
 import { ProjectHeader } from "@/components/project-header";
 import { ScriptHistoryDialog } from "@/components/script-history-dialog";
 import { TideweCopyEditor } from "@/components/tidewe-copy-editor";
@@ -33,12 +27,10 @@ import { normalizeProductFacts } from "@/lib/tidewe/facts";
 import { tideweCopyInputError } from "@/lib/tidewe/copy-input";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 import {
-  createShortVideoSalesProfile,
-  createTideweOutdoorProfile,
   resolveCreativeProfile,
   sanitizeCreativeProfileDrafts,
-  type CreationType,
   type ProjectCreativeProfile,
+  type ArchivedCreativeProfile,
   type ProjectCreativeProfileDrafts,
   type CreativeProfileSnapshot,
 } from "@/lib/creative-profiles";
@@ -62,20 +54,13 @@ const styleLabelKeys: Record<string, string> = {
   tidewe_outdoor: "styleTidewe",
 };
 
-const creationTypeLabelKeys: Record<CreationType, string> = {
-  short_video_sales: "creativeTypeSales",
-  tidewe_outdoor: "styleTidewe",
-};
-
 interface ProjectMeta {
   productName: string;
   category: string;
   description: string;
   productImages: string[];
   videoMode: string;
-  contentType: string;
-  topic: string;
-  creativeProfile: ProjectCreativeProfile;
+  creativeProfile: ProjectCreativeProfile | ArchivedCreativeProfile;
   creativeProfileDrafts: ProjectCreativeProfileDrafts;
   creativeConfigRevision: number;
   productFacts?: ProductFacts;
@@ -104,13 +89,10 @@ function projectMetaFromResponse(value: unknown): ProjectMeta {
   const creativeProfile = resolveCreativeProfile(parseJsonRecord(project.creativeProfile), fallback);
   const parsedDrafts = sanitizeCreativeProfileDrafts(parseJsonRecord(project.creativeProfileDrafts)) ?? {};
   const creativeProfileDrafts: ProjectCreativeProfileDrafts = {
-    short_video_sales: parsedDrafts.short_video_sales ?? createShortVideoSalesProfile(fallback),
-    tidewe_outdoor: parsedDrafts.tidewe_outdoor ?? createTideweOutdoorProfile(),
+    ...parsedDrafts,
   };
   if (creativeProfile.creationType === "tidewe_outdoor") {
     creativeProfileDrafts.tidewe_outdoor = creativeProfile;
-  } else {
-    creativeProfileDrafts.short_video_sales = creativeProfile;
   }
   return {
     productName: typeof project.productName === "string" ? project.productName : "",
@@ -119,8 +101,6 @@ function projectMetaFromResponse(value: unknown): ProjectMeta {
     productFacts: normalizeProductFacts(parseJsonRecord(project.productFacts)),
     productImages: Array.isArray(project.productImages) ? project.productImages.filter((image): image is string => typeof image === "string") : [],
     videoMode: creativeProfile.videoMode,
-    contentType: typeof project.contentType === "string" ? project.contentType : "product",
-    topic: typeof project.topic === "string" ? project.topic : "",
     creativeProfile,
     creativeProfileDrafts,
     creativeConfigRevision: typeof project.creativeConfigRevision === "number" && Number.isSafeInteger(project.creativeConfigRevision)
@@ -140,7 +120,6 @@ export default function ScriptPage() {
   const scriptRunActive = scriptRuns.some(generationRunActive);
   const scriptRunBlocked = scriptRunActive || scriptRuns.some((run) => run.status === "needs_attention");
   const completedScriptRuns = scriptRuns.filter((run) => run.status === "completed").map((run) => run.id).sort().join(",");
-  const router = useRouter();
   const [selectedScript, setSelectedScript] = useState(0);
   const [scripts, setScripts] = useState<
     { id: string; title: string; styleType: string; totalDuration: number; shots: Shot[]; copyDocument?: TideweCopyDocument | null; scriptHash?: string; creativeProfileSnapshot?: CreativeProfileSnapshot | null }[]
@@ -206,9 +185,9 @@ export default function ScriptPage() {
     };
   }, [id]);
 
-  // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
+  // TIDEWE uses the same durable generation flow for AI and supplied English copy.
   const handleGenerate = async () => {
-    if (!projectMeta || generationRunsLoading || generationRunsError || scriptRunBlocked || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
+    if (!projectMeta || projectMeta.creativeProfile.creationType !== "tidewe_outdoor" || generationRunsLoading || generationRunsError || scriptRunBlocked || creativeConfigSaving || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving") return;
     const manualTideweCopy = projectMeta.creativeProfile.creationType === "tidewe_outdoor" && tideweCopySource === "manual";
     const copyError = manualTideweCopy ? tideweCopyInputError(tideweCopyText) : undefined;
     if (copyError) {
@@ -225,17 +204,7 @@ export default function ScriptPage() {
     setIsGenerating(true);
     setGenError("");
     try {
-      const isTopic = projectMeta.contentType === "topic";
-      // topic projects use /api/topic/script (no product needed); otherwise use the commerce script engine
-      const endpoint = isTopic ? "/api/topic/script" : "/api/llm/script";
-      const payload = isTopic
-        ? {
-            projectId: id,
-            topic: projectMeta.topic || projectName,
-            targetDuration: 25,
-            llmConfig: { provider: llm.provider, baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model },
-          }
-        : {
+      const payload = {
             projectId: id,
             ...(projectMeta.creativeProfile.creationType === "tidewe_outdoor" && { requestId: crypto.randomUUID(), expectedCreativeConfigRevision: projectMeta.creativeConfigRevision, count: 1, ...(scripts[selectedScript]?.scriptHash && { sourceScriptId: scripts[selectedScript].id, expectedScriptHash: scripts[selectedScript].scriptHash }) }),
             ...(manualTideweCopy && { copyText: tideweCopyText }),
@@ -258,7 +227,7 @@ export default function ScriptPage() {
             },
           };
       const dbScripts = await generateProjectScripts({
-        endpoint, payload, projectId: id, knownScriptIds: scripts.map((script) => script.id),
+        endpoint: "/api/llm/script", payload, projectId: id, knownScriptIds: scripts.map((script) => script.id),
         signal: controller.signal,
         messages: {
           failed: t("errorGenFailedCheckLlm"),
@@ -400,54 +369,8 @@ export default function ScriptPage() {
   const currentScript = scripts[selectedScript];
 
   const isTideweProject = projectMeta?.creativeProfile.creationType === "tidewe_outdoor";
-  // pre-render ad compliance scan: rule-check the current script's voiceover and text overlays; warn on risky terms (non-blocking)
-  const adViolations = useMemo(
-    () => (currentScript && !isTideweProject ? checkScriptCompliance(currentScript.shots as { voiceover?: string; textOverlay?: { text?: string } | null }[]) : []),
-    [currentScript, isTideweProject]
-  );
-  // pre-publish readiness check: inspect banned words / hook / duration / subtitles / CTA / three-act structure item by item (AIGC label is handled by the compose page, not checked here)
-  const readiness = useMemo(
-    () =>
-      currentScript && !isTideweProject
-        ? checkPublishReadiness(currentScript.shots as Shot[], currentScript.totalDuration, {
-            locale,
-            // commerce hard rule "product visible in the first 3s" — only for product videos (topic videos have no productName)
-            productName: projectMeta?.productName || undefined,
-          })
-        : null,
-    [currentScript, locale, projectMeta?.productName, isTideweProject]
-  );
-
-  // template-related state
-  const { addTemplate } = useTemplateStore();
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [templateName, setTemplateName] = useState("");
   // Confirm before replacing the current alternatives; saved revisions remain in project history.
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
-  const [savedTip, setSavedTip] = useState(false);
-
-  /** click the "save as template" button */
-  const handleSaveAsTemplate = () => {
-    setTemplateName("");
-    setShowSaveDialog(true);
-  };
-
-  /** confirm and save the template */
-  const doSaveTemplate = () => {
-    if (!templateName.trim() || !currentScript) return;
-    addTemplate({
-      id: crypto.randomUUID(),
-      name: templateName.trim(),
-      styleType: currentScript.styleType,
-      shots: currentScript.shots as Shot[],
-      totalDuration: currentScript.totalDuration,
-      useCount: 0,
-      createdAt: new Date(),
-    });
-    setShowSaveDialog(false);
-    setSavedTip(true);
-    setTimeout(() => setSavedTip(false), 3000);
-  };
 
   // ---- selection persistence: switching the active variant must be written to the DB, otherwise
   // downstream steps (assets/video/export) read `selected` from the DB and use a different script ----
@@ -498,7 +421,7 @@ export default function ScriptPage() {
   };
 
   const restoreHistoricalScript = async (scriptId: string) => {
-    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving" || creativeConfigSaving || autoFinishing) {
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || editStatus === "saving" || creativeConfigSaving) {
       throw new Error(t("historyRestoreBusy"));
     }
     const controller = new AbortController();
@@ -561,126 +484,6 @@ export default function ScriptPage() {
     setEditingShotId(null);
     setEditStatus("");
   };
-  // ---- one-click auto-finish: script → auto-fill footage → compose → export, all keyless.
-  // Mirrors the batch page's autoCompose so the single-project web flow isn't the only path that
-  // can't run end-to-end automatically. Compose is polled by the exact compositionId (precise, race-free). ----
-  const [autoFinishing, setAutoFinishing] = useState(false);
-  const [autoFinishStage, setAutoFinishStage] = useState("");
-  const [autoFinishError, setAutoFinishError] = useState("");
-  // Hands-off mode (?auto=1, set by the /start hero flows): auto-run the same chain and show a
-  // takeover progress card instead of dropping beginners into the full editor. "转手动" simply
-  // reveals the editor — the running chain is untouched.
-  const [autoMode, setAutoMode] = useState(false);
-  const [autoModeTriggered, setAutoModeTriggered] = useState(false);
-  // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
-  // the AI chain stops at the script gate before continuing to Assets
-  const [genPref, setGenPref] = useState<"free" | "ai">(SHOW_FREE_QUICK_CUT ? "free" : "ai");
-  useEffect(() => {
-    const qs = new URLSearchParams(window.location.search);
-    if (qs.get("auto") === "1") setAutoMode(true);
-    if (qs.get("gen") === "ai") setGenPref("ai");
-  }, []);
-  // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
-  // The free chain now runs SERVER-SIDE (pipeline_runs): the page only starts a run and
-  // observes it, so closing/refreshing the tab no longer kills the chain — reopening the
-  // project re-attaches to the live run, and a failed run offers resume-from-breakpoint.
-  const [resumableRun, setResumableRun] = useState<{ id: string; stage: string; interrupted?: boolean } | null>(null);
-
-  /** Poll the project's latest pipeline run to a terminal status, mirroring stage labels. */
-  const attachPipeline = async () => {
-    if (!SHOW_FREE_QUICK_CUT || isTideweProject) return;
-    setAutoFinishing(true);
-    setAutoFinishError("");
-    setResumableRun(null);
-    try {
-      // 2.5s × 312 ≈ 13 min, above the server-side compose polling budget
-      for (let i = 0; i < 312; i++) {
-        const d = await fetch(`/api/project/${id}/pipeline`).then((x) => x.json()).catch(() => ({}));
-        const run = d?.run;
-        if (!run) throw new Error(t("autoFinishFailed"));
-        const labelKey = STAGE_LABEL_KEYS[run.stage as keyof typeof STAGE_LABEL_KEYS];
-        setAutoFinishStage(labelKey ? t(labelKey) : t("autoFinishSelecting"));
-        if (run.status === "done") { router.push(`/project/${id}/export`); return; }
-        if (run.status === "failed") {
-          setResumableRun({ id: run.id, stage: run.stage, interrupted: run.interrupted });
-          throw new Error(run.error === "interrupted" ? t("pipelineInterrupted") : run.error || t("autoFinishFailed"));
-        }
-        await new Promise((r) => setTimeout(r, 2500));
-      }
-      throw new Error(t("autoFinishFailed"));
-    } catch (err) {
-      setAutoFinishError(friendlyError(err, locale));
-      setAutoFinishing(false);
-    }
-  };
-
-  /** Start (or resume) the server-side run, then attach as an observer. */
-  const startPipeline = async (resume: boolean) => {
-    if (!SHOW_FREE_QUICK_CUT || isTideweProject) return;
-    if (autoFinishing) return;
-    if (!resume && !currentScript) return;
-    setAutoFinishing(true);
-    setAutoFinishError("");
-    setAutoFinishStage(t("autoFinishSelecting"));
-    try {
-      const res = await fetch(`/api/project/${id}/pipeline`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...(resume ? { resume: true } : { scriptId: currentScript!.id }),
-          // LLM config opt-in: enables the judge quality pass + semantic footage rerank
-          ...(llm.baseUrl && llm.model ? { llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model } } : {}),
-        }),
-      });
-      if (!res.ok) throw new Error(t("autoFinishFailed"));
-      await attachPipeline();
-    } catch (err) {
-      setAutoFinishError(friendlyError(err, locale));
-      setAutoFinishing(false);
-    }
-  };
-
-  const autoFinish = () => startPipeline(false);
-
-  // On entry, look for a live or breakpointed run BEFORE any fresh auto start:
-  // live → re-attach (the "came back after closing the tab" path);
-  // failed → surface the resume/restart choice instead of silently starting over.
-  const [pipelineChecked, setPipelineChecked] = useState(!SHOW_FREE_QUICK_CUT);
-  useEffect(() => {
-    if (!SHOW_FREE_QUICK_CUT || !projectMeta) return;
-    if (isTideweProject) {
-      setPipelineChecked(true);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const d = await fetch(`/api/project/${id}/pipeline`).then((x) => x.json()).catch(() => ({}));
-        if (cancelled) return;
-        const run = d?.run;
-        if (run?.status === "running") {
-          setAutoModeTriggered(true); // suppress the fresh ?auto=1 trigger — we're already attached
-          void attachPipeline();
-        } else if (run?.status === "failed") {
-          setResumableRun({ id: run.id, stage: run.stage, interrupted: run.interrupted });
-        }
-      } finally {
-        if (!cancelled) setPipelineChecked(true);
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount; attachPipeline is a stable page-level handler
-  }, [id, isTideweProject, projectMeta]);
-
-  // ?auto=1 fresh start (from the /start hero flows) — only after the re-attach check settled,
-  // so an already-live or breakpointed run is never silently restarted from the top
-  useEffect(() => {
-    if (!SHOW_FREE_QUICK_CUT || !projectMeta || isTideweProject || !autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
-    setAutoModeTriggered(true);
-    // the AI path lands on the "script ready" gate instead of auto-running the free chain
-    if (genPref !== "ai") autoFinish();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun, isTideweProject, projectMeta]);
-
   // Reports and open edits belong to a script ID; regeneration may retain the same list index.
   useEffect(() => {
     setJudgeReport(null);
@@ -692,7 +495,7 @@ export default function ScriptPage() {
 
   // Review and apply operations share a synchronous guard so repeated clicks cannot overlap.
   const runJudge = async () => {
-    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
+    if (!currentScript || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || editStatus === "saving") return;
     const controller = new AbortController();
     judgeAbort.current = controller;
     setJudging(true);
@@ -723,52 +526,8 @@ export default function ScriptPage() {
     }
   };
 
-  // Standalone concrete rewrites use the shot-edit endpoint; reports with feedback use the complete editing pass.
-  const applyJudgeRewrites = async () => {
-    if (isTideweProject || !currentScript || !judgeReport || judgeApplied || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
-    if (judgeReport.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default"))) return;
-    // tier gate applies to the button too: taste-tier rewrites stay suggestions in the list
-    const autoRewrites = autoApplicableRewrites(judgeReport);
-    const autoDescRewrites = autoApplicableDescriptionRewrites(judgeReport);
-    if (autoRewrites.length === 0 && autoDescRewrites.length === 0) return;
-    const patchByShot = new Map<number, { shotId: number; voiceover?: string; description?: string }>();
-    for (const r of autoRewrites) patchByShot.set(r.shotId, { shotId: r.shotId, voiceover: r.voiceover });
-    for (const r of autoDescRewrites) {
-      patchByShot.set(r.shotId, { ...(patchByShot.get(r.shotId) ?? { shotId: r.shotId }), description: r.description });
-    }
-    const controller = new AbortController();
-    judgeAbort.current = controller;
-    setJudgeApplying(true);
-    setJudgeError("");
-    try {
-      const res = await fetch(`/api/project/${id}/scripts`, {
-        method: "PATCH",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptId: currentScript.id, shotTexts: Array.from(patchByShot.values()) }),
-      });
-      const data = await res.json();
-      if (controller.signal.aborted) return;
-      if (!res.ok) throw new Error(data.error || t("judgeApplyFailed"));
-      setScripts((previous) => previous.map((row) => row.id === currentScript.id ? {
-        ...row,
-        shots: row.shots.map((shot) => ({ ...shot, ...patchByShot.get(shot.shotId) })),
-        ...data.script,
-      } : row));
-      setJudgeApplied(true);
-    } catch (cause) {
-      if (!controller.signal.aborted) setJudgeError(cause instanceof Error ? cause.message : t("judgeApplyFailed"));
-    } finally {
-      if (judgeAbort.current === controller) {
-        judgeAbort.current = null;
-        setJudgeApplying(false);
-      }
-    }
-  };
-
-  // Apply all actionable feedback together, including issues without a proposed rewrite.
   const applyJudgeAdvice = async () => {
-    if (!currentScript || !judgeReport || judgeApplied || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
+    if (!currentScript || !judgeReport || judgeApplied || generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || editStatus === "saving") return;
     if (!judgeReport.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default"))) return;
     if (!judgeReport.sourceScriptHash || (currentScript.scriptHash && currentScript.scriptHash !== judgeReport.sourceScriptHash)) {
       setJudgeError(t("judgeReportStale"));
@@ -845,7 +604,7 @@ export default function ScriptPage() {
     if (generationRunsLoading || generationRunsError || scriptRunBlocked) return;
     if (!currentScript?.scriptHash || !projectMeta) throw new Error(tt("missingHash"));
     if (!llm.apiKey) throw new Error(tt("missingLlm"));
-    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || autoFinishing || editStatus === "saving") return;
+    if (generationInFlight.current || deletionAbort.current || selectionAbort.current || judgeAbort.current || judging || judgeApplying || creativeConfigSaving || editStatus === "saving") return;
     generationInFlight.current = true;
     const controller = new AbortController(); generationAbort.current = controller;
     setEditStatus("saving");
@@ -871,15 +630,14 @@ export default function ScriptPage() {
   };
 
   const scriptActionsBusy = generationRunsLoading || Boolean(generationRunsError) || scriptRunBlocked || isGenerating || isDeleting || isSelecting || judging || judgeApplying || editStatus === "saving";
-  const judgeRewriteCount = judgeReport ? autoApplicableRewrites(judgeReport).length + autoApplicableDescriptionRewrites(judgeReport).length : 0;
   const judgeHasActionableAdvice = judgeReport?.verdicts.some((verdict) => verdict.issues.some((issue) => issue.tier === "invariant" || issue.tier === "default")) ?? false;
   const judgeHasSuggestions = judgeReport ? judgeReport.verdicts.some((verdict) => verdict.issues.length > 0) || judgeReport.rewrites.length > 0 || judgeReport.descriptionRewrites.length > 0 : false;
   const manualTideweCopy = isTideweProject && tideweCopySource === "manual";
-  const generationDisabled = scriptActionsBusy || creativeConfigSaving || autoFinishing || Boolean(manualTideweCopy && tideweCopyInputError(tideweCopyText));
+  const generationDisabled = !isTideweProject || scriptActionsBusy || creativeConfigSaving || Boolean(manualTideweCopy && tideweCopyInputError(tideweCopyText));
   const tideweGenerationInput = isTideweProject ? (
     <Card className="glass-card mb-5 w-full text-left">
       <CardContent className="space-y-4 p-5">
-        <TideweCopyInput id="tidewe-custom-copy-text" source={tideweCopySource} text={tideweCopyText} sceneDescription={tideweSceneDescription} onSourceChange={(source) => { tideweCopyDraftTouched.current = true; setTideweCopySource(source); }} onTextChange={(text) => { tideweCopyDraftTouched.current = true; setTideweCopyText(text); }} onSceneDescriptionChange={(description) => { tideweCopyDraftTouched.current = true; setTideweSceneDescription(description); }} disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} />
+        <TideweCopyInput id="tidewe-custom-copy-text" source={tideweCopySource} text={tideweCopyText} sceneDescription={tideweSceneDescription} onSourceChange={(source) => { tideweCopyDraftTouched.current = true; setTideweCopySource(source); }} onTextChange={(text) => { tideweCopyDraftTouched.current = true; setTideweCopyText(text); }} onSceneDescriptionChange={(description) => { tideweCopyDraftTouched.current = true; setTideweSceneDescription(description); }} disabled={scriptActionsBusy || creativeConfigSaving} />
         {scripts.length > 0 && <div className="flex justify-end">
           <Button variant="outline" size="sm" disabled={generationDisabled} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
             {isGenerating ? <LuLoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" /> : <LuWand className="mr-1 h-3.5 w-3.5" />}
@@ -890,18 +648,18 @@ export default function ScriptPage() {
     </Card>
   ) : null;
   const historyButton = (
-    <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={() => setHistoryOpen(true)}>
+    <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy || creativeConfigSaving} onClick={() => setHistoryOpen(true)}>
       <LuHistory className="mr-1 h-3.5 w-3.5" />{t("historyButton")}
     </Button>
   );
   const historyDialog = historyOpen ? (
-    <ScriptHistoryDialog key={id} projectId={id} busy={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClose={() => setHistoryOpen(false)} onRestore={restoreHistoricalScript} />
+    <ScriptHistoryDialog key={id} projectId={id} busy={scriptActionsBusy || creativeConfigSaving} onClose={() => setHistoryOpen(false)} onRestore={restoreHistoricalScript} />
   ) : null;
   const headerBar = <>
     <ProjectHeader projectName={projectName || t("defaultProjectName")} />
     <div className="mx-auto max-w-6xl px-6 pt-4"><GenerationRunsPanel projectId={id} /></div>
   </>;
-  const creativeProfileSummary = projectMeta && projectMeta.contentType !== "topic" ? (
+  const creativeProfileSummary = projectMeta ? (
     <Card className="glass-card mb-5">
       <CardContent className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -910,7 +668,7 @@ export default function ScriptPage() {
             <p className="mt-1 text-xs text-muted-foreground">{t("creativeTypeDesc")}</p>
           </div>
           <Badge variant="outline" className="h-auto rounded-lg border-primary/50 bg-primary/10 px-3 py-2 text-primary">
-            {t(creationTypeLabelKeys[projectMeta.creativeProfile.creationType])}
+            {t(isTideweProject ? "styleTidewe" : "archivedCreativeType")}
           </Badge>
         </div>
 
@@ -918,7 +676,7 @@ export default function ScriptPage() {
           key={`${id}-${projectMeta.creativeConfigRevision}`}
           projectId={id} revision={projectMeta.creativeConfigRevision} facts={projectMeta.productFacts}
           profile={projectMeta.creativeProfile} drafts={projectMeta.creativeProfileDrafts}
-          disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing}
+          disabled={scriptActionsBusy || creativeConfigSaving}
           onBusyChange={setCreativeConfigSaving} onSaved={(project) => setProjectMeta(projectMetaFromResponse(project))}
         />}
         {isTideweProject && projectMeta.productImages.length > 0 && (
@@ -975,7 +733,29 @@ export default function ScriptPage() {
     );
   }
 
-  // empty state: this project has no real scripts yet (fixes #3: no longer shows the Debao demo; provides a recoverable "generate script" entry point)
+  if (projectMeta && !isTideweProject) {
+    return (
+      <div className="min-h-screen grid-bg">
+        {headerBar}
+        <main className="mx-auto max-w-3xl space-y-5 px-6 py-8">
+          <p className="text-sm text-muted-foreground">{t("archivedProjectDescription")}</p>
+          <Link href="/project/new"><Button>{t("createTideweProject")}</Button></Link>
+          {scripts.map((script) => (
+            <Card key={script.id} className="glass-card">
+              <CardContent className="space-y-3 p-5">
+                <h2 className="text-sm font-semibold">{script.title}</h2>
+                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                  {script.copyDocument?.text ?? script.shots.map((shot) => shot.voiceover).filter(Boolean).join("\n\n")}
+                </p>
+              </CardContent>
+            </Card>
+          ))}
+        </main>
+      </div>
+    );
+  }
+
+  // Projects with no saved script can generate using either TIDEWE copy source.
   if (scripts.length === 0) {
     return (
       <div className="min-h-screen grid-bg">
@@ -1024,33 +804,6 @@ export default function ScriptPage() {
     );
   }
 
-  // Hands-off takeover: while the auto chain (free) runs,
-  // beginners see one progress card, not the editor
-  if (SHOW_FREE_QUICK_CUT && !isTideweProject && autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) {
-    return (
-      <div className="min-h-screen grid-bg">
-        {headerBar}
-        <main className="mx-auto flex max-w-lg flex-col items-center px-6 py-24 text-center">
-          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl brand-gradient">
-            <svg className="h-6 w-6 animate-spin text-white" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.4 0 0 5.4 0 12h4z" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-bold">{t("autoModeTitle")}</h2>
-          <p className="mt-2 text-sm text-primary">
-            {autoFinishStage || t("autoFinishSelecting")}
-          </p>
-          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-            {t("autoModeHint")}
-          </p>
-          <Button variant="outline" size="sm" className="mt-8 text-xs" onClick={() => setAutoMode(false)}>
-            {t("autoModeManual")}
-          </Button>
-        </main>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen grid-bg">
@@ -1061,28 +814,7 @@ export default function ScriptPage() {
         {isTideweProject && currentScript?.copyDocument && <TideweCopyEditor key={`${currentScript.id}:${currentScript.scriptHash}`} document={currentScript.copyDocument} busy={scriptActionsBusy || creativeConfigSaving} onSave={saveTideweCopy} />}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
-        {SHOW_FREE_QUICK_CUT && !isTideweProject && resumableRun && !autoFinishing && (
-          <div className="mx-auto mb-5 max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-            <p className="text-sm font-medium text-amber-500">
-              ⏸ {resumableRun.interrupted ? t("pipelineInterruptedTitle") : t("pipelineFailedTitle")}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("pipelineResumeDesc", {
-                stage: STAGE_LABEL_KEYS[resumableRun.stage as keyof typeof STAGE_LABEL_KEYS]
-                  ? t(STAGE_LABEL_KEYS[resumableRun.stage as keyof typeof STAGE_LABEL_KEYS])
-                  : resumableRun.stage,
-              })}
-            </p>
-            <div className="mt-2.5 flex gap-2">
-              <Button size="sm" className="brand-gradient text-white" onClick={() => startPipeline(true)}>
-                {t("pipelineResume")}
-              </Button>
-              <Button size="sm" variant="outline" disabled={!currentScript} onClick={() => startPipeline(false)}>
-                {t("pipelineRestart")}
-              </Button>
-            </div>
-          </div>
-        )}
+
         {uiMode === "simple" ? (
           /* Beginner view: script text + one big button. No storyboard, no panels. */
           <div className="mx-auto max-w-2xl space-y-4">
@@ -1098,16 +830,10 @@ export default function ScriptPage() {
                     {currentScript ? `${currentScript.totalDuration}s` : ""}
                   </span>
                 </div>
-                {!isTideweProject && <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-                  {currentScript?.copyDocument?.text ?? currentScript?.shots.map((sh) => sh.voiceover).filter(Boolean).join("\n\n")}
-                </p>}
+
               </CardContent>
             </Card>
-            {autoFinishError && (
-              <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-xs text-destructive">
-                {autoFinishError}
-              </div>
-            )}
+
             {genError && (
               <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/40 bg-red-500/5 px-4 py-2.5 text-xs text-red-400">
                 <span>{genError}</span>
@@ -1117,31 +843,20 @@ export default function ScriptPage() {
               </div>
             )}
             <div className="flex flex-col items-center gap-3">
-              <div className={`grid w-full gap-2 ${SHOW_FREE_QUICK_CUT && !isTideweProject ? "sm:grid-cols-2" : ""}`}>
-                {SHOW_FREE_QUICK_CUT && !isTideweProject && <Button
-                  size="lg"
-                  variant={genPref === "ai" ? "outline" : "default"}
-                  className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
-                  disabled={autoFinishing || !currentScript}
-                  onClick={autoFinish}
-                >
-                  {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
-                </Button>}
+              <div className="grid w-full gap-2">
+
                 <Link href={`/project/${id}/assets`} className="w-full">
-                  <Button size="lg" className="w-full brand-gradient text-white" disabled={autoFinishing || !currentScript}>
+                  <Button size="lg" className="w-full brand-gradient text-white" disabled={!currentScript}>
                     {t("nextStepAssets")}
                     <LuArrowRight className="w-4 h-4 ml-1" />
                   </Button>
                 </Link>
               </div>
-              {SHOW_FREE_QUICK_CUT && !isTideweProject && <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>}
+
               <div className="flex flex-wrap items-center gap-3">
-                {!isTideweProject && <Button variant="outline" size="sm" className="text-xs" disabled={scriptActionsBusy} aria-busy={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
-                  {isGenerating && <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" />}
-                  {t(isGenerating ? "regenerating" : "regenerate")}
-                </Button>}
+
                 {historyButton}
-                <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-destructive" disabled={scriptActionsBusy || autoFinishing} onClick={() => { setDeleteTarget(currentScript); setDeleteError(""); }}>
+                <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-destructive" disabled={scriptActionsBusy} onClick={() => { setDeleteTarget(currentScript); setDeleteError(""); }}>
                   <LuTrash2 className="mr-1 h-3.5 w-3.5" />{t("deleteScript")}
                 </Button>
                 <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => setUiMode("pro")}>
@@ -1160,17 +875,9 @@ export default function ScriptPage() {
                 {selectionTip && (
                   <span className="text-xs text-green-400 animate-in fade-in">{t("selectionSaved")}</span>
                 )}
-                {savedTip && (
-                  <span className="text-xs text-green-400 animate-in fade-in">{t("savedAsTemplate")}</span>
-                )}
-                <Button variant="outline" size="sm" className="text-xs" disabled={isTideweProject} onClick={handleSaveAsTemplate}>
-                  <LuBookmarkPlus className="w-3.5 h-3.5 mr-1" />
-                  {t("saveAsTemplate")}
-                </Button>
-                {!isTideweProject && <Button variant="outline" size="sm" disabled={scriptActionsBusy} aria-busy={isGenerating} className="text-xs" onClick={() => setRegenConfirmOpen(true)}>
-                  {isGenerating ? <LuLoaderCircle className="w-3.5 h-3.5 mr-1 animate-spin" /> : <LuWand className="w-3.5 h-3.5 mr-1" />}
-                  {t(isGenerating ? "regenerating" : "regenerate")}
-                </Button>}
+
+
+
                 {historyButton}
               </div>
             </div>
@@ -1190,7 +897,7 @@ export default function ScriptPage() {
                         <Badge variant="secondary" className="text-xs">
                           {styleLabelKeys[script.styleType] ? t(styleLabelKeys[script.styleType]) : script.styleType}
                         </Badge>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`${t("deleteScript")} ${script.title}`} title={t("deleteScript")} disabled={scriptActionsBusy || autoFinishing} onClick={(event) => { event.stopPropagation(); setDeleteTarget(script); setDeleteError(""); }}>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`${t("deleteScript")} ${script.title}`} title={t("deleteScript")} disabled={scriptActionsBusy} onClick={(event) => { event.stopPropagation(); setDeleteTarget(script); setDeleteError(""); }}>
                           <LuTrash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
@@ -1247,27 +954,9 @@ export default function ScriptPage() {
                         <>⚖️ {t("judgeButton")}</>
                       )}
                     </Button>
-                  {SHOW_FREE_QUICK_CUT && !isTideweProject && <Button
-                    variant="outline"
-                    className="text-sm"
-                    disabled={autoFinishing}
-                    onClick={autoFinish}
-                    title={t("autoFinishHint")}
-                  >
-                    {autoFinishing ? (
-                      <>
-                        <LuLoaderCircle className="w-4 h-4 mr-1 animate-spin" />
-                        {autoFinishStage || t("autoFinish")}
-                      </>
-                    ) : (
-                      <>
-                        <LuWand className="w-4 h-4 mr-1" />
-                        {t("autoFinish")}
-                      </>
-                    )}
-                  </Button>}
+
                   <Link href={`/project/${id}/assets`}>
-                    <Button className="brand-gradient text-white text-sm" disabled={autoFinishing}>
+                    <Button className="brand-gradient text-white text-sm">
                       {t("nextStepAssets")}
                       <LuArrowRight className="w-4 h-4 ml-1" />
                     </Button>
@@ -1288,12 +977,8 @@ export default function ScriptPage() {
                         {judgeApplied ? (
                           <span className="text-xs text-green-400">{t("judgeAppliedTip")}</span>
                         ) : judgeHasActionableAdvice ? (
-                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={applyJudgeAdvice}>
+                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy || creativeConfigSaving} onClick={applyJudgeAdvice}>
                             {judgeApplying ? t("judgeAdviceApplying") : t("judgeApplyAdvice")}
-                          </Button>
-                        ) : !isTideweProject && judgeRewriteCount > 0 ? (
-                          <Button size="sm" className="h-7 text-xs brand-gradient text-white" disabled={scriptActionsBusy || creativeConfigSaving || autoFinishing} onClick={applyJudgeRewrites}>
-                            {judgeApplying ? t("judgeApplying") : t("judgeApply", { n: judgeRewriteCount })}
                           </Button>
                         ) : judgeHasSuggestions ? (
                           <span className="text-xs text-muted-foreground">{t("judgeTasteOnly")}</span>
@@ -1361,11 +1046,7 @@ export default function ScriptPage() {
                 </Card>
               )}
 
-              {autoFinishError && (
-                <div className="mb-4 rounded-lg border border-red-500/40 bg-red-500/5 px-4 py-2.5 text-xs text-red-400">
-                  {autoFinishError}
-                </div>
-              )}
+
               {/* regenerate errors (e.g. missing LLM key) used to fail silently in this view —
                   render them here with a direct jump to Settings */}
               {genError && (
@@ -1378,86 +1059,8 @@ export default function ScriptPage() {
               )}
               <TabsContent value="timeline" className="mt-0">
                 <div className="space-y-3">
-                  {readiness && (
-                    <Card
-                      className={
-                        readiness.overall === "ready"
-                          ? "border-emerald-500/40 bg-emerald-500/5"
-                          : readiness.overall === "needsWork"
-                          ? "border-red-500/40 bg-red-500/5"
-                          : "border-amber-500/40 bg-amber-500/5"
-                      }
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-2.5">
-                          <span className="text-sm font-semibold">{t("readinessTitle")}</span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                              readiness.overall === "ready"
-                                ? "bg-emerald-500/15 text-emerald-500"
-                                : readiness.overall === "needsWork"
-                                ? "bg-red-500/15 text-red-500"
-                                : "bg-amber-500/15 text-amber-500"
-                            }`}
-                          >
-                            {t(
-                              readiness.overall === "ready"
-                                ? "readinessReady"
-                                : readiness.overall === "needsWork"
-                                ? "readinessNeedsWork"
-                                : "readinessRisky"
-                            )}
-                          </span>
-                        </div>
-                        <ul className="space-y-1.5">
-                          {readiness.items.map((it) => (
-                            <li key={it.key} className="flex items-start gap-2 text-xs">
-                              {it.status === "pass" ? (
-                                <LuCircleCheck className="w-3.5 h-3.5 text-emerald-500 mt-0.5 shrink-0" />
-                              ) : it.status === "fail" ? (
-                                <LuCircleX className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
-                              ) : (
-                                <LuTriangleAlert className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
-                              )}
-                              <span
-                                className={
-                                  it.status === "pass"
-                                    ? "text-muted-foreground"
-                                    : it.status === "fail"
-                                    ? "text-red-400"
-                                    : "text-amber-400"
-                                }
-                              >
-                                {it.message}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      </CardContent>
-                    </Card>
-                  )}
-                  {adViolations.length > 0 && (
-                    <Card className="border-amber-500/40 bg-amber-500/5">
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-1">
-                          <LuTriangleAlert className="w-4 h-4 text-amber-500" />
-                          <span className="text-sm font-semibold">{t("adComplianceTitle", { n: adViolations.length })}</span>
-                        </div>
-                        <p className="text-xs text-muted-foreground mb-2.5">{t("adComplianceHint")}</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {adViolations.map((v) => (
-                            <span
-                              key={v.term}
-                              title={v.suggestion}
-                              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs cursor-help"
-                            >
-                              「{v.term}」· {v.category}
-                            </span>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
+
+
                   {currentScript?.shots.map((shot, index) => {
                     const typeInfo = shotTypeLabels[shot.type];
                     return (
@@ -1572,7 +1175,7 @@ export default function ScriptPage() {
                     <p className="text-xs text-muted-foreground">
                       {isTideweProject ? tt("wordCount", { n: currentScript?.copyDocument?.wordCount ?? 0 }) : t("statsChars", { n: currentScript?.shots.reduce((sum, s) => sum + (s.voiceover?.length || 0), 0) ?? 0 })} ·
                       {t("statsDuration", { n: currentScript?.totalDuration ?? 0 })}
-                      {!isTideweProject && <> · {t("statsSpeed", { n: Math.round((currentScript?.shots.reduce((sum, s) => sum + (s.voiceover?.length || 0), 0) || 0) / (currentScript?.totalDuration || 1) * 10) / 10 })}</>}
+
                     </p>
                   </CardContent>
                 </Card>
@@ -1585,26 +1188,7 @@ export default function ScriptPage() {
 
       {historyDialog}
 
-      {/* save template dialog */}
-      {showSaveDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <Card className="glass-card w-full max-w-md mx-4">
-            <CardContent className="p-6 space-y-4">
-              <h3 className="text-base font-semibold">{t("saveTemplateTitle")}</h3>
-              <p className="text-xs text-muted-foreground">{t("saveTemplateDesc")}</p>
-              <Input
-                placeholder={t("templateNamePlaceholder")}
-                value={templateName}
-                onChange={(e) => setTemplateName(e.target.value)}
-              />
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => setShowSaveDialog(false)}>{tc("cancel")}</Button>
-                <Button size="sm" className="brand-gradient text-white" onClick={doSaveTemplate} disabled={!templateName.trim()}>{tc("save")}</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+
 
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="delete-script-title" aria-describedby="delete-script-description">

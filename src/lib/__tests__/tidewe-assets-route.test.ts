@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -7,7 +8,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { assetScopeForShot, scriptRevision } from "@/lib/asset-context";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot,  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts, type TideweCopyDocument } from "@/lib/tidewe/types";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
@@ -125,7 +126,7 @@ describe("TIDEWE asset source context", () => {
   });
   it("retains the legacy sales save protocol without a source hash", async () => {
     db.delete(schema.scripts).run();
-    db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+    db.update(schema.projects).set({ creativeProfile: archivedCreativeProfile() }).run();
     const response = await POST(request({ shotId: 1, sourceUrl: "https://example.invalid/sales.png" }), context());
     expect(response.status).toBe(200);
     expect(db.select().from(schema.assets).get()?.sourceScriptId).toBeNull();

@@ -216,16 +216,6 @@ describe("compose-page shot video versions", () => {
     expect(useVersion(1, 1).disabled).toBe(false);
   });
 
-  it("pins the same mixed selection in matrix composition", async () => {
-    vi.useFakeTimers();
-    await mount(); await expand(2); await click(useVersion(2, 2));
-    await click(button("变体矩阵"));
-    await click(button("批量合成 1 条"));
-    expect(JSON.parse(composeRequests()[0][1].body as string)).toMatchObject({ scriptId: "script", shotAssetSelections: [{ shotId: 1, assetId: "old-one" }, { shotId: 2, assetId: "new-two" }] });
-    expect(useVersion(2, 1).disabled).toBe(true);
-    await act(async () => vi.advanceTimersByTimeAsync(3000));
-  });
-
   it.each([
     { initial: "direct_concat", chosen: "ffmpeg_fade" },
     { initial: "ffmpeg_fade", chosen: "direct_concat" },
@@ -244,11 +234,9 @@ describe("compose-page shot video versions", () => {
   });
 
   it.each([
-    { entry: "ordinary", chosen: "direct_concat", other: "ffmpeg_fade", action: "全部直接拼接" },
-    { entry: "ordinary", chosen: "ffmpeg_fade", other: "direct_concat", action: "全部渐变过渡" },
-    { entry: "matrix", chosen: "direct_concat", other: "ffmpeg_fade", action: "全部直接拼接" },
-    { entry: "matrix", chosen: "ffmpeg_fade", other: "direct_concat", action: "全部渐变过渡" },
-  ] as const)("bulk-applies $chosen to actual boundaries and retains individual edits in $entry composition", async ({ entry, chosen, other, action }) => {
+    { chosen: "direct_concat", other: "ffmpeg_fade", action: "全部直接拼接" },
+    { chosen: "ffmpeg_fade", other: "direct_concat", action: "全部渐变过渡" },
+  ] as const)("bulk-applies $chosen to actual boundaries and retains individual edits in ordinary composition", async ({ chosen, other, action }) => {
     vi.useFakeTimers();
     const shotIds = [17, 4, 29, 8];
     const customShots = shotIds.map((shotId, index) => ({ ...shots[index === 0 ? 0 : 1], shotId, transition: other }));
@@ -266,12 +254,7 @@ describe("compose-page shot video versions", () => {
     await setTransition(other, 1);
     expect(transitionSelects().map((select) => select.value)).toEqual([chosen, other, chosen]);
 
-    if (entry === "matrix") {
-      await click(button("变体矩阵"));
-      await click(button("批量合成 1 条"));
-    } else {
-      await click(button("开始合成"));
-    }
+    await click(button("开始合成"));
     expect(JSON.parse(composeRequests()[0][1].body as string).transitionOverrides).toEqual([
       { shotId: 17, transition: other },
       { shotId: 4, transition: chosen },

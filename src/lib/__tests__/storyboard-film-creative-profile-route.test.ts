@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,10 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
 import {
-  createCreativeProfileSnapshot,
-
-  createShortVideoSalesProfile,
-} from "@/lib/creative-profiles";
+  createCreativeProfileSnapshot } from "@/lib/creative-profiles";
 import { assetScopeForShot } from "@/lib/asset-context";
 
 const state = vi.hoisted(() => ({
@@ -80,7 +78,7 @@ function request(overrides: Record<string, unknown> = {}) {
 }
 
 function setCreativeContext(
-  profile: ReturnType<typeof createShortVideoSalesProfile>,
+  profile: ReturnType<typeof archivedCreativeProfile>,
   shots: schema.Shot[] = silentShots,
   revision = 2,
 ) {
@@ -90,7 +88,7 @@ function setCreativeContext(
     .run();
   db.update(schema.scripts)
     .set({
-      styleType: profile.styleType,
+      styleType: profile.styleType as typeof schema.scripts.$inferSelect.styleType,
       shots,
       creativeProfileSnapshot: createCreativeProfileSnapshot(profile, revision),
     })
@@ -120,7 +118,7 @@ beforeEach(async () => {
   state.db = db;
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
 
-  const profile = createShortVideoSalesProfile();
+  const profile = archivedCreativeProfile();
   db.insert(schema.projects).values({
     id: projectId,
     name: "Sales film audio policy",
@@ -174,7 +172,7 @@ afterEach(async () => {
 describe("storyboard film creative-profile audio policy", () => {
 
   it("keeps audio controls available for the legacy sales profile", async () => {
-    setCreativeContext(createShortVideoSalesProfile({ styleType: "scene" }));
+    setCreativeContext(archivedCreativeProfile({ styleType: "scene" }));
     const voiceover = "This chair brings a warm finish to the room.";
     const audioPrompt = "Soft room tone and a calm voice.";
     const response = await request({

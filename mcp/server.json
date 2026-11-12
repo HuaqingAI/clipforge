@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.xixihhhh/clipforge",
-  "description": "Drive ClipForge's keyless short-video pipeline (script → free stock footage → free TTS → captions → BGM → FFmpeg compose) from any MCP client — one sentence or a product link becomes a finished vertical video.",
+  "description": "Import products into TIDEWE projects, inspect and compose existing ClipForge work, and export videos or editable timelines from any MCP client.",
   "repository": {
     "url": "https://github.com/xixihhhh/clipforge",
     "source": "github"

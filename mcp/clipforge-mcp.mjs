@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ClipForge MCP Server — exposes ClipForge's "one-sentence-to-video" pipeline as MCP tools,
+ * ClipForge MCP Server — exposes project import, composition and export as MCP tools,
  * allowing any MCP client (Claude Desktop / Claude Code / Cursor, etc.) to drive video generation directly.
  *
  * Design: this service is a thin wrapper around the ClipForge HTTP API (reusing all its orchestration:
@@ -10,7 +10,7 @@
  * Environment variables:
  *   CLIPFORGE_BASE_URL     ClipForge instance URL (default http://localhost:3000; run `pnpm dev` / `pnpm start` first)
  *   CLIPFORGE_LLM_BASE_URL LLM endpoint (OpenAI-compatible, e.g. https://api.atlascloud.ai/v1)
- *   CLIPFORGE_LLM_API_KEY  LLM key (required for script generation; omitting it gives a clear prompt in create_video / generate_script)
+ *   CLIPFORGE_LLM_API_KEY  LLM key (optional for LLM operations)
  *   CLIPFORGE_LLM_MODEL    LLM model name (e.g. deepseek-ai/deepseek-v4-pro)
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,7 +32,6 @@ const STOCK_KEYS = {};
 if (process.env.CLIPFORGE_PIXABAY_KEY) STOCK_KEYS.pixabay = process.env.CLIPFORGE_PIXABAY_KEY;
 if (process.env.CLIPFORGE_PEXELS_KEY) STOCK_KEYS.pexels = process.env.CLIPFORGE_PEXELS_KEY;
 
-const NARRATION_STYLES = ["knowledge", "story", "lifestyle", "inspiration", "travel"];
 const FOOTAGE_KINDS = ["auto", "image", "video"];
 const ASPECT_RATIOS = ["9:16", "16:9", "1:1"]; // 9:16 portrait (Douyin/Kuaishou/Reels/Shorts) · 16:9 landscape · 1:1 square
 const QUALITY_PRESETS = ["fast", "standard", "hd"]; // maps to real FFmpeg encoding: resolution + x264 preset + crf
@@ -75,9 +74,9 @@ export function defaultVoiceForTopic(topic) {
   return "en-US-AriaNeural"; // Latin etc. → English
 }
 
-/** Shared "output options" JSON-Schema properties for create_video / compose */
+/** Shared "output options" JSON-Schema properties for compose */
 const OUTPUT_OPTION_PROPS = {
-  voice: { type: "string", description: "Edge TTS 音色 value（如 zh-CN-XiaoxiaoNeural / en-US-AriaNeural，必须来自 clipforge_list_voices，猜测的 id 会合成失败或读错语种）。create_video 不指定则按主题语言自动挑（英文主题→英文音色，日/韩同理；中文→晓晓）" },
+  voice: { type: "string", description: "Edge TTS 音色 value（如 zh-CN-XiaoxiaoNeural / en-US-AriaNeural，必须来自 clipforge_list_voices，猜测的 id 会合成失败或读错语种）" },
   aspectRatio: { type: "string", enum: ASPECT_RATIOS, description: "画幅，默认 9:16 竖屏" },
   quality: { type: "string", enum: QUALITY_PRESETS, description: "画质预设 fast/standard/hd，默认 standard" },
   karaoke: {
@@ -223,88 +222,25 @@ function ok(textObj) {
 // ---- Tool definitions (JSON Schema, no zod required) ----
 const TOOLS = [
   {
-    name: "clipforge_create_video",
-    description:
-      "一句话成片：输入一个主题，自动写旁白脚本→判官团（节奏/口语/创意/结构/画面五判官）自动挑刺并重写弱句→从免费素材库配齐画面→免费 AI 配音+字幕→FFmpeg 合成竖屏短视频，返回可下载的视频地址。需要为 MCP 配置 LLM 环境变量；素材与配音全程免 Key。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        topic: { type: "string", description: "一句话主题，如「在家如何泡一杯手冲咖啡」" },
-        narrationStyle: { type: "string", enum: NARRATION_STYLES, description: "旁白风格，默认 knowledge" },
-        durationSec: { type: "number", description: "目标时长（秒），默认 25，建议 15-60" },
-        footage: {
-          type: "string",
-          enum: FOOTAGE_KINDS,
-          description: "画面类型：auto（默认，逐镜视频优先、配不到再退图片，全程免 Key）/ image（只图片，最快）/ video（只视频）",
-        },
-        wait: {
-          type: "boolean",
-          description:
-            "默认 true=等合成完成后返回视频地址（最长约 11 分钟，MCP 客户端超时较短时可能被掐断）。false=提交合成后立即返回 compositionId，用 clipforge_get_video { projectId, compositionId } 轮询取片——长视频/严格超时环境推荐 false。",
-        },
-        ...OUTPUT_OPTION_PROPS,
-      },
-      required: ["topic"],
-    },
-  },
-  {
     name: "clipforge_ingest_product",
     description:
-      "贴一个商品页链接，自动抓取标题/价格/商品图（解析优先级 schema.org JSON-LD > OpenGraph > Twitter Card > 标题/meta），可一键建带货项目并下载前几张商品图。带货成片的「链接优先」入口。返回 projectId、解析出的商品信息与已下载商品图列表。不需要 LLM；对带标准 OG/JSON-LD 标签的页面（Shopify、独立站、TikTok Shop 等）支持最好，部分平台有反爬可能解析不全。",
+      "贴一个商品页链接，自动抓取标题/价格/商品图（解析优先级 schema.org JSON-LD > OpenGraph > Twitter Card > 标题/meta），可创建 TIDEWE 项目并下载前几张商品图。返回 projectId、解析出的商品信息与已下载商品图列表。不需要 LLM；对带标准 OG/JSON-LD 标签的页面（Shopify、独立站、TikTok Shop 等）支持最好，部分平台有反爬可能解析不全。",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "商品页链接（http/https）" },
         createProject: {
           type: "boolean",
-          description: "是否一键建带货项目并下载前几张商品图，默认 true；false 则仅返回解析出的商品信息不落库",
+          description: "是否创建 TIDEWE 项目并下载前几张商品图，默认 true；false 则仅返回解析出的商品信息不落库",
         },
       },
       required: ["url"],
-    },
-  },
-  {
-    name: "clipforge_product_script",
-    description:
-      "带货脚本一条龙：贴商品链接 → 自动抓取商品信息（标题/价/图）→ LLM 生成多套带货分镜脚本，返回 projectId 与脚本数据。等于 clipforge_ingest_product + 网页端「生成带货脚本」两步合一，agent 一句话即可从链接到脚本。生成时会自动结合你已发布视频的转化数据（数据飞轮）偏向更能卖的风格/钩子。之后用 clipforge_compose { projectId } 出片。需要 LLM 环境变量。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "商品页链接（http/https）" },
-        styleType: {
-          type: "string",
-          enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "auto"],
-          description:
-            "脚本风格（四大形态）：剧情形 drama 情景短剧(双角色冲突对话+免费多音色)/reversal 反转剧场/interview 街头采访(主持人+路人)/story 剧情故事；物品形 unboxing 开箱测评/product_pov 物品拟人(商品第一人称)/comparison 对比测评；口播形 talking_head 达人口播/pain_point 痛点种草；场景形 scene 场景安利。默认 auto（按历史转化数据智能推荐）",
-        },
-        durationSec: { type: "number", description: "目标时长（秒），默认 30，建议 15-60" },
-        category: {
-          type: "string",
-          enum: ["beauty", "food", "home", "fashion", "tech", "other"],
-          description: "商品品类（美妆/食品/家居/服饰/数码/其他），用于风格模板与转化数据分品类回流；不填则按 beauty 兜底",
-        },
-      },
-      required: ["url"],
-    },
-  },
-  {
-    name: "clipforge_generate_script",
-    description:
-      "只生成去商品化的旁白分镜脚本（不配画面/不合成），返回 projectId 与各分镜（含英文素材检索词）。需要 LLM 环境变量。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        topic: { type: "string", description: "一句话主题" },
-        narrationStyle: { type: "string", enum: NARRATION_STYLES, description: "旁白风格，默认 knowledge" },
-        durationSec: { type: "number", description: "目标时长（秒），默认 25，建议 15-60" },
-      },
-      required: ["topic"],
     },
   },
   {
     name: "clipforge_search_stock",
     description:
-      "从免费可商用素材库检索画面（keyless Openverse 图片优先；配了 Pexels/Pixabay Key 的实例还会聚合视频）。返回候选列表（title/provider/license/author/预览图与来源页链接），只检索不下载——用于人工挑素材或核对授权；自动配画面无需先调它（create_video/compose 内置逐镜配片）。检索词建议英文。不需要 LLM。",
+      "从免费可商用素材库检索画面（keyless Openverse 图片优先；配了 Pexels/Pixabay Key 的实例还会聚合视频）。返回候选列表（title/provider/license/author/预览图与来源页链接），只检索不下载——用于人工挑素材或核对授权；自动配画面无需先调它（compose 内置逐镜配片）。检索词建议英文。不需要 LLM。",
     inputSchema: {
       type: "object",
       properties: {
@@ -323,7 +259,7 @@ const TOOLS = [
   {
     name: "clipforge_compose",
     description:
-      "为一个已有脚本+素材的项目执行合成（免费 Edge TTS 配音+字幕），返回可下载的视频地址。用于 generate_script 之后单独出片。不需要 LLM。",
+      "为一个已有脚本+素材的项目执行合成（免费 Edge TTS 配音+字幕），返回可下载的视频地址。TIDEWE 项目使用已生成的脚本和镜头。不需要 LLM。",
     inputSchema: {
       type: "object",
       properties: {
@@ -369,18 +305,18 @@ const TOOLS = [
   },
   {
     name: "clipforge_list_voices",
-    description: "列出可用的免费 Edge TTS 多语言音色（中/英/日/韩/西）。返回音色数组（value/label/gender/lang）与默认音色，create_video / compose 的 voice 参数只能从这里选。不需要 LLM。",
+    description: "列出可用的免费 Edge TTS 多语言音色（中/英/日/韩/西）。返回音色数组（value/label/gender/lang）与默认音色，compose 的 voice 参数只能从这里选。不需要 LLM。",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "clipforge_get_video",
     description:
-      "查询某项目合成的视频结果，不触发重新合成——用于轮询 create_video/compose 的异步产物或取回此前做过的视频。传 compositionId 可查指定那一次合成（并发合成时防串片）；缺省查最新一次。返回状态（composing/done/failed/none）与可下载的 mp4 地址。不需要 LLM。",
+      "查询某项目合成的视频结果，不触发重新合成——用于轮询 compose 的异步产物或取回此前做过的视频。传 compositionId 可查指定那一次合成（并发合成时防串片）；缺省查最新一次。返回状态（composing/done/failed/none）与可下载的 mp4 地址。不需要 LLM。",
     inputSchema: {
       type: "object",
       properties: {
         projectId: PROJECT_ID_PROP,
-        compositionId: { type: "string", description: "某次合成的 id（compose/create_video 在 wait:false 时返回）；缺省查最新一次" },
+        compositionId: { type: "string", description: "某次合成的 id（compose 在 wait:false 时返回）；缺省查最新一次" },
       },
       required: ["projectId"],
     },
@@ -388,7 +324,7 @@ const TOOLS = [
   {
     name: "clipforge_trends",
     description:
-      "拉某地区每日热搜，建议「该做什么主题」。返回话题数组（含热度 + 相关新闻背景），条目可直接当 clipforge_create_video 的 topic。免 Key，不需要 LLM。",
+      "拉某地区每日热搜，建议「该做什么主题」。返回话题数组（含热度 + 相关新闻背景），供选题研究使用。免 Key，不需要 LLM。",
     inputSchema: {
       type: "object",
       properties: { geo: { type: "string", description: "地区两字母码，如 US/JP/GB，默认 US（en 系国家覆盖最全）" } },
@@ -690,145 +626,6 @@ const TOOLS = [
 ];
 
 // ---- Tool handlers ----
-async function handleCreateVideo(args) {
-  requireLlm();
-  const topic = String(args.topic || "").trim();
-  if (topic.length < 2) throw new Error("topic 太短，请给一个完整的一句话主题");
-  const narrationStyle = NARRATION_STYLES.includes(args.narrationStyle) ? args.narrationStyle : "knowledge";
-  const targetDuration = Number.isFinite(args.durationSec) ? Number(args.durationSec) : 25;
-
-  // 1) generate script
-  const scriptRes = await api("/api/topic/script", {
-    method: "POST",
-    body: { topic, narrationStyle, targetDuration, llmConfig: LLM },
-  });
-  const projectId = scriptRes.projectId;
-  const shots = scriptRes?.scripts?.[0]?.shots ?? [];
-
-  // 1.5) judge pass: four narrow judges (pacing/spoken-voice/freshness/structure) tear the lines
-  // apart and weak ones are rewritten in place — the hands-off chain keeps the quality bar, the
-  // agent never operates the panel. Best-effort: a failed pass never blocks the video.
-  let judgeRewrites = 0;
-  const scriptId = scriptRes?.scripts?.[0]?.id;
-  if (scriptId) {
-    try {
-      const report = await api(`/api/project/${projectId}/script-judge`, {
-        method: "POST",
-        body: { scriptId, llmConfig: LLM },
-      });
-      // tier gate (judge v2): auto-apply invariant/default only — taste tier is opinion, not defect;
-      // the visual judge's description rewrites ride the same shotTexts PATCH
-      const gated = (rows) => (Array.isArray(rows) ? rows.filter((r) => r.tier !== "taste") : []);
-      const shotTexts = new Map();
-      for (const r of gated(report?.rewrites)) shotTexts.set(r.shotId, { shotId: r.shotId, voiceover: r.voiceover });
-      for (const r of gated(report?.descriptionRewrites)) {
-        shotTexts.set(r.shotId, { ...(shotTexts.get(r.shotId) ?? { shotId: r.shotId }), description: r.description });
-      }
-      if (shotTexts.size > 0) {
-        await api(`/api/project/${projectId}/scripts`, {
-          method: "PATCH",
-          body: { scriptId, shotTexts: Array.from(shotTexts.values()) },
-        });
-        judgeRewrites = shotTexts.size;
-      }
-    } catch {
-      /* quality pass is best-effort */
-    }
-  }
-
-  // 2) match visuals: free Openverse images by default; with Pexels/Pixabay keys, fetches video B-roll per footage setting
-  const mediaType = resolveMediaType(args.footage);
-  const fill = await api(`/api/project/${projectId}/stock-fill`, {
-    method: "POST",
-    body: { source: "all", mediaType, apiKeys: STOCK_KEYS, ...(LLM.baseUrl && LLM.model ? { llmConfig: LLM } : {}) },
-  });
-  // if no visuals were matched at all, don't force a compose (it would produce a blank/failed video) — return an actionable hint instead
-  if (!fill.filled) {
-    return ok({
-      ok: false,
-      projectId,
-      footage: mediaType,
-      footageFilled: `0/${fill.total}`,
-      error:
-        "免费素材库没给这个主题配到任何画面，无法合成。换个更常见/更具体的主题，或为实例配 Pexels/Pixabay Key（CLIPFORGE_PEXELS_KEY）后重试。",
-    });
-  }
-
-  // 3) compose (free Edge TTS voiceover + captions; optional voice/aspect ratio/quality)
-  const body = composeBody(args);
-  // if no voice is explicitly specified, pick a default based on the topic language (English topic → English voice, to avoid Chinese voice reading English)
-  if (!body.freeTts.voice) {
-    const v = defaultVoiceForTopic(topic);
-    if (v) body.freeTts.voice = v;
-  }
-  // actual voice sent to the backend (including auto-detection above); do NOT call composeBody(args) again — that would produce a fresh body without detection, reporting the wrong voice
-  const usedVoice = body.freeTts.voice || "zh-CN-XiaoxiaoNeural";
-  // POST returns the compositionId of this run — poll that exact one, not "latest"
-  const { compositionId } = await api(`/api/project/${projectId}/compose`, { method: "POST", body });
-  // wait:false — non-blocking submit (see handleCompose): script/judge/footage results are
-  // already known, only the render is left running in the background
-  if (args.wait === false) {
-    return ok({
-      ok: true,
-      projectId,
-      compositionId,
-      status: "composing",
-      topic,
-      narrationStyle,
-      voice: usedVoice,
-      shots: shots.length,
-      ...(judgeRewrites ? { judgeRewrites } : {}),
-      footageFilled: `${fill.filled}/${fill.total}`,
-      next: `合成已在后台进行。用 clipforge_get_video { projectId: "${projectId}", compositionId: "${compositionId}" } 轮询取片。`,
-    });
-  }
-  const composition = await pollCompose(projectId, { compositionId });
-
-  return ok({
-    ok: true,
-    projectId,
-    topic,
-    narrationStyle,
-    footage: mediaType,
-    voice: usedVoice,
-    aspectRatio: ASPECT_RATIOS.includes(args.aspectRatio) ? args.aspectRatio : "9:16",
-    shots: shots.length,
-    // judge panel: how many weak lines were auto-rewritten before composing
-    ...(judgeRewrites ? { judgeRewrites } : {}),
-    footageFilled: `${fill.filled}/${fill.total}`,
-    // material continuity: how many shots reused a provider+author already picked by a same-entity shot
-    ...(fill.sameSourceHits ? { sameSourceShots: fill.sameSourceHits } : {}),
-    videoUrl: absVideoUrl(composition),
-    status: composition.status,
-    hint: "videoUrl 可直接下载/播放（mp4）。在 ClipForge 网页 /project/" + projectId + "/export 可进一步多平台导出。",
-  });
-}
-
-async function handleGenerateScript(args) {
-  requireLlm();
-  const topic = String(args.topic || "").trim();
-  if (topic.length < 2) throw new Error("topic 太短");
-  const narrationStyle = NARRATION_STYLES.includes(args.narrationStyle) ? args.narrationStyle : "knowledge";
-  const targetDuration = Number.isFinite(args.durationSec) ? Number(args.durationSec) : 25;
-  const res = await api("/api/topic/script", {
-    method: "POST",
-    body: { topic, narrationStyle, targetDuration, llmConfig: LLM },
-  });
-  const script = res?.scripts?.[0];
-  return ok({
-    ok: true,
-    projectId: res.projectId,
-    title: script?.title ?? "",
-    shots: (script?.shots ?? []).map((s) => ({
-      shotId: s.shotId,
-      duration: s.duration,
-      voiceover: s.voiceover,
-      stockKeywords: s.stockKeywords ?? [],
-    })),
-    next: "用 clipforge_compose { projectId } 出片。",
-  });
-}
-
 async function handleSearchStock(args) {
   const query = String(args.query || "").trim();
   if (!query) throw new Error("query 不能为空");
@@ -873,7 +670,7 @@ async function handleCompose(args) {
     }).catch(() => {}); // stock-fill failure does not block compose (project may already have assets)
   }
   const body = composeBody(args);
-  // if no voice is explicitly specified, pick a default based on the project topic language (same logic as create_video) — otherwise Japanese/Korean topics via compose would fall back to the Chinese default voice and mispronounce
+  // if no voice is explicitly specified, pick a default based on the project topic language  — otherwise Japanese/Korean topics via compose would fall back to the Chinese default voice and mispronounce
   if (!body.freeTts.voice) {
     const proj = await api(`/api/project/${projectId}`).catch(() => null);
     const v = proj && proj.topic ? defaultVoiceForTopic(String(proj.topic)) : null;
@@ -964,7 +761,7 @@ async function handleIngestProduct(args) {
     body: {
       url,
       createProject,
-      ...(createProject && { creativeProfile: { creationType: "short_video_sales" } }),
+      ...(createProject && { creativeProfile: { creationType: "tidewe_outdoor" } }),
     },
   });
   return ok({
@@ -973,66 +770,8 @@ async function handleIngestProduct(args) {
     product: data.product ?? null,
     productImages: data.productImages ?? [],
     hint: data.projectId
-      ? "已建带货项目并抓取商品图。下一步：用 clipforge_product_script 直接从链接生成带货脚本（需 LLM），或 clipforge_compose 出片。"
+      ? "已建 TIDEWE 项目并抓取商品图。请在项目脚本页完善商品卖点和主播设置，再生成 TIDEWE 脚本。"
       : "仅解析、未建项目（createProject=false）。",
-  });
-}
-
-// One-shot commerce script: ingest a product URL → generate a commerce script server-side (needs LLM).
-// Chains the two existing routes (/api/ingest/product then /api/llm/script) so agents skip the manual
-// hand-off. The script route already folds in the performance-feedback flywheel by category.
-async function handleProductScript(args) {
-  requireLlm();
-  const url = String(args.url || "").trim();
-  if (!/^https?:\/\/.+/i.test(url)) throw new Error("url 必须是合法的 http/https 商品链接");
-
-  // Step 1: ingest the product (creates the project + downloads images; no LLM needed)
-  const ingest = await api("/api/ingest/product", {
-    method: "POST",
-    body: { url, createProject: true, creativeProfile: { creationType: "short_video_sales" } },
-  });
-  const projectId = ingest.projectId;
-  if (!projectId) throw new Error("未能从该链接建项目（可能被反爬或缺少标准商品标签），请换一个链接或改用网页端上传商品图。");
-  const productName = ingest.product?.title?.trim();
-  if (!productName) throw new Error("未能解析出商品标题，无法生成带货脚本。请换一个带标准 OG/JSON-LD 标签的链接。");
-
-  // Step 2: generate the commerce script from the ingested product data (LLM)
-  const styleType = ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "auto"].includes(args.styleType) ? args.styleType : "auto";
-  const targetDuration = Number.isFinite(args.durationSec) ? Number(args.durationSec) : 30;
-  const scriptRes = await api("/api/llm/script", {
-    method: "POST",
-    body: {
-      projectId,
-      productName,
-      productDescription: ingest.product?.description ?? "",
-      productImages: ingest.productImages ?? [],
-      ...(args.category ? { category: args.category } : {}),
-      styleType,
-      targetDuration,
-      llmConfig: LLM,
-    },
-  });
-
-  const scripts = Array.isArray(scriptRes?.scripts) ? scriptRes.scripts : [];
-  return ok({
-    ok: true,
-    projectId,
-    product: ingest.product ?? null,
-    productImages: ingest.productImages ?? [],
-    scripts: scripts.map((s) => ({
-      id: s.id,
-      title: s.title ?? "",
-      styleType: s.styleType,
-      totalDuration: s.totalDuration ?? 0,
-      selected: s.selected ?? false,
-      shots: (s.shots ?? []).map((sh) => ({
-        shotId: sh.shotId,
-        duration: sh.duration,
-        voiceover: sh.voiceover,
-        stockKeywords: sh.stockKeywords ?? [],
-      })),
-    })),
-    next: `已生成 ${scripts.length} 套带货脚本（默认选中第一套）。下一步用 clipforge_compose { projectId: "${projectId}" } 配画面+配音+合成出片。`,
   });
 }
 
@@ -1378,10 +1117,7 @@ async function handleCarousel(args) {
 }
 
 const HANDLERS = {
-  clipforge_create_video: handleCreateVideo,
   clipforge_ingest_product: handleIngestProduct,
-  clipforge_product_script: handleProductScript,
-  clipforge_generate_script: handleGenerateScript,
   clipforge_search_stock: handleSearchStock,
   clipforge_list_projects: handleListProjects,
   clipforge_compose: handleCompose,

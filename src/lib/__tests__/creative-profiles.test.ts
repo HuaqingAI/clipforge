@@ -1,77 +1,28 @@
 import { describe, expect, it } from "vitest";
-import {
-  SHORT_VIDEO_SALES_PROFILE_ID,
-  checkCreativeProfileContext,
-  createCreativeProfileSnapshot,
-  createShortVideoSalesProfile,
-  createTideweOutdoorProfile,
-  sanitizeCreativeProfile,
-  sanitizeCreativeProfileDrafts,
-  validateCreativeProfileInput,
-} from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createTideweOutdoorProfile, resolveCreativeProfile, sanitizeCreativeProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, checkCreativeProfileContext } from "@/lib/creative-profiles";
 
-describe("creative profile canonicalization", () => {
-  it.each([
-    "premium_product_cg",
-    "premium_product_cg_v1",
-    { creationType: "premium_product_cg" },
-    { styleType: "premium_product_cg", videoMode: "scene_demo" },
-    { id: "premium_product_cg_v1" },
-    { profileId: "premium_product_cg_v1", videoMode: "product_closeup" },
-  ])("rejects removed creation profiles: %j", value => {
-    expect(validateCreativeProfileInput(value)).toMatchObject({ error: expect.any(String) });
-    expect(sanitizeCreativeProfile(value)).toBeUndefined();
+describe("TIDEWE creative profiles", () => {
+  it.each(["short_video_sales", "short_video_sales_v1", { creationType: "short_video_sales" }, { styleType: "pain_point" }, { creationType: "tidewe_outdoor", id: "short_video_sales_v1" }])("rejects removed or mixed profile identities: %j", value => {
+    expect(validateCreativeProfileInput(value).error).toBeTruthy();
   });
-
-  it("rejects conflicting identities between the supported types", () => {
-    expect(validateCreativeProfileInput({ creationType: "tidewe_outdoor", styleType: "scene" }))
-      .toMatchObject({ error: expect.stringContaining("same profile") });
-    expect(validateCreativeProfileInput("unknown_profile")).toMatchObject({ error: expect.any(String) });
-  });
-
-  it("preserves sales settings, aliases and legacy profile resolution", () => {
-    const legacy = createShortVideoSalesProfile({
-      styleType: "pain-point", videoMode: "scene_demo", targetDuration: 45,
-      composeSnapshot: { subtitles: true, ttsEnabled: true, ctaEnabled: true, productCard: true },
-      creativeSettings: { look: "warm", soundMode: "music" }, recipeSnapshot: { templateId: "sales-template" },
-    });
-    expect(legacy).toMatchObject({
-      id: SHORT_VIDEO_SALES_PROFILE_ID, creationType: "short_video_sales", styleType: "pain_point",
-      videoMode: "scene_demo", targetDuration: 45,
-      composeSnapshot: { subtitles: true, ttsEnabled: true, ctaEnabled: true, productCard: true },
-      creativeSettings: { look: "warm", soundMode: "music" }, recipeSnapshot: { templateId: "sales-template" },
-    });
-    expect(sanitizeCreativeProfile(legacy)).toEqual(legacy);
-    expect(sanitizeCreativeProfile({ styleType: "scene", videoMode: "live_presenter" }))
-      .toMatchObject({ creationType: "short_video_sales", styleType: "scene", videoMode: "live_presenter" });
-  });
-
-  it.each(["on_camera", "voiceover"] as const)("preserves TIDEWE %s profiles and frozen script context", speechMode => {
-    const profile = createTideweOutdoorProfile({ targetDuration: 60, speechMode, narrativeAngle: "use_demo" });
+  it("keeps all TIDEWE creation settings and frozen metadata", () => {
+    const profile = createTideweOutdoorProfile({ targetDuration: 60, videoMode: "product_closeup", narrativeAngle: "gift", speechMode: "voiceover", composeSnapshot: { subtitles: false, quality: "hd" } });
     expect(validateCreativeProfileInput(profile)).toEqual({ profile });
-    const snapshot = createCreativeProfileSnapshot(profile, 12.9);
-    expect(snapshot).toMatchObject({ creativeConfigRevision: 12, profile: {
-      creationType: "tidewe_outdoor", speechMode, targetDuration: 60, language: "en-US", narrativeAngle: "use_demo",
-      composeSnapshot: { aspectRatio: "9:16", ttsEnabled: speechMode === "voiceover", nativeAudio: speechMode === "on_camera" },
-    } });
-    expect(checkCreativeProfileContext({ creativeProfile: profile, creativeConfigRevision: 13 }, {
-      styleType: "tidewe_outdoor", creativeProfileSnapshot: snapshot,
-    })).toMatchObject({ ok: true, scriptProfile: profile, scriptRevision: 12 });
-    expect(checkCreativeProfileContext({ creativeProfile: createShortVideoSalesProfile() }, {
-      styleType: "tidewe_outdoor", creativeProfileSnapshot: snapshot,
-    })).toMatchObject({ ok: false, code: "CREATIVE_PROFILE_MISMATCH" });
+    expect(createCreativeProfileSnapshot(profile, 3)).toEqual({ profile, creativeConfigRevision: 3 });
+    expect(sanitizeCreativeProfile({ ...profile, corpusVersion: "historical", promptCompilerVersion: "older" })).toMatchObject({ corpusVersion: "historical", promptCompilerVersion: "older" });
   });
-
-  it("keeps only supported drafts without leaking one type's settings into the other", () => {
-    const sales = createShortVideoSalesProfile({ styleType: "comparison" });
-    const tidewe = createTideweOutdoorProfile({ speechMode: "voiceover" });
-    expect(sanitizeCreativeProfileDrafts({
-      short_video_sales: sales, tidewe_outdoor: tidewe, premium_product_cg: { creationType: "premium_product_cg" },
-    })).toEqual({ short_video_sales: sales, tidewe_outdoor: tidewe });
+  it("keeps removed stored profiles archived without converting them to TIDEWE", () => {
+    const old = { creationType: "short_video_sales", styleType: "scene", videoMode: "graphic_montage" };
+    expect(sanitizeCreativeProfile(old)).toBeUndefined();
+    expect(resolveCreativeProfile(old)).toMatchObject({ creationType: "unsupported", styleType: "scene", videoMode: "graphic_montage" });
+    expect(resolveCreativeProfile(undefined)).toMatchObject({ creationType: "unsupported" });
+    expect(sanitizeCreativeProfileDrafts({ short_video_sales: old, tidewe_outdoor: createTideweOutdoorProfile() })).toEqual({ tidewe_outdoor: createTideweOutdoorProfile() });
   });
-
-  it("snapshots a bounded config revision with the legacy sales fallback", () => {
-    expect(createCreativeProfileSnapshot(undefined, -3, { styleType: "scene", videoMode: "product_closeup" }))
-      .toMatchObject({ creativeConfigRevision: 0, profile: { creationType: "short_video_sales", styleType: "scene" } });
+  it("keeps frozen TIDEWE settings authoritative after configuration edits", () => {
+    const frozen = createTideweOutdoorProfile({ speechMode: "voiceover" });
+    const result = checkCreativeProfileContext({ creativeProfile: createTideweOutdoorProfile(), creativeConfigRevision: 4 }, { styleType: "tidewe_outdoor", creativeProfileSnapshot: createCreativeProfileSnapshot(frozen, 1) });
+    expect(result).toMatchObject({ ok: true, projectProfile: frozen, scriptProfile: frozen, projectRevision: 4, scriptRevision: 1 });
+    expect(checkCreativeProfileContext({ creativeProfile: createTideweOutdoorProfile() }, { styleType: "pain_point" }).ok).toBe(false);
+    expect(checkCreativeProfileContext({}, { styleType: "scene" }).ok).toBe(true);
   });
 });

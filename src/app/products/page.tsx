@@ -350,13 +350,13 @@ export default function ProductsPage() {
           )}
         </div>
 
-        {/* post-confirm shortcut: the freshly stocked library feeds straight into batch rendering */}
+        {/* Start a TIDEWE project with products from the library. */}
         {importedNotice && !isFormOpen && (
           <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
             <p className="text-sm text-emerald-400">✓ {t("importSaved")}</p>
             <div className="flex shrink-0 items-center gap-2">
-              <Link href="/batch">
-                <Button size="sm" variant="outline" className="text-xs">{t("importGoBatch")}</Button>
+              <Link href="/project/new">
+                <Button size="sm" variant="outline" className="text-xs">{t("importCreateProject")}</Button>
               </Link>
               <button
                 type="button"

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, resolveCreativeProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { productFactsHash, englishWordCount, TideweValidationError } from "@/lib/tidewe/validation";
 import { withGenerationContext } from "@/lib/generation-context";
 import { assetMatchesScript, assetScopeForShot, scriptRevision } from "@/lib/asset-context";
@@ -178,8 +178,8 @@ describe("script product observation reuse", () => {
     expect(checkpoint.productAnalysis).toBe("checkpoint observations");
   });
 
-  it.each(["tidewe", "sales"])("preserves cached observations when %s product inputs are saved unchanged", async kind => {
-    if (kind === "sales") db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+  it.each(["tidewe"])("preserves cached observations when %s product inputs are saved unchanged", async kind => {
+    if (kind === "sales") db.update(schema.projects).set({ creativeProfile: resolveCreativeProfile(null) }).run();
     db.update(schema.projects).set({ productAnalysis: "cached observations" }).run();
     const current = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
     const response = await updateProject(req(`/api/project/${projectId}`, {
@@ -197,10 +197,10 @@ describe("script product observation reuse", () => {
     { field: "productId", value: "new-product" },
     { field: "brandId", value: "new-brand" },
   ];
-  it.each(productChanges.flatMap(change => ["tidewe", "sales"].map(kind => ({ ...change, kind }))))(
+  it.each(productChanges.flatMap(change => ["tidewe"].map(kind => ({ ...change, kind }))))(
     "clears old observations after $kind $field changes and analyzes the current images on generation", async ({ field, value, kind }) => {
       if (kind === "sales") {
-        db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+        db.update(schema.projects).set({ creativeProfile: resolveCreativeProfile(null) }).run();
         calls.analyze.mockResolvedValue("new sales product observations");
       }
       db.update(schema.projects).set({ productAnalysis: "old product observations" }).run();
@@ -298,13 +298,13 @@ describe("TIDEWE project context", () => {
     expect(response.status).toBe(400);
     expect(db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()?.creativeConfigRevision).toBe(1);
   });
-  it("creates two independent profile drafts and demotes image specifications to observations", async () => {
+  it("creates only the TIDEWE profile draft and demotes image specifications to observations", async () => {
     const response = await create(req("/api/project", { creativeProfile: { creationType: "tidewe_outdoor" }, productFacts: {
       ...facts, items: [{ id: "image-color", key: "color", value: "green", status: "confirmed", source: { kind: "uploaded_image", ref: "jacket.png" } }],
     } }));
     expect(response.status).toBe(201);
     const row = await response.json();
-    expect(Object.keys(row.creativeProfileDrafts).sort()).toEqual(["short_video_sales", "tidewe_outdoor"]);
+    expect(Object.keys(row.creativeProfileDrafts).sort()).toEqual(["tidewe_outdoor"]);
     expect(row.productFacts.items[0].status).toBe("observed");
     expect(row.creativeProfile).toMatchObject({ creationType: "tidewe_outdoor", language: "en-US" });
   });
@@ -323,7 +323,7 @@ describe("TIDEWE project context", () => {
     expect(stale.status).toBe(409);
   });
   it("rejects a legacy product write when another session switches the project to TIDEWE", async () => {
-    db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.projects).set({ creativeProfile: resolveCreativeProfile(null) }).where(eq(schema.projects.id, projectId)).run();
     const stale = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
     // Pause at the asynchronous context read, as a concurrent profile-switch request would.
     const select = vi.spyOn(db, "select").mockImplementationOnce(() => ({
@@ -342,7 +342,7 @@ describe("TIDEWE project context", () => {
     } finally { select.mockRestore(); }
   });
   it("rejects a legacy character write when another session switches to a TIDEWE presenter", async () => {
-    db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).where(eq(schema.projects.id, projectId)).run();
+    db.update(schema.projects).set({ creativeProfile: resolveCreativeProfile(null) }).where(eq(schema.projects.id, projectId)).run();
     const stale = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
     const select = vi.spyOn(db, "select").mockImplementationOnce(() => ({
       from: () => ({ where: () => ({ limit: () => {
@@ -393,12 +393,13 @@ describe("TIDEWE optional AI scene direction", () => {
     expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
   });
 
-  it.each([createShortVideoSalesProfile()])("keeps scene direction out of $creationType generation", async creativeProfile => {
+  it.each([null, resolveCreativeProfile(null)])("rejects archived projects even when a request claims TIDEWE: %j", async creativeProfile => {
     db.update(schema.projects).set({ creativeProfile }).where(eq(schema.projects.id, projectId)).run();
-    const response = await generate(req("/api/llm/script", { ...generationBody(), sceneDescription: { scene: "lake" } }));
-    expect(response.status).toBe(200);
-    expect(calls.generate).toHaveBeenCalledOnce();
-    expect(calls.generate.mock.calls[0][0]).not.toHaveProperty("sceneDescription");
+    const response = await generate(req("/api/llm/script", { ...generationBody(), styleType: "tidewe_outdoor", creativeProfile: profile, sceneDescription: "lake" }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "CREATIVE_PROFILE_UNSUPPORTED" });
+    expect(calls.generate).not.toHaveBeenCalled();
+    expect(calls.observe).not.toHaveBeenCalled();
   });
 });
 
@@ -653,7 +654,7 @@ describe("TIDEWE generation, history and concurrency", () => {
     expect(result.scripts[0]).toMatchObject({ styleType: "tidewe_outdoor", copyDocument: { text: copyText }, generationMetadata: { requestId: "request-0001" }, scriptHash: expect.any(String) });
     expect(calls.analyze).not.toHaveBeenCalled();
     expect(calls.observe).toHaveBeenCalledTimes(1);
-    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ styleType: "tidewe_outdoor", productCategoryHint: "hunting_apparel", productFacts: facts, performanceHint: undefined }));
+    expect(calls.generate).toHaveBeenCalledWith(expect.objectContaining({ styleType: "tidewe_outdoor", productCategoryHint: "hunting_apparel", productFacts: facts }));
     expect(calls.generate.mock.calls[0][0].character).toBeUndefined();
     const retry = await generate(req("/api/llm/script", generationBody()));
     expect(retry.status).toBe(200);
@@ -830,7 +831,7 @@ describe("TIDEWE alternative selection", () => {
   it("rejects another creative type even when it has the active batch version", async () => {
     const source = seedScript();
     db.insert(schema.scripts).values({ ...source, id: "other-type", selected: false, styleType: "scene",
-      creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 1) }).run();
+      creativeProfileSnapshot: createCreativeProfileSnapshot(resolveCreativeProfile(null), 1) }).run();
     db.update(schema.projects).set({ creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
     const before = db.select().from(schema.scripts).all();
     const response = await select("other-type");

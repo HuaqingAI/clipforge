@@ -18,7 +18,8 @@ import type { GenerationControlSummary } from "@/lib/video-repair-plan";
 import type { ScriptGenerationMetadata } from "@/lib/script-engine/provenance";
 import type { ProductFacts, TideweCopyDocument, TideweShotFields } from "@/lib/tidewe/types";
 import type {
-  ProjectCreativeProfile,
+  ResolvedCreativeProfile,
+  CreativeProfileSnapshot,
   ProjectCreativeProfileDrafts,
 } from "@/lib/creative-profiles";
 export { klingProfiles, klingAuthSessions } from "@/lib/kling/profile-schema";
@@ -52,8 +53,8 @@ export const projects = sqliteTable("projects", {
   videoMode: text("video_mode", { enum: ["product_closeup", "graphic_montage", "scene_demo", "live_presenter"] }).default("product_closeup"), // Video mode
   // The active creative profile is the source of truth for new generation. The legacy
   // video_mode column remains populated so existing project views and integrations work.
-  creativeProfile: text("creative_profile", { mode: "json" }).$type<ProjectCreativeProfile>(),
-  // Keep independent saved settings for short-video sales and TIDEWE.
+  creativeProfile: text("creative_profile", { mode: "json" }).$type<ResolvedCreativeProfile>(),
+  // Saved TIDEWE settings; removed creation types are never written as drafts.
   creativeProfileDrafts: text("creative_profile_drafts", { mode: "json" }).$type<ProjectCreativeProfileDrafts>(),
   creativeConfigRevision: integer("creative_config_revision").notNull().default(0),
   sourceType: text("source_type", { enum: ["manual", "clone"] }).default("manual"), // manual=created by hand, clone=viral-video remake
@@ -86,10 +87,7 @@ export const scripts = sqliteTable("scripts", {
   generationMetadata: text("generation_metadata", { mode: "json" }).$type<ScriptGenerationMetadata>(),
   // Immutable creative context for this script version. It remains inspectable after a
   // project switches creation type, while current generation keeps using projects.creativeProfile.
-  creativeProfileSnapshot: text("creative_profile_snapshot", { mode: "json" }).$type<{
-    profile: ProjectCreativeProfile;
-    creativeConfigRevision: number;
-  }>(),
+  creativeProfileSnapshot: text("creative_profile_snapshot", { mode: "json" }).$type<CreativeProfileSnapshot>(),
   // Dialogue-script cast (drama style): drives per-character TTS voices + visual-anchor prompts
   characters: text("characters", { mode: "json" }).$type<ScriptCharacter[]>(),
   selected: integer("selected", { mode: "boolean" }).default(false),

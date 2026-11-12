@@ -3,7 +3,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import VideoPage from "@/app/project/[id]/video/page";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { AD_TEMPLATES, adTemplateStorageKey, adTemplateAppliedKey } from "@/lib/ad-templates";
 import { elevenLabsFetch } from "@/lib/elevenlabs/browser-client";
 import { video } from "@/lib/i18n/messages/video";
 
@@ -139,9 +138,6 @@ describe("settings-owned voice services", () => {
     await select("elevenLabsVoiceLabel", "cloned-voice");
     await select("elevenLabsModelLabel", "eleven_multilingual_v2");
   }
-  async function openMatrix() {
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-  }
   function expectSettingsLink() {
     expect(container.querySelector('a[href="/settings?tab=tts"]')).not.toBeNull();
     expect(button("elevenLabsLogin")).toBeUndefined();
@@ -226,7 +222,7 @@ describe("settings-owned voice services", () => {
     expectSettingsLink();
   });
 
-  it("does not enable narration from an enabled production workflow in either compose path", async () => {
+  it("does not enable narration from an enabled production workflow during composition", async () => {
     const normalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1"
       ? Promise.resolve(Response.json({ name: "Project with voice workflow", productionWorkflow: [{ id: "voice", enabled: true }] }))
@@ -234,9 +230,7 @@ describe("settings-owned voice services", () => {
     await mount();
     expect(switchFor("ttsEnableLabel").getAttribute("aria-checked")).toBe("false");
     await click(button("composeStart"));
-    await openMatrix();
-    await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(2);
+    expect(composeBodies()).toHaveLength(1);
     for (const body of composeBodies()) {
       expect(body).toMatchObject({ ttsEnabled: false });
       for (const field of ["ttsConfig", "freeTts", "voiceoverMode"]) expect(body).not.toHaveProperty(field);
@@ -261,22 +255,20 @@ describe("settings-owned voice services", () => {
     expect(body).not.toHaveProperty("freeTts");
   });
 
-  it.each(["disabled", "different-provider"])("blocks both compose paths when ElevenLabs is %s in settings without calling its CLI", async (reason) => {
+  it.each(["disabled", "different-provider"])("blocks composition when ElevenLabs is %s in settings without calling its CLI", async (reason) => {
     settingsState.enabled = reason !== "disabled";
     settingsState.provider = reason === "disabled" ? "elevenlabs-cli" : "microsoft";
     await mount();
     await enableTts();
     await select("ttsServiceLabel", "elevenlabs-cli");
     expect(button("composeStart").disabled).toBe(true);
-    await openMatrix();
-    expect(button("matrixRun").disabled).toBe(true);
     expect(container.textContent).toContain("elevenLabsSettingsRequired");
     expectSettingsLink();
     expect(fetchMock.mock.calls.some(([url]) => url.includes("/elevenlabs/"))).toBe(false);
     expect(composeBodies()).toHaveLength(0);
   });
 
-  it("requires an available voice and model, then sends the signed local session on ordinary and matrix compose", async () => {
+  it("requires an available voice and model, then sends the signed local session during composition", async () => {
     connectElevenLabs();
     await mountWithTts();
     expect(button("composeStart").disabled).toBe(true);
@@ -287,16 +279,14 @@ describe("settings-owned voice services", () => {
     await select("elevenLabsModelLabel", "eleven_multilingual_v2");
     expect(button("composeStart").disabled).toBe(false);
     await click(button("composeStart"));
-    await openMatrix();
-    await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(2);
+    expect(composeBodies()).toHaveLength(1);
     for (const body of composeBodies()) {
       expect(body.ttsConfig).toEqual({ provider: "elevenlabs-cli", baseUrl: "", apiKey: "", voice: "cloned-voice", model: "eleven_multilingual_v2" });
       expect(body).not.toHaveProperty("freeTts");
     }
     const requests = fetchMock.mock.calls.filter(([url, init]) => url.endsWith("/compose") && init?.method === "POST");
     for (const [, init] of requests) expect(new Headers(init.headers).get("x-clipforge-elevenlabs-csrf")).toBe("signed-local-session");
-    expect(vi.mocked(elevenLabsFetch).mock.calls.filter(([url, init]) => url.endsWith("/compose") && init?.method === "POST")).toHaveLength(2);
+    expect(vi.mocked(elevenLabsFetch).mock.calls.filter(([url, init]) => url.endsWith("/compose") && init?.method === "POST")).toHaveLength(1);
     expectSettingsLink();
   });
 
@@ -450,13 +440,11 @@ describe("settings-owned voice services", () => {
     expect(button("composeStart").disabled).toBe(false);
   });
 
-  it("directs signed-out users to settings and blocks normal and matrix compose without starting OAuth", async () => {
+  it("directs signed-out users to settings and blocks composition without starting OAuth", async () => {
     const account = connectElevenLabs();
     account.authenticated = false;
     await mountWithTts();
     expect(button("composeStart").disabled).toBe(true);
-    await openMatrix();
-    expect(button("matrixRun").disabled).toBe(true);
     expect(container.querySelector('[aria-label="elevenLabsVoiceLabel"]')).toBeNull();
     expectSettingsLink();
     expect(composeBodies()).toHaveLength(0);
@@ -538,20 +526,13 @@ describe("settings-owned voice services", () => {
 });
 
 describe("composition voiceover modes", () => {
-  it("waits for the loaded profile before consuming a template and restores the TIDEWE compose snapshot", async () => {
-    const template = AD_TEMPLATES.find((item) => item.compose.captionPreset === "karaoke" || item.compose.captionPreset === "bold")!;
-    expect(template).toBeTruthy();
-    localStorage.setItem(adTemplateStorageKey("project-1"), template.id);
+  it("waits for the loaded profile and restores the TIDEWE compose snapshot", async () => {
     const normalFetch = fetchMock.getMockImplementation()!;
     let resolveProject!: (response: Response) => void;
     const projectResponse = new Promise<Response>((resolve) => { resolveProject = resolve; });
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === "/api/project/project-1" ? projectResponse : normalFetch(url, init));
     await mount();
-    expect(localStorage.getItem(adTemplateStorageKey("project-1"))).toBe(template.id);
-    expect(localStorage.getItem(adTemplateAppliedKey("project-1"))).toBeNull();
     await act(async () => resolveProject(Response.json({ name: "TIDEWE", creativeProfile: createTideweOutdoorProfile({ speechMode: "voiceover", composeSnapshot: { subtitles: false, captionPreset: "minimal", quality: "fast", bgmVolume: 0.1 } }) })));
-    expect(localStorage.getItem(adTemplateStorageKey("project-1"))).toBeNull();
-    expect(localStorage.getItem(adTemplateAppliedKey("project-1"))).toBeNull();
     expect(switchFor("subtitleEnableLabel").getAttribute("aria-checked")).toBe("false");
     expect(switchFor("ttsEnableLabel").disabled).toBe(false);
     expect(switchFor("ttsEnableLabel").getAttribute("aria-checked")).toBe("false");
@@ -667,7 +648,7 @@ describe("composition voiceover modes", () => {
   it.each([
     { mode: "replace", label: "ttsReplaceLabel" },
     { mode: "mix", label: "ttsMixLabel" },
-  ])("sends $mode for ordinary and matrix compositions, and omits it when off", async ({ mode, label }) => {
+  ])("sends $mode during composition, and omits it when off", async ({ mode, label }) => {
     await mountWithTts();
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).not.toHaveProperty("voiceoverMode");
@@ -675,18 +656,12 @@ describe("composition voiceover modes", () => {
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).toMatchObject({ voiceoverMode: mode, freeTts: { enabled: true } });
 
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-    await click(button("matrixRun"));
-    expect(composeBodies().at(-1)).toMatchObject({ voiceoverMode: mode, label: expect.any(String), freeTts: { enabled: true } });
 
     await click(switchFor("ttsEnableLabel"));
     expect(switchFor("ttsReplaceLabel").disabled).toBe(true);
     expect(switchFor("ttsMixLabel").disabled).toBe(true);
     expect(switchFor(label).getAttribute("aria-checked")).toBe("true");
     await click(button("composeStart"));
-    expect(composeBodies().at(-1)).not.toHaveProperty("voiceoverMode");
-    expect(composeBodies().at(-1)).not.toHaveProperty("freeTts");
-    await click(button("matrixRun"));
     expect(composeBodies().at(-1)).not.toHaveProperty("voiceoverMode");
     expect(composeBodies().at(-1)).not.toHaveProperty("freeTts");
 
@@ -731,10 +706,6 @@ describe("independent composition subtitles", () => {
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).toMatchObject({ headlineEnabled: true, headlineText: "My Edited Hunting Headline" });
     expect(composeBodies().at(-1)).not.toHaveProperty("llmConfig");
-    await click([...container.querySelectorAll("button")].find(item => item.textContent?.includes("matrixTitle"))!);
-    await click(button("matrixRun"));
-    expect(composeBodies().at(-1)).toMatchObject({ headlineEnabled: true, headlineText: "My Edited Hunting Headline" });
-    expect(composeBodies().at(-1)).not.toHaveProperty("llmConfig");
     expect(headlineRequests()).toHaveLength(1);
     expect(localStorage.getItem("clipforge:project:project-1:voiceover") ?? "").not.toContain(settingsState.llmApiKey);
   });
@@ -742,7 +713,7 @@ describe("independent composition subtitles", () => {
   it.each([
     { mode: "replace", label: "ttsReplaceLabel" },
     { mode: "mix", label: "ttsMixLabel" },
-  ])("disables captions without changing $mode narration in either compose entry point", async ({ mode, label }) => {
+  ])("disables captions without changing $mode narration", async ({ mode, label }) => {
     await mountWithTts();
     const subtitles = switchFor("subtitleEnableLabel");
     expect(subtitles.getAttribute("aria-checked")).toBe("true");
@@ -765,12 +736,6 @@ describe("independent composition subtitles", () => {
     expect(withoutCaptions).not.toHaveProperty("llmConfig");
     expectNoFreeBgm(withoutCaptions);
 
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-    await click(button("matrixRun"));
-    expect(composeBodies().at(-1)).toMatchObject({ subtitles: false, voiceoverMode: mode, freeTts: withCaptions.freeTts });
-    expect(composeBodies().at(-1)).not.toHaveProperty("llmConfig");
-    expectNoFreeBgm(composeBodies().at(-1));
-
     await click(switchFor("ttsEnableLabel"));
     expect(subtitles.getAttribute("aria-checked")).toBe("false");
     await click(subtitles);
@@ -778,27 +743,6 @@ describe("independent composition subtitles", () => {
     expect(composeBodies().at(-1)).toMatchObject({ subtitles: true, captionPreset: "karaoke" });
     expect(composeBodies().at(-1)).not.toHaveProperty("freeTts");
     expect(composeBodies().at(-1)).not.toHaveProperty("voiceoverMode");
-  });
-
-  it("keeps the matrix on the fixed caption style when subtitles are enabled again", async () => {
-    await mount();
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-    for (const key of ["standard", "bold", "minimal", "karaoke"]) expect(button(key)).toBeUndefined();
-    expect(container.textContent).not.toContain("matrixCaptions");
-    await click(switchFor("subtitleEnableLabel"));
-    expect(container.textContent).toContain("matrixNoSubtitles");
-    await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(1);
-    expect(composeBodies()[0]).toMatchObject({ subtitles: false, label: expect.stringContaining("matrixNoSubtitles") });
-    expect(composeBodies()[0]).not.toHaveProperty("llmConfig");
-
-    await click(switchFor("subtitleEnableLabel"));
-    await click(button("matrixRun"));
-    const restored = composeBodies().slice(1);
-    expect(restored).toHaveLength(1);
-    expect(restored.map((body) => body.captionPreset)).toEqual(["karaoke"]);
-    expect(restored.every((body) => body.subtitles === true)).toBe(true);
-    expect(restored[0]).not.toHaveProperty("llmConfig");
   });
 
   it("keeps subtitles disabled and retains the fixed caption style when applying a style pack", async () => {
@@ -849,19 +793,17 @@ describe("manual top headline", () => {
     expect(composeBodies().at(-1)).not.toHaveProperty("headlineText");
   });
 
-  it("asks for a headline before either composition path when enabled but empty", async () => {
+  it("asks for a headline before composition when enabled but empty", async () => {
     await mount();
     await click(switchFor("headlineLabel"));
     await click(button("composeStart"));
     expect(composeBodies()).toHaveLength(0);
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("headlineRequired");
-    await click([...container.querySelectorAll("button")].find(item => item.textContent?.includes("matrixTitle"))!);
-    await click(button("matrixRun"));
     expect(composeBodies()).toHaveLength(0);
     expect(headlineRequests()).toHaveLength(0);
-    await enterHeadline("A Manual Batch Headline");
-    await click(button("matrixRun"));
-    expect(composeBodies().at(-1)).toMatchObject({ headlineEnabled: true, headlineText: "A Manual Batch Headline" });
+    await enterHeadline("A Manual Headline");
+    await click(button("composeStart"));
+    expect(composeBodies().at(-1)).toMatchObject({ headlineEnabled: true, headlineText: "A Manual Headline" });
   });
 
   it("keeps failed generation separate from composition and permits manual input", async () => {
@@ -907,7 +849,7 @@ describe("manual top headline", () => {
 });
 
 describe("composition without automatic background music", () => {
-  it("removes voice grounding along with automatic music controls and matrix music variants", async () => {
+  it("removes voice grounding along with automatic music controls", async () => {
     await mountWithTts();
     expect(container.textContent).not.toContain("bgmSectionLabel");
     expect(container.textContent).not.toContain("bgmUpbeat");
@@ -917,22 +859,18 @@ describe("composition without automatic background music", () => {
     await click(button("composeStart"));
     expect(composeBodies().at(-1)).toMatchObject({ voiceoverMode: "mix", freeTts: { enabled: true } });
 
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-    expect(container.textContent).not.toContain("matrixBgms");
     expect(button("upbeat")).toBeUndefined();
     expect(button("emotional")).toBeUndefined();
-    await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(2);
+    expect(composeBodies()).toHaveLength(1);
     expect(composeBodies().at(-1)).toMatchObject({ voiceoverMode: "mix", freeTts: { enabled: true } });
     for (const body of composeBodies()) {
       expect(body).not.toHaveProperty("voiceGround");
       expectNoFreeBgm(body);
       expect(body).not.toHaveProperty("bgmPath");
     }
-    expect(composeBodies().at(-1).label).not.toMatch(/upbeat|emotional|energetic|chill/);
   });
 
-  it("ignores legacy style-pack music mood in ordinary and matrix compositions", async () => {
+  it("ignores legacy style-pack music mood during composition", async () => {
     await mount();
     const legacyPack = new File([""], "legacy-style.json", { type: "application/json" });
     Object.defineProperty(legacyPack, "text", { value: async () => JSON.stringify({
@@ -945,9 +883,7 @@ describe("composition without automatic background music", () => {
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await click(button("composeStart"));
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-    await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(2);
+    expect(composeBodies()).toHaveLength(1);
     for (const body of composeBodies()) {
       expect(body).toMatchObject({ captionPreset: "karaoke" });
       expectNoFreeBgm(body);
@@ -955,7 +891,7 @@ describe("composition without automatic background music", () => {
     }
   });
 
-  it("keeps uploaded music available for ordinary and matrix compositions", async () => {
+  it("keeps uploaded music available during composition", async () => {
     const normalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/bgm") && init?.method === "POST"
       ? Promise.resolve(Response.json({ path: "uploads/music.mp3", name: "My music.mp3" }))
@@ -968,9 +904,7 @@ describe("composition without automatic background music", () => {
     });
     expect(container.querySelector('[aria-label="bgmVolumeLabel"]')).not.toBeNull();
     await click(button("composeStart"));
-    await click([...container.querySelectorAll("button")].find((item) => item.textContent?.includes("matrixTitle"))!);
-    await click(button("matrixRun"));
-    expect(composeBodies()).toHaveLength(2);
+    expect(composeBodies()).toHaveLength(1);
     for (const body of composeBodies()) {
       expect(body).toMatchObject({ bgmPath: "uploads/music.mp3", bgmVolume: 0.18, bgmDuck: true });
       expectNoFreeBgm(body);

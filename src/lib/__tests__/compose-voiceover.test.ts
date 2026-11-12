@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -13,9 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import * as schema from "@/lib/db/schema";
 import {
   createCreativeProfileSnapshot,
-  createTideweOutdoorProfile,
-  createShortVideoSalesProfile,
-} from "@/lib/creative-profiles";
+  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { buildComposeInvocation, FADE_DURATION, type ComposeConfig } from "@/lib/video-composer/composer";
 import { createElevenLabsLocalSession } from "@/lib/elevenlabs/local-access";
@@ -525,7 +524,7 @@ describe("explicit top titles", () => {
 describe("composition creative profile context", () => {
   it("rejects a different creation type and composes a sales script with its frozen earlier configuration", async () => {
     setShots([{ source: "audible" }]);
-    const profile = createShortVideoSalesProfile({ styleType: "scene" });
+    const profile = archivedCreativeProfile({ styleType: "scene" });
     const script = db.select().from(schema.scripts).get()!;
     db.update(schema.projects).set({ creativeProfile: profile, creativeConfigRevision: 2 }).where(eq(schema.projects.id, projectId)).run();
     db.update(schema.scripts).set({

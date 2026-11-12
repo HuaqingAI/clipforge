@@ -11,7 +11,6 @@ import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import {
   createCreativeProfileSnapshot,
 
-  createShortVideoSalesProfile,
 } from "@/lib/creative-profiles";
 import { GET, PATCH } from "@/app/api/project/[id]/scripts/route";
 
@@ -19,6 +18,13 @@ vi.mock("@/lib/db", () => ({ getDb: () => db }));
 
 let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle<typeof schema>>;
+// Persisted JSON fixture from the removed workflow; it is only read by media/history APIs.
+const archivedProfile = {
+  version: 1, id: "short_video_sales_v1", creationType: "short_video_sales",
+  styleType: "pain_point", videoMode: "product_closeup", targetDuration: 30,
+  composeSnapshot: {}, creativeSettings: {}, promptCompilerVersion: "short-video-sales-1",
+} as unknown as NonNullable<typeof schema.projects.$inferInsert["creativeProfile"]>;
+
 const projectId = "project-1";
 const currentId = "current-script";
 const historicalId = "historical-script";
@@ -30,7 +36,7 @@ const shot: schema.Shot = {
 function addScript(id: string, overrides: Partial<typeof schema.scripts.$inferInsert> = {}) {
   return db.insert(schema.scripts).values({
     id, projectId, version: 1, styleType: "scene", title: id, selected: false, shots: [shot],
-    creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 0),
+    creativeProfileSnapshot: { profile: archivedProfile, creativeConfigRevision: 0 },
     createdAt: new Date("2026-10-22T00:00:00Z"), ...overrides,
   }).returning().get()!;
 }
@@ -181,7 +187,7 @@ describe("PATCH historical script restoration", () => {
     const response = await restore(historicalId, projectId, "zh-CN");
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      code: "CREATIVE_PROFILE_MISMATCH", currentCreationType: "short_video_sales", scriptCreationType: "tidewe_outdoor",
+      code: "CREATIVE_PROFILE_MISMATCH", currentCreationType: "unsupported", scriptCreationType: "tidewe_outdoor",
       error: "该历史方案的创作类型与当前项目不一致，暂时无法恢复。",
     });
     expect(rows()).toEqual(before);

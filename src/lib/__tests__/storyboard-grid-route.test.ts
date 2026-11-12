@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { execFileSync } from "child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
@@ -16,9 +17,8 @@ import { assetMatchesScript, scriptRevision } from "@/lib/asset-context";
 import {
   createCreativeProfileSnapshot,
 
-  createShortVideoSalesProfile,
-  createTideweOutdoorProfile,
-} from "@/lib/creative-profiles";
+
+  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot, TideweVisualPlan } from "@/lib/tidewe/types";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
@@ -108,7 +108,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   gridBase64 = gridBytes.toString("base64");
   await rm(join(directory, "storyboard-grids", `${projectId}.json`), { force: true });
-  const salesProfile = createShortVideoSalesProfile({ styleType: "scene" });
+  const salesProfile = archivedCreativeProfile({ styleType: "scene" });
   db.update(schema.projects).set({
     creativeProfile: salesProfile,
     creativeConfigRevision: 0,

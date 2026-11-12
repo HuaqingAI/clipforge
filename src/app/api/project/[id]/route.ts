@@ -7,7 +7,7 @@ import { projects } from "@/lib/db/schema";
 import { getUploadsDir, getOutputDir } from "@/lib/paths";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
-import { createShortVideoSalesProfile, createTideweOutdoorProfile, isTideweOutdoorProfile, resolveCreativeProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type CreativeProfileFallback, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile, resolveCreativeProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
 import { generationItems, generationRuns } from "@/lib/generation-schema";
 
@@ -61,18 +61,6 @@ function hasOwn(value: JsonRecord, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function creativeFallback(value: {
-  videoMode?: unknown;
-  creativeSettings?: unknown;
-  templateId?: unknown;
-} | JsonRecord): CreativeProfileFallback {
-  return {
-    videoMode: value.videoMode,
-    creativeSettings: value.creativeSettings,
-    recipeSnapshot: value.templateId ? { templateId: value.templateId } : undefined,
-  };
-}
-
 function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   if (hasOwn(value, "creativeProfile")) return value.creativeProfile;
   if (hasOwn(value, "profile")) return value.profile;
@@ -83,7 +71,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration",
-    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "composeSnapshot", "compose",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
@@ -97,26 +85,12 @@ function hasProfileSettings(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return [
     "styleType", "videoMode", "targetDuration", "duration", "composeSnapshot", "compose",
-    "creativeSettings", "recipeSnapshot",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ].some((key) => hasOwn(value, key));
 }
 
-function mergeCreativeProfileDrafts(
-  profile: ProjectCreativeProfile,
-  existing: unknown,
-  incoming: unknown,
-  fallback: CreativeProfileFallback,
-): ProjectCreativeProfileDrafts {
-  const drafts: ProjectCreativeProfileDrafts = {
-    ...(sanitizeCreativeProfileDrafts(existing) ?? {}),
-    ...(sanitizeCreativeProfileDrafts(incoming) ?? {}),
-  };
-  if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
-  if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
-  if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
-  else drafts.short_video_sales = profile;
-  return drafts;
+function mergeCreativeProfileDrafts(profile: ProjectCreativeProfile, existing: unknown, incoming: unknown): ProjectCreativeProfileDrafts {
+  return { ...(sanitizeCreativeProfileDrafts(existing) ?? {}), ...(sanitizeCreativeProfileDrafts(incoming) ?? {}), tidewe_outdoor: profile };
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
@@ -215,6 +189,9 @@ export async function PATCH(
       if (hasDraftUpdate && !isRecord(body.creativeProfileDrafts)) {
         return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
       }
+      if (isRecord(body.creativeProfileDrafts) && Object.keys(body.creativeProfileDrafts).some(key => key !== "tidewe_outdoor")) {
+        return NextResponse.json({ error: "Unsupported creative profile draft." }, { status: 400 });
+      }
       if (isRecord(body.creativeProfileDrafts) && body.creativeProfileDrafts.tidewe_outdoor !== undefined) {
         const draft = validateCreativeProfileInput(body.creativeProfileDrafts.tidewe_outdoor);
         if (!draft.profile || !isTideweOutdoorProfile(draft.profile)) return NextResponse.json({ error: draft.error ?? "Invalid TIDEWE creative profile draft." }, { status: 400 });
@@ -234,40 +211,30 @@ export async function PATCH(
         }, { status: 409 });
       }
 
-      const fallback = creativeFallback(current);
-      const currentProfile = resolveCreativeProfile(current.creativeProfile, fallback);
+      const currentProfile = resolveCreativeProfile(current.creativeProfile, { videoMode: current.videoMode });
+      if (!isTideweOutdoorProfile(currentProfile)) {
+        return NextResponse.json({ error: "This creation workflow is no longer supported. Create a TIDEWE project to continue.", code: "CREATION_TYPE_LOCKED", creationType: "unsupported" }, { status: 400 });
+      }
       const incomingDrafts = hasDraftUpdate ? body.creativeProfileDrafts : undefined;
       const preliminaryDrafts = mergeCreativeProfileDrafts(
         currentProfile,
         current.creativeProfileDrafts,
         incomingDrafts,
-        fallback,
       );
       let nextProfile = currentProfile;
 
       if (profileInput !== undefined) {
         const profileResult = validateCreativeProfileInput(profileInput);
         if ("error" in profileResult) {
-          return NextResponse.json({ error: profileResult.error }, { status: 400 });
-        }
-        if (profileResult.profile.creationType !== currentProfile.creationType) {
-          return NextResponse.json({
-            error: errText(req, "创作类型确定后不可修改，请新建项目选择其他类型。", "Creation type cannot be changed after it is selected. Create a new project to use another type."),
-            code: "CREATION_TYPE_LOCKED",
-            creationType: currentProfile.creationType,
-          }, { status: 400 });
+          return NextResponse.json({ error: profileResult.error, code: "CREATION_TYPE_LOCKED", creationType: currentProfile.creationType }, { status: 400 });
         }
         // Identity-only saves retain the saved settings for the project's fixed creation type.
         nextProfile = hasProfileSettings(profileInput)
           ? profileResult.profile
-          : profileResult.profile.creationType === "tidewe_outdoor"
-              ? preliminaryDrafts.tidewe_outdoor ?? profileResult.profile
-            : preliminaryDrafts.short_video_sales ?? profileResult.profile;
+          : preliminaryDrafts.tidewe_outdoor ?? profileResult.profile;
       } else if (hasDraftUpdate) {
         const incoming = sanitizeCreativeProfileDrafts(incomingDrafts);
-        const activeDraft = currentProfile.creationType === "tidewe_outdoor"
-            ? incoming?.tidewe_outdoor
-          : incoming?.short_video_sales;
+        const activeDraft = incoming?.tidewe_outdoor;
         if (activeDraft) nextProfile = activeDraft;
       }
 
@@ -283,13 +250,11 @@ export async function PATCH(
         nextProfile,
         current.creativeProfileDrafts,
         incomingDrafts,
-        fallback,
       );
       const currentDrafts = mergeCreativeProfileDrafts(
         currentProfile,
         current.creativeProfileDrafts,
         undefined,
-        fallback,
       );
       const changed = current.creativeProfile === null
         || !sameJson(currentProfile, nextProfile)

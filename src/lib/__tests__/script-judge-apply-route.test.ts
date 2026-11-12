@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -7,7 +8,7 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot,  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { scriptRevision } from "@/lib/asset-context";
 import { assertTideweScript, englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import type { TideweCopyDocument } from "@/lib/tidewe/types";
@@ -201,7 +202,7 @@ describe("apply judge feedback", () => {
   });
 
   it("supports a normal sales script with feedback but no supplied rewrite", async () => {
-    const salesProfile = createShortVideoSalesProfile();
+    const salesProfile = archivedCreativeProfile();
     db.update(schema.projects).set({ creativeProfile: salesProfile }).where(eq(schema.projects.id, projectId)).run();
     db.update(schema.scripts).set({ styleType: "pain_point", copyDocument: null,
       creativeProfileSnapshot: createCreativeProfileSnapshot(salesProfile, 1),

@@ -62,6 +62,10 @@ afterEach(() => {
 
 describe("project creation requires an explicit creative profile", () => {
   it.each([
+    { creativeProfile: { creationType: "short_video_sales" } },
+    { creationType: "short_video_sales" },
+    { creativeProfile: "short_video_sales_v1" },
+    { creativeProfile: { styleType: "pain_point" } },
     { creativeProfile: { creationType: "premium_product_cg" } },
     { creationType: "premium_product_cg" },
     { creativeProfile: "premium_product_cg_v1" },
@@ -88,29 +92,12 @@ describe("project creation requires an explicit creative profile", () => {
     expect(db.select().from(schema.projects).all()).toHaveLength(0);
   });
 
-  it("accepts and persists an explicit short-video sales creation type", async () => {
-    const response = await createProject(request("http://localhost/api/project", {
-      name: "Explicit sales profile",
-      creativeProfile: {
-        creationType: "short_video_sales",
-        styleType: "scene",
-        videoMode: "scene_demo",
-        targetDuration: 45,
-      },
-    }));
-
+  it("persists only the TIDEWE profile and its draft", async () => {
+    const response = await createProject(request("http://localhost/api/project", { name: "TIDEWE", creativeProfile: createTideweOutdoorProfile({ targetDuration: 60 }) }));
     expect(response.status).toBe(201);
     const project = await response.json();
-    expect(project.creativeProfile).toMatchObject({
-      creationType: "short_video_sales",
-      styleType: "scene",
-      videoMode: "scene_demo",
-      targetDuration: 45,
-    });
-    expect(project.creativeProfileDrafts.short_video_sales).toMatchObject({
-      creationType: "short_video_sales",
-      styleType: "scene",
-    });
+    expect(project.creativeProfile).toMatchObject({ creationType: "tidewe_outdoor", targetDuration: 60 });
+    expect(Object.keys(project.creativeProfileDrafts)).toEqual(["tidewe_outdoor"]);
   });
 
   it("rejects a project-producing link import before fetching when no type was chosen", async () => {
@@ -165,7 +152,7 @@ describe("project creation requires an explicit creative profile", () => {
     expect(project.characterId).toBe(presenter.id);
   });
 
-  it.each(["tidewe_outdoor", "short_video_sales"])("does not overwrite TIDEWE images if a %s project changes during link image download", async (creationType) => {
+  it.each(["tidewe_outdoor"])("does not overwrite TIDEWE images if a %s project changes during link image download", async (creationType) => {
     state.safeFetch.mockResolvedValueOnce(new Response('<title>Hunting chair</title><meta property="og:image" content="https://example.test/chair.png">', { headers: { "Content-Type": "text/html" } }))
       .mockImplementationOnce(async () => {
         const project = db.select().from(schema.projects).get()!;

@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { CreationTypeGate } from "@/components/creation-type-gate";
+import { TideweProjectEntry } from "@/components/tidewe-project-entry";
 import { useT, useLocale } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/relative-time";
 
@@ -15,9 +14,8 @@ interface RecentProject {
   updatedAt: string | null;
 }
 
-/** Choose a creation type, then continue in the shared new-project form. */
+/** Start a TIDEWE project or continue recent work in either app surface. */
 export default function StartPage() {
-  const router = useRouter();
   const t = useT("start");
   const locale = useLocale();
   const [recent, setRecent] = useState<RecentProject[]>([]);
@@ -49,12 +47,6 @@ export default function StartPage() {
 
   const stageKeyFor = (status: string) =>
     status === "done" ? "pjStageDone" : status === "video" || status === "composing" ? "pjStageVideo" : status === "assets" ? "pjStageAssets" : "pjStageScript";
-
-  const startSalesProject = () => {
-    const params = new URLSearchParams(window.location.search);
-    params.set("creationType", "short_video_sales");
-    router.push(`/project/new?${params.toString()}`);
-  };
 
   return (
     <div className="cf-root">
@@ -89,7 +81,7 @@ export default function StartPage() {
           <h1 className="cf-h1">{t("h1Lead")}<span className="hl">{t("h1Highlight")}</span></h1>
 
           <div className="cf-card">
-            <CreationTypeGate onSelectShortVideoSales={startSalesProject} />
+            <TideweProjectEntry />
           </div>
 
           {recent.length > 0 && (

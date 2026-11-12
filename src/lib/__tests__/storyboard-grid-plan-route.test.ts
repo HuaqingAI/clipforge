@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
@@ -12,7 +13,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot,  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { withGenerationContext } from "@/lib/generation-context";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
@@ -59,7 +60,7 @@ beforeAll(async () => {
   vi.stubEnv("FFPROBE_PATH", (require("@ffprobe-installer/ffprobe") as { path: string }).path);
   state.db = db;
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
-  const profile = createShortVideoSalesProfile({ styleType: "scene" });
+  const profile = archivedCreativeProfile({ styleType: "scene" });
   db.insert(schema.projects).values({ id: projectId, name: "Frozen prompt fixture", productImages: [reference], creativeProfile: profile }).run();
   db.insert(schema.scripts).values({ id: scriptId, projectId, selected: true, styleType: "scene", shots, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 0) }).run();
   const uploads = join(directory, "uploads", projectId);
@@ -84,7 +85,7 @@ beforeEach(async () => {
   checkpoint = {};
   state.policy = "policy-at-submission";
   db.delete(schema.assets).run();
-  const profile = createShortVideoSalesProfile({ styleType: "scene" });
+  const profile = archivedCreativeProfile({ styleType: "scene" });
   db.update(schema.projects).set({ productImages: [reference], creativeProfile: profile, creativeConfigRevision: 0 }).where(eq(schema.projects.id, projectId)).run();
   db.update(schema.scripts).set({ styleType: "scene", shots, copyDocument: null, creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 0) }).where(eq(schema.scripts.id, scriptId)).run();
   await writeFile(join(directory, "uploads", projectId, "product.png"), referenceBytes);

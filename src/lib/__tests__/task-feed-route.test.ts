@@ -156,18 +156,15 @@ describe("任务发现和恢复状态", () => {
     expect(JSON.stringify(result)).not.toContain("sensitive");
   });
 
-  it("全部运行批次都有各自进度，终止批次不再展示", async () => {
+  it("does not surface retired sales batches as active work", async () => {
     db.insert(schema.batchJobs).values([{ id: "one", total: 3 }, { id: "two", total: 2 }, { id: "cancelled", status: "cancelled" }]).run();
     db.insert(schema.batchJobItems).values([
       { id: "1", jobId: "one", productId: "p", productName: "p", status: "done" },
       { id: "2", jobId: "one", productId: "p", productName: "p", status: "failed" },
       { id: "3", jobId: "two", productId: "p", productName: "p", status: "done" },
     ]).run();
-    expect((await feed()).active).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "one", done: 1, failed: 1, total: 3 }),
-      expect.objectContaining({ id: "two", done: 1, failed: 0, total: 2 }),
-    ]));
-    expect((await feed()).active).toHaveLength(2);
+    expect((await feed()).active).toEqual([]);
+    expect(db.select().from(schema.batchJobs).all()).toHaveLength(3);
     expect((await GET()).headers.get("Cache-Control")).toBe("no-store");
   });
 

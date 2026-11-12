@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import * as schema from "@/lib/db/schema";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { DEFAULT_VIDEO_PROMPT_SETTINGS } from "@/lib/shot-video-prompt";
 import type { VideoPromptContext, VideoPromptPreview, VideoPromptRequest } from "@/lib/video-prompt-request";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
@@ -37,6 +37,13 @@ import { resolveTideweVideoDirection, prepareTideweVideoDirections, TideweVideoD
 import { POST as preview } from "@/app/api/project/[id]/video-prompt/route";
 import { POST as generate } from "@/app/api/ai/video/route";
 
+// Persisted JSON fixture from the removed workflow; it is only read by media/history APIs.
+const archivedProfile = {
+  version: 1, id: "short_video_sales_v1", creationType: "short_video_sales",
+  styleType: "pain_point", videoMode: "product_closeup", targetDuration: 30,
+  composeSnapshot: {}, creativeSettings: {}, promptCompilerVersion: "short-video-sales-1",
+} as unknown as NonNullable<typeof schema.projects.$inferInsert["creativeProfile"]>;
+
 const projectId = "prompt-preview-project", scriptId = "prompt-preview-script";
 const shot: schema.Shot = {
   shotId: 1, type: "demo", duration: 5, description: "商品放在桌面上。", visualIntent: "商品包装纹理和按键清晰可见。",
@@ -50,9 +57,9 @@ beforeEach(() => {
   db = drizzle(sqlite, { schema });
   state.db = db;
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
-  const profile = createShortVideoSalesProfile();
+  const profile = archivedProfile;
   db.insert(schema.projects).values({ id: projectId, name: "Preview", productImages: ["/api/files/product.png"], creativeProfile: profile, creativeConfigRevision: 1 }).run();
-  db.insert(schema.scripts).values({ id: scriptId, projectId, selected: true, styleType: "scene", shots: [shot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
+  db.insert(schema.scripts).values({ id: scriptId, projectId, selected: true, styleType: "scene", shots: [shot], creativeProfileSnapshot: { profile, creativeConfigRevision: 1 } }).run();
   state.generate.mockReset().mockResolvedValue({ videoUrls: ["https://example.test/clip.mp4"] });
   state.provider.mockReset().mockReturnValue({ generateVideo: state.generate });
   state.recordTask.mockReset().mockResolvedValue("task-row");

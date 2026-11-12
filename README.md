@@ -252,13 +252,13 @@ ClipForge **开源、本地运行、无水印、免费路径零成本、数据�
 一键适配抖音 (9:16) / 快手 / 小红书 (3:4) / 视频号 / TikTok / Reels / Shorts；界面与文档支持**中文 / English**，按系统语言自动切换。
 
 **可以让 AI 助手（Claude / Cursor）直接生成视频吗？**
-可以。ClipForge 内置 **MCP Server**（`clipforge_product_script` 贴商品链接直接出带货脚本，详见 [mcp/README.md](mcp/README.md)）+ **agent Skill**（[skills/clipforge-video](skills/clipforge-video/SKILL.md)，把整条出片流水线教给编程助手）。装法任选：`npx skills add xixihhhh/clipforge` 一条命令；Claude Code 里 `/plugin marketplace add xixihhhh/clipforge` 装 skill+MCP 二合一；或把 [skills/README](skills/README.md) 的 Setup prompt 贴给你的 agent 让它自装。
+可以。ClipForge 内置 **MCP Server**（`clipforge_ingest_product` 导入商品并创建 TIDEWE 项目，详见 [mcp/README.md](mcp/README.md)）+ **agent Skill**（[skills/clipforge-video](skills/clipforge-video/SKILL.md)，把整条出片流水线教给编程助手）。装法任选：`npx skills add xixihhhh/clipforge` 一条命令；Claude Code 里 `/plugin marketplace add xixihhhh/clipforge` 装 skill+MCP 二合一；或把 [skills/README](skills/README.md) 的 Setup prompt 贴给你的 agent 让它自装。
 
 **能在命令行里直接出片吗？**
 可以。内置 **命令行 CLI**：先启动实例，再设好 `CLIPFORGE_LLM_*` 环境变量，然后：
 ```bash
 node bin/clipforge.mjs trends                                            # 不知道做什么？先拉热搜选题(默认抖音/头条国内榜,--geo US 走 Google Trends)
-node bin/clipforge.mjs create --topic "在家手冲咖啡" --quality hd   # 一句话出片，回填 videoUrl
+node bin/clipforge.mjs compose --project <id> --quality hd              # 合成已有脚本与素材的项目
 node bin/clipforge.mjs import --project <id> --file my-script.txt        # 用自己写好的稿子出片
 node bin/clipforge.mjs dub --project <id> --lang en                      # 换语种译制(出海)，再 compose
 node bin/clipforge.mjs cover --project <id> --title "手冲咖啡 三步搞定"     # 给成片生成封面图(提升点击率)
@@ -276,13 +276,8 @@ node bin/clipforge.mjs list            # 列出项目
 node bin/clipforge.mjs --help          # 全部命令与参数
 ```
 
-**能全自动日更吗？**
-可以，`trends` + `create` 接上 cron 就是一台日更机（首页的「日更 · 按人设选题」是同一逻辑的网页版）。示例：每天 9 点从国内热榜拿榜一出一条待发成片：
-```bash
-crontab -e   # 加入下面一行（把路径和环境变量换成你的）
-# 0 9 * * * cd /path/to/clipforge && TOPIC=$(node bin/clipforge.mjs trends --json | python3 -c "import json,sys;print(json.load(sys.stdin)['topics'][0]['title'])") && node bin/clipforge.mjs create --topic "$TOPIC" >> daily.log 2>&1
-```
-出的是**待发草稿**（本地成片文件），发布动作留给你自己——自动发布各平台有账号风控与协议风险，我们不做。
+**当前支持哪些创作类型？**
+当前客户端和 Web 端仅支持 TIDEWE 创作。商品链接可通过 `clipforge_ingest_product` 导入；短视频带货、主题一键成片、销售模板及其专用批量/复刻入口和 CLI/MCP 生成命令已移除。TIDEWE 的脚本、逐镜生成、Kling 批量转动态及标准合成流程继续保留。
 
 ---
 
@@ -344,16 +339,6 @@ crontab -e   # 加入下面一行（把路径和环境变量换成你的）
 - **素材连贯性（同源优先）**：提到同一实体/商品的分镜自动归组，组内优先复用**同一作者/同一来源**的素材（同一上传者的片子=同场景同光线同调色），成片不再东拼西凑；相关性仍然优先（同源只做加分不改判），跨镜去重照常生效；本地素材池整体视作一个来源——首镜选中你的素材后，同组后续分镜会跟着用你的。API/CLI/MCP/素材页均回报同源命中数
 - 另有 **NASA 影像库 / Internet Archive** 两个免 Key 公共领域档案源（纪录/科普题材，显式选用不进默认聚合）
 - 没有 API 的优质免费站（Mixkit / Videezy / Mazwai 等）走「手动下载 → 本地素材池」路线：下到 `data/uploads` 项目素材池即可参与自动配画面（注意逐条核对各站授权）
-
-### 三-补、一句话主题成片 🆕（无需商品，零门槛闭环）
-
-不卖货也能成片：在首页「一句话主题成片」入口输入一句话主题（如"在家如何泡一杯手冲咖啡"），全程自动：
-
-1. **写脚本** `/api/topic/script`：去商品化的旁白脚本引擎，5 种风格（知识科普 / 情感故事 / 生活方式 / 励志金句 / 旅行风光），每个分镜产出英文检索词
-2. **自动配画面** `/api/project/[id]/stock-fill`：逐镜从免费素材库（Openverse 免 Key）拉画面落库，含"永远有素材"兜底。素材页提供一键 **「自动配画面（免费素材）」** 按钮——**无需任何生图 Key** 即可为每个分镜配好真实画面（topic 成片首选路径，已端到端实测 3/3 镜命中 Openverse）
-3. **合成成片** `/api/project/[id]/compose`：FFmpeg 把素材配上运镜 + 中文字幕 + **免费 AI 配音**（微软 Edge keyless TTS，无需任何 Key），输出有声竖屏短视频
-
-新建即标记 `contentType=topic`，与带货项目共用后半程素材/合成流程；任何主题都能做，真正"输入一句话 → 产出一条视频"。
 
 ### 四、4 种视频模式
 

@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { keyframeStaticWarnings, keyframeInstantLine } from "@/lib/prompt-lint";
-import { clampSellingPoints } from "@/lib/script-engine/generator";
 import { chainByDefault } from "@/lib/assets-view";
 
 describe("keyframeStaticWarnings（关键帧静态 lint：时序词=多瞬间，静帧画不出）", () => {
@@ -32,21 +31,6 @@ describe("keyframeStaticWarnings（关键帧静态 lint：时序词=多瞬间，
     expect(keyframeInstantLine("女生特写")).toContain("定格");
     expect(keyframeInstantLine("close-up of a girl")).toContain("freeze the instant");
     expect(keyframeInstantLine("")).toContain("定格");
-  });
-});
-
-describe("clampSellingPoints（卖点三硬约束的服务端兜底）", () => {
-  it("超过 3 条截断为 3 条，超长条截到 15 字", () => {
-    const out = clampSellingPoints(["一抽三层加厚不破", "这款产品的性价比在同类目里真的非常非常高了", "母婴可用", "多余的第四条"]);
-    expect(out).toHaveLength(3);
-    expect(out[1]).toBe("这款产品的性价比在同类目里真的");
-    expect(out[1].length).toBe(15);
-  });
-
-  it("过滤空串与非字符串；非数组输入返回空数组", () => {
-    expect(clampSellingPoints(["  ", "真材实料", 42, null])).toEqual(["真材实料"]);
-    expect(clampSellingPoints("not an array")).toEqual([]);
-    expect(clampSellingPoints(undefined)).toEqual([]);
   });
 });
 

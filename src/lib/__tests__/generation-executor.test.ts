@@ -21,7 +21,6 @@ vi.mock("@/lib/providers", () => ({ createProvider: () => ({ getTaskStatus: stat
 vi.mock("@/app/api/ai/video/route", () => ({ POST: state.submit }));
 vi.mock("@/app/api/ai/image/route", () => ({ POST: state.submit }));
 vi.mock("@/app/api/llm/script/route", () => ({ POST: state.script }));
-vi.mock("@/app/api/topic/script/route", () => ({ POST: state.script }));
 vi.mock("@/app/api/project/[id]/storyboard-grid/route", () => ({ POST: state.grid }));
 vi.mock("@/lib/kling/jobs", () => ({ createKlingJob: state.createKling, retryKlingImport: state.retryKling, startKlingJobRunner: state.startKling }));
 vi.mock("@/lib/kling/repository", () => ({ getKlingJob: state.getKling, getKlingOutputs: state.outputs }));
@@ -266,7 +265,7 @@ describe("generation executor recovery", () => {
     await expect(run(input)).rejects.toMatchObject({ code: "GENERATION_NEEDS_ATTENTION" });
     expect(state.script).not.toHaveBeenCalled();
   });
-  it.each(["/api/llm/script", "/api/topic/script"])("recovers the paid scripts after a database save failure through %s without rebilling", async (endpoint) => {
+  it.each(["/api/llm/script"])("recovers the paid scripts after a database save failure through %s without rebilling", async (endpoint) => {
     const input = item(); input.kind = "script"; input.shotId = null;
     input.payload.request.generationEndpoint = endpoint;
     const generate = vi.fn(async () => [{ title: "Original paid result", shots: getDb().select().from(scripts).get()!.shots! }]);

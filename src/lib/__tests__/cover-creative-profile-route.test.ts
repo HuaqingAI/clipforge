@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -9,7 +10,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import { createShortVideoSalesProfile } from "@/lib/creative-profiles";
+
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -68,7 +69,7 @@ describe("sales cover generation", () => {
 
   it("keeps title cover generation available for sales projects", async () => {
     db.update(schema.projects)
-      .set({ creativeProfile: createShortVideoSalesProfile() })
+      .set({ creativeProfile: archivedCreativeProfile() })
       .where(eq(schema.projects.id, projectId))
       .run();
 

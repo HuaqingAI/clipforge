@@ -8,7 +8,6 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import {
-  createShortVideoSalesProfile,
   createTideweOutdoorProfile,
   type ProjectCreativeProfile,
 } from "@/lib/creative-profiles";
@@ -20,7 +19,6 @@ let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 const projectId = "fixed-creation-type-project";
 const profiles = [
-  createShortVideoSalesProfile(),
   createTideweOutdoorProfile(),
 ];
 
@@ -55,41 +53,15 @@ beforeEach(() => {
 afterEach(() => { sqlite.close(); });
 
 describe("project creation type is fixed", () => {
-  it.each(profiles.flatMap((current) => profiles
-    .filter((incoming) => incoming.creationType !== current.creationType)
-    .map((incoming) => ({ from: current.creationType, to: incoming.creationType, current, incoming })),
-  ))("rejects $from to $to without saving any project changes", async ({ current, incoming }) => {
-    const original = seed(current);
-    const response = await patch({
-      creativeProfile: incoming,
-      creativeProfileDrafts: { [incoming.creationType]: incoming },
-      name: "Must not save",
-      productFacts: { version: 1, brand: "TIDEWE", category: "hunting_apparel", items: [] },
-    });
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({
-      code: "CREATION_TYPE_LOCKED",
-      creationType: current.creationType,
-    });
-    expect(savedProject()).toEqual(original);
-  });
-
   it.each([
-    { label: "profile alias", body: { profile: { creationType: "short_video_sales" } } },
-    { label: "string profile alias", body: { profile: "short_video_sales_v1" } },
-    { label: "nested profile ID", body: { creativeProfile: { id: "tidewe_outdoor_v1" } } },
-    { label: "string creativeProfile", body: { creativeProfile: "tidewe_outdoor_v1" } },
-    { label: "style identity", body: { creativeProfile: { styleType: "pain_point" } } },
-    { label: "flat creationType", body: { creationType: "tidewe_outdoor" } },
-    { label: "flat profileId", body: { profileId: "short_video_sales_v1" } },
-    { label: "flat creativeProfileId", body: { creativeProfileId: "tidewe_outdoor_v1" } },
-  ])("rejects creation type changes through $label", async ({ body }) => {
-    const original = seed(JSON.stringify(body).includes("tidewe") ? createShortVideoSalesProfile() : createTideweOutdoorProfile());
-    const response = await patch(body);
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: "CREATION_TYPE_LOCKED" });
+    { profile: { creationType: "short_video_sales" } },
+    { profile: "short_video_sales_v1" },
+    { creativeProfile: { styleType: "pain_point" } },
+    { profileId: "short_video_sales_v1" },
+    { creativeProfileDrafts: { short_video_sales: { creationType: "short_video_sales" } } },
+  ])("rejects removed creation profiles without changing the project: %j", async body => {
+    const original = seed(createTideweOutdoorProfile());
+    expect((await patch(body)).status).toBe(400);
     expect(savedProject()).toEqual(original);
   });
 
@@ -133,33 +105,12 @@ describe("project creation type is fixed", () => {
     });
   });
 
-  it("cannot activate a different type by updating an inactive draft", async () => {
-    const profile = createShortVideoSalesProfile();
-    seed(profile);
-    const response = await patch({
-      creativeProfileDrafts: { tidewe_outdoor: createTideweOutdoorProfile({ targetDuration: 60 }) },
-    });
-
-    expect(response.status).toBe(200);
-    expect(savedProject()).toMatchObject({
-      creativeProfile: profile,
-      creativeProfileDrafts: { tidewe_outdoor: { targetDuration: 60 } },
-    });
-  });
-
-  it("keeps legacy projects on their resolved sales type and permits profile migration", async () => {
+  it("keeps archived projects from being reactivated or reinterpreted as TIDEWE", async () => {
     const original = seed(null);
-    const rejected = await patch({ creativeProfile: createTideweOutdoorProfile() });
-    expect(rejected.status).toBe(400);
-    expect(await rejected.json()).toMatchObject({ code: "CREATION_TYPE_LOCKED", creationType: "short_video_sales" });
+    const response = await patch({ creativeProfile: createTideweOutdoorProfile() });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "CREATION_TYPE_LOCKED", creationType: "unsupported" });
     expect(savedProject()).toEqual(original);
-
-    const migrated = await patch({ creativeProfile: { creationType: "short_video_sales" } });
-    expect(migrated.status).toBe(200);
-    expect(savedProject()).toMatchObject({
-      creativeConfigRevision: 4,
-      creativeProfile: { creationType: "short_video_sales", videoMode: "scene_demo" },
-    });
   });
 
   it("preserves the direct legacy video mode update path", async () => {

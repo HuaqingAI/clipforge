@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,9 +9,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
-import {
-  createShortVideoSalesProfile,
-} from "@/lib/creative-profiles";
+
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -73,7 +72,7 @@ describe("sales direct output routes", () => {
       id: projectId,
       name: "Sales output policy",
       shopUrl: "https://shop.example.test/product",
-      creativeProfile: createShortVideoSalesProfile({ styleType: "scene" }),
+      creativeProfile: archivedCreativeProfile({ styleType: "scene" }),
     }).run();
     db.insert(schema.scripts).values({
       id: "sales-output-script",

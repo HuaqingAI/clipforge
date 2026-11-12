@@ -1,5 +1,5 @@
 import type { Shot } from "@/lib/db/schema";
-import type { ProjectCreativeProfile } from "@/lib/creative-profiles";
+import type { ResolvedCreativeProfile } from "@/lib/creative-profiles";
 import { isTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_NATIVE_CAMERA_STYLE, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
@@ -34,7 +34,7 @@ export function buildKeyframeRefinementPrompt(input: {
   shot: Shot;
   issues: KeyframeRepairIssue[];
   instructions?: string;
-  profile?: ProjectCreativeProfile;
+  profile?: ResolvedCreativeProfile;
   productCategory?: string;
   productName?: string;
   focusRegion?: KeyframeFocusRegion;

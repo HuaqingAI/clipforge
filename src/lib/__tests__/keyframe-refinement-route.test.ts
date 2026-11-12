@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -13,7 +14,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { assetScopeForShot } from "@/lib/asset-context";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot,  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
 import { TIDEWE_IMAGE_FOCUS_TARGET, TIDEWE_PHOTOGRAPHIC_POLICY } from "@/lib/tidewe/visual-policy";
@@ -146,7 +147,7 @@ describe("durable keyframe refinement execution", () => {
     try {
       expect(await runWorker(input)).toMatchObject({ pending: true });
       db.update(schema.scripts).set({ shots: [] }).run();
-      db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile(), productImages: [] }).run();
+      db.update(schema.projects).set({ creativeProfile: archivedCreativeProfile(), productImages: [] }).run();
       db.delete(schema.assets).run();
       expect(await runWorker(input)).toMatchObject({ pending: true });
       const result = await runWorker(input);
@@ -413,7 +414,7 @@ describe("durable keyframe refinement execution", () => {
 beforeEach(() => {
   db.delete(generationRuns).run();
   db.delete(schema.assets).run(); db.delete(schema.scripts).run(); db.delete(schema.projects).run(); db.delete(schema.characters).run();
-  const profile = createShortVideoSalesProfile({ styleType: "scene" });
+  const profile = archivedCreativeProfile({ styleType: "scene" });
   db.insert(schema.projects).values({ id: projectId, name: "Keyframe repair", productImages: [productPath], creativeProfile: profile, creativeConfigRevision: 1 }).run();
   db.insert(schema.scripts).values({ id: scriptId, projectId, selected: true, styleType: "scene", shots: [shot], creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1) }).run();
   db.insert(schema.assets).values({ id: "original", projectId, shotId: 1, type: "ai_generated", filePath: sourcePath, selected: true, status: "done", prompt: "[storyboard-grid-v2 第1格] seated host", ...assetScopeForShot(currentScript(), shot) }).run();
@@ -673,7 +674,7 @@ describe("single-frame refinement edit contract", () => {
     if (changed === "facts") db.update(schema.projects).set({ productFacts: { ...facts, category: "hunting_chair" } }).run();
     if (changed === "presenter") db.update(schema.projects).set({ creativeProfile: { ...profile, presenter: { ...profile.presenter!, id: "different-presenter" } } }).run();
     if (changed === "speech") db.update(schema.projects).set({ creativeProfile: { ...profile, speechMode: "voiceover" } }).run();
-    if (changed === "type") db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+    if (changed === "type") db.update(schema.projects).set({ creativeProfile: archivedCreativeProfile() }).run();
     const list = await GET(new NextRequest(`http://localhost/api/project/${projectId}/keyframe-refine?scriptId=${scriptId}&shotId=1`), ctx());
     const response = await POST(request(), ctx());
     if (changed === "type") {

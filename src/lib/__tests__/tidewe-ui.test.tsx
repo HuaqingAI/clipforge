@@ -5,13 +5,13 @@ import NewProjectPage from "@/app/project/new/page";
 import ScriptPage from "@/app/project/[id]/script/page";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useCharacterStore, type Character } from "@/lib/stores/project-store";
 import { TideweProductFields, buildTideweProductFacts, tideweProductInputFromFacts } from "@/components/tidewe-product-fields";
 import { TIDEWE_SHOP_CATEGORIES } from "@/lib/tidewe/categories";
 import { TideweProjectSettings } from "@/components/tidewe-project-settings";
 import { snapshotTidewePresenter } from "@/lib/tidewe/presenter";
 import { normalizeProductFacts } from "@/lib/tidewe/facts";
-import { AD_TEMPLATES } from "@/lib/ad-templates";
 import type { ProductFacts, TideweCopyDocument } from "@/lib/tidewe/types";
 
 vi.mock("next/navigation", () => ({
@@ -36,6 +36,7 @@ vi.mock("@/lib/i18n", async () => {
 const fetchMock = vi.fn();
 const settingsInitial = useSettingsStore.getInitialState();
 const charactersInitial = useCharacterStore.getInitialState();
+const productsInitial = useProductLibraryStore.getInitialState();
 const hunter: Character = { id: "hunter-1", name: "Outdoor creator", appearance: "An adult hunter with a short beard and a green cap", description: "Calm gear demonstrations", referenceImages: ["/api/files/hunter-sheet.png"], sourceReferenceImages: ["https://example.test/hunter.png"] };
 let root: Root;
 let container: HTMLDivElement;
@@ -71,6 +72,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("fetch", fetchMock);
   useSettingsStore.setState({ ...settingsInitial, uiMode: "pro", llm: { provider: "fixture", baseUrl: "https://example.test", apiKey: "fixture-key", model: "fixture" } });
   useCharacterStore.setState({ ...charactersInitial, characters: [] });
+  useProductLibraryStore.setState({ ...productsInitial, products: [] });
   fetchMock.mockReset().mockImplementation(async (url: string) => {
     if (url.startsWith("/api/generation-runs?")) return Response.json({ runs: [] });
     if (url === "/api/ad-template/mine") return Response.json({ templates: [] });
@@ -81,7 +83,7 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/project/new");
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(settingsInitial); useCharacterStore.setState(charactersInitial); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(settingsInitial); useCharacterStore.setState(charactersInitial); useProductLibraryStore.setState(productsInitial); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("TIDEWE product facts input", () => {
   it("supports empty historical facts and gives unrelated selling points distinct keys", () => {
@@ -202,10 +204,9 @@ describe("TIDEWE product facts input", () => {
 });
 
 describe("TIDEWE creation and script editing", () => {
-  it("keeps TIDEWE video and speech choices independent and isolated from sales", async () => {
+  it("keeps TIDEWE video and speech choices independent", async () => {
     i18nOptions.showModeCopy = true;
     await act(async () => root.render(createElement(NewProjectPage)));
-    await click("label");
     expect(button("真人场景演示").className).toContain("bg-primary/10");
     const speechMode = container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")!;
     expect(speechMode.value).toBe("on_camera");
@@ -215,52 +216,55 @@ describe("TIDEWE creation and script editing", () => {
     await click("产品特写");
     expect(button("产品特写").className).toContain("bg-primary/10");
     expect(speechMode.value).toBe("voiceover");
-    await click("creationTypeSalesLabel");
-    expect(container.querySelector("#tidewe-speech-mode")).toBeNull();
-    expect(container.textContent).toContain("AI 生成使用场景，不含人脸");
-    expect(container.textContent).not.toContain("真人场景演示");
-    await click("label");
-    expect(button("产品特写").className).toContain("bg-primary/10");
-    expect(container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")?.value).toBe("voiceover");
+    await click("真人场景演示");
+    expect(speechMode.value).toBe("voiceover");
+    expect(container.textContent).not.toContain("creationTypeSalesLabel");
+    expect(container.textContent).not.toContain("modeMontageLabel");
+    expect(container.textContent).not.toContain("modePresenterLabel");
   });
-  it("keeps independent sales and TIDEWE duration drafts and skips domestic sales choices", async () => {
+  it("offers TIDEWE durations and skips domestic sales choices", async () => {
     await act(async () => root.render(createElement(NewProjectPage)));
-    await click("creationTypeSalesLabel"); await click("60s"); await click("label");
     expect(button("40s").className).toContain("bg-primary/10");
     expect(container.querySelector("#tidewe-category")).not.toBeNull();
     expect(container.textContent).toContain("language");
-    expect(container.textContent).not.toContain("templatesSummary");
-    expect(container.textContent).not.toContain("platformDouyin");
-    expect(container.textContent).not.toContain("sourceIngestLead");
-    expect(container.textContent).not.toContain("sourceExampleLead");
-    await click("30s");
-    expect(button("30s").className).toContain("bg-primary/10");
-    await click("creationTypeSalesLabel"); expect(button("60s").className).toContain("bg-primary/10");
-    await click("label"); expect(button("30s").className).toContain("bg-primary/10");
+    for (const key of ["templatesSummary", "platformDouyin", "sourceIngestLead", "sourceExampleLead", "15s", "creationTypeSalesLabel"]) {
+      expect(container.textContent).not.toContain(key);
+    }
+    for (const duration of ["30s", "60s", "40s"]) {
+      await click(duration);
+      expect(button(duration).className).toContain("bg-primary/10");
+    }
+    expect(fetchMock.mock.calls.some(([url]) => url.startsWith("/api/ad-template"))).toBe(false);
   });
-  it.each([
-    ["short_video_sales", "creationTypeSalesLabel", "modeCloseupLabel"],
-  ])("opens the %s shortcut with its default configuration and product form", async (creationType, label, modeLabel) => {
+  it.each(["", "tidewe_outdoor", "short_video_sales", "unknown", "premium_product_cg"])("opens only TIDEWE with 40 seconds for a %s shortcut", async (creationType) => {
     window.history.replaceState(null, "", `/project/new?creationType=${creationType}`);
     await act(async () => root.render(createElement(NewProjectPage)));
-    expect(button(label).className).toContain("bg-primary/10");
-    expect(button("30s").className).toContain("bg-primary/10");
-    expect(button(modeLabel).className).toContain("bg-primary/10");
-    expect(container.querySelector("#productName")).not.toBeNull();
-    expect(container.querySelector("#tidewe-category")).toBeNull();
-  });
-  it("opens the TIDEWE shortcut with 40 seconds and the outdoor facts editor", async () => {
-    window.history.replaceState(null, "", "/project/new?creationType=tidewe_outdoor");
-    await act(async () => root.render(createElement(NewProjectPage)));
-    expect(button("label").className).toContain("bg-primary/10");
+    expect(container.textContent).toContain("label");
+    expect(container.textContent).not.toContain("creationTypeSalesLabel");
     expect(button("40s").className).toContain("bg-primary/10");
     expect(button("modeSceneLabel").className).toContain("bg-primary/10");
     expect(container.querySelector("#productName")).not.toBeNull();
     expect(container.querySelector("#tidewe-category")).not.toBeNull();
   });
-  it("requires a nonblank selling point for TIDEWE AI creation and keeps sales creation available", async () => {
+  it("prefills TIDEWE name, selling points and images when the product library hydrates", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:library-product");
+    window.history.replaceState(null, "", "/project/new?productId=library-product");
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/uploads/library-product.png") return new Response(new Blob(["product"], { type: "image/png" }));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    await act(async () => root.render(createElement(NewProjectPage)));
+    await act(async () => useProductLibraryStore.setState({ products: [{
+      id: "library-product", name: "TIDEWE outdoor jacket", category: "fashion",
+      description: "Compact pack size", images: ["/uploads/library-product.png"], videoCount: 0, createdAt: new Date(),
+    }] }));
+    expect(container.querySelector<HTMLInputElement>("#productName")?.value).toBe("TIDEWE outdoor jacket");
+    expect(container.querySelector<HTMLTextAreaElement>("#tidewe-specifications")?.value).toBe("Compact pack size");
+    expect(container.querySelector('img[src="blob:library-product"]')).not.toBeNull();
+    expect(button("submit").disabled).toBe(false);
+  });
+  it("requires a nonblank selling point for TIDEWE AI creation", async () => {
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:tidewe-fixture");
-    window.history.replaceState(null, "", "/project/new?creationType=tidewe_outdoor");
     await act(async () => root.render(createElement(NewProjectPage)));
     await changeInput("#productName", "TIDEWE outdoor jacket");
     const upload = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -275,38 +279,6 @@ describe("TIDEWE creation and script editing", () => {
     expect(button("submit").disabled).toBe(false);
     await changeText("#tidewe-specifications", "");
     expect(button("submit").disabled).toBe(true);
-    await click("creationTypeSalesLabel");
-    expect(container.querySelector("#tidewe-specifications")).toBeNull();
-    expect(button("submitGenerate").disabled).toBe(false);
-  });
-  it.each(["unknown", "premium_product_cg"])("leaves creation types unselected for an unavailable %s shortcut", async (creationType) => {
-    window.history.replaceState(null, "", `/project/new?creationType=${creationType}`);
-    await act(async () => root.render(createElement(NewProjectPage)));
-    for (const label of ["creationTypeSalesLabel", "label"]) {
-      expect(button(label).className).not.toContain("bg-primary/10");
-    }
-    expect(container.textContent).not.toContain("creationTypeCgLabel");
-    expect(container.querySelectorAll('button[aria-pressed]')).toHaveLength(0);
-    expect(container.querySelector("#productName")).toBeNull();
-    expect(container.querySelector("#tidewe-category")).toBeNull();
-  });
-  it("keeps an asynchronous sales-template result inside its sales draft after switching to TIDEWE", async () => {
-    let finishTemplate!: (response: Response) => void;
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url === "/api/ad-template/mine") return Response.json({ templates: [] });
-      if (url === "/api/ad-template/generate") return new Promise<Response>((resolve) => { finishTemplate = resolve; });
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    await act(async () => root.render(createElement(NewProjectPage)));
-    await click("creationTypeSalesLabel");
-    await changeInput("#productName", "TIDEWE jacket");
-    await click("adTemplateAiButton");
-    await click("label");
-    await act(async () => finishTemplate(Response.json({ template: { ...AD_TEMPLATES[0], styleType: "talking_head", videoMode: "live_presenter" } })));
-    expect(button("modeSceneLabel").className).toContain("bg-primary/10");
-    expect(container.textContent).not.toContain("modePresenterLabel");
-    await click("creationTypeSalesLabel");
-    expect(button("modePresenterLabel").className).toContain("bg-primary/10");
   });
   it.each([
     { selected: false, speechMode: "on_camera", videoMode: "scene_demo" },
@@ -343,7 +315,7 @@ describe("TIDEWE creation and script editing", () => {
     await click("submit");
     const creation = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/project")![1].body);
     expect(creation).toMatchObject({ productFacts: { items: [{ value: "Three heat settings" }, { value: "Battery sold separately" }] }, videoMode, creativeProfile: { creationType: "tidewe_outdoor", targetDuration: 40, speechMode, videoMode, composeSnapshot: { ttsEnabled: speechMode === "voiceover", nativeAudio: speechMode === "on_camera" } } });
-    expect(creation.creativeProfileDrafts.tidewe_outdoor).toEqual(creation.creativeProfile);
+    expect(creation.creativeProfileDrafts).toEqual({ tidewe_outdoor: creation.creativeProfile });
     if (selected) expect(creation.creativeProfile.presenter).toEqual(snapshotTidewePresenter(hunter));
     else expect(creation.creativeProfile).not.toHaveProperty("presenter");
     const registered = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/generation-runs")![1].body);
@@ -356,28 +328,22 @@ describe("TIDEWE creation and script editing", () => {
     expect(generation).not.toHaveProperty("customRequirements");
     expect(generation.creativeProfile.presenter).toEqual(creation.creativeProfile.presenter);
   });
-  it("keeps TIDEWE's presenter draft separate from the sales presenter and supports appearance-only or image-only identities", async () => {
-    const sales: Character = { id: "sales", name: "Sales creator", appearance: "An adult wearing a plain shirt", referenceImages: [] };
+  it("supports appearance-only or image-only TIDEWE presenter identities", async () => {
+    const appearanceOnly: Character = { id: "appearance-only", name: "Outdoor presenter", appearance: "An adult wearing a plain shirt", referenceImages: [] };
     const imageOnly: Character = { id: "portrait-only", name: "Portrait creator", referenceImages: [], sourceReferenceImages: ["/api/files/portrait.png"] };
     const incomplete: Character = { id: "empty", name: "Incomplete", referenceImages: [] };
-    useCharacterStore.setState({ characters: [hunter, sales, imageOnly, incomplete] });
+    useCharacterStore.setState({ characters: [hunter, appearanceOnly, imageOnly, incomplete] });
     await act(async () => root.render(createElement(NewProjectPage)));
-    await click("creationTypeSalesLabel"); await click("modePresenterLabel"); await click(sales.name);
-    expect(button(sales.name).className).toContain("bg-primary/10");
-    await click("label");
     await changeSelect("#tidewe-presenter", hunter.id);
     expect(container.textContent).toContain(hunter.appearance);
     expect((container.querySelector('#tidewe-presenter option[value="empty"]') as HTMLOptionElement).disabled).toBe(true);
     await changeSelect("#tidewe-presenter", imageOnly.id);
     expect(container.querySelector('img[src="/api/files/portrait.png"]')).not.toBeNull();
     expect(container.textContent).toContain("presenterImageOnly");
-    await changeSelect("#tidewe-presenter", sales.id);
-    expect(container.textContent).toContain(sales.appearance);
+    await changeSelect("#tidewe-presenter", appearanceOnly.id);
+    expect(container.textContent).toContain(appearanceOnly.appearance);
     await changeSelect("#tidewe-presenter", hunter.id);
-    await click("creationTypeSalesLabel");
-    expect(button(sales.name).className).toContain("bg-primary/10");
-    expect(button(hunter.name).className).not.toContain("bg-primary/10");
-    await click("label");
+    await click("modeCloseupLabel");
     expect((container.querySelector("#tidewe-presenter") as HTMLSelectElement).value).toBe(hunter.id);
   });
   it("shows canonical English and Chinese, then explicitly saves a new fully planned version with concurrency guards", async () => {

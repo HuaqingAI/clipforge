@@ -1,5 +1,7 @@
 <p align="center"><img src="docs/banner.en.png" alt="ClipForge — open-source AI e-commerce short-video generator: turn one product photo into a TikTok Shop / Reels / Shorts / Douyin ad that sells" width="820"/></p>
 
+> Current creation scope: the desktop and Web app support TIDEWE projects. Short-video sales, topic creation and their dedicated batch/clone/CLI/MCP generators have been removed. TIDEWE scripting, per-shot generation, Kling batch motion and standard composition remain supported.
+
 # ClipForge — Open-source AI shopping-video maker ｜ One product photo, an auto-generated video that sells
 
 > **Turn one product photo into a short video that actually converts.** Upload a product image → AI extracts selling points · writes the script · **locks your product so it never gets distorted** · adds voiceover + subtitles + BGM → in tens of seconds you get a video ready to post to **TikTok Shop / Reels / Shorts / Douyin / Kuaishou / Xiaohongshu**. **One person, dozens of videos a day · 0-cost batch production · open-source, no watermark.**
@@ -247,7 +249,7 @@ Yes. The whole flow is automatic — AI writes the script, fills visuals, adds v
 One-click fit for TikTok / Reels / Shorts (9:16) / Douyin / Kuaishou / Xiaohongshu (3:4); the UI and docs support **中文 / English**, auto-switching by system language.
 
 **Can an AI assistant (Claude / Cursor) generate videos directly?**
-Yes. ClipForge ships an **MCP Server** (`clipforge_product_script` turns a product link straight into a sales script — see [mcp/README.md](mcp/README.md)) plus an **agent Skill** ([skills/clipforge-video](skills/clipforge-video/SKILL.md)) that teaches an assistant the whole pipeline. Install any way you like: `npx skills add xixihhhh/clipforge`; or `/plugin marketplace add xixihhhh/clipforge` in Claude Code for skill + MCP in one; or paste the Setup prompt from [skills/README](skills/README.md) to your agent and it installs itself.
+Yes. ClipForge ships an **MCP Server** (`clipforge_ingest_product` imports a product into a TIDEWE project — see [mcp/README.md](mcp/README.md)) plus an **agent Skill** ([skills/clipforge-video](skills/clipforge-video/SKILL.md)) that teaches an assistant the whole pipeline. Install any way you like: `npx skills add xixihhhh/clipforge`; or `/plugin marketplace add xixihhhh/clipforge` in Claude Code for skill + MCP in one; or paste the Setup prompt from [skills/README](skills/README.md) to your agent and it installs itself.
 
 ---
 
@@ -305,16 +307,6 @@ One English search term pulls video/image/music from multiple **free commercial-
 - **Per-shot auto-fill** `/api/project/[id]/stock-fill`: after each shot produces an English search term, it pulls visuals from the free libraries shot by shot. The assets page has a one-click **"Auto-fill visuals (free stock)"**: always available for topic videos; for commerce projects it also fills B-roll (hooks, social proof) when no image model is configured, and **automatically skips product-image shots** (protecting product fidelity) — so even users without an AI key can ship.
 - Plus **NASA imagery / Internet Archive** — two key-free public-domain archive sources (documentary/science topics, opt-in, excluded from default aggregation)
 - Great API-less free sites (Mixkit / Videezy / Mazwai etc.) work via the "manual download → local pool" route: drop files into the project pool and they join auto-fill (verify each site's license per clip)
-
-### 3b. One-sentence topic video 🆕 (no product, zero barrier)
-
-You don't need to be selling: type a one-line topic (e.g. "how to brew a pour-over coffee at home") on the home page and it runs end-to-end:
-
-1. **Write the script** `/api/topic/script`: a de-commercialized narration engine, 5 styles (knowledge / emotional story / lifestyle / motivational / travel scenery), each shot producing an English search term
-2. **Auto-fill visuals** `/api/project/[id]/stock-fill`: pulls visuals shot-by-shot from the free libraries (Openverse, key-free), with the "always has a fallback." The assets page offers one-click **"Auto-fill visuals (free stock)"** — **no image key needed** to give every shot real footage
-3. **Composite** `/api/project/[id]/compose`: FFmpeg adds motion + burned subtitles + **free AI voiceover** (Microsoft Edge keyless TTS, no key) into a vertical short with sound
-
-New projects are tagged `contentType=topic` and share the second half of the commerce pipeline; truly "type one sentence → get a video."
 
 ### 4. Four video modes
 

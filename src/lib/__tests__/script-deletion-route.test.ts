@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -8,7 +9,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { createTideweOutdoorProfile } from "@/lib/creative-profiles";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot } from "@/lib/creative-profiles";
 import { DELETE, GET, PATCH } from "@/app/api/project/[id]/scripts/route";
 
 vi.mock("@/lib/db", () => ({ getDb: () => db }));
@@ -115,7 +116,7 @@ describe("DELETE project script", () => {
 
   it("keeps earlier-configuration alternatives eligible when selecting a replacement", async () => {
     addScript("alternative-a-stale", {
-      creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 1),
+      creativeProfileSnapshot: createCreativeProfileSnapshot(archivedCreativeProfile(), 1),
     });
     addScript("alternative-b-current");
     const response = await remove();
@@ -127,7 +128,7 @@ describe("DELETE project script", () => {
 
   it("activates the remaining same-type alternative regardless of its configuration counter", async () => {
     addScript("stale-alternative", {
-      creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 1),
+      creativeProfileSnapshot: createCreativeProfileSnapshot(archivedCreativeProfile(), 1),
     });
     const response = await remove();
     expect(await response.json()).toMatchObject({ selectedScriptId: "stale-alternative", scripts: [{ id: "stale-alternative", selected: true }] });
@@ -305,7 +306,7 @@ describe("script selection after concurrent deletion", () => {
 
   it("checks the current project creation type after acquiring the selection write lock", async () => {
     addScript("alternative-a", {
-      creativeProfileSnapshot: createCreativeProfileSnapshot(createShortVideoSalesProfile(), 0),
+      creativeProfileSnapshot: createCreativeProfileSnapshot(archivedCreativeProfile(), 0),
     });
     const transaction = db.transaction.bind(db);
     vi.spyOn(db, "transaction").mockImplementationOnce((callback, config) => {

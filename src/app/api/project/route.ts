@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { desc } from "drizzle-orm";
-import { createShortVideoSalesProfile, createTideweOutdoorProfile, isTideweOutdoorProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type CreativeProfileFallback, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 
 type JsonRecord = Record<string, unknown>;
@@ -25,17 +25,6 @@ function stringList(value: unknown): string[] {
     : [];
 }
 
-function creativeFallback(value: JsonRecord): CreativeProfileFallback {
-  return {
-    styleType: value.styleType,
-    videoMode: value.videoMode,
-    targetDuration: value.targetDuration ?? value.duration,
-    composeSnapshot: value.composeSnapshot ?? value.compose,
-    creativeSettings: value.creativeSettings,
-    recipeSnapshot: value.recipeSnapshot,
-  };
-}
-
 /** Read only deliberate creative-profile fields. Legacy style/video payloads remain readable on existing projects. */
 function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   if (hasOwn(value, "creativeProfile")) return value.creativeProfile;
@@ -47,7 +36,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration",
-    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "composeSnapshot", "compose",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
@@ -57,17 +46,8 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   return profile;
 }
 
-function createProfileDrafts(
-  profile: ProjectCreativeProfile,
-  rawDrafts: unknown,
-  fallback: CreativeProfileFallback,
-): ProjectCreativeProfileDrafts {
-  const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
-  if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
-  if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
-  if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
-  else drafts.short_video_sales = profile;
-  return drafts;
+function createProfileDrafts(profile: ProjectCreativeProfile, rawDrafts: unknown): ProjectCreativeProfileDrafts {
+  return { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}), tidewe_outdoor: profile };
 }
 
 // fetch project list, most recently edited first (the /start "continue" cards rely on this order)
@@ -102,13 +82,15 @@ export async function POST(req: NextRequest) {
         code: "CREATIVE_PROFILE_REQUIRED",
       }, { status: 400 });
     }
-    const fallback = creativeFallback(body);
     const profileResult = validateCreativeProfileInput(requestedProfile);
     if ("error" in profileResult) {
       return NextResponse.json({ error: profileResult.error }, { status: 400 });
     }
     if (hasOwn(body, "creativeProfileDrafts") && !isRecord(body.creativeProfileDrafts)) {
       return NextResponse.json({ error: "creativeProfileDrafts must be a JSON object." }, { status: 400 });
+    }
+    if (isRecord(body.creativeProfileDrafts) && Object.keys(body.creativeProfileDrafts).some(key => key !== "tidewe_outdoor")) {
+      return NextResponse.json({ error: "Unsupported creative profile draft." }, { status: 400 });
     }
     if (isRecord(body.creativeProfileDrafts) && body.creativeProfileDrafts.tidewe_outdoor !== undefined) {
       const draft = validateCreativeProfileInput(body.creativeProfileDrafts.tidewe_outdoor);
@@ -125,7 +107,7 @@ export async function POST(req: NextRequest) {
     if (body.productFacts != null && !productFacts) {
       return NextResponse.json({ error: "Invalid productFacts.", code: "TIDEWE_FACTS_INVALID" }, { status: 400 });
     }
-    const creativeProfileDrafts = createProfileDrafts(creativeProfile, body.creativeProfileDrafts, fallback);
+    const creativeProfileDrafts = createProfileDrafts(creativeProfile, body.creativeProfileDrafts);
     const sourceType = body.sourceType === "clone" ? "clone" : undefined;
 
     const projectValues: typeof projects.$inferInsert = {

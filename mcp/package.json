@@ -2,7 +2,7 @@
   "name": "clipforge-mcp",
   "version": "0.1.6",
   "mcpName": "io.github.xixihhhh/clipforge",
-  "description": "MCP server for ClipForge — drive the keyless AI 带货/short-video pipeline (create_video, generate_script, list_voices, get_video …) from any MCP client. Thin stdio wrapper over a running ClipForge instance; stock + Edge-TTS are keyless, only script generation needs an LLM key.",
+  "description": "MCP server for ClipForge — import products into TIDEWE projects, inspect and compose existing work, and export video or editable timelines through a running ClipForge instance.",
   "type": "module",
   "bin": {
     "clipforge-mcp": "clipforge-mcp.mjs"

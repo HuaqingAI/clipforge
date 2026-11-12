@@ -1,8 +1,8 @@
 # ClipForge MCP Server
 
-让 **Claude Desktop / Claude Code / Cursor** 等任意 MCP 客户端直接调用 ClipForge 的「一句话成片」能力——一句主题，自动出片。
+让 **Claude Desktop / Claude Code / Cursor** 等 MCP 客户端导入 TIDEWE 商品资料、检查现有项目、合成与导出视频。客户端和 Web 端共用同一 API。
 
-Drive ClipForge's text-to-video pipeline from any MCP client (Claude Desktop / Claude Code / Cursor). One sentence in, a finished vertical video out.
+Import products into TIDEWE projects, inspect existing work, compose videos and export timelines from any MCP client. Desktop and Web use the same API.
 
 > 本服务是 ClipForge HTTP API 的薄封装：复用其全部编排（脚本引擎 / 免费素材 / 免费 Edge TTS / FFmpeg 合成）。运行前需先启动一个 ClipForge 实例（`pnpm dev` 或 `pnpm start`）。
 > This server is a thin wrapper over ClipForge's HTTP API — start a ClipForge instance first (`pnpm dev` / `pnpm start`).
@@ -11,9 +11,7 @@ Drive ClipForge's text-to-video pipeline from any MCP client (Claude Desktop / C
 
 | Tool | 说明 | 需要 LLM Key |
 |------|------|:---:|
-| `clipforge_create_video` | 一句话 → 脚本 → 免费配画面 → 免费配音+字幕 → 合成竖屏成片，返回可下载 mp4 地址 | ✅ |
-| `clipforge_ingest_product` | 贴商品链接 → 抓标题/价/图（JSON-LD>OG>Twitter>标题）→ 一键建带货项目下图，带货「链接优先」入口 | — |
-| `clipforge_generate_script` | 只生成去商品化旁白分镜脚本（含英文素材检索词） | ✅ |
+| `clipforge_ingest_product` | 贴商品链接 → 抓标题/价/图 → 创建 TIDEWE 项目并下载商品图 | — |
 | `clipforge_search_stock` | 从免费可商用素材库检索画面（keyless Openverse 图片优先） | — |
 | `clipforge_list_projects` | 列出 ClipForge 里的项目 | — |
 | `clipforge_compose` | 为已有脚本+素材的项目合成出片（免费 Edge TTS）；可开 卡拉OK字幕 / 商品卡 / AI合规标识 / 购买CTA 等带货增强 | — |
@@ -41,8 +39,7 @@ Drive ClipForge's text-to-video pipeline from any MCP client (Claude Desktop / C
 平台导出支持固定版本、三种构图、裁切位置与原生图片预览：见[构图与导出说明](../docs/platform-framing.md)。Use `framing`, `preview` and `previewTime` with `clipforge_export_platform`; pin `compositionId` across preview and final exports.
 
 
-> **成片选项**：`create_video` / `compose` 支持 `voice`（多语言音色，见 `clipforge_list_voices`；`create_video` 不指定则按主题语言自动挑，英文主题→英文音色）、`aspectRatio`（`9:16` 竖屏默认 / `16:9` / `1:1`）、`quality`（`fast` / `standard` / `hd`）。一个画面都没配到时 `create_video` 会直接返回可操作的提示而非空白片。
-> **Output options**: `create_video` / `compose` accept `voice` (multilingual — zh/en/ja/ko/es; `create_video` auto-picks one matching the topic's language when unset, e.g. an English topic gets an English voice), `aspectRatio` (`9:16` default / `16:9` / `1:1`) and `quality` (`fast`/`standard`/`hd`).
+> **成片选项 / Output options**：`clipforge_compose` 处理已有脚本和素材的项目，支持 `voice`、`aspectRatio`、`quality`。TIDEWE 原声与英语配音规则由项目和脚本配置决定。
 
 > **视频 B-roll**：默认 `footage:"auto"` 现在**逐镜视频优先、配不到再退图片**——**全程免 Key** 就能拿到实拍动态 B-roll（Wikimedia Commons 提供 CC/公共领域视频，取 ≤720p webm 转码）。想更快可传 `footage:"image"`（只图片）；`footage:"video"` 只视频。配了 `CLIPFORGE_PEXELS_KEY` / `CLIPFORGE_PIXABAY_KEY` 则再补充 Pexels/Pixabay 高质量视频。
 > **Video B-roll**: `footage:"auto"` (default) now picks **video first, falling back to image per shot** — real motion B-roll with **no key at all** (Wikimedia Commons). Pass `footage:"image"` for the fastest path; add `CLIPFORGE_PEXELS_KEY` / `CLIPFORGE_PIXABAY_KEY` for extra Pexels/Pixabay footage.
@@ -129,11 +126,15 @@ cd mcp && mcp-publisher login github && mcp-publisher publish
 
 ## 试一试 / Try it
 
-启动 ClipForge（`pnpm dev`）后，在客户端里直接说：
+启动 ClipForge（`pnpm dev`）后，可调用：
 
-> 用 clipforge 做一条关于「在家如何泡手冲咖啡」的竖屏短视频
+```json
+{ "name": "clipforge_ingest_product", "arguments": { "url": "https://example.com/product" } }
+```
 
-Agent 会调用 `clipforge_create_video`，几十秒后返回可下载的 mp4 地址。
+返回的项目使用 TIDEWE 创作类型。在项目脚本页完善商品卖点、主播和文案设置后生成脚本，再逐镜生成素材并合成。`createProject:false` 仅解析商品信息。
+
+短视频带货、主题一键成片和对应的脚本工具已移除；CLI 不再提供 `create` 或 `product` 命令。旧版工具列表和用法不适用于当前版本。
 
 ## 本地直接跑 / Run directly
 

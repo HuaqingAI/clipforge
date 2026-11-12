@@ -3,7 +3,7 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { projects, scripts } from "@/lib/db/schema";
 import { resolveCurrentScript } from "@/lib/current-script";
-import { checkCreativeProfileContext, isTideweOutdoorProfile, sanitizeCreativeProfile } from "@/lib/creative-profiles";
+import { checkCreativeProfileContext, isTideweOutdoorProfile, sanitizeCreativeProfile, resolveCreativeProfile } from "@/lib/creative-profiles";
 import { assertTideweScript } from "@/lib/tidewe/validation";
 import { stripPauseMarks } from "@/lib/voice-markup";
 import { generateComposeHeadline, normalizeComposeHeadlineConfig } from "@/lib/server/compose-headline";
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!Array.isArray(script.shots) || !script.shots.length) {
       return NextResponse.json({ error: "当前脚本没有可用的口播文案" }, { status: 400 });
     }
-    const projectProfile = sanitizeCreativeProfile(project.creativeProfile);
+    const projectProfile = project.creativeProfile == null ? undefined : resolveCreativeProfile(project.creativeProfile);
     if (projectProfile) {
       const context = checkCreativeProfileContext(project, script);
       if (!context.ok) return NextResponse.json({ error: "当前脚本与项目创作配置不一致，请刷新后重新生成脚本。", code: context.code }, { status: 409 });

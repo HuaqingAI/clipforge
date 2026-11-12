@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { reconcileTranscriptRenders } from "@/lib/transcript-render-runner";
 import { getDb } from "@/lib/db";
-import { batchJobItems, batchJobs, compositions, mediaEdits, pipelineRuns, projects } from "@/lib/db/schema";
+import { compositions, mediaEdits, pipelineRuns, projects } from "@/lib/db/schema";
 import { isPipelineRunActive } from "@/lib/pipeline-runner";
 import { listActiveAiTaskSummaries } from "@/lib/ai-tasks";
 import { listLatestPipelineRuns } from "@/lib/pipeline-history";
@@ -122,32 +122,6 @@ export async function GET() {
         submissionState: job.submissionState, remoteState: job.remoteState,
         importState: job.importState, blockedReason: job.data.blockedReason,
         createdAt: new Date(job.createdAt).toISOString(),
-      });
-    }
-
-    // 展示全部运行中的批次，一次读取它们的进度。
-    const jobs = await db
-      .select()
-      .from(batchJobs)
-      .where(eq(batchJobs.status, "running"))
-      .orderBy(desc(batchJobs.createdAt));
-    const items = jobs.length ? await db.select({ jobId: batchJobItems.jobId, status: batchJobItems.status })
-      .from(batchJobItems).where(inArray(batchJobItems.jobId, jobs.map((job) => job.id))) : [];
-    const counts = new Map<string, { done: number; failed: number }>();
-    for (const item of items) {
-      const count = counts.get(item.jobId) ?? { done: 0, failed: 0 };
-      if (item.status === "done") count.done++;
-      if (item.status === "failed") count.failed++;
-      counts.set(item.jobId, count);
-    }
-    for (const job of jobs) {
-      active.push({
-        kind: "batch",
-        id: job.id,
-        total: job.total,
-        done: counts.get(job.id)?.done ?? 0,
-        failed: counts.get(job.id)?.failed ?? 0,
-        createdAt: job.createdAt,
       });
     }
 

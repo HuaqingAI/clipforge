@@ -231,8 +231,7 @@ async function executeDocument(item: GenerationExecutionItem, request: RecordVal
   } else {
     const body = { ...request, requestId: item.id };
     const endpoint = string(request.generationEndpoint) ?? "/api/llm/script";
-    if (endpoint === "/api/topic/script") response = await (await import("@/app/api/topic/script/route")).POST(internalRequest(endpoint, body));
-    else if (endpoint === `/api/project/${item.projectId}/scripts` && request.generationMethod === "PATCH") response = await (await import("@/app/api/project/[id]/scripts/route")).PATCH(internalRequest(endpoint, body, "PATCH"), { params: Promise.resolve({ id: item.projectId }) });
+    if (endpoint === `/api/project/${item.projectId}/scripts` && request.generationMethod === "PATCH") response = await (await import("@/app/api/project/[id]/scripts/route")).PATCH(internalRequest(endpoint, body, "PATCH"), { params: Promise.resolve({ id: item.projectId }) });
     else if (endpoint === "/api/llm/script") response = await (await import("@/app/api/llm/script/route")).POST(internalRequest(endpoint, body));
     else throw new GenerationExecutionError("不支持的脚本生成入口", "GENERATION_ENDPOINT_INVALID");
   }

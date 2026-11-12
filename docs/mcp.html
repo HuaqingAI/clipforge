@@ -42,14 +42,14 @@
   "@context": "https://schema.org",
   "@type": "HowTo",
   "name": "三步把 ClipForge MCP 接入 Claude / Cursor,agent 一句话出片",
-  "description": "启动一个 ClipForge 实例,在 MCP 客户端注册 clipforge-mcp,然后在对话里说一句话主题——agent 调用 clipforge_create_video,几十秒返回可下载的竖屏成片地址。素材与配音全程免 Key。",
+  "description": "启动一个 ClipForge 实例,在 MCP 客户端注册 clipforge-mcp,然后在对话里说一句话主题——agent 导入商品并创建 TIDEWE 项目,几十秒返回可下载的竖屏成片地址。素材与配音全程免 Key。",
   "totalTime": "PT10M",
   "estimatedCost": { "@type": "MonetaryAmount", "currency": "CNY", "value": "0" },
   "tool": [{ "@type": "HowToTool", "name": "ClipForge(开源,Docker/源码/桌面版)" }],
   "step": [
     { "@type": "HowToStep", "name": "启动 ClipForge 实例", "text": "Docker 一行命令 docker run -d -p 3000:3000 -v clipforge-data:/data ghcr.io/xixihhhh/clipforge,或源码 pnpm dev;MCP Server 是这个实例 HTTP API 的薄封装,默认指向 http://localhost:3000。" },
     { "@type": "HowToStep", "name": "在 agent 客户端注册 MCP Server", "text": "Claude Desktop / Cursor 在 MCP 配置里加一条 command: node,args: [mcp/clipforge-mcp.mjs 的绝对路径];Claude Code 一条命令 claude mcp add clipforge -- node /路径/mcp/clipforge-mcp.mjs。写脚本需在 env 里配一个 OpenAI 兼容 LLM Key,素材与配音免 Key。" },
-    { "@type": "HowToStep", "name": "对话里一句话出片", "text": "直接说「用 clipforge 做一条关于在家泡手冲咖啡的竖屏短视频」,agent 调用 clipforge_create_video——写脚本、免费素材配画面、免费配音加字幕、FFmpeg 合成,返回可下载的 mp4 地址。" }
+    { "@type": "HowToStep", "name": "对话里一句话出片", "text": "直接说「用 clipforge 做一条关于在家泡手冲咖啡的竖屏短视频」,agent 导入商品并创建 TIDEWE 项目——写脚本、免费素材配画面、免费配音加字幕、FFmpeg 合成,返回可下载的 mp4 地址。" }
   ]
 }
 </script>
@@ -142,18 +142,16 @@
 <p>Claude Code 一条命令:</p>
 <pre><code>claude mcp add clipforge -- node /绝对路径/clipforge/mcp/clipforge-mcp.mjs</code></pre>
 <h3>第 3 步:对话里直接说</h3>
-<pre><code>用 clipforge 做一条关于「在家如何泡手冲咖啡」的竖屏短视频</code></pre>
-<p>agent 会调用 <code>clipforge_create_video</code>,几十秒后返回可下载的 mp4 地址。带货场景则先贴商品链接——<code>clipforge_ingest_product</code> 自动抓标题 / 价格 / 主图并建好项目,接着出脚本、出片一气呵成。</p>
+<pre><code>用 clipforge 导入这个商品链接，创建 TIDEWE 项目</code></pre>
+<p>agent 调用 <code>clipforge_ingest_product</code> 抓取商品资料并创建 TIDEWE 项目。进入客户端或 Web 项目页补充卖点、主播和文案设置后生成脚本，再逐镜生成和合成。</p>
 <div class="tip"><p>本地想直接试 Server 本体:仓库根目录 <code>pnpm mcp</code>(等价于 <code>node mcp/clipforge-mcp.mjs</code>,stdio 模式)。</p></div>
 
 <h2 id="tools">三、MCP 工具清单:从建项目到发布把关</h2>
-<p>共 <b>29 个 MCP 工具</b>覆盖出片、原片剪辑与专业交付全流程,核心几个:</p>
+<p>MCP 工具覆盖出片、原片剪辑与专业交付全流程,核心几个:</p>
 <table>
   <thead><tr><th>工具</th><th>做什么</th><th>需要 LLM Key</th></tr></thead>
   <tbody>
-    <tr><td><code>clipforge_create_video</code></td><td>一句话 → 脚本 → 免费配画面 → 免费配音+字幕 → 合成竖屏成片,返回可下载 mp4 地址</td><td>✅</td></tr>
     <tr><td><code>clipforge_ingest_product</code></td><td>贴商品链接 → 抓标题/价/图 → 一键建带货项目</td><td>—</td></tr>
-    <tr><td><code>clipforge_generate_script</code></td><td>只生成旁白分镜脚本(含英文素材检索词)</td><td>✅</td></tr>
     <tr><td><code>clipforge_search_stock</code></td><td>从免费可商用素材库检索画面(免 Key)</td><td>—</td></tr>
     <tr><td><code>clipforge_compose</code></td><td>为已有脚本+素材的项目合成出片,可开卡拉OK字幕 / 商品卡 / AI 合规标识 / 购买 CTA / BGM 等带货增强</td><td>—</td></tr>
     <tr><td><code>clipforge_trends</code></td><td>拉热榜选题(国内榜 / Google Trends),不知道做什么先问它</td><td>—</td></tr>
@@ -170,7 +168,6 @@
 <h2 id="cli">四、CLI 脚本化出片:一行命令一条片</h2>
 <p>不走 agent 也可以纯命令行(先启动实例、设好 <code>CLIPFORGE_LLM_*</code> 环境变量):</p>
 <pre><code>npm run cli -- trends                              # 不知道做什么?先拉热搜选题
-npm run cli -- create --topic "在家手冲咖啡" --quality hd --bgm   # 一句话出片,回填 videoUrl
 npm run cli -- qc --project &lt;id&gt;                   # 成片质检(黑屏/静音/响度)
 npm run cli -- master --project &lt;id&gt;               # 默认只读:切点连续性+响度分析
 npm run cli -- master --project &lt;id&gt; --apply --normalize-audio  # 新建两遍响度母版,不覆盖原片
@@ -179,17 +176,10 @@ npm run cli -- transcript --project &lt;id&gt; --media &lt;mediaId&gt;  # 检查
 npm run cli -- transcript-edit --project &lt;id&gt; --media &lt;mediaId&gt; --plan edit.json --revision 0 --operation edit-001  # 默认预演;--apply 才执行
 npm run cli -- timeline --project &lt;id&gt; --media &lt;mediaId&gt; --plan edit.json --format otio --out edit.otio  # 导出可编辑时间线
 npm run cli -- --help                              # 全部命令与参数</code></pre>
-<p>等价写法 <code>node bin/clipforge.mjs create --topic "..."</code>。还有 <code>import</code>(自带稿子出片)、<code>dub</code>(换语种译制出海)、<code>cover</code>(封面图)、<code>carousel</code>(小红书图文卡)等子命令,全部可编排进脚本。</p>
+<p>等价写法 <code>node bin/clipforge.mjs compose --project &lt;id&gt;</code>。还有 <code>import</code>(自带稿子出片)、<code>dub</code>(换语种译制出海)、<code>cover</code>(封面图)、<code>carousel</code>(小红书图文卡)等子命令,全部可编排进脚本。</p>
 
-<h2 id="cron">五、cron 定时 + 按人设选题 = 全自动日更机</h2>
-<p><b>「AI agent 短视频日更」最省事的形态其实是一行 crontab</b>:<code>trends</code> 拉热榜、<code>create</code> 出片,接上 cron 每天固定时间产出一条待发成片:</p>
-<pre><code>crontab -e   # 加入下面一行(路径与环境变量换成你的):每天 9 点从国内热榜拿榜一出一条
-0 9 * * * cd /path/to/clipforge &amp;&amp; TOPIC=$(node bin/clipforge.mjs trends --json | python3 -c "import json,sys;print(json.load(sys.stdin)['topics'][0]['title'])") &amp;&amp; node bin/clipforge.mjs create --topic "$TOPIC" --bgm &gt;&gt; daily.log 2&gt;&amp;1</code></pre>
-<p>不想碰终端?网页版是同一逻辑:工作台的<b>「日更 · 按人设选题」</b>填几个人设关键词,自动按人设挑选题、预填一句话成片——cron 负责准时,人设负责选题,你只负责最后点发布。</p>
-
-<h2 id="batch">六、批量出片:大促 10 个商品排队</h2>
-<p>大促备货不用一条条来:导演模式的<b>批量出片页</b>把多个商品(如 10 个)一键排队,自动逐条走完「脚本 → 画面 → 配音 → 合成」,产出后统一查收——自动化带货视频的产能瓶颈从「人剪多快」变成「机器排多长的队」。</p>
-<figure><img class="shot" src="screenshots/06-batch.png" alt="ClipForge 批量出片页截图:多商品排队自动逐条产出带货视频" loading="lazy"><figcaption>批量出片:多商品排队,自动逐条产出</figcaption></figure>
+<h2 id="creation">五、TIDEWE 创作</h2>
+<p>当前版本仅提供 TIDEWE 创作类型。短视频带货、主题一键成片及其专用批量/复刻入口和 CLI/MCP 生成命令已经移除。旧地址进入统一 TIDEWE 新建页面；Kling 单镜头与批量转动态继续沿用项目的标准合成流程。</p>
 
 <h2 id="skill">七、Agent Skill:教会 agent「什么时候用哪个工具」</h2>
 <p>MCP 给了 agent 可调用的工具,<b>Skill 则教它何时、如何组合使用</b>(Claude Code / Cursor / Copilot / Windsurf 通用的 SKILL.md 约定):</p>

@@ -1,4 +1,5 @@
-import { createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
+
 // @vitest-environment node
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -10,8 +11,7 @@ import * as schema from "@/lib/db/schema";
 import {
   createCreativeProfileSnapshot,
 
-  createTideweOutdoorProfile,
-} from "@/lib/creative-profiles";
+  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import type { ProductFacts, TideweCopyDocument, TidewePresenterSnapshot } from "@/lib/tidewe/types";
 import { compileTideweVisualPrompt } from "@/lib/tidewe/visual-policy";
@@ -35,7 +35,7 @@ let db: ReturnType<typeof drizzle<typeof schema>>;
 const projectId = "image-profile-project";
 const scriptId = "image-profile-script";
 const productImage = `/api/files/${projectId}/product.png`;
-const profile = createShortVideoSalesProfile();
+const profile = archivedCreativeProfile();
 const shot: schema.Shot = {
   shotId: 1,
   type: "product_reveal",

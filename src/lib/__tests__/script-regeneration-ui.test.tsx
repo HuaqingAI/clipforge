@@ -3,7 +3,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ScriptPage from "@/app/project/[id]/script/page";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { productFactsHash } from "@/lib/tidewe/validation";
+import { TIDEWE_COMPILER_VERSION, TIDEWE_CORPUS_VERSION, type ProductFacts, type TideweCopyDocument } from "@/lib/tidewe/types";
 
 const navigation = vi.hoisted(() => ({ projectId: "project-1" }));
 const historyDialog = vi.hoisted(() => ({
@@ -44,22 +46,28 @@ const fetchMock = vi.fn();
 let root: Root | undefined;
 let container: HTMLDivElement;
 
+const profile = createTideweOutdoorProfile();
+const facts: ProductFacts = { version: 1, brand: "TIDEWE", category: "waders", items: [] };
+const projectFixture = {
+  name: "Product", productName: "Product", productCategory: "waders", productDescription: "Water-resistant fabric",
+  productImages: [], videoMode: profile.videoMode, creativeProfile: profile, creativeConfigRevision: 1, productFacts: facts,
+};
+
 function script(id: string, title: string, selected = true, version?: number) {
+  const text = `${title} details`;
+  const copyDocument: TideweCopyDocument = {
+    version: 1, language: "en-US", text, translation: `${title} translation`, angle: "scene_pain", hookType: "situation",
+    claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts), corpusVersion: TIDEWE_CORPUS_VERSION,
+    compilerVersion: TIDEWE_COMPILER_VERSION, exampleIds: [], wordCount: text.split(/\s+/).length, estimatedDuration: 40,
+  };
   return {
-    id,
-    title,
-    styleType: "scene",
-    totalDuration: 5,
-    selected,
-    version,
+    id, title, styleType: "tidewe_outdoor", totalDuration: 40, selected, version, copyDocument, scriptHash: `hash-${id}`,
+    creativeProfileSnapshot: createCreativeProfileSnapshot(profile, 1),
     shots: [{
-      shotId: 1,
-      type: "demo",
-      duration: 5,
-      description: `${title} product`,
-      voiceover: `${title} details`,
-      visualSource: "ai_generate",
-      transition: "direct_concat",
+      shotId: 1, type: "demo", duration: 40, description: `${title} product`, voiceover: text,
+      visualSource: "ai_generate", transition: "direct_concat",
+      tidewe: { copySpan: { start: 0, end: text.length }, translation: copyDocument.translation,
+        shotGoal: "Demonstrate the outdoor gear", factRefs: [], sceneId: "woods" },
     }],
   };
 }
@@ -68,7 +76,8 @@ const oldScript = script("script-old", "Original script", true, 1);
 const archivedOldScript = script("script-old", "Original script", false, 1);
 const newScript = script("script-new", "Regenerated result", true, 2);
 const judgeReport = {
-  verdicts: [], descriptionRewrites: [], summary: "Review of the original script",
+  sourceScriptHash: oldScript.scriptHash,
+  verdicts: [{ judge: "visual", issues: [{ shotId: 1, issue: "Show the gear in use", tier: "default" }] }], descriptionRewrites: [], summary: "Review of the original script",
   rewrites: [{ shotId: 1, voiceover: "Suggested original-script rewrite", tier: "default" }],
 };
 
@@ -124,6 +133,9 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const response = await fetchMock(url, init);
+    if (/^\/api\/project\/[^/]+$/.test(url) && response.ok) {
+      return Response.json({ ...projectFixture, ...await response.json() });
+    }
     if (url !== generationUrl || !response.ok) return response;
     const body = await response.json();
     return Response.json({ id: "script-run", projectId: navigation.projectId, kind: "script", status: "completed", total: 1, done: 1, failed: 0,
@@ -159,34 +171,9 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("sales script product references", () => {
-  it("keeps sales AI shots as placeholders and product-image shots as original photos", async () => {
-    const salesScript = {
-      ...oldScript,
-      shots: [oldScript.shots[0], { ...oldScript.shots[0], shotId: 2, visualSource: "product_image" }],
-    };
-    const normalFetch = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === scriptsUrl) return Promise.resolve(Response.json([salesScript]));
-      if (url === projectUrl) return Promise.resolve(Response.json({
-        name: "Product", productName: "Product", productImages: ["/uploads/product.webp"],
-        creativeProfile: createShortVideoSalesProfile(),
-      }));
-      return normalFetch(url, init);
-    });
-    await mount();
-    expect(container.querySelector('section[aria-label="productReferencesTitle"]')).toBeNull();
-    const images = [...container.querySelectorAll("img")];
-    expect(images).toHaveLength(1);
-    expect(images[0].getAttribute("src")).toBe("/uploads/product.webp");
-    expect(container.textContent).toContain("visualAiGenerate");
-    expect(container.textContent).toContain("visualProductImage");
-  });
-});
-
 describe("first script generation failure recovery", () => {
   it.each(["server diagnostic", "invalid error body", "stalled error body"] as const)(
-    "restores the empty sales page and allows retry after a %s",
+    "restores the empty TIDEWE page and allows retry after a %s",
     async (failure) => {
       const normalFetch = fetchMock.getMockImplementation()!;
       const generation = deferredResponse();
@@ -201,7 +188,7 @@ describe("first script generation failure recovery", () => {
           name: "AeroStretch",
           productName: "AeroStretch",
           productImages: [],
-          creativeProfile: createShortVideoSalesProfile(),
+          creativeProfile: createTideweOutdoorProfile(),
         }));
         if (url === generationUrl) {
           attempts += 1;
@@ -356,39 +343,6 @@ describe("script regeneration recovers without a page refresh", () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === projectUrl)).toHaveLength(1);
   });
 
-  it("replaces topic history when the durable submit confirms new saved scripts", async () => {
-    const normalFetch = fetchMock.getMockImplementation()!;
-    const generation = deferredResponse();
-    let started = false;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === projectUrl) return Promise.resolve(Response.json({
-        name: "Topic",
-        contentType: "topic",
-        topic: "A useful topic",
-      }));
-      if (url === generationUrl) { started = true; return generation.promise; }
-      if (started && url === scriptsUrl) return Promise.resolve(Response.json([newScript]));
-      return normalFetch(url, init);
-    });
-    await mount();
-    await regenerate();
-    expectBusy();
-    await act(async () => generation.resolve(Response.json({ scripts: [newScript] })));
-
-    expectReady();
-    expect(container.textContent).toContain("Regenerated result details");
-    expect(container.textContent).not.toContain("Original script");
-    const request = fetchMock.mock.calls.find(([url]) => url === generationUrl);
-    expect(JSON.parse(request![1].body)).toMatchObject({ projectId: "project-1", items: [{ request: { generationEndpoint: "/api/topic/script", topic: "A useful topic" } }] });
-    expect(fetchMock.mock.calls.some(([url]) => url === "/api/topic/script")).toBe(false);
-  });
-
-
-
-
-
-
-
   it.each(["simple", "pro"] as const)("restores the %s button and current editor after a failed POST", async (uiMode) => {
     const normalFetch = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url === generationUrl
@@ -402,19 +356,12 @@ describe("script regeneration recovers without a page refresh", () => {
     expect(container.textContent).toContain("Original script");
   });
 
-
-
-
-
-
-
-
 });
 
 describe("saved script configuration versions", () => {
-  const profile = createShortVideoSalesProfile();
+  const profile = createTideweOutdoorProfile();
 
-  function useSavedOptions(options: (ReturnType<typeof script> & {
+  function useSavedOptions(options: (Omit<ReturnType<typeof script>, "creativeProfileSnapshot"> & {
     creativeProfileSnapshot?: ReturnType<typeof createCreativeProfileSnapshot> | null;
   })[]) {
     const normalFetch = fetchMock.getMockImplementation()!;
@@ -623,7 +570,7 @@ describe("script option deletion", () => {
     await act(async () => pending.resolve(Response.json(response)));
     expect(button("judgeButton").disabled).toBe(false);
     expect(container.textContent).not.toContain(judgeReport.summary);
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector('textarea[readonly]')).toBeNull();
   });
 
   it("clears the old report and open edit when regeneration replaces the script at the same index", async () => {
@@ -637,13 +584,13 @@ describe("script option deletion", () => {
     await act(async () => button("judgeButton").click());
     await act(async () => button("editShot").click());
     expect(container.textContent).toContain(judgeReport.summary);
-    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector('textarea[readonly]')).not.toBeNull();
     await regenerate();
     expectReady();
     expect(container.textContent).toContain("Regenerated result details");
     expect(container.textContent).not.toContain(judgeReport.summary);
     expect(button("judgeApply")).toBeUndefined();
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector('textarea[readonly]')).toBeNull();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
@@ -662,7 +609,7 @@ describe("script option deletion", () => {
     expect(button("regenerate").disabled).toBe(true);
     await act(async () => button("cancel").click());
     expect(deleteButton(oldScript.title).disabled).toBe(true);
-    await act(async () => save.resolve(Response.json({ success: true })));
+    await act(async () => save.resolve(Response.json({ success: true, script: { ...oldScript, scriptHash: "edited-script-hash" } })));
     expect(deleteButton(oldScript.title).disabled).toBe(false);
     expect(button("judgeButton").disabled).toBe(false);
   });
@@ -823,7 +770,7 @@ describe("script history restoration", () => {
     await act(async () => button("judgeButton").click());
     await act(async () => button("editShot").click());
     expect(container.textContent).toContain(judgeReport.summary);
-    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector('textarea[readonly]')).not.toBeNull();
     await openHistory();
     const { restoration } = await beginRestore();
 
@@ -851,7 +798,7 @@ describe("script history restoration", () => {
     expect(container.textContent).toContain(restoredScript.shots[0].voiceover);
     expect(container.textContent).not.toContain(judgeReport.summary);
     expect(button("judgeApply")).toBeUndefined();
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector('textarea[readonly]')).toBeNull();
     expect(button("judgeButton").disabled).toBe(false);
     expectReady();
   });

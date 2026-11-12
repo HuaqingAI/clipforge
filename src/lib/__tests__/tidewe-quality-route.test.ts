@@ -1,3 +1,4 @@
+import { archivedCreativeProfile } from "@/lib/__tests__/fixtures/creative-profile";
 // @vitest-environment node
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -9,7 +10,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import { assetScopeForShot } from "@/lib/asset-context";
-import { createCreativeProfileSnapshot, createShortVideoSalesProfile, createTideweOutdoorProfile } from "@/lib/creative-profiles";
+import { createCreativeProfileSnapshot,  createTideweOutdoorProfile } from "@/lib/creative-profiles";
 import type { TideweOutdoorProfile } from "@/lib/creative-profiles";
 import { englishWordCount, productFactsHash } from "@/lib/tidewe/validation";
 import { tidewePresenterAnchor } from "@/lib/tidewe/presenter";
@@ -34,7 +35,7 @@ const shot: schema.Shot = { shotId: 1, type: "hook", duration: 5, description: `
     shotGoal: "户外等待体验", productVisible: false, factRefs: [], sceneId: "woods" } };
 
 function seedScript(selectedShot = shot, speechMode: TideweOutdoorProfile["speechMode"] = "on_camera", tidewe = true) {
-  const frozen = tidewe ? createTideweOutdoorProfile({ presenter, speechMode }) : createShortVideoSalesProfile();
+  const frozen = tidewe ? createTideweOutdoorProfile({ presenter, speechMode }) : archivedCreativeProfile();
   const facts = { version: 1 as const, brand: "TIDEWE" as const, category: "hunting_apparel" as const, items: [] };
   const copyDocument = tidewe ? { version: 1 as const, language: "en-US" as const, text: selectedShot.voiceover, translation: "长时间等待会改变计划。",
     angle: "long_wait", hookType: "scene", claimedFactIds: [], factsSnapshot: facts, factsHash: productFactsHash(facts),
@@ -125,7 +126,7 @@ describe("TIDEWE quality reference identity", () => {
 
   it("uses frozen script photography requirements even after the project changes to an ordinary style", async () => {
     seedScript();
-    db.update(schema.projects).set({ creativeProfile: createShortVideoSalesProfile() }).run();
+    db.update(schema.projects).set({ creativeProfile: archivedCreativeProfile() }).run();
     expect((await evaluate()).status).toBe(200);
     const contract = state.evaluate.mock.calls[0][0].contract;
     const criteria = contract.dimensions.find((row: { id: string }) => row.id === "visual-fidelity").criteria;

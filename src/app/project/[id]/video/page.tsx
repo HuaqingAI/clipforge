@@ -14,10 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { useT, useLocale } from "@/lib/i18n";
 import { RENDER_PRESETS, DEFAULT_RENDER_PRESET, type RenderPreset } from "@/lib/compose-presets";
-import { BUILTIN_STYLE_PACKS, parseStylePack, serializeStylePack, STYLE_PACK_FORMAT, type StylePack } from "@/lib/style-packs";
-import { decodeStoredAdTemplate, adTemplateStorageKey, adTemplateAppliedKey } from "@/lib/ad-templates";
-import { buildHookVariants } from "@/lib/script-engine/hook-variants";
-import type { ProductCategory } from "@/lib/script-engine/templates";
+import { BUILTIN_STYLE_PACKS, parseStylePack, serializeStylePack, type StylePack } from "@/lib/style-packs";
 import { sanitizeCreativeProfile, isTideweOutdoorProfile, isTideweNativeSpeech, type TideweOutdoorProfile } from "@/lib/creative-profiles";
 import { resolveNarrationVoice, TIDEWE_TTS_VOICES } from "@/lib/narration-voice";
 import { DEFAULT_FREE_VOICE, FREE_TTS_VOICES, ttsVoiceLocale, ttsVoicePreviewText } from "@/lib/tts-voices";
@@ -346,7 +343,6 @@ export default function VideoPage() {
         if (cancelled) return;
         if (project) {
           setProjectName(project.name ?? project.productName ?? "");
-          setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
           const creativeProfile = sanitizeCreativeProfile(project.creativeProfile);
           const isTidewe = isTideweOutdoorProfile(creativeProfile);
           tideweRef.current = isTidewe;
@@ -362,13 +358,10 @@ export default function VideoPage() {
           : null;
         if (!selected || !Array.isArray(selected.shots) || selected.shots.length === 0) {
           setScriptId("");
-          setScriptShots([]);
           setLoadError(t("errorNoScript"));
           setClips([]);
         } else {
           setScriptId(typeof selected.id === "string" ? selected.id : "");
-          // raw shots feed the variant matrix (hook rewrites need full Shot objects)
-          setScriptShots(selected.shots as Shot[]);
           setClips(
             (selected.shots as DbShot[]).map((s) => ({
               shotId: s.shotId,
@@ -440,34 +433,6 @@ export default function VideoPage() {
     setPackNotice(t("stylePackApplied").replace("{name}", pack.name));
   };
 
-  // Ad-template hand-off (set at project creation on the new-project page): apply the
-  // template's compose recipe ONCE per project, through the same whitelisted style-pack
-  // path — later manual tweaks are never overwritten on revisit.
-  useEffect(() => {
-    if (loadedProfileProjectId !== id) return;
-    try {
-      if (tideweRef.current) {
-        appStorage.removeItem(adTemplateStorageKey(id));
-        appStorage.removeItem(adTemplateAppliedKey(id));
-        return;
-      }
-      const stored = appStorage.getItem(adTemplateStorageKey(id));
-      if (!stored || appStorage.getItem(adTemplateAppliedKey(id))) return;
-      // decodes both builtin ids and inline AI custom templates (custom:<json>)
-      const tpl = decodeStoredAdTemplate(stored);
-      if (!tpl) return;
-      applyStylePack({
-        format: STYLE_PACK_FORMAT,
-        name: locale === "zh" ? tpl.name.zh : tpl.name.en,
-        compose: tpl.compose,
-      });
-      appStorage.setItem(adTemplateAppliedKey(id), "1");
-    } catch {
-      // localStorage unavailable — the pre-fill is a convenience, never a blocker
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, loadedProfileProjectId]);
-
   const importStylePack = async (file: File) => {
     const pack = parseStylePack(await file.text());
     if (!pack) {
@@ -498,18 +463,8 @@ export default function VideoPage() {
     URL.revokeObjectURL(url);
   };
 
-  // —— Variant matrix: same assets,
-  // Hook copy variants rendered as separate labeled outputs with the fixed caption style.
-  // for A/B testing. Zero extra AI-generation cost — only compose (FFmpeg + TTS) reruns. ——
-  const [scriptShots, setScriptShots] = useState<Shot[]>([]);
-  const [projectCategory, setProjectCategory] = useState("");
-  const [matrixOpen, setMatrixOpen] = useState(false);
-  const [matrixHooks, setMatrixHooks] = useState<Set<string>>(new Set(["base"]));
-  const [matrixRunning, setMatrixRunning] = useState(false);
-  const [matrixResults, setMatrixResults] = useState<Array<{ label: string; status: "composing" | "done" | "failed"; url?: string; error?: string }>>([]);
-
   const selectAsset = async (asset: ShotVideoAsset) => {
-    if (selectingAsset.current || isComposing || matrixRunning) return;
+    if (selectingAsset.current || isComposing) return;
     selectingAsset.current = true;
     setSavingAssetId(asset.id);
     setAssetSelectionError(null);
@@ -549,126 +504,9 @@ export default function VideoPage() {
     }
   };
 
-  /** Hard cap on one batch (compose is FFmpeg-heavy and runs sequentially). */
-  const MATRIX_MAX = 6;
-
-  // hook-pattern categories use the script-engine vocabulary; map the project's UI category in
-  const matrixCategory = (
-    ["beauty", "food", "home", "fashion", "tech"].includes(projectCategory)
-      ? projectCategory
-      : projectCategory === "digital"
-        ? "tech"
-        : "home"
-  ) as ProductCategory;
-
-  // zero-LLM hook rewrites from the validated pattern library (base + 2 alternatives)
-  const hookVariants = useMemo(
-    () => (!tidewe && scriptShots.length > 0 ? buildHookVariants({ shots: scriptShots }, matrixCategory, 2) : []),
-    [scriptShots, matrixCategory, tidewe]
-  );
-
-  const matrixCombos = useMemo(() => {
-    const hooks = [...matrixHooks];
-    const combos: Array<{ hookKey: string; hookLabel: string; label: string }> = [];
-    for (const h of hooks) {
-      const hookLabel = h === "base" ? t("matrixBaseHook") : hookVariants.find((v) => v.hookId === h)?.hookName ?? h;
-      const captionLabel = config.subtitles ? "Komika Axis" : t("matrixNoSubtitles");
-      combos.push({ hookKey: h, hookLabel, label: `${hookLabel}×${captionLabel}` });
-    }
-    return combos.slice(0, MATRIX_MAX);
-  }, [matrixHooks, hookVariants, config.subtitles, t]);
-
-  const toggleMatrixOpen = () => {
-    setMatrixOpen((open) => !open);
-  };
-
-  const toggleInSet = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, value: string) => {
-    setter((prev) => {
-      const next = new Set(prev);
-      if (next.has(value)) next.delete(value);
-      else next.add(value);
-      return next;
-    });
-  };
-
-  /** Run the matrix: sequential compose per combo, each polled by its own compositionId. */
-  const runMatrix = async () => {
-    if (tidewe || matrixRunning || isComposing || selectingAsset.current || voiceoverBlocked || !scriptId || matrixCombos.length === 0) return;
-    if (config.headlineEnabled && !config.headlineText.trim()) {
-      setHeadlineError(t("headlineRequired"));
-      return;
-    }
-    const shotAssetSelections = buildShotAssetSelections(clips, savedAssets);
-    const transitionOverrides = clips.map(({ shotId, transition }) => ({ shotId, transition }));
-    setMatrixRunning(true);
-    setMatrixResults(matrixCombos.map((c) => ({ label: c.label, status: "composing" as const })));
-    for (let i = 0; i < matrixCombos.length; i++) {
-      const combo = matrixCombos[i];
-      try {
-        // hook variant: in-memory voiceover override for shot 1 (the stored script stays untouched)
-        const variant = combo.hookKey === "base" ? undefined : hookVariants.find((v) => v.hookId === combo.hookKey);
-        const hookShot = variant?.script.shots[0];
-        const res = await composeFetch(`/api/project/${id}/compose`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            scriptId,
-            shotAssetSelections,
-            transitionOverrides,
-            resolution: config.resolution,
-            renderPreset: config.renderPreset,
-            aspectRatio: config.aspectRatio,
-            subtitles: config.subtitles,
-            ttsEnabled: config.ttsEnabled,
-            headlineEnabled: config.headlineEnabled,
-            ...(config.headlineEnabled && { headlineText: config.headlineText.trim() }),
-            label: combo.label,
-            ...(hookShot && { voiceoverOverrides: [{ shotId: hookShot.shotId, voiceover: hookShot.voiceover ?? "" }] }),
-            ...(config.ctaEnabled && config.ctaText.trim() && { ctaText: config.ctaText.trim() }),
-            ...(config.productCard && { productCard: true }),
-            captionPreset: "karaoke",
-            ...(bgm?.path && { bgmPath: bgm.path, bgmVolume: config.bgmVolume, bgmDuck: config.bgmDuck }),
-            ...(config.ttsEnabled && config.voiceoverMode !== "auto" && { voiceoverMode: config.voiceoverMode }),
-            ...selectedVoiceoverConfig,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.compositionId) throw new Error(elevenLabsErrorMessage(data, t("errorComposeFailed")));
-        // poll THIS composition by id (avoids the latest-row race across sequential renders)
-        const url: string = await new Promise((resolve, reject) => {
-          const poll = setInterval(async () => {
-            try {
-              const r = await fetch(`/api/project/${id}/compose?compositionId=${encodeURIComponent(data.compositionId)}`);
-              const d = await r.json();
-              const c = d.composition;
-              if (!c) return;
-              if (c.status === "done" && c.url) {
-                clearInterval(poll);
-                resolve(c.url);
-              } else if (c.status === "failed") {
-                clearInterval(poll);
-                reject(new Error(c.error || t("errorComposeAssets")));
-              }
-            } catch {
-              // transient poll failure — keep trying until the outer timeout
-            }
-          }, 3000);
-          setTimeout(() => {
-            clearInterval(poll);
-            reject(new Error("timeout"));
-          }, 300000);
-        });
-        setMatrixResults((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: "done", url } : r)));
-      } catch (error) {
-        setMatrixResults((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: "failed", error: error instanceof Error ? error.message : t("errorComposeFailed") } : r)));
-      }
-    }
-    setMatrixRunning(false);
-  };
-
   // 真实合成：调用 compose API 跑 FFmpeg，配乐观进度动画，完成后拿到真实 mp4
   const startCompose = async () => {
-    if (isComposing || matrixRunning || selectingAsset.current || voiceoverBlocked || !scriptId) return;
+    if (isComposing || selectingAsset.current || voiceoverBlocked || !scriptId) return;
     if (config.headlineEnabled && !config.headlineText.trim()) {
       setHeadlineError(t("headlineRequired"));
       return;
@@ -869,7 +707,7 @@ export default function VideoPage() {
                           shotId={clip.shotId}
                           assets={savedAssets}
                           locale={locale}
-                          disabled={savingAssetId !== null || isComposing || matrixRunning}
+                          disabled={savingAssetId !== null || isComposing}
                           savingAssetId={savingAssetId}
                           error={assetSelectionError?.shotId === clip.shotId ? assetSelectionError.message : undefined}
                           onSelect={(asset) => { void selectAsset(asset); }}
@@ -965,7 +803,7 @@ export default function VideoPage() {
                     id="compose-voice-service"
                     aria-label={t("ttsServiceLabel")}
                     value={config.voiceService}
-                    disabled={isComposing || matrixRunning || !config.ttsEnabled}
+                    disabled={isComposing || !config.ttsEnabled}
                     onChange={(event) => {
                       if (event.target.value !== config.voiceService) setElevenLabsReady(false);
                       setCustomizedVoiceProjectId(id);
@@ -1038,11 +876,11 @@ export default function VideoPage() {
                       onReadyChange={setElevenLabsReady}
                     />
                     <ElevenLabsVoicePreview
-                      key={`${id}:${config.elevenLabsVoice}:${config.elevenLabsModel}:${tts.speed ?? 1}:${locale}:${elevenLabsReady}:${isComposing}:${matrixRunning}`}
+                      key={`${id}:${config.elevenLabsVoice}:${config.elevenLabsModel}:${tts.speed ?? 1}:${locale}:${elevenLabsReady}:${isComposing}`}
                       voice={config.elevenLabsVoice}
                       model={config.elevenLabsModel}
                       speed={tts.speed}
-                      ready={elevenLabsReady && !isComposing && !matrixRunning}
+                      ready={elevenLabsReady && !isComposing}
                       text={tidewe ? "The walk in is one thing. Sitting still on a cold morning is another." : undefined}
                     />
                   </div>
@@ -1222,7 +1060,7 @@ export default function VideoPage() {
                       role="switch"
                       aria-label={t("headlineLabel")}
                       aria-checked={config.headlineEnabled}
-                      disabled={isComposing || matrixRunning}
+                      disabled={isComposing}
                       onClick={() => {
                         cancelHeadlineGeneration();
                         setHeadlineError(null);
@@ -1240,7 +1078,7 @@ export default function VideoPage() {
                       id="compose-headline-text"
                       value={config.headlineText}
                       maxLength={120}
-                      disabled={isComposing || matrixRunning}
+                      disabled={isComposing}
                       placeholder={t("headlinePlaceholder")}
                       onChange={(event) => {
                         cancelHeadlineGeneration();
@@ -1254,7 +1092,7 @@ export default function VideoPage() {
                       size="sm"
                       variant="outline"
                       onClick={generateHeadline}
-                      disabled={headlineGenerating || isComposing || matrixRunning || !scriptId}
+                      disabled={headlineGenerating || isComposing || !scriptId}
                       className="text-xs"
                     >
                       {headlineGenerating && <LuLoaderCircle className="animate-spin mr-1 h-3 w-3" />}
@@ -1333,7 +1171,7 @@ export default function VideoPage() {
 
               <Button
                 onClick={startCompose}
-                disabled={isComposing || matrixRunning || savingAssetId !== null || voiceoverBlocked || !scriptId || clips.length === 0}
+                disabled={isComposing || savingAssetId !== null || voiceoverBlocked || !scriptId || clips.length === 0}
                 className="w-full brand-gradient text-white"
               >
                 {isComposing ? (
@@ -1365,89 +1203,7 @@ export default function VideoPage() {
                 </>
               )}
 
-              {/* Variant matrix: hook × caption × BGM combos as
-                  labeled outputs — same assets, compose-only reruns, zero AI-gen cost */}
-              {!tidewe && clips.length > 0 && (
-                <div className="rounded-lg border border-border/50 bg-muted/10 p-3 space-y-2">
-                  <button
-                    type="button"
-                    onClick={toggleMatrixOpen}
-                    className="w-full flex items-center justify-between text-sm font-medium"
-                  >
-                    <span>🧪 {t("matrixTitle")}</span>
-                    <span className="text-xs text-muted-foreground">{matrixOpen ? "−" : "+"}</span>
-                  </button>
-                  {matrixOpen && (
-                    <div className="space-y-3 text-xs pt-1">
-                      <p className="text-muted-foreground leading-relaxed">{t("matrixDesc")}</p>
-                      <div>
-                        <p className="font-medium mb-1.5">{t("matrixHooks")}</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {[{ key: "base", name: t("matrixBaseHook") }, ...hookVariants.map((v) => ({ key: v.hookId, name: v.hookName }))].map((h) => (
-                            <button
-                              key={h.key}
-                              type="button"
-                              onClick={() => toggleInSet(setMatrixHooks, h.key)}
-                              className={`rounded-full border px-2 py-0.5 transition-all ${
-                                matrixHooks.has(h.key)
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-border/60 text-muted-foreground hover:border-primary/40"
-                              }`}
-                            >
-                              {h.name}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      {!config.subtitles && <p className="text-muted-foreground">{t("matrixNoSubtitles")}</p>}
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-muted-foreground">{t("matrixCount", { n: matrixCombos.length, max: MATRIX_MAX })}</span>
-                        <Button
-                          size="sm"
-                          className="text-xs"
-                          disabled={matrixRunning || matrixCombos.length === 0 || isComposing || savingAssetId !== null || voiceoverBlocked || !scriptId}
-                          onClick={runMatrix}
-                        >
-                          {matrixRunning ? (
-                            <>
-                              <LuLoaderCircle className="animate-spin mr-1 h-3 w-3" />
-                              {t("matrixRunning", {
-                                done: matrixResults.filter((r) => r.status !== "composing").length,
-                                total: matrixResults.length,
-                              })}
-                            </>
-                          ) : (
-                            t("matrixRun", { n: matrixCombos.length })
-                          )}
-                        </Button>
-                      </div>
-                      {matrixResults.length > 0 && (
-                        <div className="space-y-1">
-                          {matrixResults.map((r) => (
-                            <div key={r.label} className="flex flex-wrap items-center gap-2">
-                              {r.status === "composing" ? (
-                                <LuLoaderCircle className="animate-spin h-3 w-3 shrink-0 text-muted-foreground" />
-                              ) : r.status === "done" ? (
-                                <span className="text-emerald-500 shrink-0">✓</span>
-                              ) : (
-                                <span className="text-destructive shrink-0">✗</span>
-                              )}
-                              <span className="truncate text-muted-foreground">{r.label}</span>
-                              {r.url && (
-                                <a href={r.url} target="_blank" rel="noreferrer" className="text-primary underline shrink-0">
-                                  {t("matrixView")}
-                                </a>
-                              )}
-                              {r.error && <p className="w-full text-destructive text-xs break-words whitespace-pre-wrap">{r.error}</p>}
-                            </div>
-                          ))}
-                          <p className="text-[10px] text-muted-foreground pt-1">{t("matrixExportHint")}</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+
             </div>
           </div>
         </div>

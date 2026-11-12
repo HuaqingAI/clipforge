@@ -1,6 +1,6 @@
 ---
 name: clipforge-video
-description: Create short vertical videos (TikTok / Reels / Shorts / 抖音 / 快手 / 小红书) from a topic, a product link/image, or a script you already wrote. ClipForge runs the full pipeline — script → footage → voiceover → subtitles → BGM → compose — with a free, no-API-key path (free stock + Edge TTS + local FFmpeg). Use when the user wants to turn an idea, product, or written narration into a finished short video. Pipeline-correctness rules are hard; everything creative is your call.
+description: Import products into TIDEWE projects and work with existing ClipForge projects through MCP, CLI or HTTP. Supports composition, media inspection, transcript editing and export. The current desktop and Web app support TIDEWE creation; the short-video sales and topic creation workflows have been removed.
 license: AGPL-3.0-only
 metadata:
   {
@@ -46,9 +46,9 @@ These are pipeline-correctness facts — violating them produces broken output o
 
 ## Three ways to create
 
-- **MCP tools** (in Claude Desktop / Cursor / Claude Code): `clipforge_create_video`, `clipforge_ingest_product`, `clipforge_product_script`, `clipforge_generate_script`, `clipforge_compose`, `clipforge_search_stock`, `clipforge_list_voices`, `clipforge_list_projects`, `clipforge_get_video`, `clipforge_update_shots`, `clipforge_trends`, `clipforge_import_script`, `clipforge_dub`, `clipforge_cover`, `clipforge_carousel`, `clipforge_shop_qr`, `clipforge_end_card`, `clipforge_qc`, `clipforge_master`, `clipforge_gate`, `clipforge_credits`, `clipforge_native_feel`, `clipforge_preview_gif`, `clipforge_contact_sheet`, `clipforge_export_subtitle`, `clipforge_find_clips`, `clipforge_transcript_inspect`, `clipforge_transcript_edit`, `clipforge_timeline_export`, `clipforge_export_platform`.
-- **CLI**: `node bin/clipforge.mjs <create|product|import|compose|dub|cover|qr|endcard|export|qc|master|gate|credits|native|preview|sheet|carousel|clips|transcript|transcript-edit|timeline|list|voices|get|trends> [flags]` (`--help` for all). `master` analyzes by default; add `--apply` with an explicit operation to create a new version. `gate` exits with code 2 when blocked (fail, or warn under `--strict`) — pipe it straight into shell scripts and CI.
-- **HTTP**: `POST /api/topic/script` → `POST /api/project/[id]/stock-fill` → `POST /api/project/[id]/compose` → poll `GET /api/project/[id]/compose`.
+- **MCP tools** (in Claude Desktop / Cursor / Claude Code): `clipforge_ingest_product`, `clipforge_compose`, `clipforge_search_stock`, `clipforge_list_voices`, `clipforge_list_projects`, `clipforge_get_video`, `clipforge_update_shots`, `clipforge_trends`, `clipforge_import_script`, `clipforge_dub`, `clipforge_cover`, `clipforge_carousel`, `clipforge_shop_qr`, `clipforge_end_card`, `clipforge_qc`, `clipforge_master`, `clipforge_gate`, `clipforge_credits`, `clipforge_native_feel`, `clipforge_preview_gif`, `clipforge_contact_sheet`, `clipforge_export_subtitle`, `clipforge_find_clips`, `clipforge_transcript_inspect`, `clipforge_transcript_edit`, `clipforge_timeline_export`, `clipforge_export_platform`.
+- **CLI**: `node bin/clipforge.mjs <import|compose|dub|cover|qr|endcard|export|qc|master|gate|credits|native|preview|sheet|carousel|clips|transcript|transcript-edit|timeline|list|voices|get|trends> [flags]` (`--help` for all). `master` analyzes by default; add `--apply` with an explicit operation to create a new version. `gate` exits with code 2 when blocked (fail, or warn under `--strict`) — pipe it straight into shell scripts and CI.
+- **HTTP**: import product data through `POST /api/ingest/product` with `creativeProfile: { creationType: "tidewe_outdoor" }`; use the shared TIDEWE editor for script configuration and generation. Compose an existing project through `POST /api/project/[id]/compose` and poll `GET /api/project/[id]/compose`.
 
 **Delivery checklist (hard rules 2–4 and 11 in tool form):** compose done → `clipforge_master { apply: false }` → `clipforge_gate` → `clipforge_contact_sheet` (look at it) → only then report the video URL, together with continuity evidence and any `warn` items the gate raised.
 
@@ -56,36 +56,15 @@ These are pipeline-correctness facts — violating them produces broken output o
 
 The Assets page has a Local material library for images and videos (up to 12 files per batch, 80 MB each), with names, tags, previews, deduplication, cancellation, and retry. Assign a material to a shot to make it active while keeping earlier takes. For model-free, network-free shot matching, use the library’s **Fill empty shots locally** action or `POST /api/project/[id]/stock-fill` with `{ "source": "local", "mediaType": "auto" }` and no `llmConfig`. Only that project’s library is read; selected ready/in-progress assets and product-image shots are skipped.
 
-## Route first, then work
+## TIDEWE creation
 
-Pick the entry point by matching the user's input TOP-DOWN — first hit wins, stop matching:
+Use `clipforge_ingest_product { url }` to import product information and create a TIDEWE project. With `createProject:false`, the tool only parses the product page. Open the project's script page in the desktop or Web editor to review the product facts, presenter, narrative angle, target duration and English copy. TIDEWE supports AI copy or a user-provided English original, on-camera speech or voiceover, and its normal per-shot image/video generation and composition workflow.
 
-| # | User gives you… | Route | Must have | Safe defaults |
-|---|---|---|---|---|
-| 1 | A finished narration/script | `clipforge_import_script` → `clipforge_compose` | projectId (create or reuse), script text | voice auto by language, aspect 9:16 |
-| 2 | A product URL (or product image) | `clipforge_product_script` → `clipforge_compose` | url, LLM env | styleType `auto`, durationSec 30 |
-| 3 | "Real-person feel" / "shouldn't look AI" | route 2 or 4 with a drama/talking-head styleType + `clipforge_native_feel` on the output | same as base route | `native_feel` defaults |
-| 4 | A bare topic/idea | `clipforge_create_video` | topic, LLM env | narrationStyle `knowledge`, 25s |
+The retired sales creation type, topic creation, template recipes and their dedicated CLI/MCP generators are unavailable. Do not recreate those flows or substitute a sales prompt for the TIDEWE compiler. Preserve TIDEWE source audio or English narration according to the saved project/script configuration.
 
-Conflicts resolve by intent priority: **selling beats growing beats expressing** — e.g. "写个卖货的知识科普" is route 2 (commerce) styled as knowledge, not route 4. Every route ends with the same delivery checklist (gate → contact sheet → report), and gate `warn` items are relayed verbatim.
+For existing projects, use `clipforge_list_projects`, `clipforge_compose`, the inspection tools and the normal delivery checklist. For long renders, pass `wait:false` to `clipforge_compose` and poll `clipforge_get_video { projectId, compositionId }`.
 
-Targeted fixes after QC: when `clipforge_gate`/`clipforge_qc` flags one shot (a dragging line, an unreadable visual), use `clipforge_update_shots` to patch just that shot and re-`compose` — do NOT regenerate the whole script (that discards the judge panel's applied rewrites).
-
-Long renders / strict-timeout MCP clients: pass `wait: false` to `clipforge_create_video`/`clipforge_compose` and poll `clipforge_get_video { projectId, compositionId }` instead of holding the call open.
-
-## Workflows
-
-### 1. One-line topic → video
-Give a topic; ClipForge writes the narration, auto-fills free footage, voices it, and composes.
-- MCP: `clipforge_create_video { topic: "在家如何泡一杯手冲咖啡", aspectRatio: "9:16", quality: "standard" }`
-- CLI: `node bin/clipforge.mjs create --topic "..." --quality hd --bgm`
-
-### 2. Product / e-commerce video
-Paste a product URL (auto-extracts title/price/images) or upload a product image; ClipForge writes a selling script and keeps the product image faithful. It also folds in the performance flywheel — historical conversion data biases the script toward the style/hook that actually sells.
-- MCP (one shot): `clipforge_product_script { url: "https://...", styleType: "auto", durationSec: 30 }` → returns `projectId` + commerce scripts; then `clipforge_compose { projectId }`.
-- `styleType` spans four forms: drama (`drama` two-character conflict skit with free multi-voice dialogue / `reversal` / `interview` / `story`), product (`unboxing` / `product_pov` personified product / `comparison`), talking-head (`talking_head` / `pain_point`), scene (`scene`). Dialogue styles auto-cast characters and give each a distinct free TTS voice at compose time.
-- CLI (link → video in one line): `node bin/clipforge.mjs product --url "https://..." --compose --bgm`.
-- Low-level: `clipforge_ingest_product { url }` then generate a script and `clipforge_compose` separately.
+## Existing project workflows
 
 ### 3. Bring your own script
 You already wrote the narration — import it, ClipForge splits it into shots and composes.
@@ -99,7 +78,7 @@ Upload your own B-roll to a project's material pool; auto-fill prefers your foot
 ### 5. Public-domain archive footage (documentary / science topics)
 For documentary or science content, search the keyless public-domain sources explicitly: `source: "nasa"` or `source: "archive"` via `POST /api/stock/search` or `clipforge_search_stock`.
 
-## Output options (compose / create flags)
+## Output options (compose flags)
 
 | Option | Values | Meaning |
 |---|---|---|
@@ -155,7 +134,6 @@ What this skill does not do:
 Review the CLI/MCP scripts before first use — they are plain, dependency-free Node files (`bin/clipforge.mjs`, `mcp/clipforge-mcp.mjs`).
 
 ## Notes
-- Footage auto-fill groups shots that mention the same entity and leans them toward one source/author (coherent look). `clipforge_create_video` reports `sameSourceShots` when it happened — worth relaying to the user as a quality signal.
 - Subtitles can be exported as SRT/WebVTT: `GET /api/project/[id]/subtitle?format=srt|vtt`.
 - `compose` is async — poll until `status: "done"`, then the response carries the downloadable mp4 URL.
 - The free path (free stock + Edge TTS + local FFmpeg) costs nothing; only paid AI image/video/voice models bill per use.

@@ -9,7 +9,7 @@ import { parseProductFromHtml } from "@/lib/product-ingest";
 import { inferExtension, MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { safeFetch } from "@/lib/ssrf-guard";
 import { apiError, errText } from "@/lib/api-error";
-import { createShortVideoSalesProfile, createTideweOutdoorProfile, isTideweOutdoorProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type CreativeProfileFallback, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
+import { isTideweOutdoorProfile, sanitizeCreativeProfileDrafts, validateCreativeProfileInput, type ProjectCreativeProfile, type ProjectCreativeProfileDrafts } from "@/lib/creative-profiles";
 import { normalizeProductFacts, productFactsFromDescription } from "@/lib/tidewe/facts";
 
 const UA = "Mozilla/5.0 (compatible; ClipForge/1.0; +https://github.com/xixihhhh/clipforge)";
@@ -36,7 +36,7 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   for (const key of [
     "creationType", "profileId", "creativeProfileId", "styleType", "videoMode", "targetDuration",
     "duration",
-    "composeSnapshot", "compose", "creativeSettings", "recipeSnapshot",
+    "composeSnapshot", "compose",
     "narrativeAngle", "language", "reviewLanguage", "market", "platform", "speechMode", "presenter",
   ]) {
     if (hasOwn(value, key)) profile[key] = value[key];
@@ -46,28 +46,8 @@ function requestedCreativeProfile(value: JsonRecord): unknown | undefined {
   return profile;
 }
 
-function creativeFallback(value: JsonRecord): CreativeProfileFallback {
-  return {
-    styleType: value.styleType,
-    videoMode: value.videoMode,
-    targetDuration: value.targetDuration ?? value.duration,
-    composeSnapshot: value.composeSnapshot ?? value.compose,
-    creativeSettings: value.creativeSettings,
-    recipeSnapshot: value.recipeSnapshot,
-  };
-}
-
-function createProfileDrafts(
-  profile: ProjectCreativeProfile,
-  rawDrafts: unknown,
-  fallback: CreativeProfileFallback,
-): ProjectCreativeProfileDrafts {
-  const drafts: ProjectCreativeProfileDrafts = { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}) };
-  if (!drafts.short_video_sales) drafts.short_video_sales = createShortVideoSalesProfile(fallback);
-  if (!drafts.tidewe_outdoor) drafts.tidewe_outdoor = createTideweOutdoorProfile();
-  if (profile.creationType === "tidewe_outdoor") drafts.tidewe_outdoor = profile;
-  else drafts.short_video_sales = profile;
-  return drafts;
+function createProfileDrafts(profile: ProjectCreativeProfile, rawDrafts: unknown): ProjectCreativeProfileDrafts {
+  return { ...(sanitizeCreativeProfileDrafts(rawDrafts) ?? {}), tidewe_outdoor: profile };
 }
 
 type ProjectCreationCreativeConfig = {
@@ -95,15 +75,17 @@ function projectCreationCreativeConfig(
     && (body.characterId ?? null) !== (profileResult.profile.presenter?.id ?? null)) {
     return { error: "TIDEWE 主播须通过创作配置中的 presenter 完整保存，不能单独修改 characterId。" };
   }
+  if (isRecord(body.creativeProfileDrafts) && Object.keys(body.creativeProfileDrafts).some(key => key !== "tidewe_outdoor")) {
+    return { error: "Unsupported creative profile draft." };
+  }
   if (isRecord(body.creativeProfileDrafts) && body.creativeProfileDrafts.tidewe_outdoor !== undefined) {
     const draft = validateCreativeProfileInput(body.creativeProfileDrafts.tidewe_outdoor);
     if (!draft.profile || !isTideweOutdoorProfile(draft.profile)) return { error: draft.error ?? "Invalid TIDEWE creative profile draft." };
   }
 
-  const fallback = creativeFallback(body);
   return {
     creativeProfile: profileResult.profile,
-    creativeProfileDrafts: createProfileDrafts(profileResult.profile, body.creativeProfileDrafts, fallback),
+    creativeProfileDrafts: createProfileDrafts(profileResult.profile, body.creativeProfileDrafts),
   };
 }
 
@@ -259,17 +241,10 @@ export async function POST(req: NextRequest) {
   }
   let creativeConfigRevision = proj.creativeConfigRevision;
   if (saved.length > 0) {
-    if (isTideweOutdoorProfile(creativeProfile)) {
-      const [updated] = await db.update(projects).set({ productImages: saved, creativeConfigRevision: proj.creativeConfigRevision + 1, updatedAt: new Date() })
-        .where(and(eq(projects.id, proj.id), eq(projects.creativeConfigRevision, proj.creativeConfigRevision))).returning();
-      if (!updated) return NextResponse.json({ error: "Project configuration changed while product images were downloading. Refresh before continuing.", code: "CREATIVE_CONFIG_CONFLICT", projectId: proj.id }, { status: 409 });
-      creativeConfigRevision = updated.creativeConfigRevision;
-    } else {
-      // A sales project may have switched to TIDEWE while images downloaded.
-      const [updated] = await db.update(projects).set({ productImages: saved, updatedAt: new Date() })
-        .where(and(eq(projects.id, proj.id), eq(projects.creativeConfigRevision, proj.creativeConfigRevision))).returning();
-      if (!updated) return NextResponse.json({ error: "Project configuration changed while product images were downloading. Refresh before continuing.", code: "CREATIVE_CONFIG_CONFLICT", projectId: proj.id }, { status: 409 });
-    }
+    const [updated] = await db.update(projects).set({ productImages: saved, creativeConfigRevision: proj.creativeConfigRevision + 1, updatedAt: new Date() })
+      .where(and(eq(projects.id, proj.id), eq(projects.creativeConfigRevision, proj.creativeConfigRevision))).returning();
+    if (!updated) return NextResponse.json({ error: "Project configuration changed while product images were downloading. Refresh before continuing.", code: "CREATIVE_CONFIG_CONFLICT", projectId: proj.id }, { status: 409 });
+    creativeConfigRevision = updated.creativeConfigRevision;
   }
 
   return NextResponse.json({ projectId: proj.id, product, productImages: saved, creativeConfigRevision });
