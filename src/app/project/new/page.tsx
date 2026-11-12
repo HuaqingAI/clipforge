@@ -203,7 +203,7 @@ export default function NewProjectPage() {
 
   const isTidewe = creationType === "tidewe_outdoor";
   const isSales = creationType === "short_video_sales";
-  const [tideweProduct, setTideweProduct] = useState<TideweProductInput>({ category: "other", sku: "", specifications: "", source: "" });
+  const [tideweProduct, setTideweProduct] = useState<TideweProductInput>({ category: "other", specifications: "" });
   const [tideweCopySource, setTideweCopySource] = useState<TideweCopySource>("ai");
   const [tideweCopyText, setTideweCopyText] = useState("");
   const [tideweSceneDescription, setTideweSceneDescription] = useState("");
@@ -601,8 +601,9 @@ export default function NewProjectPage() {
 
   // form validation
   const hasProductInput = hasChosenCreationType && productName.trim().length > 0 && images.length >= 1;
+  const sellingPointsMissing = isTidewe && !tideweProduct.specifications.trim();
   const originalCopyError = useTideweOriginal ? tideweCopyInputError(tideweCopyText) : undefined;
-  const isValid = hasProductInput && !originalCopyError;
+  const isValid = hasProductInput && !sellingPointsMissing && !originalCopyError;
 
   // summary badge for the folded templates drawer: surfaces what's currently applied while closed
   const pickedAdTpl = resolveAdTemplate(selectedAdTemplateId);
@@ -2011,7 +2012,7 @@ export default function NewProjectPage() {
                 {!isLLMConfigured
                   ? t("hintNeedLlm")
                   : !isValid
-                    ? hasProductInput && originalCopyError ? tt(originalCopyError) : t("hintNeedInput")
+                    ? !hasProductInput ? t("hintNeedInput") : sellingPointsMissing ? tt("sellingPointsRequired") : originalCopyError ? tt(originalCopyError) : t("hintNeedInput")
                     : isTidewe ? tt(useTideweOriginal ? "copyInputReady" : "ready") : t("hintReady")}
               </p>
             )}

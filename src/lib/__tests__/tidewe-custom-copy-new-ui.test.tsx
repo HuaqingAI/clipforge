@@ -51,6 +51,7 @@ async function source(value: "manual" | "ai") {
 }
 async function product() {
   await input("#productName", "TIDEWE outdoor gear");
+  await input("#tidewe-specifications", "Water-resistant outer fabric");
   const upload = container.querySelector('input[type="file"]') as HTMLInputElement;
   Object.defineProperty(upload, "files", { value: [new File(["product"], "product.png", { type: "image/png" })] });
   await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
@@ -88,6 +89,31 @@ afterEach(async () => {
 });
 
 describe("TIDEWE custom copy before project creation", () => {
+  it("requires a nonblank selling point before planning from a valid English original", async () => {
+    await act(async () => root.render(createElement(NewProjectPage)));
+    await product();
+    await source("manual");
+    await input("#tidewe-copy-input", original);
+
+    for (const sellingPoints of ["", " \n\t "]) {
+      await input("#tidewe-specifications", sellingPoints);
+      expect(button("copyInputGenerate").disabled).toBe(true);
+      await click("copyInputGenerate");
+      expect(fetchMock.mock.calls.some(([url]) => url === "/api/project")).toBe(false);
+      expect(generationBodies()).toEqual([]);
+    }
+
+    await input("#tidewe-specifications", "\n\t  Sealed seams  \n ");
+    expect(button("copyInputGenerate").disabled).toBe(false);
+    await click("copyInputGenerate");
+    const creation = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/project")![1].body);
+    expect(creation.productFacts.items).toEqual([
+      expect.objectContaining({ value: "Sealed seams", status: "confirmed", source: { kind: "manual", ref: "user-entered", excerpt: "Sealed seams" } }),
+    ]);
+    expect(generationBodies()).toHaveLength(1);
+    expect(generationBodies()[0].copyText).toBe(original);
+  });
+
   it.each(["", " \n\t "])("defaults to AI copy and omits a blank scene direction (%j)", async (scene) => {
     await act(async () => root.render(createElement(NewProjectPage)));
     expect((container.querySelector('input[type="radio"][value="ai"]') as HTMLInputElement).checked).toBe(true);

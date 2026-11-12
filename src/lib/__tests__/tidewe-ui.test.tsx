@@ -84,11 +84,13 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); useSettingsStore.setState(settingsInitial); useCharacterStore.setState(charactersInitial); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("TIDEWE product facts input", () => {
-  it("supports image-only projects and gives unrelated specifications distinct keys", () => {
-    expect(buildTideweProductFacts({ category: "other", sku: "", specifications: "", source: "" }).items).toEqual([]);
-    const result = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", sku: "HJ006", specifications: "Three heat settings\nBattery sold separately", source: "manual-check" }))!;
+  it("supports empty historical facts and gives unrelated selling points distinct keys", () => {
+    expect(buildTideweProductFacts({ category: "other", specifications: "" }).items).toEqual([]);
+    const result = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", specifications: "Three heat settings\nBattery sold separately" }))!;
     expect(result.category).toBe("heated_gear");
+    expect(result.sku).toBeUndefined();
     expect(result.items.map((item) => item.status)).toEqual(["confirmed", "confirmed"]);
+    expect(result.items.map((item) => item.source)).toEqual(result.items.map((item) => ({ kind: "manual", ref: "user-entered", excerpt: item.value })));
     expect(result.blockedClaims).toBeUndefined();
   });
   it("preserves observed information, original sources and restrictions without promoting image guesses", () => {
@@ -97,35 +99,48 @@ describe("TIDEWE product facts input", () => {
       { id: "battery", key: "batteryIncluded", value: "Battery sold separately", status: "confirmed", source: { kind: "product_page", ref: "https://example.test/HJ006" } },
     ], blockedClaims: [{ key: "runtime", reason: "Conflicting sources", sourceRefs: ["manual"] }] };
     const result = buildTideweProductFacts(tideweProductInputFromFacts(existing), existing);
+    expect(result.sku).toBe(existing.sku);
     expect(result.items).toEqual(existing.items);
     expect(result.blockedClaims).toEqual(existing.blockedClaims);
     expect(tideweProductInputFromFacts(existing).specifications).not.toContain("Camo");
   });
   it("does not turn reordered existing and newly added specifications into false conflicts", () => {
-    const existing = buildTideweProductFacts({ category: "heated_apparel", sku: "HJ006", specifications: "Three heat settings\nBattery sold separately", source: "manual-check" });
-    const result = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", sku: "HJ006", specifications: "Battery sold separately\nCamo pattern", source: "new-check" }, existing))!;
+    const existing: ProductFacts = { ...facts, items: [
+      { id: "manual-1", key: "specification-1", value: "Three heat settings", status: "confirmed", source: { kind: "manual", ref: "manual-check" } },
+      { id: "manual-2", key: "specification-2", value: "Battery sold separately", status: "confirmed", source: { kind: "product_page", ref: "https://example.test/HJ006" } },
+    ] };
+    const result = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", specifications: "Battery sold separately\nCamo pattern" }, existing))!;
     expect(result.items[0]).toEqual(existing.items[1]);
+    expect(result.items[1].source).toEqual({ kind: "manual", ref: "user-entered", excerpt: "Camo pattern" });
     expect(new Set(result.items.map((item) => item.key)).size).toBe(2);
     expect(result.blockedClaims).toBeUndefined();
-    const inserted = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", sku: "HJ006", specifications: "Camo pattern\nThree heat settings", source: "new-check" }, existing))!;
+    const inserted = normalizeProductFacts(buildTideweProductFacts({ category: "heated_apparel", specifications: "Camo pattern\nThree heat settings" }, existing))!;
     expect(inserted.items[1]).toEqual(existing.items[0]);
     expect(new Set(inserted.items.map((item) => item.id)).size).toBe(2);
     expect(inserted.blockedClaims).toBeUndefined();
   });
   it.each([
-    { locale: "zh" as const, labels: ["狩猎帐篷", "涉水服", "加热装备", "服装", "靴子", "配件"], placeholder: "请选择", skuPlaceholder: "填写产品型号或 SKU" },
-    { locale: "en" as const, labels: ["Hunting Blinds", "Waders", "Heated Gear", "Apparel", "Boots", "Accessories"], placeholder: "Please select", skuPlaceholder: "Enter a model number or SKU" },
-  ])("offers six SHOP choices in order and sends canonical values from real select events: $locale", async ({ locale, labels, placeholder, skuPlaceholder }) => {
+    { locale: "zh" as const, labels: ["狩猎帐篷", "涉水服", "加热装备", "服装", "靴子", "配件"], placeholder: "请选择", sellingPointsLabel: "产品卖点（每行一项）", removedLabels: ["产品型号 / SKU", "规格来源"] },
+    { locale: "en" as const, labels: ["Hunting Blinds", "Waders", "Heated Gear", "Apparel", "Boots", "Accessories"], placeholder: "Please select", sellingPointsLabel: "Product selling points (one per line)", removedLabels: ["Model / SKU", "Specification source"] },
+  ])("offers required selling points and six SHOP choices without model or source inputs: $locale", async ({ locale, labels, placeholder, sellingPointsLabel, removedLabels }) => {
     i18nOptions.showProductCopy = true; i18nOptions.locale = locale;
     const changed = vi.fn();
-    const value = { category: "other" as const, sku: "MODEL-42", specifications: "Confirmed specification", source: "manual-check" };
+    const value = { category: "other" as const, specifications: "Confirmed specification" };
     await act(async () => root.render(createElement(TideweProductFields, { value, onChange: changed })));
     const select = container.querySelector<HTMLSelectElement>("#tidewe-category")!;
     expect([...select.options].map((option) => [option.value, option.text])).toEqual([["", placeholder], ...TIDEWE_SHOP_CATEGORIES.map((category, index) => [category, labels[index]])]);
     expect(select.value).toBe("");
     expect(select.options[0].disabled).toBe(true);
     expect([...select.options].filter((option) => !option.disabled)).toHaveLength(6);
-    expect(container.querySelector<HTMLInputElement>("#tidewe-sku")?.placeholder).toBe(skuPlaceholder);
+    expect(container.querySelector("#tidewe-sku")).toBeNull();
+    expect(container.querySelector("#tidewe-source")).toBeNull();
+    const sellingPoints = container.querySelector<HTMLTextAreaElement>("#tidewe-specifications")!;
+    const sellingPointsTitle = container.querySelector('label[for="tidewe-specifications"]')!;
+    expect(sellingPoints.required).toBe(true);
+    expect(sellingPoints.getAttribute("aria-required")).toBe("true");
+    expect(sellingPointsTitle.textContent).toContain(sellingPointsLabel);
+    expect(sellingPointsTitle.querySelector(".text-destructive")?.textContent?.trim()).toBe("*");
+    for (const label of removedLabels) expect(container.textContent).not.toContain(label);
     for (const category of TIDEWE_SHOP_CATEGORIES) {
       await changeSelect("#tidewe-category", category);
       expect(changed).toHaveBeenLastCalledWith({ ...value, category });
@@ -139,7 +154,10 @@ describe("TIDEWE product facts input", () => {
     { legacy: "hunting_apparel" as const, shop: "apparel", next: "boots" },
     { legacy: "waterproof_boots" as const, shop: "boots", next: "apparel" },
   ])("shows legacy $legacy as SHOP $shop and saves canonical product data after a user selection", async ({ legacy, shop, next }) => {
-    const stored = { ...facts, category: legacy };
+    const stored: ProductFacts = { ...facts, category: legacy, items: [
+      { id: "heat", key: "heatSettings", value: "Three heat settings", status: "confirmed", source: { kind: "manual", ref: "verified-manual", excerpt: "Three settings" } },
+      { id: "battery", key: "batteryIncluded", value: "Battery sold separately", status: "confirmed", source: { kind: "product_page", ref: "https://example.test/HJ006" } },
+    ] };
     const original = structuredClone(stored);
     const profile = createTideweOutdoorProfile();
     const saved = vi.fn();
@@ -148,16 +166,38 @@ describe("TIDEWE product facts input", () => {
     const changed = vi.fn();
     await act(async () => root.render(createElement(TideweProductFields, { value: { ...tideweProductInputFromFacts(stored), category: legacy }, onChange: changed })));
     expect(container.querySelector<HTMLSelectElement>("#tidewe-category")?.value).toBe(shop);
-    await changeInput("#tidewe-sku", "UPDATED-MODEL");
-    expect(changed).toHaveBeenLastCalledWith({ ...tideweProductInputFromFacts(stored), category: shop, sku: "UPDATED-MODEL" });
+    await changeText("#tidewe-specifications", "Updated specification");
+    expect(changed).toHaveBeenLastCalledWith({ category: shop, specifications: "Updated specification" });
     await act(async () => root.render(createElement(TideweProjectSettings, { projectId: "tidewe-project", revision: 4, facts: stored, profile, drafts: { tidewe_outdoor: profile }, disabled: false, onBusyChange: vi.fn(), onSaved: saved })));
     expect(container.querySelector<HTMLSelectElement>("#project-tidewe-category")?.value).toBe(shop);
+    expect(container.querySelector("#project-tidewe-sku")).toBeNull();
+    expect(container.querySelector("#project-tidewe-source")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     await changeSelect("#project-tidewe-category", next);
     await click("saveFacts");
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ expectedCreativeConfigRevision: 4, productCategory: next, productFacts: { category: next, sku: stored.sku, items: stored.items } });
     expect(saved).toHaveBeenCalledTimes(1);
     expect(stored).toEqual(original);
+  });
+  it("requires nonblank selling points before saving settings for a historical project", async () => {
+    const profile = createTideweOutdoorProfile();
+    const saved = vi.fn();
+    const busy = vi.fn();
+    await act(async () => root.render(createElement(TideweProjectSettings, { projectId: "tidewe-project", revision: 4, facts, profile, drafts: { tidewe_outdoor: profile }, disabled: false, onBusyChange: busy, onSaved: saved })));
+    expect(button("saveFacts").disabled).toBe(true);
+    await changeText("#project-tidewe-specifications", " \n\t ");
+    expect(button("saveFacts").disabled).toBe(true);
+    await click("saveFacts");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(busy).not.toHaveBeenCalled();
+    const sellingPoints = " \n  Battery sold separately  \n\t ";
+    await changeText("#project-tidewe-specifications", sellingPoints);
+    expect(button("saveFacts").disabled).toBe(false);
+    await click("saveFacts");
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ productFacts: { sku: facts.sku, items: [{ value: "Battery sold separately", status: "confirmed", source: { kind: "manual", ref: "user-entered", excerpt: "Battery sold separately" } }] } });
+    expect(saved).toHaveBeenCalledTimes(1);
+    await changeText("#project-tidewe-specifications", "");
+    expect(button("saveFacts").disabled).toBe(true);
   });
 });
 
@@ -218,6 +258,27 @@ describe("TIDEWE creation and script editing", () => {
     expect(container.querySelector("#productName")).not.toBeNull();
     expect(container.querySelector("#tidewe-category")).not.toBeNull();
   });
+  it("requires a nonblank selling point for TIDEWE AI creation and keeps sales creation available", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:tidewe-fixture");
+    window.history.replaceState(null, "", "/project/new?creationType=tidewe_outdoor");
+    await act(async () => root.render(createElement(NewProjectPage)));
+    await changeInput("#productName", "TIDEWE outdoor jacket");
+    const upload = container.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(upload, "files", { value: [new File(["product"], "product.png", { type: "image/png" })] });
+    await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(button("submit").disabled).toBe(true);
+    await changeText("#tidewe-specifications", " \n\t ");
+    expect(button("submit").disabled).toBe(true);
+    await click("submit");
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/project")).toBe(false);
+    await changeText("#tidewe-specifications", " \n  Compact pack size  \n ");
+    expect(button("submit").disabled).toBe(false);
+    await changeText("#tidewe-specifications", "");
+    expect(button("submit").disabled).toBe(true);
+    await click("creationTypeSalesLabel");
+    expect(container.querySelector("#tidewe-specifications")).toBeNull();
+    expect(button("submitGenerate").disabled).toBe(false);
+  });
   it.each(["unknown", "premium_product_cg"])("leaves creation types unselected for an unavailable %s shortcut", async (creationType) => {
     window.history.replaceState(null, "", `/project/new?creationType=${creationType}`);
     await act(async () => root.render(createElement(NewProjectPage)));
@@ -275,12 +336,13 @@ describe("TIDEWE creation and script editing", () => {
     expect(container.querySelector<HTMLSelectElement>("#tidewe-speech-mode")?.value).toBe(speechMode);
     if (selected) await changeSelect("#tidewe-presenter", hunter.id);
     await changeInput("#productName", "TIDEWE outdoor jacket");
+    await changeText("#tidewe-specifications", "Three heat settings\nBattery sold separately");
     const upload = container.querySelector('input[type="file"]') as HTMLInputElement;
     Object.defineProperty(upload, "files", { value: [new File(["product"], "product.png", { type: "image/png" })] });
     await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
     await click("submit");
     const creation = JSON.parse(fetchMock.mock.calls.find(([url]) => url === "/api/project")![1].body);
-    expect(creation).toMatchObject({ productFacts: { items: [] }, videoMode, creativeProfile: { creationType: "tidewe_outdoor", targetDuration: 40, speechMode, videoMode, composeSnapshot: { ttsEnabled: speechMode === "voiceover", nativeAudio: speechMode === "on_camera" } } });
+    expect(creation).toMatchObject({ productFacts: { items: [{ value: "Three heat settings" }, { value: "Battery sold separately" }] }, videoMode, creativeProfile: { creationType: "tidewe_outdoor", targetDuration: 40, speechMode, videoMode, composeSnapshot: { ttsEnabled: speechMode === "voiceover", nativeAudio: speechMode === "on_camera" } } });
     expect(creation.creativeProfileDrafts.tidewe_outdoor).toEqual(creation.creativeProfile);
     if (selected) expect(creation.creativeProfile.presenter).toEqual(snapshotTidewePresenter(hunter));
     else expect(creation.creativeProfile).not.toHaveProperty("presenter");
@@ -352,6 +414,7 @@ describe("TIDEWE creation and script editing", () => {
     await act(async () => root.render(createElement(TideweProjectSettings, { projectId: "tidewe-project", revision: 4, facts, profile, drafts: { tidewe_outdoor: profile }, disabled: false, onBusyChange: vi.fn(), onSaved: saved })));
     const mode = container.querySelector('[aria-label="speechMode"]') as HTMLSelectElement;
     expect(mode.value).toBe("voiceover");
+    await changeText("#project-tidewe-specifications", "Battery sold separately");
     await click("saveFacts");
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ expectedCreativeConfigRevision: 4, creativeProfile: { speechMode: "voiceover" } });
     await act(async () => { mode.value = "on_camera"; mode.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -368,6 +431,7 @@ describe("TIDEWE creation and script editing", () => {
     expect(container.textContent).toContain("presenterDeletedHint");
     expect(container.textContent).toContain(hunter.appearance);
     expect(container.querySelector('img[src="/api/files/hunter-sheet.png"]')).not.toBeNull();
+    await changeText("#project-tidewe-specifications", "Battery sold separately");
     await click("saveFacts");
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ expectedCreativeConfigRevision: 4, creativeProfile: { presenter } });
     const changed = { ...hunter, appearance: "An adult hunter with a blue cap", referenceImages: ["/api/files/new-sheet.png"] };

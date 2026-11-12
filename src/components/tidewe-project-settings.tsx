@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { LoaderCircle, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TideweProductFields, buildTideweProductFacts, tideweProductInputFromFacts } from "@/components/tidewe-product-fields";
 import { TidewePresenterPicker } from "@/components/tidewe-presenter-picker";
@@ -29,8 +30,9 @@ export function TideweProjectSettings({ projectId, revision, facts, profile, dra
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const hasSellingPoints = input.specifications.trim().length > 0;
   const save = async () => {
-    if (saving || disabled) return;
+    if (saving || disabled || !hasSellingPoints) return;
     setSaving(true); onBusyChange(true); setNotice(""); setError("");
     try {
       const nextProfile = createTideweOutdoorProfile({ ...profile, targetDuration: duration, narrativeAngle: angle, speechMode, presenter });
@@ -59,7 +61,18 @@ export function TideweProjectSettings({ projectId, revision, facts, profile, dra
       </div>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {notice && <p role="status" className="text-xs text-primary">{notice}</p>}
-      <Button variant="outline" size="sm" disabled={disabled || saving} onClick={() => void save()}>{t("saveFacts")}</Button>
+      {!hasSellingPoints && <p className="text-xs text-muted-foreground">{t("sellingPointsRequired")}</p>}
+      <Button
+        type="button"
+        size="lg"
+        className="h-11 w-full gap-2 px-6 text-sm font-semibold shadow-md shadow-primary/20 hover:bg-primary/90 sm:w-auto sm:min-w-60"
+        disabled={disabled || saving || !hasSellingPoints}
+        aria-busy={saving}
+        onClick={() => void save()}
+      >
+        {saving ? <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Save className="size-4" aria-hidden="true" />}
+        {t(saving ? "savingFacts" : "saveFacts")}
+      </Button>
     </div>
   </details>;
 }
