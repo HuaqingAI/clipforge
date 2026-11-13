@@ -1000,9 +1000,10 @@ function AssetsPageContent() {
     setPreparingBatchMotion(true);
     try {
       const shots = await Promise.all(assets.map(async (asset) => {
+        // A video's display poster is not necessarily the image used to generate it.
+        const firstFrame = asset.isVideo ? asset.sourceImageUrl : asset.thumbnailUrl;
         const existingTask = klingJobs.some((job) => job.scriptId === scriptId && job.shotId === asset.shotId && klingJobBlocksSubmission(job));
-        const disabledReason = asset.isVideo ? t("batchMotionAlreadyVideo")
-          : asset.status !== "done" || !asset.thumbnailUrl || /\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(asset.thumbnailUrl) ? t("batchMotionNeedImage")
+        const disabledReason = asset.status !== "done" || !firstFrame || /\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(firstFrame) ? t("batchMotionNeedImage")
           : backgroundShots.has(asset.shotId) || motionShots.has(asset.shotId) || unresolvedMotionShots.has(asset.shotId) || existingTask || pendingTasks.some((task) => task.shotId === asset.shotId && task.status !== "failed") ? t("batchMotionExistingTask")
           : (klingEnabled || isKlingDefault) && (!klingJobsLoaded || klingJobsError) ? t("batchMotionTasksUnavailable")
           : undefined;
@@ -1010,7 +1011,7 @@ function AssetsPageContent() {
         // Each selected shot starts from its OWN still. Batch submission does not
         // wait for another shot's generated tail or bridge to an unselected shot.
         try {
-          const draft = await prepareMotion(asset.shotId, asset.thumbnailUrl, null, undefined, true, controller.signal);
+          const draft = await prepareMotion(asset.shotId, firstFrame, null, undefined, true, controller.signal);
           return draft ? { asset, draft } : { asset, disabledReason: t("batchMotionUnavailable") };
         } catch (error) {
           return { asset, disabledReason: error instanceof Error ? error.message : "读取视频提示词失败，请重试。" };
@@ -1367,7 +1368,10 @@ function AssetsPageContent() {
               const shotsOk = assets.length >= 2 && assets.length <= 9;
               const gridReady = Boolean(modelTarget) && shotsOk;
               const gridReason = !modelTarget ? t("gridNeedModel") : !shotsOk ? t("gridNeedShots") : t("gridTip");
-              const batchReady = Boolean(scriptId && videoModelTarget && assets.some((asset) => asset.status === "done" && asset.thumbnailUrl && !asset.isVideo));
+              const batchReady = Boolean(scriptId && videoModelTarget && assets.some((asset) => {
+                const firstFrame = asset.isVideo ? asset.sourceImageUrl : asset.thumbnailUrl;
+                return asset.status === "done" && firstFrame && !/\.(?:mp4|webm|mov|m4v)(?:[?#]|$)/i.test(firstFrame);
+              }));
               const batchReason = !videoModelTarget ? t("batchMotionNeedModel") : t("batchMotionHint");
               return (
                 <>

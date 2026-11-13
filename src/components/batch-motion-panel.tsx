@@ -190,6 +190,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
       <DialogHeader><DialogTitle>批量转动态</DialogTitle></DialogHeader>
       <p className="text-sm text-muted-foreground">勾选要转动态的分镜，使用各自的当前关键帧生成视频。</p>
+      {rows.some((row) => row.asset.isVideo && row.draft) && <p className="text-xs text-muted-foreground">已有视频的分镜将使用原始关键帧重新生成，可能产生新的生成费用。</p>}
       <p className="text-xs text-muted-foreground">确认后，所选分镜的提示词、参考图和参数会进入后台队列依次提交，正常排队自动继续。可收起窗口或切换项目；账号、素材变化或提交结果不明时会暂停核对。</p>
       <p className="break-all text-xs text-muted-foreground">视频模型：{modelLabel}</p>
       {provider === "openai" && selectionKey === HTH_VIDEO_MODEL && <p className="text-xs text-muted-foreground">MiniMax-H3 始终生成原生音轨，接口不支持关闭声音。</p>}
@@ -205,7 +206,7 @@ export function BatchMotionPanel({ open, onOpenChange, projectId, scriptId, mode
         const prepared = isKling && row.draft && model ? prepareBatchMotionKling(row.draft, model) : undefined;
         const parameters = prepared?.options ?? row.draft?.options ?? {};
         const frameChoices = row.draft ? [
-          { label: "当前镜头原始关键帧", url: row.asset.isVideo ? row.asset.keyframeUrl ?? row.draft.firstFrameUrl : row.asset.thumbnailUrl ?? row.draft.firstFrameUrl },
+          { label: "当前镜头原始关键帧", url: row.asset.isVideo ? row.asset.sourceImageUrl ?? row.draft.firstFrameUrl : row.asset.thumbnailUrl ?? row.draft.firstFrameUrl },
           ...(row.draft.frameChoices ?? []),
           { label: "已选首帧", url: row.draft.firstFrameUrl },
           ...(row.draft.lastFrameUrl ? [{ label: "已选尾帧", url: row.draft.lastFrameUrl }] : []),
